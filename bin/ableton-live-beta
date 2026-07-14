@@ -8,6 +8,9 @@ export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG="${WINEDEBUG:--all}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
+# Report host mount points as plain dirs (patch 0033); Live's browser treats
+# junctions without reparse data as unresolvable and skips them.
+export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 
 if pgrep -af 'Ableton Live 12 Suite[.]exe' 2>/dev/null | grep -q 'ProgramData'; then

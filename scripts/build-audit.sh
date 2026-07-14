@@ -66,16 +66,26 @@ while read -r sum file; do
 done < "$SERIES"
 extras="$(cd "$root/patches" && ls 00*.patch wineasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
+# Retired numbers stay retired (renumbering would break cross-references in patch
+# titles and notes/); a gap is fine if documented here, a dropped patch is not.
+declare -A SERIES_GAPS=(
+    [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
+)
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^wineasio/' | sort); do
     num="${f%%-*}"
     printf -v want '%04d' "$seq_expect"
+    while [ "$num" != "$want" ] && [ -n "${SERIES_GAPS[$want]:-}" ]; do
+        ok "series numbering" "$want gap documented (${SERIES_GAPS[$want]})"
+        seq_expect=$((seq_expect+1))
+        printf -v want '%04d' "$seq_expect"
+    done
     [ "$num" = "$want" ] || bad "series numbering" "expected $want, found $num"
     seq_expect=$((seq_expect+1))
 done
 n_wine="$(awk '{print $2}' "$SERIES" | grep -vc '^wineasio/' || true)"
 n_asio="$(awk '{print $2}' "$SERIES" | grep -c '^wineasio/' || true)"
-say "   series: $n_wine wine patches (contiguous 0001..$(printf '%04d' "$n_wine")) + $n_asio wineasio patch(es)"
+say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_asio wineasio patch(es)"
 
 # --- [2/4] artifact provenance stamp ------------------------------------------
 say "== [2/4] artifact provenance (patch stack stamped at build time) =="
@@ -108,6 +118,7 @@ FINGERPRINTS='
 0031|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.portal.FileChooser
 0031|wide|lib/wine/x86_64-windows/comdlg32.dll|FileDialogPortal
 0032|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|libusb_submit_transfer
+0033|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_DISABLE_UNIX_MOUNT_REPARSE
 wineasio/0001|ascii|lib/wine/x86_64-unix/wineasio64.dll.so|wineasio-clamp-sample-rate
 '
 # wineasio's code is in the unix .so; the PE wineasio64.dll is a codeless fake module.
@@ -133,10 +144,10 @@ STAMP_ONLY='
 0023|logic-only (client rects in present thread)
 0024|logic-only (diagnostics severity change)
 0026|logic-only (DC drawable visual; literals not compiled in)
-0027|gitignore housekeeping — no artifact effect by design
 0028|logic-only (MIDI announce-port re-subscribe)
 0029|logic-only (menu bar +4px arithmetic)
 0030|literal __wine_dcomp_swapchain pre-exists in base — not distinctive
+0034|logic-only (XdndStatus reply flush; adds no string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \

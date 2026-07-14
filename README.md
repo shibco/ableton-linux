@@ -2,6 +2,9 @@
 
 Ableton Live 12 on a patched Wine: reproducible builds, a single-file installer, and a beta test program with remote diagnostics.
 
+![screenshot.png](screenshot.png)
+
+
 ## Features
 
 - Live 12 Suite and Beta support
@@ -15,52 +18,14 @@ Ableton Live 12 on a patched Wine: reproducible builds, a single-file installer,
 - VST3/JUCE/OpenGL editor windows render, take input, and scale correctly.
 - HiDPI support display scale auto-detected and recalibrated on every launch.
 - Extensions SDK support.
-- Reproducible, audited builds.
+- VST specific fixes for Autuira, Pianoteq, SWAM and KORG (with others to follow).
+- Reproducible builds.
 
 ## Getting started
 
-- `podman` or `docker`
-- ~10 GB disk.
-- x86_64, glibc 2.35+ (any 2022+ distro)
-- GNOME or KDE 
-- `zstd`
-- `pipewire-jack`
-- `cabextract`,
-- `binutils`
-
-## Project structure
-
-- [patches/](patches/) — the Wine patch series + the wineasio series
-- [scripts/](scripts/) — install, prefix setup, launcher
-- [vendor/](vendor/) — pinned build inputs
-- [notes/](notes/) — patch notes and investigations
-- [tools/](tools/) — diagnostic tools
-- [bin/](bin/) — launchers
-- [dist/](dist/) — build outputs
-- [beta/](beta/) — beta test program
-
-## Install
-
-```bash
-./build.sh
-./scripts/install.sh
-./scripts/setup-prefix.sh
-WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.11/bin/wine \
-    "/path/to/Ableton Live 12 Suite Installer.exe"
-ableton-live
-```
-
-The tarball is relocatable and user-agnostic; a release tarball (+ `.sha256`) dropped into `dist/` skips the build. `install.sh` keeps an existing runtime at a dated `-rollback-` path and refuses to run while Live is open. `setup-prefix.sh` is idempotent and never touches your Live installation or license.
-
-## Single-file installer
-
-`./scripts/make-installer.sh` packs the kit into `dist/ableton-wine-setup-<version>.run`. Put it on a USB stick next to your Ableton download (`.zip` or `.exe`) and run it on the target machine:
-
-```bash
-sh /run/media/*/*/ableton-wine-setup-*.run
-```
-
-It verifies itself, installs the runtime, detects the display scale, creates the prefix, then runs the Ableton installer it finds next to itself (pauses so you can add one; prints the manual commands otherwise). Fully offline except `pipewire-jack`, which it cannot carry — it prints the install commands when missing. `--help`: `--runtime-only`, `--uninstall`, `--extract DIR`.
+1. Download Ableton Live
+2. Download a release from the Releases tab
+3. If your Ableton archive is in the same place, run the downloaded installer script and follow the instructions.
 
 ## First launch
 
@@ -73,6 +38,53 @@ A few more things to do after you launch for the first time:
 
 This is built in. Use Preferences → Link, Tempo & MIDI → exactly one `Push2` row, Live Port for both input and output. Like all other MIDI and Audio devices, Push will survive in-session disconnects. 
 
+
+## Development
+
+Requirements are:
+
+- `podman` or `docker`
+- ~10 GB disk.
+- x86_64, glibc 2.35+ (any 2022+ distro)
+- GNOME or KDE 
+- `zstd`
+- `pipewire-jack`
+- `cabextract`,
+- `binutils`
+
+## Project structure
+
+- [patches/](patches/): the Wine patch series + the wineasio series
+- [scripts/](scripts/): install, prefix setup, launcher
+- [vendor/](vendor/): pinned build inputs
+- [notes/](notes/): patch notes and investigations
+- [tools/](tools/): diagnostic tools
+- [bin/](bin/): launchers
+- [dist/](dist/): build outputs
+- [beta/](beta/): beta test program
+
+## Install
+
+If you're working on this and want to try building and installing:
+
+```bash
+./build.sh
+./scripts/install.sh
+./scripts/setup-prefix.sh
+WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.11/bin/wine \
+    "/path/to/Ableton Live 12 Suite Installer.exe"
+ableton-live
+```
+
+## Single-file installer
+
+`./scripts/make-installer.sh` compiles everything into `dist/ableton-wine-setup-<version>.run`. Put it on a USB stick next to your Ableton download (`.zip` or `.exe`) and run it on the target machine:
+
+```bash
+sh /run/media/*/*/ableton-wine-setup-*.run
+```
+
+It verifies itself, installs the runtime, detects the display scale, creates the prefix, then runs the Ableton installer it finds next to itself (pauses so you can add one; prints the manual commands otherwise). 
 
 ## Display scale
 

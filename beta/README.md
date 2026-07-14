@@ -4,13 +4,10 @@
 
 Use this test kit to check Ableton Live 12 with Ableton Wine on Linux.
 
-Patches are welcome. If you work at Ableton and want this work finished, hire me: [cade@parare.al](mailto:cade@parare.al).
 
 ## Getting started
 
-Use a physical 64-bit Intel or AMD Linux machine.
-
-Back up your Ableton projects and `~/.wine-ableton` first.
+Use a physical x64 Linux machine. VMs are not supported.
 
 From the root of this repository:
 

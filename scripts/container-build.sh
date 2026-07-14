@@ -27,7 +27,18 @@ cd "$WORK/wine-src"
 git init -q
 git -c user.email=build@localhost -c user.name=dist add -A
 git -c user.email=build@localhost -c user.name=dist commit -q -m "base 7ea0c8b7"
-git -c user.email=build@localhost -c user.name=dist am --3way "$SRC"/patches/00*.patch
+# The series ships without From:/Date: mail headers; git am refuses to commit
+# with an empty author, so supply a fixed neutral ident (fixed date keeps the
+# apply reproducible). Patches that still carry headers keep their own.
+for p in "$SRC"/patches/00*.patch; do
+    if head -8 "$p" | grep -q '^From: '; then
+        git -c user.email=build@localhost -c user.name=dist am --3way "$p"
+    else
+        { printf 'From: dist <build@localhost>\nDate: Thu, 01 Jan 2026 00:00:00 +0000\n'
+          cat "$p"
+        } | git -c user.email=build@localhost -c user.name=dist am --3way
+    fi
+done
 patch_head="$(git rev-parse HEAD)"
 echo "   HEAD: $(git log --oneline -1)"
 
