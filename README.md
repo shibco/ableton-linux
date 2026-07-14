@@ -15,7 +15,7 @@ Place this installer + an Ableton Live zip file downloaded from Ableton.com in t
 - Live 12 Suite and Beta support
 - Push 1 + 2 support.
 - Device recovery: audio and MIDI devices (Push included) survive in-session disconnect and reconnect.
-- Max/MSP and Max for Live support.
+- Experimental Max/MSP and Max for Live support.
 - Native file dialogs including open/save dialogs are your desktop's (XDG portal).
 - Dark/light theme mode follows the system setting.
 - System font support, Ableton's UI renders with your desktop's fonts.
@@ -48,6 +48,8 @@ A few more things to do after you launch for the first time:
 
 1. Ableton's Settings → untick Auto-Scale Plugin Window (prevents a plugin-window resize loop).
 2. Preferences → Audio → Driver Type ASIO → Device WineASIO.
+
+WineASIO can be tempermental; If you have any issues with WineASIO, Make a github issue or +1 an existing one and I'll fix as a priority!
 
 ## Push 1 + 2 support
 

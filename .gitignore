@@ -3,7 +3,7 @@
 # the verified build this repo's patch series produced.
 /dist/*
 !/dist/BUILD-INFO*.txt
-
+.env
 # Local scratch
 *.log
 *.tmp
