@@ -1,15 +1,20 @@
-# Ableton Live 12 / Max For Live and Push on Linux
+# Ableton Live 12, Max For Live and Push on Linux
 
 Run Ableton Live 12, Max for Live and Ableton Push 1 and 2 on a patched Wine. Featuring dozens of QoL fixes, reproducible builds, a single-file installer, and a beta test program with remote diagnostics.
 
 ![screenshot.png](screenshot.png)
 
+Follow me on [Mastodon](https://post.lurk.org/@shibacomputer) or [Bluesky](https://bsky.app/profile/shibco.newdesigncongress.org) to keep track of development.
+
+DOWNLOAD HERE: https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run
+
+Place this installer + an Ableton Live zip file downloaded from Ableton.com in the same directory, and run.
 
 ## Features
 
 - Live 12 Suite and Beta support
 - Push 1 + 2 support.
-- Device recovery — audio and MIDI devices (Push included) survive in-session disconnect and replug.
+- Device recovery: audio and MIDI devices (Push included) survive in-session disconnect and reconnect.
 - Max/MSP and Max for Live support.
 - Native file dialogs including open/save dialogs are your desktop's (XDG portal).
 - Dark/light theme mode follows the system setting.
@@ -26,6 +31,16 @@ Run Ableton Live 12, Max for Live and Ableton Push 1 and 2 on a patched Wine. Fe
 1. Download Ableton Live
 2. Download a release from the Releases tab
 3. If your Ableton archive is in the same place, run the downloaded installer script and follow the instructions.
+
+You can do that either by double clicking the `ableton-wine-setup-*.run` installer, or running this command from your Downloads directory
+
+```
+sh ~/Downloads/ableton-wine-setup-*.run
+```
+
+## Issues?
+
+File an issue on GitHub, there's some diagnostics scripts that will help diagnose the problem in ./beta/scripts.
 
 ## First launch
 
@@ -63,7 +78,7 @@ Requirements are:
 - [dist/](dist/): build outputs
 - [beta/](beta/): beta test program
 
-## Install
+## Development
 
 If you're working on this and want to try building and installing:
 
@@ -76,30 +91,28 @@ WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.11/bin/wine \
 ableton-live
 ```
 
-## Single-file installer
+### Single-file installer
 
-`./scripts/make-installer.sh` compiles everything into `dist/ableton-wine-setup-<version>.run`. Put it on a USB stick next to your Ableton download (`.zip` or `.exe`) and run it on the target machine:
-
-```bash
-sh /run/media/*/*/ableton-wine-setup-*.run
-```
+`./scripts/make-installer.sh` compiles everything into `dist/ableton-wine-setup-<version>.run`.
 
 It verifies itself, installs the runtime, detects the display scale, creates the prefix, then runs the Ableton installer it finds next to itself (pauses so you can add one; prints the manual commands otherwise). 
 
-## Display scale
+#### Display scale
 
 `setup-prefix.sh` and the launcher auto-detect the display scale (GNOME, KDE, sway, Hyprland, X11 `Xft.dpi`); the launcher recalibrates the prefix DPI on every start, so switching monitors needs only a Live restart. Only 100% and 125% are calibrated; anything else is preserved. Override with `ABLETON_DPI_MODE`.
 
-## Environment variables
+### Environment variables
 
-- `ABLETON_WINE_ROOT` — runtime path (default `~/.local/opt/wine-d2d1-nspa-11.11`)
-- `ABLETON_WINEPREFIX` — prefix path (default `~/.wine-ableton`)
-- `ABLETON_DPI_MODE` — `auto` | `preserve` | `100` | `fractional`
-- `ENGINE=docker` — for `build.sh` / `make-installer.sh`
+Mostly unnecessary. But in case you need them: 
 
-## Steam Deck
+- `ABLETON_WINE_ROOT` runtime path (default `~/.local/opt/wine-d2d1-nspa-11.11`)
+- `ABLETON_WINEPREFIX` prefix path (default `~/.wine-ableton`)
+- `ABLETON_DPI_MODE` `auto` | `preserve` | `100` | `fractional`
+- `ENGINE=docker` for `build.sh` / `make-installer.sh`
 
-Desktop Mode only. Add the host packages once, and again after every SteamOS update (updates remove pacman packages; runtime, prefix, and Live live in `/home` and survive):
+### Steam Deck
+
+Desktop Mode only. Add the host packages once, and (unfortunately) again after every SteamOS update.
 
 ```bash
 sudo steamos-readonly disable
@@ -122,6 +135,10 @@ sudo steamos-readonly enable
 
 ## More
 
-[patches/BASE.txt](patches/BASE.txt) — origin of every Wine change.
+You can learn all about the patches here: [patches/BASE.txt](patches/BASE.txt).
 
-[cade@parare.al](mailto:cade@parare.al)
+Questions? [cade@parare.al](mailto:cade@parare.al)
+
+### AI Disclosure
+
+Local models (Qwen 3.6) and Claude Opus were used during QA testing, documentation checking, and to help setup the build pipleline at the very end of this project's release.

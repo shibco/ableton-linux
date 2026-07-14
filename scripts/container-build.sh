@@ -18,11 +18,11 @@ DESTDIR="$WORK/stage"
 PREFIX_ROOT="$DESTDIR$CONFIGURE_PREFIX"
 npatch="$(ls "$SRC"/patches/00*.patch | wc -l)"
 
-echo "== [1/7] unpack pristine Wine base (giang17 d2d1-dcomp-11.11 @ 7ea0c8b7) =="
+echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.11 @ 7ea0c8b7) =="
 mkdir -p "$WORK/wine-src"
 zstd -dc --long=27 "$SRC/vendor/wine-base-7ea0c8b7.tar.zst" | tar -x -C "$WORK/wine-src"
 
-echo "== [2/7] git init + apply the $npatch-patch fix series =="
+echo "== [2/8] git init + apply the $npatch-patch fix series =="
 cd "$WORK/wine-src"
 git init -q
 git -c user.email=build@localhost -c user.name=dist add -A
@@ -42,7 +42,7 @@ done
 patch_head="$(git rev-parse HEAD)"
 echo "   HEAD: $(git log --oneline -1)"
 
-echo "== [3/7] configure + build Wine (WoW64: clang/lld PE, gcc Unix) =="
+echo "== [3/8] configure + build Wine (WoW64: clang/lld PE, gcc Unix) =="
 mkdir -p "$WORK/build" && cd "$WORK/build"
 ../wine-src/configure \
     --prefix="$CONFIGURE_PREFIX" \
@@ -89,7 +89,7 @@ bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
 echo "   libusb bridge: PE $bridge_pe_sha / Unix $bridge_unix_sha"
 
-echo "== [4/7] build WineASIO 1.3.0 against THIS Wine (ABI-matched) =="
+echo "== [4/8] build WineASIO 1.3.0 against THIS Wine (ABI-matched) =="
 mkdir -p "$WORK/wineasio"
 tar xzf "$SRC/vendor/wineasio-1.3.0.tar.gz" -C "$WORK/wineasio" --strip-components=1
 cd "$WORK/wineasio"
@@ -112,6 +112,27 @@ install -m644 build64/wineasio64.dll.so "$PREFIX_ROOT/lib/wine/x86_64-unix/winea
 # unix half under that name — install both names or LoadLibrary fails with STATUS_DLL_NOT_FOUND.
 install -m644 build64/wineasio64.dll    "$PREFIX_ROOT/lib/wine/x86_64-windows/wineasio.dll"
 install -m644 build64/wineasio64.dll.so "$PREFIX_ROOT/lib/wine/x86_64-unix/wineasio.dll.so"
+
+echo "== [5/8] strip + prune (dev files served their purpose in [4/8]; nothing below runs on user machines) =="
+# Debug info is ~3/4 of every PE builtin and ~5/6 of the unix halves. Exports,
+# resources, .rodata literals (the audit fingerprints) and the builtin signature
+# all live outside the symtab; the relocation gate re-runs the stripped tree.
+# .dll16/.tlb/.vxd etc. are not COFF and stay untouched.
+find "$PREFIX_ROOT/lib/wine" \( -name '*.dll' -o -name '*.exe' -o -name '*.sys' \
+    -o -name '*.drv' -o -name '*.cpl' -o -name '*.ocx' \) -exec llvm-strip --strip-all {} +
+strip --strip-unneeded "$PREFIX_ROOT"/lib/wine/*-unix/*.so
+for f in "$PREFIX_ROOT"/bin/*; do strip --strip-unneeded "$f" 2>/dev/null || true; done  # sh wrappers in bin/ are not ELF
+rm -f "$PREFIX_ROOT"/lib/wine/*-windows/*.a
+rm -rf "$PREFIX_ROOT/include" "$PREFIX_ROOT/share/man"
+rm -f "$PREFIX_ROOT"/bin/widl "$PREFIX_ROOT"/bin/winebuild "$PREFIX_ROOT"/bin/winecpp \
+      "$PREFIX_ROOT"/bin/winedump "$PREFIX_ROOT"/bin/wineg++ "$PREFIX_ROOT"/bin/winegcc \
+      "$PREFIX_ROOT"/bin/winemaker "$PREFIX_ROOT"/bin/wmc "$PREFIX_ROOT"/bin/wrc \
+      "$PREFIX_ROOT"/bin/function_grep.pl
+# BUILD-INFO must hash the files as shipped, i.e. post-strip
+bridge_pe_sha="$(sha256sum "$bridge_pe" | awk '{print $1}')"
+bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
+portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
+
 wineasio_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/wineasio64.dll"
 wineasio_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/wineasio64.dll.so"
 test -s "$wineasio_pe"
@@ -120,7 +141,7 @@ wineasio_pe_sha="$(sha256sum "$wineasio_pe" | awk '{print $1}')"
 wineasio_unix_sha="$(sha256sum "$wineasio_unix" | awk '{print $1}')"
 echo "   WineASIO: PE $wineasio_pe_sha / Unix $wineasio_unix_sha"
 
-echo "== [5/7] package =="
+echo "== [6/8] package =="
 # Stamp per-patch sha256s into the tree; build-audit.sh diffs this against patches/SERIES.sha256.
 stack_stamp="$PREFIX_ROOT/ABLETON-WINE-PATCH-STACK.txt"
 ( cd "$SRC/patches" && sha256sum 00*.patch wineasio/*.patch ) > "$stack_stamp"
@@ -147,10 +168,12 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 cp "$build_info" "$OUT/BUILD-INFO-${VERSION}.txt"
 cp "$build_info" "$OUT/BUILD-INFO.txt"
 tarball="$OUT/${NAME}-${VERSION}.tar.zst"
-tar -C "$(dirname "$PREFIX_ROOT")" -c "$NAME" | zstd -T0 -19 -q -o "$tarball"
+# --long=27 (128 MiB window, zstd's default decode limit — no flags needed to unpack)
+# lets the i386/x86_64 builtin pairs dedup against each other.
+tar -C "$(dirname "$PREFIX_ROOT")" -c "$NAME" | zstd -T0 -19 --long=27 -q -o "$tarball"
 ( cd "$OUT" && sha256sum "$(basename "$tarball")" > "$(basename "$tarball").sha256" )
 
-echo "== [6/7] relocation + registration gate: run the packaged tree from a random path =="
+echo "== [7/8] relocation + registration gate: run the packaged tree from a random path =="
 # Remove the configure-path symlink so Wine's compiled-in fallback can't mask a broken relative lookup.
 rm -f "$CONFIGURE_PREFIX"
 reloc="$(mktemp -d /tmp/reloc-gate.XXXXXX)"
@@ -168,7 +191,7 @@ WINEPREFIX="$reloc/prefix" "$reloc/$NAME/bin/wineserver" -w 2>/dev/null || true
 rm -rf "$reloc"
 echo "   relocation + registration gate passed (cmd.exe ran, WineASIO registered)"
 
-echo "== [7/7] build audit: every patch verified against the shipped tarball =="
+echo "== [8/8] build audit: every patch verified against the shipped tarball =="
 bash "$SRC/scripts/build-audit.sh" "$tarball"
 
 echo
