@@ -31,4 +31,5 @@ d057c2e41a0b9646b0e139869f143328f3b4e9603abd77b8fd860f9a585ceab8  0031-comdlg32-
 a01b91a917004d0b2a69bb101a29fcd681c0cea9951fdc0ae787e21d4ff703d3  0032-libusb-1.0-add-host-USB-bridge-for-Push-2.patch
 6bd2836da3679670bc7f012f741f5a36c26490c5586298eea932c8375160437a  0033-ntdll-let-WINE_DISABLE_UNIX_MOUNT_REPARSE-turn-off-m.patch
 692c00a0a3544c2df21ce4014173340ed1c028e9f27aae47a6b0422046db45a0  0034-winex11-flush-XdndStatus-replies-before-the-source-s.patch
+2d34c89001381de46ddfabc1235ca9c67d11692f994fcbf063974c16d0266142  0035-dxgi-make-never-attributed-layered-dcomp-targets-dis.patch
 b34e6f293f457cb1f3352ed1e72691013bfe82c173cbd5ddbecf880905858bd1  wineasio/0001-asio-keep-backend-sample-rate-instead-of-ASE_NoClock.patch

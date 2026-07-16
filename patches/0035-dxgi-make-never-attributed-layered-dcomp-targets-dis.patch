@@ -1,0 +1,208 @@
+From 0b6ee3cfeaf545e2c270aa1ca3d132bae5aa778a Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Wed, 15 Jul 2026 09:52:27 +0200
+Subject: [PATCH] dxgi: make never-attributed layered dcomp targets displayable
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On Windows a WS_EX_NOREDIRECTIONBITMAP DComp target window bypasses the
+layered redirection surface entirely: WS_EX_LAYERED is set but never given
+attributes, and DWM displays the composition visual directly.  Wine has no
+DWM; this dcomp stack emulates presentation with GDI blits into the window
+surface — but Wine also faithfully emulates 'layered without attributes is
+not displayed', so those blits never reach the screen.  WebView2's Learn
+View pane then shows the sibling Chrome_RenderWidgetHostHWND's stale
+software-fallback frame, drawn once at old geometry: the mangled band and
+flicker (XDamage-verified: zero X-side damage from correct-size blits;
+stripping WS_EX_LAYERED live healed the pane instantly).
+
+Three coupled fixes:
+- WM_WINE_DCOMP_SET_TARGET: strip never-attributed WS_EX_LAYERED from the
+  adopted target (both full and popup mode); restore it if the swapchain is
+  released while the window survives.  WS_EX_TRANSPARENT stays, so the
+  software fallback sibling can still paint if Chromium abandons GPU
+  compositing (transparent siblings do not clip each other).
+- WM_PAINT with a stale-size comp buffer: paint the last frame scaled to the
+  current client rect instead of validating without painting (patch 0030's
+  gate left black holes: BeginPaint validates, no later WM_PAINT comes).
+- dcomp_reblit_comp_buffer stale skip: leave the region invalidated so a
+  paint follows — closes the 0030-caveat cross-thread race between the
+  windowposchanged reblit and ResizeBuffers.
+
+Now the target window itself carries correct frames end-to-end, the fallback
+never shows through during active presentation, and every transient
+stale-size window converges on the next present.
+---
+ dlls/dxgi/factory.c   | 87 +++++++++++++++++++++++++++++++++++++++----
+ dlls/dxgi/swapchain.c | 10 +++++
+ 2 files changed, 89 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 9906de8..1f097ee 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -446,6 +446,13 @@ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+             if (stale_count <= 5 || !(stale_count % 200))
+                 FIXME("Re-blit skipped (stale %ux%u buffer): hwnd %p reason=%s.\n",
+                         w, h, hwnd, reason);
++            /* The skipped blit was going to repair the window surface; leave
++             * the region invalid so WM_PAINT repaints it (scaled placeholder,
++             * see dcomp_target_wndproc) instead of stranding stale pixels.
++             * Closes the ResizeBuffers-vs-windowposchanged cross-thread race:
++             * whichever way it resolves, a paint follows and the next present
++             * lands correct pixels. */
++            InvalidateRect(hwnd, NULL, FALSE);
+             return;
+         }
+ 
+@@ -557,6 +564,42 @@ static void dcomp_restore_parent_clip(HWND hwnd)
+     }
+ }
+ 
++/* On Windows a WS_EX_NOREDIRECTIONBITMAP DComp target never uses the layered
++ * redirection surface: WS_EX_LAYERED is set but no attributes are ever given,
++ * and DWM shows the composition visual directly.  Wine has no DWM; this dcomp
++ * stack emulates presentation with GDI blits into the window surface.  But a
++ * never-attributed layered window is invisible by definition (the server marks
++ * it SWP_NOREDRAW, no displayable surface), so every present/reblit lands in a
++ * surface that is never shown — WebView2's Learn View pane then displays the
++ * sibling Chrome_RenderWidgetHostHWND's stale software fallback frame drawn
++ * at old geometry (mangled band + flicker) instead of the correct D3D frames.
++ * Strip WS_EX_LAYERED when adopting such a window as blit target so it becomes
++ * an ordinary child whose surface our blits actually reach.  WS_EX_TRANSPARENT
++ * is kept: transparent siblings do not clip each other, so the software
++ * fallback below can still paint if Chromium abandons GPU compositing (the
++ * DCOMP_STALE_TICKS machinery then keeps our reblits out of its way).
++ * Windows that DID get layered attributes (JUCE DropShadower shadows etc.)
++ * are real layered windows and are left alone. */
++static void dcomp_make_target_displayable(HWND hwnd)
++{
++    LONG ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
++    COLORREF key;
++    BYTE alpha;
++    DWORD lw_flags;
++
++    if (!(ex_style & WS_EX_LAYERED))
++        return;
++    if (GetLayeredWindowAttributes(hwnd, &key, &alpha, &lw_flags))
++        return; /* attributed: a real layered window, not a DComp shell */
++
++    SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style & ~WS_EX_LAYERED);
++    SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
++            | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
++    SetPropW(hwnd, L"__wine_dcomp_unlayered", (HANDLE)1);
++    FIXME("DComp: stripped never-attributed WS_EX_LAYERED from target %p (ex was %#lx).\n",
++            hwnd, (unsigned long)ex_style);
++}
++
+ /* Lightweight subclass for DComp popup windows (menus, tooltips).
+  * Only blocks WM_ERASEBKGND and re-blits composition content on WM_PAINT.
+  * NO timer, NO periodic Present â avoids dual-swapchain
+@@ -651,6 +694,7 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             RemovePropW(hwnd, L"__wine_dcomp_swapchain");
+             RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
+             RemovePropW(hwnd, L"__wine_dcomp_comp_size");
++            RemovePropW(hwnd, L"__wine_dcomp_unlayered");
+             return result;
+         }
+     }
+@@ -686,18 +730,42 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                             : DefWindowProcW(hwnd, msg, wparam, lparam);
+ 
+             BeginPaint(hwnd, &ps);
+-            if (comp_dc && dims
+-                    && dcomp_comp_buffer_current(hwnd, LOWORD(dims), HIWORD(dims)))
++            if (comp_dc && dims)
+             {
+                 unsigned int w = LOWORD(dims);
+                 unsigned int h = HIWORD(dims);
+-                BitBlt(ps.hdc, 0, 0, w, h, comp_dc, 0, 0, SRCCOPY);
++
++                if (dcomp_comp_buffer_current(hwnd, w, h))
++                {
++                    BitBlt(ps.hdc, 0, 0, w, h, comp_dc, 0, 0, SRCCOPY);
++                    {
++                        static unsigned int paint_count;
++                        ++paint_count;
++                        if (paint_count <= 5 || !(paint_count % 200))
++                            FIXME("WM_PAINT #%u: hwnd %p %ux%u, comp_dc=%p.\n",
++                                    paint_count, hwnd, w, h, comp_dc);
++                    }
++                }
++                else
+                 {
+-                    static unsigned int paint_count;
+-                    ++paint_count;
+-                    if (paint_count <= 5 || !(paint_count % 200))
+-                        FIXME("WM_PAINT #%u: hwnd %p %ux%u, comp_dc=%p.\n",
+-                                paint_count, hwnd, w, h, comp_dc);
++                    /* Stale-size buffer (mid create->resize dance): a 1:1 blit
++                     * would paint the misframed band (see
++                     * dcomp_comp_buffer_current), but painting nothing leaves a
++                     * black hole — BeginPaint has already validated the region
++                     * and no later WM_PAINT will repair it.  Scale the last
++                     * frame to the current client size as a placeholder; the
++                     * next present overwrites it with correct pixels. */
++                    RECT rc;
++                    static unsigned int paint_stale;
++
++                    GetClientRect(hwnd, &rc);
++                    SetStretchBltMode(ps.hdc, HALFTONE);
++                    StretchBlt(ps.hdc, 0, 0, rc.right, rc.bottom,
++                            comp_dc, 0, 0, w, h, SRCCOPY);
++                    ++paint_stale;
++                    if (paint_stale <= 5 || !(paint_stale % 200))
++                        FIXME("WM_PAINT #%u (stale %ux%u buffer): hwnd %p scaled to %ldx%ld.\n",
++                                paint_stale, w, h, hwnd, rc.right, rc.bottom);
+                 }
+             }
+             else
+@@ -824,6 +892,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             RemovePropW(hwnd, L"__wine_dcomp_comp_size");
+             RemovePropW(hwnd, L"__wine_dcomp_last_present");
+             RemovePropW(hwnd, L"__wine_dcomp_idle_ticks");
++            RemovePropW(hwnd, L"__wine_dcomp_unlayered");
+             return result;
+         }
+     }
+@@ -970,6 +1039,7 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                             InterlockedIncrement(&dcomp_subclassed_target_count);
+                             dcomp_update_active_prop();
+                             dcomp_popup_stack_push(target_hwnd);
++                            dcomp_make_target_displayable(target_hwnd);
+                             FIXME("DComp POPUP mode: target %p, orig wndproc %p, sc=%p, transient->%p (reblit timer 200ms).\n",
+                                     target_hwnd, orig, iface, popup_parent);
+                         }
+@@ -993,6 +1063,7 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                             dcomp_update_active_prop();
+                             /* Main window: stack base for the first popup's transient anchor. */
+                             dcomp_popup_stack_push(target_hwnd);
++                            dcomp_make_target_displayable(target_hwnd);
+                             FIXME("DComp: subclassed target %p, orig wndproc %p, timer started, sc=%p.\n",
+                                     target_hwnd, orig, iface);
+                         }
+diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
+index 577ae1f..ea98801 100644
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -300,6 +300,16 @@ static ULONG STDMETHODCALLTYPE d3d11_swapchain_Release(IDXGISwapChain4 *iface)
+                 KillTimer(t, DCOMP_POPUP_REBLIT_TIMER_ID);
+                 if (orig)
+                     SetWindowLongPtrW(t, GWLP_WNDPROC, (LONG_PTR)orig);
++                /* If adoption stripped never-attributed WS_EX_LAYERED (see
++                 * dcomp_make_target_displayable), give the surviving window
++                 * its style back — without a swapchain we no longer supply
++                 * its pixels, and the owner may re-target it. */
++                if (GetPropW(t, L"__wine_dcomp_unlayered"))
++                {
++                    SetWindowLongW(t, GWL_EXSTYLE,
++                            GetWindowLongW(t, GWL_EXSTYLE) | WS_EX_LAYERED);
++                    RemovePropW(t, L"__wine_dcomp_unlayered");
++                }
+                 RemovePropW(t, L"__wine_dcomp_orig_wndproc");
+                 RemovePropW(t, L"__wine_dcomp_comp_dc");
+                 RemovePropW(t, L"__wine_dcomp_comp_size");
+-- 
+2.51.0
+

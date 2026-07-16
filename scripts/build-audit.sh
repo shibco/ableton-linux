@@ -119,6 +119,7 @@ FINGERPRINTS='
 0031|wide|lib/wine/x86_64-windows/comdlg32.dll|FileDialogPortal
 0032|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|libusb_submit_transfer
 0033|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_DISABLE_UNIX_MOUNT_REPARSE
+0035|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_unlayered
 wineasio/0001|ascii|lib/wine/x86_64-unix/wineasio64.dll.so|wineasio-clamp-sample-rate
 '
 # wineasio's code is in the unix .so; the PE wineasio64.dll is a codeless fake module.
