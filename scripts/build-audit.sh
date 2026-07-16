@@ -149,6 +149,7 @@ STAMP_ONLY='
 0029|logic-only (menu bar +4px arithmetic)
 0030|literal __wine_dcomp_swapchain pre-exists in base — not distinctive
 0034|logic-only (XdndStatus reply flush; adds no string literal)
+0036|logic-only (server: ancestor visible-region clip for adopted dcomp targets; no string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \

@@ -1,0 +1,169 @@
+From a2e191a5fd1503ea82a97034bf20f7b11831e5b0 Mon Sep 17 00:00:00 2001
+From: Janosch Tepesch <janosch@tepesch.dev>
+Date: Wed, 15 Jul 2026 12:22:44 +0200
+Subject: [PATCH] server, dxgi: clip adopted dcomp blit targets out of ancestor
+ rendering
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Ableton Live repaints its main view ~20x/s through a cache DC obtained
+without DCX_CLIPCHILDREN (SYSRGN probe: full client rect).  On Windows
+that is harmless: the WebView2 Learn View child has
+WS_EX_NOREDIRECTIONBITMAP, so DWM composites its DComp visual above the
+toplevel redirection surface and ancestor paints under it never reach
+the screen.  Wine emulates the visual with GDI blits into the shared
+toplevel X surface (from the WebView2 GPU process), so Live's unclipped
+paints and window-surface flushes overwrote the pane with placeholder
+gray; the dcomp reblit timer suspends 3s after the last present, leaving
+the pane overlap permanently gray (measured: pixel probes flip
+content->gray at Live's paint-rect boundary, exactly its damage rect,
+and stay gray once reblits suspend).
+
+Emulate the DWM occlusion at both levels the host writes through:
+
+- get_visible_region: always subtract visible descendants having
+  WS_EX_NOREDIRECTIONBITMAP without WS_EX_LAYERED, whatever DCX flags
+  the DC was opened with.  That ex-style combination exists exactly
+  while dxgi has a swapchain adopted on the window (WS_EX_LAYERED is
+  stripped at adoption; the window dies with the swapchain otherwise).
+- get_surface_region: punch the same hole into the toplevel's window
+  surface, like pixel-format children: the surface flush pushes the
+  dirty BOUNDING RECT, so without the hole a stale DIB region over the
+  pane gets re-pushed on every nearby flush even with all paints
+  clipped (the pane content itself is painted direct-to-X by another
+  process and never lands in this DIB).
+- dxgi adoption: nudge the toplevel with an async FRAMECHANGED
+  SetWindowPos — update_surface_region only runs in the surface
+  owner's process, so the cross-process ex-style change would
+  otherwise not refresh the host's surface clip until its next
+  incidental window move.
+
+Siblings are not affected, so the software-fallback path for abandoned
+swapchains keeps painting.
+---
+ dlls/dxgi/factory.c | 17 ++++++++++++
+ server/window.c     | 65 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 82 insertions(+)
+
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 1f097ee..4c5adc3 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -598,6 +598,23 @@ static void dcomp_make_target_displayable(HWND hwnd)
+     SetPropW(hwnd, L"__wine_dcomp_unlayered", (HANDLE)1);
+     FIXME("DComp: stripped never-attributed WS_EX_LAYERED from target %p (ex was %#lx).\n",
+             hwnd, (unsigned long)ex_style);
++
++    /* The ex-style change makes the server clip this window out of ancestor
++     * DC visible regions AND the toplevel's window-surface region (DWM visual
++     * emulation, see server clip_composited_descendants).  The surface region
++     * is only recomputed by the surface owner's process in apply_window_pos —
++     * this code runs in the swapchain owner's process (e.g. WebView2's GPU
++     * process), whose update_surface_region call skips WND_OTHER_PROCESS.
++     * Nudge the toplevel: cross-thread SetWindowPos is routed to the owner
++     * thread via WM_WINE_SETWINDOWPOS, so the host app recomputes its surface
++     * clip and DCEs immediately instead of on its next incidental move. */
++    {
++        HWND toplevel = GetAncestor(hwnd, GA_ROOT);
++        if (toplevel && toplevel != hwnd)
++            SetWindowPos(toplevel, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE
++                    | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER
++                    | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
++    }
+ }
+ 
+ /* Lightweight subclass for DComp popup windows (menus, tooltips).
+diff --git a/server/window.c b/server/window.c
+index 6bff48e..1a17d34 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -1216,6 +1216,55 @@ static struct region *clip_children( struct window *parent, struct window *last,
+ }
+ 
+ 
++/* clip out visible descendants that are adopted DComp blit targets, i.e. windows
++ * with WS_EX_NOREDIRECTIONBITMAP and no WS_EX_LAYERED.  On Windows such windows
++ * display a DWM-composited DComp/DXGI visual that always covers ancestor
++ * rendering: GDI painted "under" them by an ancestor through a DC without
++ * DCX_CLIPCHILDREN is never visible on screen.  Wine emulates the visual with
++ * GDI blits into the shared toplevel surface (dlls/dxgi dcomp emulation), so
++ * ancestor paints must be kept out of the target's area or they overwrite the
++ * emulated visual on every ancestor redraw (Ableton Live repaints its main view
++ * ~20x/s through an unclipped cache DC right across its WebView2 Learn View
++ * pane; the dcomp reblit timer suspends after 3s idle, leaving the pane gray).
++ * The ex-style combination tracks adoption exactly: dxgi strips the
++ * never-attributed WS_EX_LAYERED when adopting a target and restores it on
++ * swapchain release, so unadopted shells keep normal semantics.  Unlike
++ * clip_children this must not skip WS_EX_TRANSPARENT windows - adopted targets
++ * are deliberately transparent so Chromium's software-fallback sibling can
++ * still paint over them when GPU compositing is abandoned; sibling clipping is
++ * likewise deliberately left alone here for that reason (ancestors only). */
++static struct region *clip_composited_descendants( struct window *parent, struct region *region,
++                                                   int offset_x, int offset_y )
++{
++    struct window *ptr;
++    struct region *tmp = create_empty_region();
++
++    if (!tmp) return NULL;
++    LIST_FOR_EACH_ENTRY( ptr, &parent->children, struct window, entry )
++    {
++        if (!(ptr->style & WS_VISIBLE)) continue;
++        if ((ptr->ex_style & (WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED)) == WS_EX_NOREDIRECTIONBITMAP)
++        {
++            set_region_rect( tmp, &ptr->visible_rect );
++            if (ptr->win_region && !intersect_window_region( tmp, ptr ))
++            {
++                free_region( tmp );
++                return NULL;
++            }
++            offset_region( tmp, offset_x, offset_y );
++            if (!(region = subtract_region( region, region, tmp ))) break;
++        }
++        else if (!(region = clip_composited_descendants( ptr, region,
++                                                         offset_x + ptr->client_rect.left,
++                                                         offset_y + ptr->client_rect.top )))
++            break;
++        if (is_region_empty( region )) break;
++    }
++    free_region( tmp );
++    return region;
++}
++
++
+ /* set the region to the client rect clipped by the window rect, in parent-relative coordinates */
+ static void set_region_client_rect( struct region *region, struct window *win )
+ {
+@@ -1289,6 +1338,15 @@ static struct region *get_visible_region( struct window *win, unsigned int flags
+         if (!clip_children( win, NULL, region, win->client_rect.left, win->client_rect.top )) goto error;
+     }
+ 
++    /* always clip adopted DComp targets in the subtree, they render above us like a DWM visual
++     * (DCX_CLIPCHILDREN handles direct subtrees, but not those under WS_EX_TRANSPARENT children) */
++
++    if (!is_region_empty( region ))
++    {
++        if (!clip_composited_descendants( win, region, win->client_rect.left, win->client_rect.top ))
++            goto error;
++    }
++
+     /* clip siblings of ancestors */
+ 
+     offset_x = win->window_rect.left;
+@@ -1394,6 +1452,13 @@ static struct region *get_surface_region( struct window *win )
+ 
+     if (!clip_pixel_format_children( win, clip, region, offset_x, offset_y )) goto error;
+ 
++    /* also punch out adopted DComp targets: the window surface flush pushes the
++     * dirty BOUNDING RECT, so without a surface-clip hole a stale surface region
++     * over the target gets re-pushed to screen on every nearby flush even though
++     * DC-level clipping keeps everyone from painting it (the dcomp emulation
++     * paints the target directly from another process, bypassing this surface) */
++    if (!clip_composited_descendants( win, region, offset_x, offset_y )) goto error;
++
+     free_region( clip );
+     return region;
+ 
+-- 
+2.51.0
+
