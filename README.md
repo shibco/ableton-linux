@@ -1,6 +1,6 @@
 # Ableton Live 12, Max For Live and Push on Linux
 
-Run Ableton Live 12, Max for Live and Ableton Push 1 and 2 on a patched Wine. Featuring dozens of QoL fixes, reproducible builds, a single-file installer, and a beta test program with remote diagnostics.
+Run Ableton Live 12, Max for Live and Ableton Push 1 and 2 on a patched Wine. Featuring dozens of QoL fixes, reproducible builds, a single-file installer, and a beta test program with remote diagnostics. Very unofficial, not endorsed or affiliated in any way with Ableton. 
 
 ![screenshot.png](screenshot.png)
 
@@ -27,6 +27,8 @@ Place this installer + an Ableton Live zip file downloaded from Ableton.com in t
 - Reproducible builds.
 
 ## Getting started
+
+Most popular distros and configs are supported. Flatpak / steam-run / sandboxed environments are not supported!
 
 1. Download Ableton Live
 2. Download the latest installer: [install-ableton-latest.run](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run) (versioned builds are on the Releases tab)
