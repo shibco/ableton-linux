@@ -120,6 +120,7 @@ FINGERPRINTS='
 0032|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|libusb_submit_transfer
 0033|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_DISABLE_UNIX_MOUNT_REPARSE
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
+pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
 STAMP_ONLY='

@@ -1,0 +1,36 @@
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -890,6 +890,7 @@
+     This->host_buffer_index = This->host_buffer_index ? 0 : 1;
+ 
+     This->host_driver_state = Running;
++    TRACE("ASIO systemTime uses the timeGetTime timebase (pipeasio-midi-timebase)\n");
+     TRACE("PipeASIO successfully loaded\n");
+     return 0;
+ }
+@@ -1703,15 +1704,22 @@
+     uint64_t samples
+             = atomic_load_explicit(&impl->host_num_samples, memory_order_relaxed) + add_samples;
+     atomic_store_explicit(&impl->host_num_samples, samples, memory_order_relaxed);
+-    atomic_store_explicit(&impl->host_time_stamp, time_nsec, memory_order_relaxed);
++
++    /* Live timestamps incoming MIDI with timeGetTime and compares those
++     * stamps against systemTime. The PipeWire graph clock has a different
++     * origin, so every live-played event is dropped as out of window.
++     * Report timeGetTime, as WineASIO did. */
++    uint64_t sys_nsec = (uint64_t)timeGetTime() * 1000000u;
++    (void)time_nsec;
++    atomic_store_explicit(&impl->host_time_stamp, sys_nsec, memory_order_relaxed);
+ 
+     if (impl->host_time_info_mode)
+     {
+         impl->host_time._2            = 1.0;
+         impl->host_time.numSamples.lo = (ULONG)(samples & 0xFFFFFFFFu);
+         impl->host_time.numSamples.hi = (ULONG)(samples >> 32);
+-        impl->host_time.timeStamp.lo  = (ULONG)(time_nsec & 0xFFFFFFFFu);
+-        impl->host_time.timeStamp.hi  = (ULONG)(time_nsec >> 32);
++        impl->host_time.timeStamp.lo  = (ULONG)(sys_nsec & 0xFFFFFFFFu);
++        impl->host_time.timeStamp.hi  = (ULONG)(sys_nsec >> 32);
+         impl->host_time.sampleRate    = impl->host_sample_rate;
+         impl->host_time.flags         = 0x7;
+ 

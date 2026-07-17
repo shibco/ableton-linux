@@ -32,3 +32,4 @@ a01b91a917004d0b2a69bb101a29fcd681c0cea9951fdc0ae787e21d4ff703d3  0032-libusb-1.
 6bd2836da3679670bc7f012f741f5a36c26490c5586298eea932c8375160437a  0033-ntdll-let-WINE_DISABLE_UNIX_MOUNT_REPARSE-turn-off-m.patch
 692c00a0a3544c2df21ce4014173340ed1c028e9f27aae47a6b0422046db45a0  0034-winex11-flush-XdndStatus-replies-before-the-source-s.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
+f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
