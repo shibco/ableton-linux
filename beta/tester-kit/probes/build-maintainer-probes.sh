@@ -34,6 +34,7 @@ clang "${common[@]}" -o "$output_dir/pluginwindowprobe.exe" "$source_dir/pluginw
 clang "${common[@]}" -o "$output_dir/portalprobe.exe" "$source_dir/portalprobe.c" -L "$user32" -L "$kernel32" -L "$gdi32" -L "$ntdll" -L "$comdlg32" -lcomdlg32 -luser32 -lkernel32 -lgdi32 -lntdll
 clang "${common[@]}" -o "$advanced_output/spyhost.exe" "$advanced_source/spyhost-portable.c" -L "$user32" -L "$kernel32" -L "$ntdll" -luser32 -lkernel32 -lntdll
 clang -target x86_64-windows-gnu -fuse-ld=lld --no-default-config -fno-stack-protector -mno-stack-arg-probe -nostdlib -nostdinc -Wall -Wextra -O2 -isystem "$resource_dir/include" -I "$include_dir" -I "$include_dir/msvcrt" -D__WINESRC__ -shared -Wl,-e,DllMain -Wl,--export-all-symbols -o "$advanced_output/mousespy.dll" "$advanced_source/mousespy.c" -L "$user32" -L "$kernel32" -L "$ntdll" -luser32 -lkernel32 -lntdll
+clang "${common[@]}" -o "$output_dir/ntsyncprobe.exe" "$source_dir/ntsyncprobe.c" -L "$user32" -L "$kernel32" -L "$ntdll" -luser32 -lkernel32 -lntdll
 
 (
     cd "$here"

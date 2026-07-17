@@ -41,4 +41,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     done \
  && clang --version | head -1
 
+# 3. ntsync UAPI header: jammy's linux-libc-dev is 5.15, but Wine needs
+# linux/ntsync.h (kernel >= 6.14) or configure silently drops ntsync and every
+# NT sync wait becomes a wineserver round trip. Vendored and sha256-pinned;
+# see notes/ABLETON-WINE-NTSYNC-REGRESSION.md.
+COPY vendor/ntsync-uapi/linux/ntsync.h /opt/ntsync-uapi/linux/ntsync.h
+
 WORKDIR /work

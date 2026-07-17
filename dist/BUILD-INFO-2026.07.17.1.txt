@@ -1,0 +1,17 @@
+dist-version: 2026.07.17.1
+wine:         wine-11.11
+base:         giang17/wine d2d1-dcomp-11.11 @ 7ea0c8b7
+prefix:       /opt/wine-d2d1-nspa-11.11 (configure-time only; tarball is relocatable, see relocation gate)
+patches:      34
+wine-patches: 33
+wineasio-patches: 1
+patch-head:   ddfe3a73e9ecbd655f3aaa62228f52ace4856c33
+patch-stack:  2821c1f608044a35030150594ea65537171bfc135216db05283761f6089bec65
+wineasio:     1.3.0
+ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
+libusb-pe:    f8367fcc96c8c98c8579e712f43ea2e1b76a5150b376b34fbf34df828a398bb1
+libusb-unix:  78d08809fb95d0c2cfd8a118e854a1350e54980023c31df1a75d3e1212ba5acb
+portal-unix:  497ae6169bfefb925021ece061c1d0a51ed91f561a8f933834569795b7a3aad5
+wineasio-pe:  6c0762ae941b237f7b3658a5d711fad4a69c07364ecf87e5507321dfa290b17f
+wineasio-unix: a8b2c26eb9f933a8571dbd8ba6b2954d911c7ac25e6483895cf6c4894ec89b26
+built-on:     Ubuntu 22.04 (glibc 2.35)

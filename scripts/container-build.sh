@@ -44,7 +44,9 @@ echo "   HEAD: $(git log --oneline -1)"
 
 echo "== [3/8] configure + build Wine (WoW64: clang/lld PE, gcc Unix) =="
 mkdir -p "$WORK/build" && cd "$WORK/build"
-../wine-src/configure \
+# CPPFLAGS: the vendored ntsync UAPI header (Containerfile), nothing else in
+# that dir, so the 5.15 system headers stay authoritative for everything else.
+CPPFLAGS="-I/opt/ntsync-uapi" ../wine-src/configure \
     --prefix="$CONFIGURE_PREFIX" \
     --enable-archs=i386,x86_64 \
     --disable-tests
@@ -84,6 +86,29 @@ if [ ! -s "$winealsa_unix" ]; then
     echo "!! winealsa.so missing — libasound2-dev not present at configure time; no ALSA MIDI" >&2
     exit 1
 fi
+
+# configure also silently drops ntsync without linux/ntsync.h; every NT sync
+# wait then becomes a wineserver round trip (~1.3 cores with Live running).
+# Shipped unnoticed twice in 2026-07. Check BOTH halves: the 07-12 build lost
+# only the wineserver one. notes/ABLETON-WINE-NTSYNC-REGRESSION.md
+if ! grep -q '^#define HAVE_LINUX_NTSYNC_H 1' "$WORK/build/include/config.h"; then
+    echo "!! HAVE_LINUX_NTSYNC_H not set; linux/ntsync.h not seen at configure time" >&2
+    exit 1
+fi
+# grep -c, not grep -q: -q exits on first match, strings dies of SIGPIPE and
+# pipefail turns the success into a false "missing" (this killed a good build).
+ntsync_srv="$(strings "$PREFIX_ROOT/bin/wineserver" | grep -c ntsync || true)"
+ntsync_ntd="$(strings "$PREFIX_ROOT/lib/wine/x86_64-unix/ntdll.so" | grep -c ntsync || true)"
+if [ "${ntsync_srv:-0}" -eq 0 ]; then
+    echo "!! no ntsync in wineserver; waits would fall back to server round trips" >&2
+    exit 1
+fi
+if [ "${ntsync_ntd:-0}" -eq 0 ]; then
+    echo "!! no ntsync in ntdll.so; waits would fall back to server round trips" >&2
+    exit 1
+fi
+ntsync_hdr_sha="$(sha256sum /opt/ntsync-uapi/linux/ntsync.h | awk '{print $1}')"
+echo "   ntsync: compiled in (header $ntsync_hdr_sha)"
 bridge_pe_sha="$(sha256sum "$bridge_pe" | awk '{print $1}')"
 bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
@@ -158,6 +183,7 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "patch-head:   $patch_head"
     echo "patch-stack:  $stack_sha"
     echo "wineasio:     1.3.0"
+    echo "ntsync:       yes (vendored linux/ntsync.h $ntsync_hdr_sha)"
     echo "libusb-pe:    $bridge_pe_sha"
     echo "libusb-unix:  $bridge_unix_sha"
     echo "portal-unix:  $portal_unix_sha"
