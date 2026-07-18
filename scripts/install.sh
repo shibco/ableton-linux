@@ -119,10 +119,11 @@ fi
 install -m755 "$here/ableton-live" "$BIN/ableton-live"
 
 echo "== install detection libs -> ~/.local/share/ableton-wine =="
-# The launcher sources these on every start (DPI auto-calibration, light/dark theme sync).
+# The launcher sources these on every start (DPI, theme, and GPU policy).
 mkdir -p "$HOME/.local/share/ableton-wine"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
+install -m644 "$here/opengl-policy.sh" "$HOME/.local/share/ableton-wine/opengl-policy.sh"
 
 # Record the kit version so a later installer can tell what it is updating
 # (the kit and the repo both carry VERSION at the root).

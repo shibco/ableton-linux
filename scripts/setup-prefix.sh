@@ -56,6 +56,9 @@ detect_display_scale() { ableton_detect_scale; }
 # Shared host light/dark-scheme detection (see detect-theme.sh).
 . "$here/detect-theme.sh"
 
+# Shared Wine OpenGL-backend policy (see opengl-policy.sh).
+. "$here/opengl-policy.sh"
+
 block_for_scale() {  # scale -> calibrated block name, fails on uncalibrated
     case "$1" in
         1|1.0)  echo 100 ;;
@@ -263,6 +266,31 @@ else
     echo "   host scheme not detectable — leaving the theme key as-is (the launcher retries on every start)"
 fi
 wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f
+"$WINESERVER" -w
+
+echo "== [3c/5] OpenGL backend policy =="
+opengl_mode="${ABLETON_OPENGL_BACKEND:-auto}"
+if ! opengl_backend="$(ableton_resolve_opengl_backend "$opengl_mode")"; then
+    echo "!! ABLETON_OPENGL_BACKEND must be auto, preserve, egl, or glx" >&2
+    exit 2
+fi
+case "$opengl_backend" in
+  glx)
+    if [ "$opengl_mode" = glx ]; then
+      echo "   selecting Wine's GLX backend (explicit override)"
+    else
+      echo "   active NVIDIA display detected — selecting Wine's GLX backend"
+    fi
+    wine reg add 'HKCU\Software\Wine\X11 Driver' /v UseEGL /t REG_SZ /d N /f
+    ;;
+  egl)
+    echo "   selecting Wine's EGL backend (explicit override)"
+    wine reg add 'HKCU\Software\Wine\X11 Driver' /v UseEGL /t REG_SZ /d Y /f
+    ;;
+  preserve)
+    echo "   preserving Wine's current OpenGL backend"
+    ;;
+esac
 "$WINESERVER" -w
 
 echo "== [4/5] register packaged PipeASIO =="

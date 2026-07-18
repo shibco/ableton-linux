@@ -11,6 +11,7 @@
 # Environment:
 #   ABLETON_DPI_MODE    auto|preserve|100|fractional (overrides scale auto-detection)
 #   ABLETON_THEME_MODE  auto|dark|light|preserve (overrides the light/dark sync)
+#   ABLETON_OPENGL_BACKEND auto|preserve|egl|glx (overrides GPU backend selection)
 # Everything after the marker line is a tar archive; this header never changes it.
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail

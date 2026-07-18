@@ -130,6 +130,7 @@ Mostly unnecessary. But in case you need them:
 - `ABLETON_WINEPREFIX` prefix path (default `~/.wine-ableton`)
 - `ABLETON_DPI_MODE` `auto` | `preserve` | `100` | `fractional`
 - `ABLETON_THEME_MODE` `auto` | `dark` | `light` | `preserve` — the launcher syncs Live's light/dark theme key to the desktop scheme on every start; this overrides it
+- `ABLETON_OPENGL_BACKEND` `auto` | `preserve` | `egl` | `glx` — `auto` selects GLX when an NVIDIA GPU is actively driving a display, avoiding NVIDIA EGL/X11 pixel-format incompatibilities; other GPUs keep their existing backend
 - `ABLETON_LIVE_EXE` full path to a Live exe inside the prefix, when more than one edition/version is installed (default: the newest found)
 - `PIPEASIO_*` audio driver overrides, e.g. `PIPEASIO_PREFERRED_BUFFERSIZE=512` if you hear crackles; defaults live in `~/.config/pipeasio/config.ini`
 - `ENGINE=docker` for `build.sh` / `make-installer.sh`

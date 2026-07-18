@@ -49,6 +49,41 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
     /usr/bin/wineserver -k 2>/dev/null || true
 fi
 
+# NVIDIA's EGL/X11 path has no default-depth RGBA8 window format under Wine;
+# GLX does. Select it only for an active NVIDIA display (or explicit PRIME
+# offload), and leave every other host's existing backend untouched.
+if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
+    opengl_mode="${ABLETON_OPENGL_BACKEND:-auto}"
+    opengl_backend=preserve
+    opengl_lib="$HOME/.local/share/ableton-wine/opengl-policy.sh"
+    if [ -r "$opengl_lib" ]; then
+        . "$opengl_lib"
+        if ! opengl_backend="$(ableton_resolve_opengl_backend "$opengl_mode")"; then
+            echo "ableton-live: ABLETON_OPENGL_BACKEND must be auto, preserve, egl, or glx" >&2
+            opengl_backend=preserve
+        fi
+    elif [ "$opengl_mode" != auto ] && [ "$opengl_mode" != preserve ]; then
+        echo "ableton-live: OpenGL backend policy library is missing — keeping the current backend" >&2
+    fi
+    cur_use_egl="$(awk '/^\[Software\\\\Wine\\\\X11 Driver\]/{f=1;next} /^\[/{f=0} f&&/"UseEGL"=/{gsub(/.*="/,""); gsub(/".*/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
+    case "$opengl_backend" in
+        glx)
+            if [ "$cur_use_egl" != N ]; then
+                if [ "$opengl_mode" = glx ]; then
+                    echo "ableton-live: selecting Wine's GLX backend (explicit override)" >&2
+                else
+                    echo "ableton-live: active NVIDIA display — selecting Wine's GLX backend" >&2
+                fi
+                "$WINE_ROOT/bin/wine" reg add 'HKCU\Software\Wine\X11 Driver' /v UseEGL /t REG_SZ /d N /f >/dev/null 2>&1
+            fi ;;
+        egl)
+            if [ "$cur_use_egl" != Y ]; then
+                echo "ableton-live: selecting Wine's EGL backend (explicit override)" >&2
+                "$WINE_ROOT/bin/wine" reg add 'HKCU\Software\Wine\X11 Driver' /v UseEGL /t REG_SZ /d Y /f >/dev/null 2>&1
+            fi ;;
+    esac
+fi
+
 # Recalibrate prefix DPI to the detected scale before each launch: 1.0 -> LogPixels 96 + no IFEO;
 # 1.25 -> LogPixels 192 + IFEO=2; else preserve. ABLETON_DPI_MODE=100|fractional|preserve overrides.
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
