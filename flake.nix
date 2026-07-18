@@ -42,6 +42,16 @@
         program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/setup-prefix.sh";
         meta.description = "Create or refresh the Ableton Wine prefix (installs Live from ~/Proprietary when present)";
       };
+      setup-realtime = {
+        type = "app";
+        program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/setup-realtime.sh";
+        meta.description = "Install the distribution-canon pro-audio profile (rtprio, swappiness, governor; needs sudo)";
+      };
+      setup-link = {
+        type = "app";
+        program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/setup-link.sh";
+        meta.description = "Set up Ableton Link networking (multicast route + firewall) and enable the jack_link bridge";
+      };
     };
   };
 }

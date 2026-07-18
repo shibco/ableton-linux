@@ -77,6 +77,8 @@ The first build compiles Wine from source (no binary cache) and takes a while; a
 
 For daily use prefer `nix profile install github:shibco/ableton-linux` (or the NixOS config below) over bare `nix run`: `nix run` leaves no GC root, so a `nix-collect-garbage` deletes the compiled Wine and the next run rebuilds it.
 
+Optional extras, mirroring the tarball flow: `nix run github:shibco/ableton-linux#setup-realtime` installs the host pro-audio profile (rtprio limits, swappiness, performance governor — after a re-login the launcher's realtime probe turns on), and `...#setup-link` prepares Ableton Link networking (multicast route, firewall, jack_link bridge). Both change host policy and use sudo. Live 11 works the same as the tarball flow: `ABLETON_LIVE_VERSION=11 nix run github:shibco/ableton-linux#setup-prefix` — see [Live 11](#live-11).
+
 ### NixOS configuration
 
 ```nix

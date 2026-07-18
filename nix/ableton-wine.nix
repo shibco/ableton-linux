@@ -11,11 +11,12 @@
   #   ableton-wine.override { dpi = 112; pipeasioBufferSize = 128;
   #                           pipeasioInputs = 8; pipeasioOutputs = 4; }
   # dpi: prefix LogPixels (96 = 100%, 112 ≈ 117%, 120 = 125%, 144 = 150%).
-  #   Pinned into the prefix registry at every launch (ABLETON_DPI env
-  #   overrides per launch; ABLETON_DPI_MODE=auto regains scale detection).
-  #   The pin writes LogPixels ONLY — an IFEO dpiAwareness key left by an
-  #   earlier fractional calibration is not touched; use ABLETON_DPI_MODE=auto
-  #   once to recalibrate both together.
+  #   Handed to the launcher as its native ABLETON_DPI_MODE=dpi<N> block, so
+  #   the prefix is recalibrated idempotently on every launch (LogPixels = N,
+  #   IFEO dpiAwareness removed — the plain application-side set). Valid N is
+  #   72..384. Setting ABLETON_DPI_MODE in the environment
+  #   (auto|preserve|100|fractional|dpi<N>|fractional<N>) overrides the pin;
+  #   ABLETON_DPI_MODE=auto regains scale detection.
   # pipeasio*: PipeASIO settings. The driver's only config surface is
   #   ~/.config/pipeasio/config.ini (no env support in 1.2.2), so the shim
   #   pins exactly the configured keys and leaves the rest to the user.
@@ -26,6 +27,11 @@
   pipeasioInputs ? null,
   pipeasioOutputs ? null,
 }:
+
+# Out-of-range pins fail here instead of being refused at launch time
+# (the launcher validates dpi<N> against the same 72..384 window).
+assert lib.assertMsg (dpi == null || (builtins.isInt dpi && dpi >= 72 && dpi <= 384))
+  "ableton-wine: dpi must be an integer LogPixels value in 72..384 (96 = 100%)";
 
 let
   # The original launcher — we patch it to add Nix-store fallbacks for the
@@ -137,24 +143,11 @@ stdenv.mkDerivation {
     SHIM
         ${lib.optionalString (dpi != null) ''
               cat >> $out/bin/ableton-live <<'SHIM'
-          # Flake-pinned prefix DPI (LogPixels). ABLETON_DPI env overrides the pin;
-          # ABLETON_DPI_MODE=preserve stops the launcher's calibrated auto-recalibration
-          # from undoing it (set ABLETON_DPI_MODE=auto to get detection back).
-          export ABLETON_DPI_MODE="''${ABLETON_DPI_MODE:-preserve}"
-          dpi_pin="''${ABLETON_DPI:-@dpi@}"
-          if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData; then
-              pfx="''${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
-              if [ -f "$pfx/user.reg" ]; then
-                  # Section-scoped read straight from the registry file, same
-                  # pattern as the launcher (a fixed grep -A window can miss
-                  # LogPixels once wine grows the Desktop section past it).
-                  cur_lp="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"LogPixels"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$pfx/user.reg" 2>/dev/null || true)"
-                  if [ "''${cur_lp:-absent}" != "$(printf '%08x' "$dpi_pin")" ]; then
-                      echo "ableton-live: pinning prefix DPI to $dpi_pin (flake dpi)" >&2
-                      WINEPREFIX="$pfx" WINEDEBUG=-all "@out@/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$dpi_pin" /f >/dev/null 2>&1
-                  fi
-              fi
-          fi
+          # Flake-pinned prefix DPI: hand the launcher its native 'dpi<N>' DPI block
+          # (LogPixels @dpi@, no IFEO) — it recalibrates the prefix idempotently
+          # before each start, exactly as it would for a detected scale. A user-set
+          # ABLETON_DPI_MODE (auto|preserve|100|fractional|dpi<N>) wins per launch.
+          export ABLETON_DPI_MODE="''${ABLETON_DPI_MODE:-dpi@dpi@}"
           SHIM
         ''}
         ${lib.optionalString (pipeasioPins != { }) ''
@@ -200,6 +193,14 @@ stdenv.mkDerivation {
         install -m755 ${../scripts/setup-prefix.sh}      $out/share/ableton-wine/scripts/setup-prefix.sh
         install -m755 ${../scripts/check-live-audio.sh}  $out/share/ableton-wine/scripts/check-live-audio.sh
         install -m755 ${../scripts/check-ntsync.sh}      $out/share/ableton-wine/scripts/check-ntsync.sh
+        # Host-policy helpers (both standalone: no wine, no repo paths beyond
+        # the Link note installed below).
+        install -m755 ${../scripts/setup-realtime.sh}    $out/share/ableton-wine/scripts/setup-realtime.sh
+        install -m755 ${../scripts/setup-link.sh}        $out/share/ableton-wine/scripts/setup-link.sh
+        # setup-link.sh points at the jack_link build/unit instructions in
+        # notes/ — ship that one note so the pointer resolves from the store.
+        mkdir -p $out/share/ableton-wine/notes
+        install -m644 ${../notes/ABLETON-WINE-LINK.md}   $out/share/ableton-wine/notes/ABLETON-WINE-LINK.md
         # install.sh / uninstall.sh are tarball-install tools; under Nix the
         # store path is immutable and GC'd by nix, so they are not shipped.
 
