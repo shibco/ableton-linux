@@ -4,8 +4,6 @@
 *.log
 *.tmp
 !tools/*.log
-notes/
-notes/*.md
 ableton-prefix-*/
 wine-d2d1-nspa-11.11/
 wine-d2d1-nspa-src/
@@ -22,7 +20,7 @@ xact
 xmon
 xrec
 xtool
-
+notes/
 # Local safety backups from the 2026-07-05 audio fix
 mmdevapi-backup-2026-07-05/
 prefix-reg-backup-2026-07-05/

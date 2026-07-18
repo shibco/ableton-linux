@@ -1,0 +1,20 @@
+# Template for the beta launcher's desktop entry — not installed
+# automatically. Render it into your user applications directory with:
+#
+#   repo="$(cd "$(dirname "$0")/.." && pwd)"
+#   sed -e "s#@HOME@#$HOME#g" -e "s#@REPO@#$repo#g" \
+#       bin/ableton-live-beta.desktop.in \
+#       > ~/.local/share/applications/ableton-live-beta.desktop
+#
+# @REPO@ is the checkout that holds bin/ableton-live-beta; the prefix path
+# follows the launcher's default (ABLETON_BETA_WINEPREFIX overrides it).
+[Desktop Entry]
+Name=Ableton Live 12 Beta
+Comment=Ableton Live 12.4.5b7 (isolated Wine prefix)
+Exec=@REPO@/bin/ableton-live-beta
+Type=Application
+StartupNotify=true
+Path=@HOME@/.wine-ableton-beta/drive_c/ProgramData/Ableton/Live 12 Beta/Program
+Icon=@HOME@/.local/share/icons/hicolor/256x256/apps/ableton-live-beta.png
+StartupWMClass=ableton live 12 beta.exe
+Categories=AudioVideo;Audio;

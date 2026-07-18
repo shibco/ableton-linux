@@ -58,7 +58,8 @@ tracks adjust; the mismatch just moves).
 ## Mitigations
 
 - `scripts/detect-scale.sh` + `setup-prefix.sh` + the launcher apply the
-  matched set for the detected scale on every start.
+  calibrated DPI set for the detected scale on every start (the matched set
+  on GNOME; plain `LogPixels = round(96 × scale)` elsewhere).
 - [../patches/0029-win32u-lay-out-the-menu-bar-4px-taller-than-SM_CYMEN.patch](../patches/0029-win32u-lay-out-the-menu-bar-4px-taller-than-SM_CYMEN.patch):
   raises the menu-bar item floor in `win32u/menu.c calc_menu_item_size` from
   `SM_CYMENU - 1` to `SM_CYMENU + 3` (both branches), so the bar measures
@@ -86,8 +87,10 @@ pkill -x Xwayland
 
 ## Caveats
 
-- 150%/200% are uncalibrated; detection preserves the prefix's current
-  values there.
+- Off GNOME (KDE, Hyprland, sway, Xft), scales 100-250% calibrate as plain
+  `LogPixels = round(96 × scale)` with no IFEO key (96/120/144/168/192/240 at
+  100/125/150/175/200/250%); GNOME keeps the matched set above. Scales
+  outside that range preserve the prefix's current values.
 - `wineserver -k` without `WINEPREFIX` exported kills the default prefix's
   server; "killed" Lives survive and the single-instance guard then aborts
   new launches.

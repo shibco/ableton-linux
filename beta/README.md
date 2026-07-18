@@ -27,7 +27,7 @@ After installing Live in `~/.wine-ableton`, start Live and run the checks. They 
 
 ```bash
 ./tester-kit/run-session --live-only \
-  --wine "$HOME/.local/opt/ableton-wine/current/bin/wine"
+  --wine "$HOME/.local/opt/wine-d2d1-nspa-11.11/bin/wine"
 ```
 
 For every option and test, read [tester-kit/README.md](tester-kit/README.md).

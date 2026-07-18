@@ -15,8 +15,7 @@ project-root exports in ~/Projects/Code/ableton by git patch-id. The full
 wine-d2d1-nspa-src plus these two mailbox patches.
 Patches 0033 and 0034 were exported 2026-07-14 the same way, from a
 disposable worktree on base 182ae79b (commits 21be973f and 283d8fa9 there):
-two stability fixes adopted from a review of the ENCORE repository, see
-ABLETON-WINE-ENCORE-REVIEW.md. The 0027 patch file was removed from the
+two stability fixes. The 0027 patch file was removed from the
 series directory on 2026-07-14; its commit remains in the tree history, so
 regenerating 0001-0030 from the tree will re-create it.
 
@@ -59,16 +58,28 @@ Provenance:
               builtin exporting the exact 16-function Win64 libusb 1.0.23 ABI
               used by Push2DisplayProcess.exe; x86_64-only by design (i386
               subdir disabled at configure). See ABLETON-WINE-PUSH2-DISPLAY.md
-  0033      = ntdll WINE_DISABLE_UNIX_MOUNT_REPARSE opt-out (2026-07-14).
-              Origin: ENCORE (wowitsjack) patches/encore-wine.patch,
-              dlls/ntdll/unix/file.c hunks, ported unchanged in behavior.
-              With the variable set, Unix mount boundaries stop being
-              reported as IO_REPARSE_TAG_MOUNT_POINT junctions (which carry
-              no FSCTL_GET_REPARSE_POINT data); launchers set it to 1.
-              See ABLETON-WINE-ENCORE-REVIEW.md
-  0034      = winex11 XdndStatus flush (2026-07-14). Origin: ENCORE
-              patches/encore-wine.patch, dlls/winex11.drv/event.c hunk,
-              ported unchanged: flush each XdndStatus reply so a queued
-              XdndLeave from a fast source cannot overtake the acceptance
-              (intermittent refused drops dragging from file managers under
-              Xwayland). See ABLETON-WINE-ENCORE-REVIEW.md
+  0033      = ntdll WINE_DISABLE_UNIX_MOUNT_REPARSE opt-out (2026-07-14),
+              dlls/ntdll/unix/file.c hunks. With the variable set, Unix
+              mount boundaries stop being reported as
+              IO_REPARSE_TAG_MOUNT_POINT junctions (which carry no
+              FSCTL_GET_REPARSE_POINT data); launchers set it to 1.
+  0034      = winex11 XdndStatus flush (2026-07-14),
+              dlls/winex11.drv/event.c hunk: flush each XdndStatus reply so
+              a queued XdndLeave from a fast source cannot overtake the
+              acceptance (intermittent refused drops dragging from file
+              managers under Xwayland).
+  0035      = wined3d Intel Battlemage G21 GPU description (2026-07-18).
+              Local fix for issue #11: without a table entry for device
+              0xe20b, an Arc B580 is reported through the generic Intel
+              fallback as "Intel(R) HD Graphics 4000", a name Live 12
+              blacklists (D3D11 refused, GDI fallback). Should also be
+              upstreamed to Wine.
+  0036      = dxgi suspend dcomp reblits on a null d2d1 device (2026-07-18).
+              Local fix for issue #16: when the dcomp device's d2d1 device
+              never comes up (e.g. Mesa libEGL without the NVIDIA GLVND
+              vendor config under NixOS/steam-run), the 200ms reblit timer
+              spins on the dead swapchain's GetDesc. The bind is flagged in
+              the WM_WINE_DCOMP_SET_TARGET wparam and the dxgi side skips
+              the timer-idle reblit while no present has succeeded, backing
+              the timer off exponentially and killing it after 20 null
+              ticks until device recreation rebinds.

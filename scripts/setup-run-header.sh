@@ -9,8 +9,9 @@
 #   --uninstall      remove the installed Wine, launcher, and menu entries
 #   --help           this text
 # Environment:
-#   ABLETON_DPI_MODE    auto|preserve|100|fractional (overrides scale auto-detection)
+#   ABLETON_DPI_MODE    auto|preserve|100|fractional|dpi<N> (overrides scale auto-detection)
 #   ABLETON_THEME_MODE  auto|dark|light|preserve (overrides the light/dark sync)
+#   ABLETON_LIVE_VERSION  11|12 (prepare the prefix for this Live version; default 12)
 # Everything after the marker line is a tar archive; this header never changes it.
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail
@@ -30,7 +31,7 @@ do_launch=1
 extract_dir=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --help|-h)      head -14 "$self" | sed -n '2,14{s/^# \{0,1\}//;p}'; exit 0 ;;
+        --help|-h)      head -15 "$self" | sed -n '2,15{s/^# \{0,1\}//;p}'; exit 0 ;;
         --runtime-only) mode=runtime ;;
         --update)       mode=update ;;
         --no-launch)    do_launch=0 ;;
@@ -214,20 +215,22 @@ bash "$kit/scripts/install.sh"
 # Seed ABLETON_DPI_MODE from the detected display scale; the launcher re-detects on every start.
 if [ -z "${ABLETON_DPI_MODE:-}" ]; then
     . "$kit/scripts/detect-scale.sh"
-    scale="$(ableton_detect_scale)" || scale=""
-    case "$scale" in
-        1)    export ABLETON_DPI_MODE=100;        say "-- display scale: 100% (auto-detected)" ;;
-        1.25) export ABLETON_DPI_MODE=fractional; say "-- display scale: 125% (auto-detected)" ;;
-        *)
-            if [ -d "$HOME/.wine-ableton" ]; then
-                export ABLETON_DPI_MODE=preserve
-                say "-- display scale: ${scale:-could not be detected}${scale:+ (only 100% and 125% are calibrated)}; keeping your existing display settings"
-            else
-                export ABLETON_DPI_MODE=100
-                say "-- display scale: ${scale:-could not be detected}${scale:+ (only 100% and 125% are calibrated)}; starting the new prefix at 100%"
-                say "   (the launcher re-checks your display on every start, so this corrects itself)"
-            fi ;;
-    esac
+    detected="$(ableton_detect_scale_ex)" || detected=""
+    scale=""; family=""
+    if [ -n "$detected" ]; then
+        scale="${detected% *}"; family="${detected#* }"
+    fi
+    if block="$(ableton_dpi_block_for_scale "$scale" "$family")"; then
+        export ABLETON_DPI_MODE="$block"
+        say "-- display scale: $(awk -v s="$scale" 'BEGIN { printf "%d", s*100 + 0.5 }')% (auto-detected)"
+    elif [ -d "$HOME/.wine-ableton" ]; then
+        export ABLETON_DPI_MODE=preserve
+        say "-- display scale: ${scale:-could not be detected}${scale:+ (outside the calibrated 100-250% range)}; keeping your existing display settings"
+    else
+        export ABLETON_DPI_MODE=100
+        say "-- display scale: ${scale:-could not be detected}${scale:+ (outside the calibrated 100-250% range)}; starting the new prefix at 100%"
+        say "   (the launcher re-checks your display on every start, so this corrects itself)"
+    fi
 fi
 say "-- creating the Wine prefix — Live's private 'C: drive' at ~/.wine-ableton"
 say "   (fonts and runtime pieces install now; this takes a few minutes)"

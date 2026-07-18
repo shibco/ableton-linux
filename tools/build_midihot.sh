@@ -3,7 +3,8 @@
 # build_swamprobe.sh: real PE via clang, Wine headers + import libs, no CRT.
 set -e
 cd "$(dirname "$0")"
-SRC=~/Projects/Code/ableton/wine-d2d1-nspa-src
+SRC="${ABLETON_WINE_SOURCE:-}"
+[ -n "$SRC" ] || { echo "!! set ABLETON_WINE_SOURCE to the wine-d2d1-nspa source tree (with build-wow64/)" >&2; exit 1; }
 BLD=$SRC/build-wow64
 INC=$SRC/include
 U=$BLD/dlls/user32/x86_64-windows

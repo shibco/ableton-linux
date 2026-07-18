@@ -1,5 +1,8 @@
 # Sourceable display-scale detection. ableton_detect_scale prints the primary monitor's scale
 # ("1", "1.25", ...) or returns 1 when no probe answers (probes: GNOME, KDE, sway, Hyprland, Xft.dpi).
+# ableton_detect_scale_ex also prints which probe answered (the compositor family), and
+# ableton_dpi_block_for_scale / ableton_dpi_block_values map a detected scale to the
+# calibrated DPI block for that family (see the mapping comment at the bottom).
 
 _ads_gnome() {
     local state rows all prim
@@ -60,7 +63,7 @@ _ads_hyprland() {
     printf '%s\n' "$s"
 }
 
-_ads_xftdpi() {
+_ads_xft() {
     [ -n "${DISPLAY:-}" ] || return 1
     command -v xrdb >/dev/null 2>&1 || return 1
     local dpi
@@ -71,7 +74,7 @@ _ads_xftdpi() {
 
 ableton_detect_scale() {
     local scale
-    for probe in _ads_gnome _ads_kde _ads_sway _ads_hyprland _ads_xftdpi; do
+    for probe in _ads_gnome _ads_kde _ads_sway _ads_hyprland _ads_xft; do
         if scale="$($probe)"; then
             # normalize: 1.0 -> 1, 1.250 -> 1.25
             printf '%s\n' "$scale" | awk '{ printf "%g\n", $1 }'
@@ -79,4 +82,61 @@ ableton_detect_scale() {
         fi
     done
     return 1
+}
+
+# Like ableton_detect_scale, but prints "<scale> <family>" — the family names the probe
+# that answered (gnome|kde|sway|hyprland|xft) and picks the DPI policy below.
+ableton_detect_scale_ex() {
+    local scale family
+    for family in gnome kde sway hyprland xft; do
+        if scale="$("_ads_$family")"; then
+            awk -v s="$scale" -v f="$family" 'BEGIN { printf "%g %s\n", s, f }'
+            return 0
+        fi
+    done
+    return 1
+}
+
+# A detected scale maps to a DPI block by compositor family. GNOME/mutter hands XWayland
+# an integer-upscaled framebuffer, so it needs the matched set (LogPixels = 96 x ceil(scale)
+# plus IFEO dpiAwareness=2); every other probed compositor hands X11 clients an unscaled
+# framebuffer and expects application-side scaling — plain LogPixels = round(96 x scale),
+# no IFEO. Block tokens: 100 (LogPixels 96, no IFEO), fractional (192, IFEO=2),
+# dpi<N> (N, no IFEO), fractional<N> (N, IFEO=2). Scales outside 100-250% are refused.
+ableton_dpi_block_for_scale() {  # scale family -> block token
+    local scale="$1" family="${2:-}" lp ceil
+    case "$scale" in
+        ""|*[!0-9.]*|*.*.*) return 1 ;;   # numeric scales only
+    esac
+    lp="$(awk -v s="$scale" 'BEGIN {
+        if (s + 0 < 1 || s + 0 > 2.5) exit 1
+        printf "%d", 96*s + 0.5
+    }')" || return 1
+    if [ "$family" = gnome ]; then
+        ceil="$(awk -v s="$scale" 'BEGIN { c = int(s); print (s > c) ? c + 1 : c }')"
+        if [ "$ceil" -gt 1 ]; then
+            lp=$((96 * ceil))
+            if [ "$lp" -eq 192 ]; then printf 'fractional\n'; else printf 'fractional%s\n' "$lp"; fi
+        else
+            printf '100\n'
+        fi
+        return 0
+    fi
+    if [ "$lp" -eq 96 ]; then printf '100\n'; else printf 'dpi%s\n' "$lp"; fi
+}
+
+ableton_dpi_block_values() {  # block token -> "<LogPixels> <ifeo>" (ifeo: 2 or -)
+    local n ifeo=-
+    case "$1" in
+        100)              n=96 ;;
+        fractional)       n=192; ifeo=2 ;;
+        dpi[0-9]*)        n="${1#dpi}" ;;
+        fractional[0-9]*) n="${1#fractional}"; ifeo=2 ;;
+        *) return 1 ;;
+    esac
+    case "$n" in ""|*[!0-9]*) return 1 ;; esac
+    n=$((10#$n))
+    # the validated LogPixels window is 72..384
+    [ "$n" -ge 72 ] && [ "$n" -le 384 ] || return 1
+    printf '%s %s\n' "$n" "$ifeo"
 }

@@ -25,7 +25,7 @@ This is the only advanced tool started by `run-session`:
 ```bash
 ./tester-kit/run-session --live-only \
   --advanced-input-trace \
-  --wine "$HOME/.local/opt/ableton-wine/current/bin/wine"
+  --wine "$HOME/.local/opt/wine-d2d1-nspa-11.11/bin/wine"
 ```
 
 The command asks you to type `TRACE`. It then watches Wine mouse input and JUCE

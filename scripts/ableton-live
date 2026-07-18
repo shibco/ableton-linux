@@ -2,7 +2,8 @@
 # Ableton Live launcher for the patched Wine stack. Runs whichever Live edition
 # (Intro/Lite/Standard/Suite/Trial, any major version) is installed in the prefix.
 # Overrides: ABLETON_WINE_ROOT=/usr (stock wine), ABLETON_VDESK=2560x1600 (virtual desktop),
-#            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install).
+#            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
+#            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version).
 set -u
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
@@ -18,22 +19,121 @@ export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 
+# Keep Wine's Mono/.NET and HTML-help hooks out of Live — nothing in the
+# stack loads them. winemenubuilder.exe is deliberately absent here: setup-prefix.sh
+# already disables it registry-side, and that form stays canonical.
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}mscoree,mshtml="
+# Opt-in A/B against the open Learn View flicker (notes/ABLETON-WINE-LEARNVIEW-FLICKER.md):
+# ABLETON_DCOMP=off disables DirectComposition outright. Off contradicts the d2d1-dcomp
+# stack this runtime ships (WINED3D_DCOMP_FORCE_FULL_REDRAW above), so it is no default.
+if [ "${ABLETON_DCOMP:-on}" = "off" ]; then
+    export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;dcomp="
+fi
+# Live 12's Learn View is a WebView2 (Chromium) embed; force the SwiftShader software
+# path, which renders where GPU compositing under Wine does not. --no-sandbox is
+# mandatory: nothing under Wine can sandbox the renderer. User-supplied flags come first.
+export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:+$WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS }--use-gl=angle --use-angle=swiftshader --disable-gpu-compositing --disable-gpu-rasterization --disable-direct-composition --disable-features=ForceSWDCompWhenDCompFallbackRequired --edge-webview-foreground-boost-opt-out --no-sandbox"
+
+# Report a stable, small CPU count to Live — cap 8, honoring taskset/cgroup cpusets. 
+# Emit 8 when usable CPUs exceed 8, the allowed-set size when affinity-constrained 
+# below that, and nothing otherwise (Wine's default is fine).
+# A user-set WINE_CPU_TOPOLOGY always wins. Inert on this runtime until the patched
+# ntdll/wineserver consumer lands; exported as groundwork only.
+select_cpu_topology() {
+    local online allowed list part lo hi
+    online="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || online=""
+    case "$online" in ""|*[!0-9]*) return 1 ;; esac
+    allowed="$online"
+    list="$(awk '/^Cpus_allowed_list:/{print $2; exit}' /proc/self/status 2>/dev/null)"
+    if [ -n "$list" ]; then
+        allowed=0
+        for part in ${list//,/ }; do
+            case "$part" in
+                *-*) lo="${part%%-*}"; hi="${part##*-}"
+                     case "$lo$hi" in ""|*[!0-9]*) return 1 ;; esac
+                     allowed=$((allowed + hi - lo + 1)) ;;
+                *)   case "$part" in *[!0-9]*) return 1 ;; esac
+                     allowed=$((allowed + 1)) ;;
+            esac
+        done
+    fi
+    [ "$allowed" -ge 1 ] || return 1
+    if [ "$allowed" -gt 8 ]; then
+        printf '8\n'
+    elif [ "$allowed" -lt "$online" ]; then
+        printf '%d\n' "$allowed"
+    fi
+}
+if [ -z "${WINE_CPU_TOPOLOGY:-}" ]; then
+    cpu_topology="$(select_cpu_topology)" || cpu_topology=""
+    [ -n "$cpu_topology" ] && export WINE_CPU_TOPOLOGY="$cpu_topology"
+fi
+
+# Single-instance guard with no Live process up, exactly one
+# launcher may bring it up — a concurrent second launch would race the wineserver kill
+# and the DPI/theme re-sync below. Once Live runs there is nothing to serialize (the
+# pgrep checks skip the re-sync; wine forwards to the running instance), so the guard
+# stays off that path. fd 9 must never leak into a wine child: a spawned wineserver
+# would pin the lock for the whole session (start_server posix_spawns with inherited
+# fds), so the lock is dropped again just before the exec at the bottom.
+launch_lock="$WINEPREFIX/.ableton-live.lock"
+if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
+    if [ -d "$WINEPREFIX" ] && [ -w "$WINEPREFIX" ] && command -v flock >/dev/null 2>&1; then
+        exec 9>"$launch_lock"
+        if ! flock -n 9; then
+            echo "ableton-live: another launcher is bringing Live up (lock: $launch_lock) — refusing a second instance" >&2
+            exit 1
+        fi
+        printf '%s\n' "$$" >&9   # lock owner PID, for debugging
+    fi
+fi
+
 # Locate the installed Live: any 'Ableton Live*.exe' under ProgramData/Ableton.
-# Several installs (editions or majors) may coexist; the newest wins unless pinned.
-find_live_exe() {
+# Several installs (editions or majors) may coexist. ABLETON_LIVE_EXE pins one exact
+# install; ABLETON_LIVE_VERSION (e.g. 11) restricts discovery to one major. Without a
+# pin the newest wins, unless every install shares one major — ambiguity inside a
+# single major is a hard failure (refuse to guess) that prints the discovery list.
+case "${ABLETON_LIVE_VERSION:-}" in
+    "") ;;
+    *[!0-9]*)
+        echo "ableton-live: ABLETON_LIVE_VERSION must be a major version number (e.g. 11 or 12), got '$ABLETON_LIVE_VERSION'" >&2
+        exit 2 ;;
+esac
+find_live_exe() {  # $1 = optional major-version filter
     if [ -n "${ABLETON_LIVE_EXE:-}" ]; then
         printf '%s\n' "$ABLETON_LIVE_EXE"
         return
     fi
-    ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe 2>/dev/null | sort -V
+    if [ -n "${1:-}" ]; then
+        ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live $1 "*.exe 2>/dev/null | sort -V
+    else
+        ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe 2>/dev/null | sort -V
+    fi
 }
-live_exe_unix="$(find_live_exe | tail -n 1)"
-live_count="$(find_live_exe | grep -c .)"
+live_exe_unix="$(find_live_exe "${ABLETON_LIVE_VERSION:-}" | tail -n 1)"
+live_count="$(find_live_exe "${ABLETON_LIVE_VERSION:-}" | grep -c .)"
+if [ -z "$live_exe_unix" ] && [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
+    echo "ableton-live: no Live $ABLETON_LIVE_VERSION install found in $WINEPREFIX" >&2
+    if find_live_exe | grep -q .; then
+        echo "ableton-live: the prefix holds other majors (unset ABLETON_LIVE_VERSION to use them):" >&2
+        find_live_exe | sed 's/^/ableton-live:   /' >&2
+    fi
+    exit 1
+fi
 EXE=""; exe_base=""
 if [ -n "$live_exe_unix" ]; then
     exe_base="$(basename "$live_exe_unix")"
-    if [ "$live_count" -gt 1 ]; then
-        echo "ableton-live: $live_count Live installs in this prefix — launching '${exe_base%.exe}' (set ABLETON_LIVE_EXE to pick another)" >&2
+    if [ "$live_count" -gt 1 ] && [ -z "${ABLETON_LIVE_EXE:-}" ]; then
+        live_majors="$(find_live_exe "${ABLETON_LIVE_VERSION:-}" \
+            | while IFS= read -r f; do basename "$f"; done | awk '{print $3}' | sort -u | paste -sd' ' -)"
+        if [ "$(printf '%s' "$live_majors" | wc -w)" -eq 1 ]; then
+            # One major, several installs, no exact pin: never guess which edition.
+            echo "ableton-live: $live_count Live $live_majors installs in this prefix — refusing to guess:" >&2
+            find_live_exe "${ABLETON_LIVE_VERSION:-}" | sed 's/^/ableton-live:   /' >&2
+            echo "ableton-live: set ABLETON_LIVE_EXE=/path/into/prefix/.../'Ableton Live NN Edition.exe' to pick one" >&2
+            exit 1
+        fi
+        echo "ableton-live: $live_count Live installs in this prefix (majors: $live_majors) — launching '${exe_base%.exe}' (set ABLETON_LIVE_VERSION to pin a major, or ABLETON_LIVE_EXE to pick an exact install)" >&2
     fi
     rel="${live_exe_unix#"$WINEPREFIX/drive_c/"}"
     if [ "$rel" != "$live_exe_unix" ]; then
@@ -49,15 +149,39 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
     /usr/bin/wineserver -k 2>/dev/null || true
 fi
 
-# Recalibrate prefix DPI to the detected scale before each launch: 1.0 -> LogPixels 96 + no IFEO;
-# 1.25 -> LogPixels 192 + IFEO=2; else preserve. ABLETON_DPI_MODE=100|fractional|preserve overrides.
+# Recalibrate prefix DPI to the detected scale before each launch. The block comes from
+# detect-scale.sh: GNOME (upscaled framebuffer) -> LogPixels = 96 x ceil(scale) + IFEO=2;
+# other compositors -> LogPixels = round(96 x scale), no IFEO. Scales outside 100-250%
+# keep current values. ABLETON_DPI_MODE=100|fractional|dpi<N>|preserve overrides.
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
     dpi_mode="${ABLETON_DPI_MODE:-auto}"
+    dpi_family=""; dpi_scale=""
+    dpi_lib="$HOME/.local/share/ableton-wine/detect-scale.sh"
+    [ -r "$dpi_lib" ] && . "$dpi_lib"
+    if ! declare -F ableton_dpi_block_values >/dev/null 2>&1; then
+        # no (or an older) detect-scale.sh: the two legacy blocks still resolve inline
+        ableton_dpi_block_values() {
+            case "$1" in
+                100)        printf '96 -\n' ;;
+                fractional) printf '192 2\n' ;;
+                *) return 1 ;;
+            esac
+        }
+    fi
     if [ "$dpi_mode" = auto ]; then
-        dpi_lib="$HOME/.local/share/ableton-wine/detect-scale.sh"
         dpi_mode=preserve
-        if [ -r "$dpi_lib" ]; then
-            . "$dpi_lib"
+        if declare -F ableton_detect_scale_ex >/dev/null 2>&1; then
+            detected="$(ableton_detect_scale_ex)" || detected=""
+            if [ -n "$detected" ]; then
+                dpi_scale="${detected% *}"
+                dpi_family="${detected#* }"
+                if ! dpi_mode="$(ableton_dpi_block_for_scale "$dpi_scale" "$dpi_family")"; then
+                    dpi_mode=preserve
+                    echo "ableton-live: scale $dpi_scale is outside the calibrated 100-250% range — keeping current DPI values (set ABLETON_DPI_MODE to force)" >&2
+                fi
+            fi
+        elif declare -F ableton_detect_scale >/dev/null 2>&1; then
+            # older detect-scale.sh without the family/mapping helpers: the two legacy blocks
             dpi_scale="$(ableton_detect_scale)" || dpi_scale=""
             case "$dpi_scale" in
                 1)    dpi_mode=100 ;;
@@ -76,30 +200,81 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
     # Read current values from the registry files directly (no wineserver spin-up).
     cur_lp="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"LogPixels"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
     case "$dpi_mode" in
-        100)
-            if [ "${cur_lp:-00000060}" != 00000060 ] || [ -n "$cur_ifeo" ]; then
-                echo "ableton-live: display at 100% — recalibrating prefix DPI (LogPixels 96, no IFEO)" >&2
-                "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d 96 /f >/dev/null 2>&1
-                [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" /v dpiAwareness /f >/dev/null 2>&1 || true
-            fi ;;
-        fractional)
-            if [ "${cur_lp:-}" != 000000c0 ] || { [ -n "$dpi_ifeo" ] && [ "${cur_ifeo:-}" != 00000002 ]; }; then
-                echo "ableton-live: display at 125% — recalibrating prefix DPI (LogPixels 192, IFEO=2)" >&2
-                "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d 192 /f >/dev/null 2>&1
-                [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg add "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f >/dev/null 2>&1
+        preserve) ;;
+        *)
+            lp_ifeo="$(ableton_dpi_block_values "$dpi_mode" 2>/dev/null)" || lp_ifeo=""
+            if [ -z "$lp_ifeo" ]; then
+                echo "ableton-live: unknown ABLETON_DPI_MODE '$dpi_mode' — keeping current DPI values" >&2
+            else
+                want_lp="${lp_ifeo% *}"
+                want_ifeo="${lp_ifeo#* }"
+                want_lp_hex="$(printf '%08x' "$want_lp")"
+                if [ "$want_ifeo" = 2 ]; then
+                    if [ "${cur_lp:-}" != "$want_lp_hex" ] || { [ -n "$dpi_ifeo" ] && [ "${cur_ifeo:-}" != 00000002 ]; }; then
+                        echo "ableton-live: recalibrating prefix DPI to the '$dpi_mode' set (LogPixels $want_lp, IFEO=2)" >&2
+                        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1
+                        [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg add "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f >/dev/null 2>&1
+                    fi
+                else
+                    if [ "${cur_lp:-00000060}" != "$want_lp_hex" ] || [ -n "$cur_ifeo" ]; then
+                        echo "ableton-live: recalibrating prefix DPI to the '$dpi_mode' set (LogPixels $want_lp, no IFEO)" >&2
+                        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1
+                        [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" /v dpiAwareness /f >/dev/null 2>&1 || true
+                    fi
+                fi
             fi ;;
     esac
     # Warn if mutter's xwayland-native-scaling disagrees with the DPI set; never change it.
-    if command -v gsettings >/dev/null 2>&1; then
-        mutter_feats="$(gsettings get org.gnome.mutter experimental-features 2>/dev/null || true)"
-        case "$dpi_mode" in
-            100)        case "$mutter_feats" in *xwayland-native-scaling*)
-                            echo "ableton-live: warn — mutter xwayland-native-scaling is ON; the 100% set expects it OFF" >&2 ;; esac ;;
-            fractional) case "$mutter_feats" in *xwayland-native-scaling*) ;; *)
-                            [ -n "$mutter_feats" ] && echo "ableton-live: warn — mutter xwayland-native-scaling is OFF; the 125% set expects it ON" >&2 ;; esac ;;
-        esac
+    # The knob only exists under mutter — skip when another compositor family was detected.
+    if [ -z "$dpi_family" ] || [ "$dpi_family" = gnome ]; then
+        if command -v gsettings >/dev/null 2>&1; then
+            mutter_feats="$(gsettings get org.gnome.mutter experimental-features 2>/dev/null || true)"
+            case "$dpi_mode" in
+                fractional*)   # upscaled-framebuffer sets expect the knob ON
+                    case "$mutter_feats" in *xwayland-native-scaling*) ;; *)
+                        [ -n "$mutter_feats" ] && echo "ableton-live: warn — mutter xwayland-native-scaling is OFF; the '$dpi_mode' set expects it ON" >&2 ;; esac ;;
+                100|dpi*)
+                    case "$mutter_feats" in *xwayland-native-scaling*)
+                        echo "ableton-live: warn — mutter xwayland-native-scaling is ON; the '$dpi_mode' set expects it OFF" >&2 ;; esac ;;
+            esac
+        fi
     fi
 fi
+
+# win32u-drawn menus — Live's menu bar and dropdowns — take their colors from the
+# [Control Panel\Colors] table, which neither the prefix setup nor the theme sync below
+# has ever written, so the bar keeps stock light colors in dark mode. Sync the entries
+# the bar uses alongside AppsUseLightTheme (current values read from the registry file,
+# no wineserver spin-up when unchanged). Do NOT add "Window" here: a dark Window color
+# blacks out comdlg32 dialog lists.
+sync_win32_colors() {   # dark|light
+    local scheme="$1" pair name want cur changed=0
+    local -a pairs
+    case "$scheme" in
+        dark)   pairs=("MenuBar=43 43 43" "Menu=43 43 43" "ButtonFace=64 64 64"
+                       "MenuText=232 232 232" "ButtonText=232 232 232") ;;
+        light)  pairs=("MenuBar=240 240 240" "Menu=255 255 255" "ButtonFace=240 240 240"
+                       "MenuText=0 0 0" "ButtonText=0 0 0") ;;
+        *)      return 0 ;;
+    esac
+    for pair in "${pairs[@]}"; do
+        name="${pair%%=*}"
+        want="${pair#*=}"
+        cur="$(awk -v n="\"$name\"=" '
+            /^\[Control Panel\\\\Colors\]/ { f=1; next }
+            /^\[/ { f=0 }
+            f && index($0, n) == 1 {
+                v = substr($0, length(n) + 1)
+                sub(/^"/, "", v); sub(/"\r?$/, "", v)
+                print v; exit
+            }' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
+        if [ "$cur" != "$want" ]; then
+            [ "$changed" -eq 0 ] && echo "ableton-live: syncing the win32 menu colors to the $scheme scheme" >&2
+            changed=1
+            "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Colors' /v "$name" /t REG_SZ /d "$want" /f >/dev/null 2>&1
+        fi
+    done
+}
 
 # Mirror the host light/dark scheme into the prefix before each launch: Live's "Follow system"
 # theme reads AppsUseLightTheme, which a scripted prefix never carries (the early snapshot-based
@@ -123,6 +298,7 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
             echo "ableton-live: host scheme is $theme_mode — setting the prefix theme to match" >&2
             "$WINE_ROOT/bin/wine" reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$want_light" /f >/dev/null 2>&1
         fi
+        sync_win32_colors "$theme_mode"
     fi
 fi
 
@@ -137,9 +313,21 @@ require_live() {
     exit 1
 }
 
+# Bring-up done — drop the single-instance lock so exec'ing wine cannot inherit fd 9.
+exec 9>&-
+
 run=(wine)
 if command -v chrt >/dev/null 2>&1 && chrt -r 10 true >/dev/null 2>&1; then
     run=(chrt -r 10 wine)
+fi
+
+# Ableton Link bridge (optional): if jack_link is installed but not running
+# (e.g. the jack-link.service user unit is disabled), start it under PipeWire's
+# JACK layer so the Link session is anchored before Live launches; daemon mode
+# logs to ~/.log/jack_link/. See notes/ABLETON-WINE-LINK.md.
+if command -v jack_link >/dev/null 2>&1 && command -v pw-jack >/dev/null 2>&1 \
+    && ! pgrep -x jack_link >/dev/null 2>&1; then
+    pw-jack jack_link --daemon || echo "ableton-live: jack_link failed to start" >&2
 fi
 
 if [ -n "${ABLETON_VDESK:-}" ]; then

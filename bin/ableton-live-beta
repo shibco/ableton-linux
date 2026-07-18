@@ -3,7 +3,7 @@
 set -u
 
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
-export WINEPREFIX="${ABLETON_BETA_WINEPREFIX:-$HOME/Projects/Code/ableton/ableton-prefix-beta-12.4.5b7}"
+export WINEPREFIX="${ABLETON_BETA_WINEPREFIX:-$HOME/.wine-ableton-beta}"
 export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG="${WINEDEBUG:--all}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"

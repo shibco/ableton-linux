@@ -1,0 +1,49 @@
+Subject: wined3d: add Intel Battlemage G21
+
+The GPU description table has no entry for device 0xe20b (Arc B580,
+Battlemage G21), so wined3d reports the card through the generic Intel
+fallback for feature level 11, "Intel(R) HD Graphics 4000". Ableton
+Live 12 blacklists that description by name ("Unexplained slow UI at
+zoom-level 100% and/or crashes"), refuses D3D11 and falls back to GDI,
+even though the stack underneath is healthy (Mesa 26 identifies the
+card as BMG G21). Add the real description so the reported adapter name
+is truthful and no longer matches the blacklist.
+
+Like the other post-HD4000 Intel entries the card reuses
+DRIVER_INTEL_HD4000; this tree has no newer Intel driver class. VRAM is
+12288 MiB (B580 12 GB).
+
+Origin: local fix for issue #11 (Intel Arc B580 misidentified as HD
+Graphics 4000). Should also be upstreamed to Wine.
+---
+ dlls/wined3d/directx.c         | 4 ++++
+ dlls/wined3d/wined3d_private.h | 1 +
+ 2 files changed, 5 insertions(+)
+
+diff --git a/dlls/wined3d/directx.c b/dlls/wined3d/directx.c
+index 19ec807..3cc5e3f 100644
+--- a/dlls/wined3d/directx.c
++++ b/dlls/wined3d/directx.c
+@@ -666,6 +666,10 @@ static const struct wined3d_gpu_description gpu_description_table[] =
+     {HW_VENDOR_INTEL,      CARD_INTEL_HD630_2,             "Intel(R) HD Graphics 630",                                  DRIVER_INTEL_HD4000,  3072},
+     {HW_VENDOR_INTEL,      CARD_INTEL_UHD630_1,            "Intel(R) UHD Graphics 630",                                 DRIVER_INTEL_HD4000,  3072},
+     {HW_VENDOR_INTEL,      CARD_INTEL_UHD630_2,            "Intel(R) UHD Graphics 630",                                 DRIVER_INTEL_HD4000,  3072},
++    /* Battlemage G21. Without this entry the card is reported through the
++     * generic Intel fallback ("Intel(R) HD Graphics 4000"), which Ableton
++     * Live 12 blacklists by name, disabling its GPU renderer. */
++    {HW_VENDOR_INTEL,      CARD_INTEL_BMG_G21,             "Intel(R) Arc(tm) B580 Graphics (BMG G21)",                  DRIVER_INTEL_HD4000,  12288},
+ };
+ 
+ static const struct driver_version_information *get_driver_version_info(enum wined3d_display_driver driver,
+diff --git a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
+index a145f59..82b4793 100644
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -2451,6 +2451,7 @@ enum wined3d_pci_device
+     CARD_INTEL_HD630_2              = 0x591b,
+     CARD_INTEL_UHD630_1             = 0x3e9b,
+     CARD_INTEL_UHD630_2             = 0x3e91,
++    CARD_INTEL_BMG_G21              = 0xe20b,
+ };
+ 
+ /* The driver names reflect the lowest GPU supported

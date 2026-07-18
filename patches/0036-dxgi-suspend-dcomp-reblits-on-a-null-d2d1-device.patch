@@ -1,0 +1,223 @@
+Subject: dxgi: suspend dcomp reblits on a null d2d1 device
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Issue #16: NixOS/steam-run provides Mesa's libEGL without the NVIDIA GLVND
+vendor config, so Wine's D2D1/EGL init fails; the dcomp device's d2d1 device
+never comes up, the app can never present, and the 200ms reblit timer keeps
+polling the dead swapchain's GetDesc (~1300 calls in 90s, a full core
+spinning in MainThread).
+
+dlls/dcomp now flags such a bind in the WM_WINE_DCOMP_SET_TARGET wparam: a
+visual snapshots the creating device's d2d1 state (fixed once at device
+creation) and try_reparent passes it along. The dxgi side arms a per-target
+guard: while flagged and not one present has succeeded since the bind, skip
+the timer-idle reblit (its GetDesc1 poll is the spin) and back the timer off
+exponentially (200ms base, doubling to a 2s cap); after 20 consecutive null
+ticks kill the timer — reblits stay suspended until device recreation
+rebinds and restarts the base timer. The frame-latency event keeps being
+signaled while the timer lives (JUCE input), and any successful present
+disarms the guard and restores the 200ms interval, so healthy D3D11-only
+composition clients (WebView2's Chromium never has a d2d1 device either)
+are unaffected.
+---
+ dlls/dcomp/device.c | 18 ++++++++-
+ dlls/dxgi/factory.c | 92 ++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 107 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
+index 5090a69..6b57938 100644
+--- a/dlls/dcomp/device.c
++++ b/dlls/dcomp/device.c
+@@ -954,6 +954,11 @@ struct dcomp_visual
+     IUnknown *content;
+     struct dcomp_surface *surface_content; /* non-NULL if content is a DComp surface */
+     HWND target_hwnd;
++    /* Snapshot taken at CreateVisual: the creating dcomp device has no d2d1
++     * device (EGL/D2D1 init failure, issue #16). Handed to dxgi in the
++     * SET_TARGET wparam so its reblit machinery can back off instead of
++     * tight-polling a swapchain that will never present. */
++    BOOL null_d2d1_device;
+     /* Visual tree */
+     float offset_x;
+     float offset_y;
+@@ -1432,6 +1437,9 @@ static const IDCompositionVisual2Vtbl dcomp_visual2_vtbl =
+ };
+ 
+ #define WM_WINE_DCOMP_SET_TARGET (WM_USER + 0x100)
++/* SET_TARGET wparam flag: the binding dcomp device has no d2d1 device
++ * (issue #16). Mirrored in dlls/dxgi/factory.c, like the message id itself. */
++#define DCOMP_SET_TARGET_NULL_D2D1_DEVICE 0x1
+ 
+ static void dcomp_visual_try_reparent(struct dcomp_visual *visual)
+ {
+@@ -1462,8 +1470,11 @@ static void dcomp_visual_try_reparent(struct dcomp_visual *visual)
+     /* Tell dxgi to switch the swapchain's rendering target to target_hwnd.
+      * This avoids SetParent which destroys the X11 window and breaks GL rendering.
+      * The wndproc in dxgi/factory.c handles this message by calling
+-     * wined3d_swapchain_set_window, which triggers lazy GL context rebinding. */
+-    SendMessageW(comp_wnd, WM_WINE_DCOMP_SET_TARGET, 0, (LPARAM)visual->target_hwnd);
++     * wined3d_swapchain_set_window, which triggers lazy GL context rebinding.
++     * The wparam flags a bind whose device has no d2d1 device (issue #16). */
++    SendMessageW(comp_wnd, WM_WINE_DCOMP_SET_TARGET,
++            visual->null_d2d1_device ? DCOMP_SET_TARGET_NULL_D2D1_DEVICE : 0,
++            (LPARAM)visual->target_hwnd);
+ 
+     FIXME("Requested swapchain window switch from %p to target %p.\n",
+             comp_wnd, visual->target_hwnd);
+@@ -2147,6 +2158,9 @@ static HRESULT STDMETHODCALLTYPE dcomp_device_CreateVisual(IDCompositionDevice *
+ 
+     object->IDCompositionVisual_iface.lpVtbl = &dcomp_visual_vtbl;
+     object->refcount = 1;
++    /* The device fixes d2d1_device once at creation (never changes afterwards),
++     * so a snapshot here is exact. */
++    object->null_d2d1_device = !impl_from_IDCompositionDevice(iface)->d2d1_device;
+ 
+     TRACE("Created composition visual %p.\n", object);
+ 
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 9906de8..436d588 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -380,6 +380,9 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
+ 
+ #define WM_WINE_DCOMP_SET_TARGET (WM_USER + 0x100)
+ #define WM_WINE_DCOMP_SET_CHILD_MODE (WM_USER + 0x101)
++/* SET_TARGET wparam flag set by dlls/dcomp when the binding dcomp device has
++ * no d2d1 device (mirrored there, like the message id itself). */
++#define DCOMP_SET_TARGET_NULL_D2D1_DEVICE 0x1
+ 
+ /* Consecutive idle reblit-timer ticks (200ms each) after which a dcomp target
+  * swapchain is considered abandoned: the app stopped presenting and paints the
+@@ -389,6 +392,29 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
+  * Presenting again resets the counter and re-enables the reblit machinery. */
+ #define DCOMP_STALE_TICKS 15
+ 
++/* Issue #16 (NixOS/steam-run: the FHS provides Mesa's libEGL without the
++ * NVIDIA GLVND vendor config, so Wine's D2D1/EGL init fails): the dcomp
++ * device's d2d1 device never comes up, the app can never present, and the
++ * reblit timer keeps polling the dead swapchain's GetDesc (~1300 calls / 90 s,
++ * a full core spinning in MainThread). dlls/dcomp flags such a bind through
++ * the SET_TARGET wparam; while armed, and not one present has succeeded since
++ * the bind, the reblit timer backs off exponentially (200 ms base, doubling to
++ * a 2 s cap) and after DCOMP_NULL_DEVICE_MAX_TICKS consecutive null ticks is
++ * killed — reblits stay suspended until device recreation (a new SET_TARGET
++ * rebinds and restarts the base timer). Any successful present disarms the
++ * guard, so healthy D3D11-only composition clients (WebView2's Chromium never
++ * has a d2d1 device either) are unaffected. */
++#define DCOMP_NULL_DEVICE_MAX_TICKS 20
++#define DCOMP_NULL_DEVICE_MAX_BACKOFF_MS 2000
++
++static void dcomp_clear_null_device_props(HWND hwnd)
++{
++    RemovePropW(hwnd, L"__wine_dcomp_null_device");
++    RemovePropW(hwnd, L"__wine_dcomp_nulldev_presents");
++    RemovePropW(hwnd, L"__wine_dcomp_nulldev_ticks");
++    RemovePropW(hwnd, L"__wine_dcomp_nulldev_ms");
++}
++
+ static inline struct d3d11_swapchain *d3d11_swapchain_from_IDXGISwapChain4(IDXGISwapChain4 *iface)
+ {
+     return CONTAINING_RECORD(iface, struct d3d11_swapchain, IDXGISwapChain4_iface);
+@@ -651,6 +677,7 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             RemovePropW(hwnd, L"__wine_dcomp_swapchain");
+             RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
+             RemovePropW(hwnd, L"__wine_dcomp_comp_size");
++            dcomp_clear_null_device_props(hwnd);
+             return result;
+         }
+     }
+@@ -751,7 +778,41 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                         SetPropW(hwnd, L"__wine_dcomp_idle_ticks", (HANDLE)(LONG_PTR)idle);
+                         if (swapchain->frame_latency_event)
+                             SetEvent(swapchain->frame_latency_event);
+-                        if (idle < DCOMP_STALE_TICKS)
++                        if (GetPropW(hwnd, L"__wine_dcomp_null_device")
++                                && count != (LONG)(LONG_PTR)GetPropW(hwnd, L"__wine_dcomp_nulldev_presents"))
++                        {
++                            /* A present landed since the bind — the render
++                             * path is alive after all; disarm the guard. */
++                            dcomp_clear_null_device_props(hwnd);
++                        }
++                        if (GetPropW(hwnd, L"__wine_dcomp_null_device"))
++                        {
++                            /* Null d2d1 device and not one present since the
++                             * bind: the device never came up (issue #16). Skip
++                             * the reblit — its GetDesc1 poll is the spin being
++                             * fixed — and back the timer off exponentially;
++                             * after DCOMP_NULL_DEVICE_MAX_TICKS consecutive
++                             * null ticks suspend it until device recreation
++                             * rebinds. The frame-latency event above keeps
++                             * being signaled while the timer lives. */
++                            LONG ticks = (LONG)(LONG_PTR)GetPropW(hwnd, L"__wine_dcomp_nulldev_ticks") + 1;
++                            LONG ms = (LONG)(LONG_PTR)GetPropW(hwnd, L"__wine_dcomp_nulldev_ms");
++                            SetPropW(hwnd, L"__wine_dcomp_nulldev_ticks", (HANDLE)(LONG_PTR)ticks);
++                            if (ticks >= DCOMP_NULL_DEVICE_MAX_TICKS)
++                            {
++                                FIXME("DComp: target %p on a null d2d1 device for %ld ticks,"
++                                        " reblit timer suspended until device recreation.\n",
++                                        hwnd, ticks);
++                                KillTimer(hwnd, DCOMP_REBLIT_TIMER_ID);
++                            }
++                            else
++                            {
++                                ms = ms ? min(ms * 2, DCOMP_NULL_DEVICE_MAX_BACKOFF_MS) : 400;
++                                SetPropW(hwnd, L"__wine_dcomp_nulldev_ms", (HANDLE)(LONG_PTR)ms);
++                                SetTimer(hwnd, DCOMP_REBLIT_TIMER_ID, ms, NULL);
++                            }
++                        }
++                        else if (idle < DCOMP_STALE_TICKS)
+                             dcomp_reblit_comp_buffer(hwnd, "timer-idle");
+                         else if (idle == DCOMP_STALE_TICKS)
+                             FIXME("DComp: target %p idle for %d ticks, reblit suspended until next present.\n",
+@@ -762,6 +823,13 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                         /* The app is presenting on its own — the window
+                          * surface is already fresh, nothing to do. */
+                         RemovePropW(hwnd, L"__wine_dcomp_idle_ticks");
++                        if (GetPropW(hwnd, L"__wine_dcomp_null_device"))
++                        {
++                            /* Presents are flowing: disarm the null-device
++                             * guard and restore the base reblit interval. */
++                            dcomp_clear_null_device_props(hwnd);
++                            SetTimer(hwnd, DCOMP_REBLIT_TIMER_ID, 200, NULL);
++                        }
+                     }
+                     SetPropW(hwnd, L"__wine_dcomp_last_present", (HANDLE)(LONG_PTR)count);
+                 }
+@@ -824,6 +892,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             RemovePropW(hwnd, L"__wine_dcomp_comp_size");
+             RemovePropW(hwnd, L"__wine_dcomp_last_present");
+             RemovePropW(hwnd, L"__wine_dcomp_idle_ticks");
++            dcomp_clear_null_device_props(hwnd);
+             return result;
+         }
+     }
+@@ -918,6 +987,27 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                 if (swapchain->alpha_mode == DXGI_ALPHA_MODE_PREMULTIPLIED)
+                     wined3d_swapchain_set_premultiplied_alpha(swapchain->wined3d_swapchain, TRUE);
+ 
++                /* Issue #16: arm the null-d2d1-device reblit backoff when dcomp
++                 * flagged this bind (see DCOMP_NULL_DEVICE_MAX_TICKS). The
++                 * present count is snapshotted so the WM_TIMER guard can tell
++                 * "never presented" apart from "presented, then went idle". A
++                 * re-bind with a healthy device (device recreation) disarms. */
++                if (wparam & DCOMP_SET_TARGET_NULL_D2D1_DEVICE)
++                {
++                    SetPropW(target_hwnd, L"__wine_dcomp_null_device", (HANDLE)(ULONG_PTR)1);
++                    SetPropW(target_hwnd, L"__wine_dcomp_nulldev_presents",
++                            (HANDLE)(LONG_PTR)swapchain->present_count);
++                    FIXME("DComp: target %p bound to a null d2d1 device, reblit backoff armed.\n",
++                            target_hwnd);
++                }
++                else
++                {
++                    RemovePropW(target_hwnd, L"__wine_dcomp_null_device");
++                    RemovePropW(target_hwnd, L"__wine_dcomp_nulldev_presents");
++                }
++                RemovePropW(target_hwnd, L"__wine_dcomp_nulldev_ticks");
++                RemovePropW(target_hwnd, L"__wine_dcomp_nulldev_ms");
++
+                 ShowWindow(hwnd, SW_HIDE);
+ 
+                 /* Detect popup mode via subclassed target count.
