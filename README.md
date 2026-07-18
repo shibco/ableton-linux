@@ -108,6 +108,8 @@ inputs.ableton-linux.url = "github:shibco/ableton-linux";
 
 This puts `ableton-live` on every user's PATH. Each user still runs the one-time `nix run github:shibco/ableton-linux#setup-prefix` — the prefix is per-user state in `~/.wine-ableton`, not something a system rebuild can produce. Desktop menu entries are not registered automatically; templates ship in the package under `share/ableton-wine/desktop/`.
 
+Since 2026.07.18.1 the launcher recalibrates the prefix DPI on every start from the detected compositor scale (non-GNOME desktops get application-side `LogPixels = round(96 × scale)`), so Live now matches your native apps' size — older builds rendered fractional scales at a fixed 200%, noticeably larger. Prefer a bigger UI? Pin it per launch with `ABLETON_DPI_MODE=dpi<N>` (e.g. `dpi144` = 150%) or permanently with the `dpi` override above; a user-set `ABLETON_DPI_MODE` always beats the pin.
+
 ## Issues?
 
 File an issue on GitHub, there's some diagnostics scripts that will help diagnose the problem in ./beta/scripts.
