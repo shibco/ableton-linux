@@ -54,7 +54,7 @@ cp -a "$tarball" "$tarball.sha256" "$kit/dist/"
 cp -a "dist/BUILD-INFO-${VERSION}.txt" "$kit/" 2>/dev/null || true
 mkdir -p "$kit/scripts"
 cp -a scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
-      scripts/ableton-live scripts/detect-scale.sh scripts/detect-theme.sh \
+      scripts/ableton-live scripts/detect-scale.sh scripts/dpi-policy.sh scripts/detect-theme.sh \
       scripts/check-live-audio.sh "$kit/scripts/"
 cp -a desktop "$kit/desktop"
 cp -a vendor/winetricks vendor/winetricks-cache "$kit/vendor/"

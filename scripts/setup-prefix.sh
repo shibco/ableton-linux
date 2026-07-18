@@ -39,8 +39,10 @@ for t in cabextract; do
     command -v "$t" >/dev/null || echo "!! missing host tool '$t' (needed by winetricks) — install it (e.g. 'pacman -S cabextract' / 'apt install cabextract')"
 done
 
-# DPI blocks: 100% -> LogPixels=96 + no IFEO dpiAwareness; 125% -> LogPixels=192 + IFEO=2. auto applies
-# the detected block on a fresh prefix, preserves an existing one, refuses uncalibrated/undetectable scales.
+# DPI blocks: 100% -> LogPixels=96 + no IFEO; legacy Mutter fractional ->
+# LogPixels=192 + IFEO=2; Hyprland zero-scaling -> exact native DPI + no IFEO.
+# Auto applies the detected block on a fresh prefix, preserves an existing one,
+# and refuses uncalibrated/undetectable compositor strategies.
 # The dpiAwareness IFEO is keyed on the exe name, so it is applied per installed Live (any edition);
 # on a fresh prefix Live isn't installed yet — the launcher applies it on every start.
 ifeo_root='HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
@@ -51,20 +53,13 @@ live_exe_names() {   # basenames of every Live exe installed in this prefix
 
 # Shared display-scale detection (see detect-scale.sh).
 . "$here/detect-scale.sh"
+. "$here/dpi-policy.sh"
 detect_display_scale() { ableton_detect_scale; }
 
 # Shared host light/dark-scheme detection (see detect-theme.sh).
 . "$here/detect-theme.sh"
 
-block_for_scale() {  # scale -> calibrated block name, fails on uncalibrated
-    case "$1" in
-        1|1.0)  echo 100 ;;
-        1.25)   echo fractional ;;
-        *)      return 1 ;;
-    esac
-}
-
-current_dpi_block() {  # what an EXISTING prefix holds: 100 | fractional | custom
+current_dpi_block() {  # existing prefix: 100 | fractional | native:<dpi> | custom
     local lp ifeo=absent name installs=0
     lp="$(wine reg query 'HKCU\Control Panel\Desktop' /v LogPixels 2>/dev/null \
           | awk '$1=="LogPixels"{gsub(/\r/,"",$3); print tolower($3)}')"   # reg output is CRLF
@@ -80,6 +75,8 @@ current_dpi_block() {  # what an EXISTING prefix holds: 100 | fractional | custo
         echo 100
     elif [ "$lp" = 0xc0 ] && { [ "$ifeo" = present ] || [ "$installs" -eq 0 ]; }; then
         echo fractional    # no Live installed yet: LogPixels alone decides; the launcher adds the IFEO
+    elif [ "$ifeo" = absent ]; then
+        printf 'native:%d\n' "$((lp))"
     else
         echo custom
     fi
@@ -120,11 +117,19 @@ case "$dpi_mode" in
   100|fractional)
     dpi_block="$dpi_mode"
     ;;
+  native)
+    if scale="$(detect_display_scale)" && dpi="$(ableton_scale_to_dpi "$scale")"; then
+        if [ "$dpi" -eq 96 ]; then dpi_block=100; else dpi_block="native:$dpi"; fi
+    else
+        echo "!! ABLETON_DPI_MODE=native needs a detectable, valid display scale" >&2
+        exit 2
+    fi
+    ;;
   preserve)
     ;;
   auto)
     if scale="$(detect_display_scale)"; then
-        if block="$(block_for_scale "$scale")"; then
+        if block="$(ableton_resolve_dpi_policy "$scale")"; then
             if [ "$fresh_prefix" -eq 1 ]; then
                 echo "   display scale $scale detected -> will apply the '$block' DPI block"
                 dpi_block="$block"
@@ -138,22 +143,22 @@ case "$dpi_mode" in
                 fi
             fi
         elif [ "$fresh_prefix" -eq 1 ]; then
-            echo "!! display scale $scale has no calibrated DPI block (only 100% and 125% are)" >&2
-            echo "!! rerun with an explicit ABLETON_DPI_MODE=100 or ABLETON_DPI_MODE=fractional" >&2
+            echo "!! display scale $scale has no calibrated policy for this compositor/XWayland strategy" >&2
+            echo "!! rerun with ABLETON_DPI_MODE=preserve, 100, fractional, or native" >&2
             exit 2
         else
             echo "!! display scale $scale has no calibrated DPI block — preserving existing prefix values"
         fi
     elif [ "$fresh_prefix" -eq 1 ]; then
         echo "!! cannot detect the display scale (non-GNOME desktop or headless session?)" >&2
-        echo "!! a fresh prefix needs an explicit ABLETON_DPI_MODE=100 or ABLETON_DPI_MODE=fractional" >&2
+        echo "!! a fresh prefix needs an explicit ABLETON_DPI_MODE=100, fractional, or native" >&2
         exit 2
     else
         echo "   cannot detect display scale; preserving existing prefix values"
     fi
     ;;
   *)
-    echo "!! ABLETON_DPI_MODE must be auto, preserve, 100, or fractional" >&2
+    echo "!! ABLETON_DPI_MODE must be auto, preserve, 100, fractional, or native" >&2
     exit 2
     ;;
 esac
@@ -239,6 +244,14 @@ case "$dpi_block" in
     done < <(live_exe_names)
     [ "$ifeo_set" -eq 1 ] || echo "   (Live not installed yet — the launcher sets its per-app DPI flag on first start)"
     check_mutter_knob fractional
+    ;;
+  native:*)
+    native_dpi="${dpi_block#native:}"
+    wine reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$native_dpi" /f
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        wine reg delete "$ifeo_root\\$name" /v dpiAwareness /f >/dev/null 2>&1 || true
+    done < <(live_exe_names)
     ;;
   preserve)
     echo "   preserving current LogPixels and dpiAwareness values"

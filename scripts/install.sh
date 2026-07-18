@@ -122,6 +122,7 @@ echo "== install detection libs -> ~/.local/share/ableton-wine =="
 # The launcher sources these on every start (DPI auto-calibration, light/dark theme sync).
 mkdir -p "$HOME/.local/share/ableton-wine"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
+install -m644 "$here/dpi-policy.sh" "$HOME/.local/share/ableton-wine/dpi-policy.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
 
 # Record the kit version so a later installer can tell what it is updating

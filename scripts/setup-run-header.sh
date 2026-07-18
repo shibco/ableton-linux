@@ -9,7 +9,7 @@
 #   --uninstall      remove the installed Wine, launcher, and menu entries
 #   --help           this text
 # Environment:
-#   ABLETON_DPI_MODE    auto|preserve|100|fractional (overrides scale auto-detection)
+#   ABLETON_DPI_MODE    auto|preserve|100|fractional|native (overrides scale auto-detection)
 #   ABLETON_THEME_MODE  auto|dark|light|preserve (overrides the light/dark sync)
 # Everything after the marker line is a tar archive; this header never changes it.
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
@@ -214,17 +214,21 @@ bash "$kit/scripts/install.sh"
 # Seed ABLETON_DPI_MODE from the detected display scale; the launcher re-detects on every start.
 if [ -z "${ABLETON_DPI_MODE:-}" ]; then
     . "$kit/scripts/detect-scale.sh"
+    . "$kit/scripts/dpi-policy.sh"
     scale="$(ableton_detect_scale)" || scale=""
-    case "$scale" in
-        1)    export ABLETON_DPI_MODE=100;        say "-- display scale: 100% (auto-detected)" ;;
-        1.25) export ABLETON_DPI_MODE=fractional; say "-- display scale: 125% (auto-detected)" ;;
+    policy=""
+    [ -z "$scale" ] || policy="$(ableton_resolve_dpi_policy "$scale" || true)"
+    case "$policy" in
+        100)        export ABLETON_DPI_MODE=100;        say "-- display scale: 100% (auto-detected)" ;;
+        fractional) export ABLETON_DPI_MODE=fractional; say "-- display scale: 125% legacy fractional policy (auto-detected)" ;;
+        native:*)   export ABLETON_DPI_MODE=native;     say "-- display scale: $scale -> ${policy#native:} DPI native application scaling (auto-detected)" ;;
         *)
             if [ -d "$HOME/.wine-ableton" ]; then
                 export ABLETON_DPI_MODE=preserve
-                say "-- display scale: ${scale:-could not be detected}${scale:+ (only 100% and 125% are calibrated)}; keeping your existing display settings"
+                say "-- display scale: ${scale:-could not be detected}; compositor/XWayland strategy not calibrated, keeping your existing display settings"
             else
                 export ABLETON_DPI_MODE=100
-                say "-- display scale: ${scale:-could not be detected}${scale:+ (only 100% and 125% are calibrated)}; starting the new prefix at 100%"
+                say "-- display scale: ${scale:-could not be detected}; compositor/XWayland strategy not calibrated, starting the new prefix at 100%"
                 say "   (the launcher re-checks your display on every start, so this corrects itself)"
             fi ;;
     esac

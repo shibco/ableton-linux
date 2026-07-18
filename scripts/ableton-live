@@ -49,22 +49,37 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
     /usr/bin/wineserver -k 2>/dev/null || true
 fi
 
-# Recalibrate prefix DPI to the detected scale before each launch: 1.0 -> LogPixels 96 + no IFEO;
-# 1.25 -> LogPixels 192 + IFEO=2; else preserve. ABLETON_DPI_MODE=100|fractional|preserve overrides.
+# Recalibrate prefix DPI before each launch. Hyprland with XWayland zero
+# scaling uses exact application-side DPI with no IFEO; legacy 100%/Mutter
+# policies remain available. ABLETON_DPI_MODE=100|fractional|native|preserve
+# overrides auto detection.
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
     dpi_mode="${ABLETON_DPI_MODE:-auto}"
-    if [ "$dpi_mode" = auto ]; then
-        dpi_lib="$HOME/.local/share/ableton-wine/detect-scale.sh"
-        dpi_mode=preserve
-        if [ -r "$dpi_lib" ]; then
-            . "$dpi_lib"
+    dpi_block="$dpi_mode"
+    dpi_scale_lib="$HOME/.local/share/ableton-wine/detect-scale.sh"
+    dpi_policy_lib="$HOME/.local/share/ableton-wine/dpi-policy.sh"
+    if [ "$dpi_mode" = auto ] || [ "$dpi_mode" = native ]; then
+        dpi_block=preserve
+        if [ -r "$dpi_scale_lib" ] && [ -r "$dpi_policy_lib" ]; then
+            . "$dpi_scale_lib"
+            . "$dpi_policy_lib"
             dpi_scale="$(ableton_detect_scale)" || dpi_scale=""
-            case "$dpi_scale" in
-                1)    dpi_mode=100 ;;
-                1.25) dpi_mode=fractional ;;
-                "")   ;;
-                *)    echo "ableton-live: scale $dpi_scale detected, but only 100%/125% are calibrated — keeping current DPI values (set ABLETON_DPI_MODE to force)" >&2 ;;
-            esac
+            if [ -n "$dpi_scale" ]; then
+                if [ "$dpi_mode" = native ]; then
+                    dpi_value="$(ableton_scale_to_dpi "$dpi_scale")" || dpi_value=""
+                    if [ "$dpi_value" = 96 ]; then dpi_block=100
+                    elif [ -n "$dpi_value" ]; then dpi_block="native:$dpi_value"
+                    fi
+                elif resolved="$(ableton_resolve_dpi_policy "$dpi_scale")"; then
+                    dpi_block="$resolved"
+                else
+                    echo "ableton-live: scale $dpi_scale detected, but this compositor/XWayland strategy is not calibrated — keeping current DPI values" >&2
+                fi
+            elif [ "$dpi_mode" = native ]; then
+                echo "ableton-live: ABLETON_DPI_MODE=native needs a detectable display scale — keeping current DPI values" >&2
+            fi
+        elif [ "$dpi_mode" = native ]; then
+            echo "ableton-live: native DPI policy library is missing — keeping current DPI values" >&2
         fi
     fi
     # The dpiAwareness IFEO is keyed on the exe name, so it follows the discovered install.
@@ -75,7 +90,7 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
     fi
     # Read current values from the registry files directly (no wineserver spin-up).
     cur_lp="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"LogPixels"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
-    case "$dpi_mode" in
+    case "$dpi_block" in
         100)
             if [ "${cur_lp:-00000060}" != 00000060 ] || [ -n "$cur_ifeo" ]; then
                 echo "ableton-live: display at 100% — recalibrating prefix DPI (LogPixels 96, no IFEO)" >&2
@@ -88,11 +103,21 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
                 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d 192 /f >/dev/null 2>&1
                 [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg add "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f >/dev/null 2>&1
             fi ;;
+        native:*)
+            native_dpi="${dpi_block#native:}"
+            want_lp="$(ableton_dpi_to_dword "$native_dpi")"
+            if [ "${cur_lp:-00000060}" != "$want_lp" ] || [ -n "$cur_ifeo" ]; then
+                echo "ableton-live: native display scaling — recalibrating prefix DPI (LogPixels $native_dpi, no IFEO)" >&2
+                "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$native_dpi" /f >/dev/null 2>&1
+                [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" /v dpiAwareness /f >/dev/null 2>&1 || true
+            fi ;;
+        preserve) ;;
+        *) echo "ableton-live: invalid ABLETON_DPI_MODE '$dpi_mode' — keeping current DPI values" >&2 ;;
     esac
     # Warn if mutter's xwayland-native-scaling disagrees with the DPI set; never change it.
     if command -v gsettings >/dev/null 2>&1; then
         mutter_feats="$(gsettings get org.gnome.mutter experimental-features 2>/dev/null || true)"
-        case "$dpi_mode" in
+        case "$dpi_block" in
             100)        case "$mutter_feats" in *xwayland-native-scaling*)
                             echo "ableton-live: warn — mutter xwayland-native-scaling is ON; the 100% set expects it OFF" >&2 ;; esac ;;
             fractional) case "$mutter_feats" in *xwayland-native-scaling*) ;; *)
