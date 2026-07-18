@@ -120,7 +120,7 @@ It verifies itself, installs the runtime, detects the display scale, creates the
 
 #### Display scale
 
-`setup-prefix.sh` and the launcher auto-detect the display scale (GNOME, KDE, sway, Hyprland, X11 `Xft.dpi`); the launcher recalibrates the prefix DPI on every start. Unfortunately, switching monitors still needs a Live restart if those monitors have different DPIs. You can manually override the default scaling behaviours with `ABLETON_DPI_MODE`.
+`setup-prefix.sh` and the launcher auto-detect the display scale (GNOME, KDE, sway, Hyprland, X11 `Xft.dpi`); the launcher recalibrates the prefix DPI on every start. Hyprland with `xwayland:force_zero_scaling` enabled uses exact application-side DPI (`round(96 * scale)`) and does not require a per-executable DPI override. Other uncalibrated compositor/XWayland strategies preserve existing prefix values. Unfortunately, switching monitors still needs a Live restart if those monitors have different DPIs. You can manually override the default scaling behaviours with `ABLETON_DPI_MODE`.
 
 ### Other environment variables
 
@@ -128,7 +128,7 @@ Mostly unnecessary. But in case you need them:
 
 - `ABLETON_WINE_ROOT` runtime path (default `~/.local/opt/wine-d2d1-nspa-11.11`)
 - `ABLETON_WINEPREFIX` prefix path (default `~/.wine-ableton`)
-- `ABLETON_DPI_MODE` `auto` | `preserve` | `100` | `fractional`
+- `ABLETON_DPI_MODE` `auto` | `preserve` | `100` | `fractional` | `native` — `native` uses exact application-side DPI from the detected scale; `fractional` retains the legacy 192-DPI/IFEO policy
 - `ABLETON_THEME_MODE` `auto` | `dark` | `light` | `preserve` — the launcher syncs Live's light/dark theme key to the desktop scheme on every start; this overrides it
 - `ABLETON_LIVE_EXE` full path to a Live exe inside the prefix, when more than one edition/version is installed (default: the newest found)
 - `PIPEASIO_*` audio driver overrides, e.g. `PIPEASIO_PREFERRED_BUFFERSIZE=512` if you hear crackles; defaults live in `~/.config/pipeasio/config.ini`
