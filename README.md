@@ -1,6 +1,6 @@
 # Ableton Live 12, Max For Live and Push on Linux
 
-Run Ableton Live 12 (and, experimentally, Live 11), Max for Live and Ableton Push 1 and 2 on a patched Wine. Featuring dozens of QoL fixes, reproducible builds, a single-file installer, and a beta test program with remote diagnostics. Very unofficial, not endorsed or affiliated in any way with Ableton. 
+Run Ableton Live 12 (and, experimentally, Live 11), Max for Live and Ableton Push 1 and 2 on a patched Wine. Featuring dozens of QoL fixes, reproducible builds, a single-file installer, and a beta test program with remote diagnostics. Very unofficial, not endorsed or affiliated in any way with Ableton.
 
 ![screenshot.png](screenshot.png)
 
@@ -17,7 +17,7 @@ Place this installer + an Ableton Live zip file downloaded from Ableton.com in t
 - Push 1 + 2 support.
 - Device recovery: audio and MIDI devices (Push included) survive in-session disconnect and reconnect.
 - Experimental Max/MSP and Max for Live support.
-- File dialogues including open/save dialogs are handled by your system's native file picker. 
+- File dialogues including open/save dialogs are handled by your system's native file picker.
 - Dark/light theme mode that follows your system's settings.
 - System font support: display Ableton's UI with your desktop interface fonts.
 - Low-latency audio via autobuilt PipeASIO, a native PipeWire ASIO driver, at 256 frames, with additional hardening to prevent crashes. Live can record from any PipeWire source, no JACK layer needed.
@@ -108,8 +108,6 @@ inputs.ableton-linux.url = "github:shibco/ableton-linux";
 
 This puts `ableton-live` on every user's PATH. Each user still runs the one-time `nix run github:shibco/ableton-linux#setup-prefix` — the prefix is per-user state in `~/.wine-ableton`, not something a system rebuild can produce. Desktop menu entries are not registered automatically; templates ship in the package under `share/ableton-wine/desktop/`.
 
-Since 2026.07.18.1 the launcher recalibrates the prefix DPI on every start from the detected compositor scale (non-GNOME desktops get application-side `LogPixels = round(96 × scale)`), so Live now matches your native apps' size — older builds rendered fractional scales at a fixed 200%, noticeably larger. Prefer a bigger UI? Pin it per launch with `ABLETON_DPI_MODE=dpi<N>` (e.g. `dpi144` = 150%) or permanently with the `dpi` override above; a user-set `ABLETON_DPI_MODE` always beats the pin.
-
 ## Issues?
 
 File an issue on GitHub, there's some diagnostics scripts that will help diagnose the problem in ./beta/scripts.
@@ -129,16 +127,16 @@ Live 11 support is new and experimental. A Live 11 install differs in three ways
 
 1. Set `ABLETON_LIVE_VERSION=11` when you run the installer. The prefix then gets the Live 11 runtime set (vcrun2019 and gdiplus instead of vcrun2022 and mfc42, plus Windows 10 mode). These pieces are downloaded during setup, so you need to be online:
 
-    ```
-    ABLETON_LIVE_VERSION=11 sh ~/Downloads/install-ableton-latest.run
-    ```
+   ```
+   ABLETON_LIVE_VERSION=11 sh ~/Downloads/install-ableton-latest.run
+   ```
 
 2. After your first Live 11 launch, run the Max for Live fixup once. Max 8 crashes on its second start over a preferences file its first start wrote. The fixup moves that file aside (nothing is deleted) and Max regenerates it:
 
-    ```
-    sh ~/Downloads/install-ableton-latest.run --extract /tmp/ableton-kit
-    bash /tmp/ableton-kit/scripts/setup-prefix.sh --post-first-run
-    ```
+   ```
+   sh ~/Downloads/install-ableton-latest.run --extract /tmp/ableton-kit
+   bash /tmp/ableton-kit/scripts/setup-prefix.sh --post-first-run
+   ```
 
 3. Known limitation: previewing or importing WMA or video files crashes Live 11. A fix is planned. Avoid those files in Live's browser for now; details in [notes/ABLETON-WINE-LIVE11-WMVCORE-STUB.md](notes/ABLETON-WINE-LIVE11-WMVCORE-STUB.md).
 
@@ -147,10 +145,12 @@ The launcher finds Live 11 by itself. With both 11 and 12 in the prefix the newe
 ## Installing plugins
 
 To run a plugin installer inside your Live environment:
+
 ```
 WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.11/bin/wine \
     "/path/to/PluginInstaller.exe"
 ```
+
 You can also manually install plugin .vst3 files inside the `~/.wine-ableton/drive_c/Program Files/Common Files/VST3/` directory.
 
 ### Linux-native plugins
@@ -159,9 +159,9 @@ Do you have a Linux-only plugin? Run them in Carla or Ildaeil alongside Live and
 
 ## Push 1 + 2 support
 
-This is built in. Use Preferences → Link, Tempo & MIDI → enable one `Push2` row, Live Port for both input and output, and enable the remote toggles. 
+This is built in. Use Preferences → Link, Tempo & MIDI → enable one `Push2` row, Live Port for both input and output, and enable the remote toggles.
 
-Like all other MIDI and Audio devices, Push will survive in-session disconnects. 
+Like all other MIDI and Audio devices, Push will survive in-session disconnects.
 
 ## Ableton Link
 
@@ -232,7 +232,7 @@ nix build                    # full runtime: Wine + PipeASIO + launcher -> resul
 
 `./scripts/make-installer.sh` compiles everything into `dist/ableton-wine-setup-<version>.run`.
 
-It verifies itself, installs the runtime, detects the display scale, creates the prefix, then runs the Ableton installer it finds next to itself (pauses so you can add one; prints the manual commands otherwise). 
+It verifies itself, installs the runtime, detects the display scale, creates the prefix, then runs the Ableton installer it finds next to itself (pauses so you can add one; prints the manual commands otherwise).
 
 #### Display scale
 
@@ -240,7 +240,7 @@ It verifies itself, installs the runtime, detects the display scale, creates the
 
 ### Other environment variables
 
-Mostly unnecessary. But in case you need them: 
+Mostly unnecessary. But in case you need them:
 
 - `ABLETON_WINE_ROOT` runtime path (default `~/.local/opt/wine-d2d1-nspa-11.11`)
 - `ABLETON_WINEPREFIX` prefix path (default `~/.wine-ableton`)
