@@ -75,7 +75,10 @@ fi
 # pgrep checks skip the re-sync; wine forwards to the running instance), so the guard
 # stays off that path. fd 9 must never leak into a wine child: a spawned wineserver
 # would pin the lock for the whole session (start_server posix_spawns with inherited
-# fds), so the lock is dropped again just before the exec at the bottom.
+# fds), so the lock is dropped again just before the exec at the bottom, and every
+# wine registry call made during bring-up closes it explicitly (9>&-) — without that,
+# a failed launch leaves the sync-spawned wineserver holding the lock, and relaunching
+# is refused until that server exits.
 launch_lock="$WINEPREFIX/.ableton-live.lock"
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
     if [ -d "$WINEPREFIX" ] && [ -w "$WINEPREFIX" ] && command -v flock >/dev/null 2>&1; then
@@ -147,6 +150,12 @@ fi
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
     "$WINE_ROOT/bin/wineserver" -k 2>/dev/null || true
     /usr/bin/wineserver -k 2>/dev/null || true
+    # Boot the session synchronously before the registry sync below. Console clients
+    # (reg.exe) skip the wineboot-event wait GUI apps honor, and a write racing the
+    # async session boot can be dropped (observed: the FontSubstitutes sync lost its
+    # HKLM write on a fresh session). wineboot exits when the boot pass is done; Live
+    # would spin this server up moments later anyway.
+    "$WINE_ROOT/bin/wine" wineboot >/dev/null 2>&1 9>&- || true
 fi
 
 # Recalibrate prefix DPI to the detected scale before each launch. The block comes from
@@ -212,14 +221,14 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
                 if [ "$want_ifeo" = 2 ]; then
                     if [ "${cur_lp:-}" != "$want_lp_hex" ] || { [ -n "$dpi_ifeo" ] && [ "${cur_ifeo:-}" != 00000002 ]; }; then
                         echo "ableton-live: recalibrating prefix DPI to the '$dpi_mode' set (LogPixels $want_lp, IFEO=2)" >&2
-                        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1
-                        [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg add "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f >/dev/null 2>&1
+                        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1 9>&-
+                        [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg add "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f >/dev/null 2>&1 9>&-
                     fi
                 else
                     if [ "${cur_lp:-00000060}" != "$want_lp_hex" ] || [ -n "$cur_ifeo" ]; then
                         echo "ableton-live: recalibrating prefix DPI to the '$dpi_mode' set (LogPixels $want_lp, no IFEO)" >&2
-                        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1
-                        [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" /v dpiAwareness /f >/dev/null 2>&1 || true
+                        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1 9>&-
+                        [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" /v dpiAwareness /f >/dev/null 2>&1 9>&- || true
                     fi
                 fi
             fi ;;
@@ -245,18 +254,35 @@ fi
 # [Control Panel\Colors] table, which neither the prefix setup nor the theme sync below
 # has ever written, so the bar keeps stock light colors in dark mode. Sync the entries
 # the bar uses alongside AppsUseLightTheme (current values read from the registry file,
-# no wineserver spin-up when unchanged). Do NOT add "Window" here: a dark Window color
-# blacks out comdlg32 dialog lists.
-sync_win32_colors() {   # dark|light
-    local scheme="$1" pair name want cur changed=0
+# no wineserver spin-up when unchanged). When the host titlebar colors are known
+# (issue #32), the bar and its text take those instead, so the WM titlebar and Live's
+# menu bar read as one unified strip; the wine-drawn title colors (virtual desktops)
+# follow along. Do NOT add "Window" here: a dark Window color blacks out comdlg32
+# dialog lists.
+sync_win32_colors() {   # dark|light [bar-bg bar-fg [menu-bg sel-bg sel-fg]]  ("R G B")
+    local scheme="$1" bar_bg="${2:-}" bar_fg="${3:-}" menu_bg="${4:-}" sel_bg="${5:-}" sel_fg="${6:-}"
+    local pair name want cur changed=0 menubar menutext menu
     local -a pairs
     case "$scheme" in
-        dark)   pairs=("MenuBar=43 43 43" "Menu=43 43 43" "ButtonFace=64 64 64"
-                       "MenuText=232 232 232" "ButtonText=232 232 232") ;;
-        light)  pairs=("MenuBar=240 240 240" "Menu=255 255 255" "ButtonFace=240 240 240"
-                       "MenuText=0 0 0" "ButtonText=0 0 0") ;;
+        dark)   menubar="43 43 43";    menutext="232 232 232"; menu="43 43 43"
+                pairs=("ButtonFace=64 64 64" "ButtonText=232 232 232") ;;
+        light)  menubar="240 240 240"; menutext="0 0 0";       menu="255 255 255"
+                pairs=("ButtonFace=240 240 240" "ButtonText=0 0 0") ;;
         *)      return 0 ;;
     esac
+    if [ -n "$bar_bg" ] && [ -n "$bar_fg" ]; then
+        menubar="$bar_bg"; menutext="$bar_fg"
+        pairs+=("ActiveTitle=$bar_bg" "GradientActiveTitle=$bar_bg" "TitleText=$bar_fg")
+    fi
+    [ -n "$menu_bg" ] && menu="$menu_bg"
+    # Selected-item colors only ever move as a set: the menu highlight fill
+    # (MenuHilight), the general selection fill (Hilight) and the selection text
+    # (HilightText) — win32u draws selected menu text with HilightText, so a themed
+    # fill under the stock white text would be unreadable.
+    if [ -n "$sel_bg" ] && [ -n "$sel_fg" ]; then
+        pairs+=("MenuHilight=$sel_bg" "Hilight=$sel_bg" "HilightText=$sel_fg")
+    fi
+    pairs+=("Menu=$menu" "MenuBar=$menubar" "MenuText=$menutext")
     for pair in "${pairs[@]}"; do
         name="${pair%%=*}"
         want="${pair#*=}"
@@ -271,21 +297,259 @@ sync_win32_colors() {   # dark|light
         if [ "$cur" != "$want" ]; then
             [ "$changed" -eq 0 ] && echo "ableton-live: syncing the win32 menu colors to the $scheme scheme" >&2
             changed=1
-            "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Colors' /v "$name" /t REG_SZ /d "$want" /f >/dev/null 2>&1
+            "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Colors' /v "$name" /t REG_SZ /d "$want" /f >/dev/null 2>&1 9>&-
         fi
     done
+}
+
+# The bar only paints with the MenuBar color when the flat-menu preference is on
+# (win32u picks COLOR_MENUBAR over COLOR_MENU off SPI_GETFLATMENU); flat is also how
+# Windows 10/11 draw menus. The preference is bit 0x02 of byte 2 in the
+# UserPreferencesMask blob — set that one bit, keep every other preference.
+ensure_flat_menu() {
+    local cur b2 hex
+    local -a bytes
+    cur="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"UserPreferencesMask"=hex:/{gsub(/.*hex:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
+    [ -n "$cur" ] || cur="10,00,00,80,12,00,00,00"    # win32u's built-in default
+    IFS=, read -ra bytes <<< "$cur"
+    [ "${#bytes[@]}" -ge 8 ] || return 0
+    b2=$(( 16#${bytes[2]} )) 2>/dev/null || return 0
+    [ $(( b2 & 0x02 )) -ne 0 ] && return 0
+    printf -v 'bytes[2]' '%02x' $(( b2 | 0x02 ))
+    hex="$(IFS=''; printf '%s' "${bytes[*]}")"
+    echo "ableton-live: enabling flat menus so the bar can take the titlebar color" >&2
+    "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v UserPreferencesMask /t REG_BINARY /d "$hex" /f >/dev/null 2>&1 9>&-
+}
+
+# "#RRGGBB #RRGGBB" (ABLETON_TOPBAR_MODE override) -> "R G B|R G B" (bg|text)
+parse_topbar_override() {
+    local bg fg rest c
+    read -r bg fg rest <<< "$1"
+    [ -z "$rest" ] || return 1
+    for c in "$bg" "$fg"; do
+        case "$c" in
+            \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+            *) return 1 ;;
+        esac
+    done
+    printf '%d %d %d|%d %d %d\n' \
+        $(( 16#${bg:1:2} )) $(( 16#${bg:3:2} )) $(( 16#${bg:5:2} )) \
+        $(( 16#${fg:1:2} )) $(( 16#${fg:3:2} )) $(( 16#${fg:5:2} ))
+}
+
+# ABLETON_TOPBAR_MODE=live: color the chrome with Live's active theme, so the bar
+# and menus continue Live's own surface (the Push 3 standalone look). Ground and
+# text come from the theme's Desktop and ControlForeground; the selection set from
+# SelectionBackground/SelectionForeground (see detect-theme.sh for the resolution).
+resolve_live_topbar() {   # sets topbar/menu_bg/sel_bg/sel_fg; fails when unresolvable
+    local themes major theme_file bg fg
+    [ -n "$live_exe_unix" ] || return 1
+    declare -F ableton_live_theme_file >/dev/null 2>&1 || return 1
+    themes="${live_exe_unix%/Program/*}/Resources/Themes"
+    major="$(printf '%s\n' "$exe_base" | awk '{print $3}')"
+    theme_file="$(ableton_live_theme_file "$WINEPREFIX" "$themes" "$major" "$theme_mode")" || return 1
+    # The bar sits on Live's transport strip, which renders ControlBackground —
+    # Desktop (the surface behind the views) reads as a visible seam there.
+    # Dropdowns take Desktop, matching Live's own popup surfaces.
+    bg="$(ableton_ask_color "$theme_file" ControlBackground)" || return 1
+    fg="$(ableton_ask_color "$theme_file" ControlForeground)" || return 1
+    topbar="$bg|$fg"
+    menu_bg="$(ableton_ask_color "$theme_file" Desktop)" || menu_bg="$bg"
+    sel_bg="$(ableton_ask_color "$theme_file" SelectionBackground)" || sel_bg=""
+    sel_fg="$(ableton_ask_color "$theme_file" SelectionForeground)" || sel_fg=""
+    return 0
+}
+
+detect_system_topbar() {   # sets topbar from the host titlebar colors
+    declare -F ableton_detect_topbar_colors >/dev/null 2>&1 || return 0
+    topbar="$(ableton_detect_topbar_colors "$theme_mode")" || topbar=""
+}
+
+# With ABLETON_TOPBAR_MODE=live the bar keeps following while Live runs: Live
+# flushes Preferences.cfg when its settings dialog closes (and on exit), so a
+# theme picked there lands on disk moments later. Watch the newest cfg and
+# re-apply through setsyscolors.exe — SetSysColors updates the running session
+# (volatile color entries plus a WM_SYSCOLORCHANGE broadcast and redraw), so the
+# bar and menus repaint without a restart; the per-launch sync persists the
+# colors for the next session. One watcher per prefix (own lock, fd 8); exits
+# when Live does.
+theme_watch_prefs_cfg() {
+    local major
+    major="$(printf '%s\n' "$exe_base" | awk '{print $3}')"
+    ls "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/Ableton/"Live ${major:-}"*/Preferences/Preferences.cfg 2>/dev/null | sort -V | tail -n 1
+}
+theme_watch_loop() {
+    local apply="$HOME/.local/share/ableton-wine/setsyscolors.exe"
+    local lock="$WINEPREFIX/.ableton-theme-watch.lock" cfg last="" cur bar_bg bar_fg
+    [ -f "$apply" ] || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 8>"$lock" || return 0
+    # the previous session's watcher exits within seconds of Live going down;
+    # wait it out rather than losing the handover race
+    for _ in 1 2 3 4 5 6 7 8; do
+        flock -n 8 && break
+        sleep 2
+    done
+    flock -n 8 || return 0
+    for _ in {1..30}; do
+        pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData && break
+        sleep 2
+    done
+    cfg="$(theme_watch_prefs_cfg)"
+    [ -n "$cfg" ] && last="$(stat -c %Y "$cfg" 2>/dev/null)"
+    while pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData; do
+        sleep 2
+        cfg="$(theme_watch_prefs_cfg)"
+        [ -n "$cfg" ] || continue
+        cur="$(stat -c %Y "$cfg" 2>/dev/null)" || continue
+        [ "$cur" = "$last" ] && continue
+        last="$cur"
+        topbar=""; menu_bg=""; sel_bg=""; sel_fg=""
+        resolve_live_topbar || continue
+        bar_bg="${topbar%%|*}"; bar_bg="${bar_bg// /,}"
+        bar_fg="${topbar##*|}"; bar_fg="${bar_fg// /,}"
+        set -- "MenuBar=$bar_bg" "MenuText=$bar_fg" "ActiveTitle=$bar_bg" \
+               "GradientActiveTitle=$bar_bg" "TitleText=$bar_fg"
+        [ -n "$menu_bg" ] && set -- "$@" "Menu=${menu_bg// /,}"
+        if [ -n "$sel_bg" ] && [ -n "$sel_fg" ]; then
+            set -- "$@" "MenuHilight=${sel_bg// /,}" "Hilight=${sel_bg// /,}" "HilightText=${sel_fg// /,}"
+        fi
+        "$WINE_ROOT/bin/wine" "$apply" "$@" >/dev/null 2>&1
+    done
+}
+
+# Chrome typeface (issue #32): Live ships its own UI faces (Ableton Sans, plus the
+# small-size cut Ableton Sans Small) in the install's Resources/Fonts, but the win32
+# chrome around it — menu bar, context menus, message boxes — still renders Tahoma.
+# Symlink the faces into the prefix's Fonts dir (win32u rescans it on every process
+# start) and point both the shell-dialog substitutes and the WindowMetrics non-client
+# fonts at them. The WindowMetrics LOGFONTs are patched in place: only the 64
+# face-name bytes at offset 28 change, so the DPI-scaled heights and per-entry weights
+# survive. ABLETON_UI_FONT=preserve touches nothing, =off restores wine's stock
+# Tahoma, any other value is used verbatim as the family name.
+
+reg_windowmetrics_hex() {   # value name -> "aa,bb,..." with continuation lines joined
+    awk -v n="\"$1\"=hex:" '
+        /^\[Control Panel\\\\Desktop\\\\WindowMetrics\]/ { f=1; next }
+        /^\[/ { f=0 }
+        f && index($0, n) == 1 {
+            v = substr($0, length(n) + 1)
+            while (v ~ /\\$/) {
+                sub(/\\$/, "", v)
+                if ((getline nl) <= 0) break
+                gsub(/^[ \t]+/, "", nl)
+                v = v nl
+            }
+            gsub(/\r/, "", v)
+            print v; exit
+        }' "$WINEPREFIX/user.reg" 2>/dev/null
+}
+
+logfont_face_hex() {   # family -> UTF-16LE face-name bytes, zero-padded to LF_FACESIZE
+    local s="$1" out="" i ch
+    [ "${#s}" -le 31 ] || return 1
+    case "$s" in *[![:ascii:]]*) return 1 ;; esac   # blob is built bytewise from ASCII
+    for (( i = 0; i < 32; i++ )); do
+        if [ "$i" -lt "${#s}" ]; then
+            printf -v ch '%02x' "'${s:$i:1}"
+            out+="$ch,00,"
+        else
+            out+="00,00,"
+        fi
+    done
+    printf '%s\n' "${out%,}"
+}
+
+sync_metric_fonts() {   # family -> repoint the non-client LOGFONTs, heights preserved
+    local fam="$1" face_hex name cur head cur_face changed=0
+    face_hex="$(logfont_face_hex "$fam")" || return 0
+    for name in MenuFont MessageFont StatusFont CaptionFont SmCaptionFont; do
+        cur="$(reg_windowmetrics_hex "$name")"
+        # absent: win32u falls back to "MS Shell Dlg", which the substitutes cover
+        [ -n "$cur" ] || continue
+        head="$(printf '%s' "$cur" | cut -d, -f1-28)"
+        [ "$(printf '%s' "$head" | awk -F, '{print NF}')" -eq 28 ] || continue
+        cur_face="$(printf '%s' "$cur" | cut -d, -f29-92)"
+        [ "$cur_face" = "$face_hex" ] && continue
+        [ "$changed" -eq 0 ] && echo "ableton-live: pointing the win32 chrome fonts at '$fam'" >&2
+        changed=1
+        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop\WindowMetrics' /v "$name" \
+            /t REG_BINARY /d "$(printf '%s,%s' "$head" "$face_hex" | tr -d ,)" /f >/dev/null 2>&1 9>&-
+    done
+}
+
+sync_font_substitutes() {   # family -> route the shell-dialog faces to it
+    local fam="$1" name cur changed=0
+    for name in "MS Shell Dlg" "MS Shell Dlg 2"; do
+        cur="$(awk -v n="\"$name\"=" '
+            /^\[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes\]/ { f=1; next }
+            /^\[/ { f=0 }
+            f && index($0, n) == 1 {
+                v = substr($0, length(n) + 1)
+                sub(/^"/, "", v); sub(/"\r?$/, "", v)
+                print v; exit
+            }' "$WINEPREFIX/system.reg" 2>/dev/null || true)"
+        if [ "$cur" != "$fam" ]; then
+            [ "$changed" -eq 0 ] && echo "ableton-live: substituting the shell dialog faces with '$fam'" >&2
+            changed=1
+            "$WINE_ROOT/bin/wine" reg add 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes' \
+                /v "$name" /t REG_SZ /d "$fam" /f >/dev/null 2>&1 9>&-
+        fi
+    done
+}
+
+sync_ui_font() {
+    local mode="${ABLETON_UI_FONT:-auto}" winfonts="$WINEPREFIX/drive_c/windows/Fonts"
+    local fonts_dir="" family="" f linked=0
+    [ "$mode" = preserve ] && return 0
+    [ -d "$winfonts" ] || return 0
+    # Links from an install that was since removed or upgraded must not linger.
+    for f in "$winfonts"/AbletonSans*; do
+        [ -L "$f" ] && [ ! -e "$f" ] && rm -f "$f"
+    done
+    if [ "$mode" = off ]; then
+        for f in "$winfonts"/AbletonSans*; do
+            [ -L "$f" ] && rm -f "$f"
+        done
+        sync_font_substitutes Tahoma
+        sync_metric_fonts Tahoma
+        return 0
+    fi
+    [ -n "$live_exe_unix" ] && fonts_dir="${live_exe_unix%/Program/*}/Resources/Fonts"
+    if [ "$mode" = auto ]; then
+        [ -d "$fonts_dir" ] || return 0
+        for f in "$fonts_dir"/AbletonSans*.ttf; do
+            [ -e "$f" ] || continue
+            ln -sf "$f" "$winfonts/${f##*/}"
+            linked=1
+        done
+        [ "$linked" -eq 1 ] || return 0
+        # Ableton Sans Small is the complete family (Regular/Bold/Italic) cut for UI
+        # sizes; plain Ableton Sans ships as Light only in current Live 12.
+        if [ -e "$winfonts/AbletonSansSmall-Regular.ttf" ]; then
+            family="Ableton Sans Small"
+        else
+            family="Ableton Sans"
+        fi
+    else
+        family="$mode"
+    fi
+    sync_font_substitutes "$family"
+    sync_metric_fonts "$family"
 }
 
 # Mirror the host light/dark scheme into the prefix before each launch: Live's "Follow system"
 # theme reads AppsUseLightTheme, which a scripted prefix never carries (the early snapshot-based
 # installs inherited it). ABLETON_THEME_MODE=auto|dark|light|preserve overrides detection.
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
+    # Sourced outside the auto branch: the topbar color detection below wants the lib
+    # even when ABLETON_THEME_MODE pins the scheme.
+    theme_lib="$HOME/.local/share/ableton-wine/detect-theme.sh"
+    [ -r "$theme_lib" ] && . "$theme_lib"
     theme_mode="${ABLETON_THEME_MODE:-auto}"
     if [ "$theme_mode" = auto ]; then
-        theme_lib="$HOME/.local/share/ableton-wine/detect-theme.sh"
         theme_mode=preserve
-        if [ -r "$theme_lib" ]; then
-            . "$theme_lib"
+        if declare -F ableton_detect_theme >/dev/null 2>&1; then
             host_scheme="$(ableton_detect_theme)" || host_scheme=""
             case "$host_scheme" in dark|light) theme_mode="$host_scheme" ;; esac
         fi
@@ -296,10 +560,35 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
         cur_light="$(awk '/^\[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Themes\\\\Personalize\]/{f=1;next} /^\[/{f=0} f&&/"AppsUseLightTheme"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
         if [ "${cur_light:-absent}" != "0000000$want_light" ]; then
             echo "ableton-live: host scheme is $theme_mode — setting the prefix theme to match" >&2
-            "$WINE_ROOT/bin/wine" reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$want_light" /f >/dev/null 2>&1
+            "$WINE_ROOT/bin/wine" reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$want_light" /f >/dev/null 2>&1 9>&-
         fi
-        sync_win32_colors "$theme_mode"
+        # Unified top bar (issue #32): live (the default) colors the bar and menus
+        # with Live's active theme so the chrome continues Live's own surface;
+        # system inherits the host titlebar colors instead (KDE header colors, or
+        # the GNOME header-bar constants for the scheme); "#RRGGBB #RRGGBB" forces
+        # bar and text; preserve keeps the plain scheme colors of old.
+        topbar=""; menu_bg=""; sel_bg=""; sel_fg=""
+        case "${ABLETON_TOPBAR_MODE:-live}" in
+            preserve) ;;
+            live)   resolve_live_topbar || detect_system_topbar ;;
+            system) detect_system_topbar ;;
+            \#*)
+                if ! topbar="$(parse_topbar_override "$ABLETON_TOPBAR_MODE")"; then
+                    echo "ableton-live: cannot parse ABLETON_TOPBAR_MODE '$ABLETON_TOPBAR_MODE' (want '#RRGGBB #RRGGBB') — following the Live theme instead" >&2
+                    resolve_live_topbar || detect_system_topbar
+                fi ;;
+            *)
+                echo "ableton-live: ABLETON_TOPBAR_MODE must be live, system, preserve, or '#RRGGBB #RRGGBB' — following the Live theme instead" >&2
+                resolve_live_topbar || detect_system_topbar ;;
+        esac
+        if [ -n "$topbar" ]; then
+            sync_win32_colors "$theme_mode" "${topbar%%|*}" "${topbar##*|}" "$menu_bg" "$sel_bg" "$sel_fg"
+            ensure_flat_menu
+        else
+            sync_win32_colors "$theme_mode"
+        fi
     fi
+    sync_ui_font
 fi
 
 # Audio: PipeASIO -> PipeWire (native client, no JACK layer). Defaults live in
@@ -328,6 +617,14 @@ fi
 if command -v jack_link >/dev/null 2>&1 && command -v pw-jack >/dev/null 2>&1 \
     && ! pgrep -x jack_link >/dev/null 2>&1; then
     pw-jack jack_link --daemon || echo "ableton-live: jack_link failed to start" >&2
+fi
+
+# Follow Live-theme changes while it runs (see theme_watch_loop above). Spawned
+# after the launch lock is closed, fully detached; a no-op when the helper exe
+# is not installed or another watcher already holds the prefix's watch lock.
+if [ "${ABLETON_TOPBAR_MODE:-live}" = live ] && [ -n "$EXE" ] && [ -n "${want_light:-}" ]; then
+    ( theme_watch_loop ) </dev/null >/dev/null 2>&1 &
+    disown
 fi
 
 if [ -n "${ABLETON_VDESK:-}" ]; then
