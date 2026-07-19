@@ -122,6 +122,7 @@ FINGERPRINTS='
 0035|ascii|lib/wine/x86_64-windows/wined3d.dll|Arc(tm) B580
 0036|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_null_device
 0038|ascii|lib/wine/x86_64-unix/winex11.so|Ignoring FocusOut on %p during menu tracking
+0039|ascii|lib/wine/x86_64-unix/winex11.so|is mapped, refusing to make it managed
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '

@@ -22,6 +22,8 @@ Patch 0038 was exported 2026-07-19 the same way, from a disposable worktree
 on base 182ae79b (commit 0106d01f there). The 0037 number was taken by the
 fixes/close-button branch (MWM_FUNC_CLOSE); both branches merged together
 on 2026-07-19, closing the gap.
+Patch 0039 was exported 2026-07-19 the same way, from a disposable worktree
+on base 182ae79b (commit dd25887c there).
 
 The previous 6-patch series (state of 2026-07-03, commit b826f21e) is in
 archive-2026-07-03/ for reference only.
@@ -108,3 +110,17 @@ Provenance:
               reports GUI_INMENUMODE the cancel is only sent when
               XGetInputFocus shows another client's window holding the
               focus. See ABLETON-WINE-MENU-FOCUSOUT.md
+  0039      = winex11 mapped-window managed-flip refusal (2026-07-19).
+              The root fix for issue #3, found by tracing a live repro:
+              Live pokes its open Preferences dropdown lists (its own
+              WS_POPUP windows, mapped override-redirect) with an
+              activating no-op SetWindowPos; is_window_managed's
+              "activated windows are managed" rule then flipped the
+              mapped popup to managed, which unmaps and remaps it through
+              the WM mid-interaction as a dialog-typed toplevel (flash,
+              eaten first click, mutter wobble and Dash-over-fullscreen,
+              KWin shadow frame, Rounded Window Corners styling).
+              window_set_managed now refuses the unmanaged-to-managed
+              flip while the window is mapped; the managed decision is
+              made at map time and re-evaluated on the next map. See
+              ABLETON-WINE-DROPDOWN-MANAGED-FLIP.md

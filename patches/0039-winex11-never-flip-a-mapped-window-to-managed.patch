@@ -1,0 +1,59 @@
+Subject: winex11: never flip a mapped window to managed
+
+Issue #3, second half: Live's Preferences dropdown lists are its own
+WS_POPUP windows, shown unmanaged (override-redirect) via SetWindowPos
+with SWP_NOACTIVATE, then poked while open with an activating no-op
+SetWindowPos (NOSIZE|NOMOVE|NOZORDER, no NOACTIVATE). On Windows that
+call changes nothing. Here is_window_managed's "activated windows are
+managed" rule made X11DRV_WindowPosChanged flip the mapped popup to
+managed, and window_set_managed can only do that through a WM_STATE
+unmap/remap round-trip: the open dropdown vanishes under the pointer
+and comes back as a WM-managed dialog-typed toplevel. That remap is the
+visible flash and the eaten first click, and the managed dialog is what
+compositors then animate (mutter wobble, Dash over fullscreen), style
+(Rounded Window Corners), and decorate with a shadow frame (KWin's
+"second popup"). Confirmed against a live trace: WM_STATE 1 -> 0,
+override-redirect 1 -> 0, WM_STATE 0 -> 1 on the open dropdown, right
+after EnterNotify/MotionNotify from the user mousing over it.
+
+Refuse the unmanaged-to-managed flip while the window is mapped: the
+managed decision is made at map time, a mapped window keeps its mode
+until it is withdrawn, and the next map re-evaluates. The legitimate
+flip paths are unaffected: a hidden window shown activated passes (its
+desired WM_STATE is still Withdrawn when the flip runs, the map request
+comes later in the same SetWindowPos), make_window_embedded withdraws
+explicitly before flipping, and the desktop window is created withdrawn.
+window_set_managed already refuses the reverse direction outright.
+
+The win32u menu popups (menu bar dropdowns) were never affected: they
+are shown with SWP_NOACTIVATE and nothing pokes them while open, which
+is why patch 0038's focus gate alone did not resolve the issue.
+---
+ dlls/winex11.drv/window.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 9d1697d6..a92506e2 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1890,6 +1890,20 @@ static void window_set_managed( struct x11drv_win_data *data, BOOL new_managed )
+         return;
+     }
+ 
++    /* Flipping to managed can only go through a WM_STATE unmap/remap round-trip,
++       which yanks a mapped window off the screen and hands it to the WM mid-use.
++       Live pokes its open dropdown lists with activating no-op SetWindowPos calls
++       (NOSIZE|NOMOVE|NOZORDER, no NOACTIVATE), a no-op on Windows, and the remap
++       turned the popup into a WM-managed dialog under the pointer: menus flash,
++       eat the first click, and grow WM decorations.  The managed decision is
++       made at map time; a mapped window keeps its mode until it is withdrawn,
++       and the next map re-evaluates. */
++    if (data->desired_state.wm_state != WithdrawnState)
++    {
++        WARN( "window %p/%lx is mapped, refusing to make it managed\n", data->hwnd, data->whole_window );
++        return;
++    }
++
+     window_set_wm_state( data, WithdrawnState, FALSE ); /* no WM_STATE is pending, requested immediately */
+ 
+     data->managed = new_managed;

@@ -35,5 +35,6 @@ a01b91a917004d0b2a69bb101a29fcd681c0cea9951fdc0ae787e21d4ff703d3  0032-libusb-1.
 c2f7ccd1b98e5b146fde6cd75538c8b6bbe6144c5f66f86be6149ebc46615ee8  0036-dxgi-suspend-dcomp-reblits-on-a-null-d2d1-device.patch
 adb26b02cfd60ba4cb7c1204ffccd047d388679394c76e8b1753be9ba0629685  0037-winex11-always-advertise-MWM_FUNC_CLOSE-in-the-Motif.patch
 067b4bdabfce6f2f0f900f02ceff50843a8cbf745004a596e7307de58ac1fa61  0038-winex11-don-t-cancel-menu-tracking-while-the-focus-s.patch
+8d8db96e1b5188b840432b4d2262600f9276dc65de2c01bab5fc375507bf4349  0039-winex11-never-flip-a-mapped-window-to-managed.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

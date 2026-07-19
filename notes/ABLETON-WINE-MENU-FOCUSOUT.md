@@ -3,6 +3,14 @@
 Issue #3. Status 2026-07-19: fix authored as patch 0038, compile-verified;
 runtime verification per desktop still pending.
 
+Update, later 2026-07-19: shipped in 2026.07.19.1 and the issue still
+reproduced. A live trace showed Live's Preferences dropdowns are not
+win32u menus and never hit this path; the actual root cause is the
+mapped-window managed flip, fixed by patch 0039, see
+[ABLETON-WINE-DROPDOWN-MANAGED-FLIP.md](ABLETON-WINE-DROPDOWN-MANAGED-FLIP.md).
+The 0038 gate below stays: it is a real cancellation route for the menu
+bar dropdowns, just not the one issue #3's reporters were hitting.
+
 ## Symptoms
 
 Live's Preferences dropdowns misbehave, differently per desktop:
