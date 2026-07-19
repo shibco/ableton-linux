@@ -1,6 +1,8 @@
-# Ableton Live 12, Max For Live and Push on Linux
+# Ableton Live 12, Max For Live, Link and Push on Linux
 
-Run Ableton Live 12 (and, experimentally, Live 11), Max for Live and Ableton Push 1 and 2 on a patched Wine. Featuring dozens of QoL fixes, reproducible builds, a single-file installer, and a beta test program with remote diagnostics. Very unofficial, not endorsed or affiliated in any way with Ableton. 
+Write, compose, experiment and perform with Ableton Live 12 (and, experimentally, Live 11), Max for Live, and Ableton Push 1 and 2 on your distro of choice with a fully customised, purpose-built Wine fork that makes Live a first-class Linux citizen. 
+
+**Very unofficial, not endorsed by or affiliated in any way with Ableton.** 
 
 ![screenshot.png](screenshot.png)
 
@@ -14,22 +16,25 @@ Place this installer + an Ableton Live zip file downloaded from Ableton.com in t
 
 - Support for all Live 12 editions (Intro, Standard, Suite, Trial), and experimental Live 12 Beta support.
 - Experimental Live 11 support: see [Live 11](#live-11).
-- Push 1 + 2 support.
+- Push 1 + 2 support (with highly speculative and experimental Push 3 support).
+- Experimental Ableton Link support: keep tempo in sync with other apps and instruments on your network. See [Ableton Link](#ableton-link).
 - Device recovery: audio and MIDI devices (Push included) survive in-session disconnect and reconnect.
 - Experimental Max/MSP and Max for Live support.
-- File dialogues including open/save dialogs are handled by your system's native file picker. 
+- Open/save dialogs use your system's native file picker.
 - Dark/light theme mode that follows your system's settings.
 - System font support: display Ableton's UI with your desktop interface fonts.
-- Low-latency audio via autobuilt PipeASIO, a native PipeWire ASIO driver, at 256 frames, with additional hardening to prevent crashes. Live can record from any PipeWire source, no JACK layer needed.
+- Low-latency audio via autobuilt PipeASIO, a native PipeWire ASIO driver, at 256 frames, with additional hardening to prevent crashes. Live can record from any PipeWire source, out of the box.
+- Optional one-command tuning that lets Live run at even lower latency without crackles. See [Lower latency](#lower-latency-optional).
 - VST3/JUCE/OpenGL editor windows render, take input, and scale correctly.
 - HiDPI support: display scales from 100% to 250% are auto-detected and recalibrated on every launch.
-- Extensions SDK support.
-- VST specific fixes for Autuira, Pianoteq, SWAM and KORG (with others to follow).
+- Experimental support for Ableton's forthcoming Extensions SDK.
+- VST specific fixes for Arturia, Pianoteq, SWAM, U-he, KORG and many others, with more to follow.
 - Reproducible builds.
+- Stable, fast, and integrated into your Linux operating system.
 
 ## Getting started
 
-Most popular distros and configs are supported. Flatpak / steam-run / sandboxed environments are not supported!
+Most popular distros and configs are supported. Flatpak / steam-run / sandboxed environments are not yet fully supported!
 
 You need a 64-bit x86 machine, a 2022-or-newer distro (glibc 2.35+), and PipeWire 0.3.56 or newer (1.6+ recommended for the lowest latency). The installer checks all of this and tells you what's missing.
 
@@ -53,15 +58,17 @@ Installing Live 11? Read [Live 11](#live-11) first.
 
 ## Updating
 
-Download the newest installer and run it with `--update`:
-
-`sh install-ableton-latest.run --update`
+1. Download the newest installer.
+2. Run it: `sh install-ableton-latest.run --update`
+3. There is no step 3!
 
 This updates the patched Wine, the launcher and the prefix policy. Ableton Live itself, your settings and your license are kept. Running the installer without `--update` offers the same update when it finds an existing installation.
 
+Updating from 2026.07.18.1 also removes the `-DontCombineAPCs` line that release added to Live's Options.txt. The line causes stuttering, slowed-down audio during playback (issue #29). The update removes it even if you added it by hand.
+
 ## Issues?
 
-File an issue on GitHub, there's some diagnostics scripts that will help diagnose the problem in ./beta/scripts.
+File an issue on GitHub. There are diagnostic scripts in ./beta/scripts that will help pin down the problem.
 
 ## First launch
 
@@ -76,7 +83,7 @@ If you encounter any unexpected audio behaviour, open an issue or +1 an existing
 
 Live 11 support is new and experimental. A Live 11 install differs in three ways:
 
-1. Set `ABLETON_LIVE_VERSION=11` when you run the installer. The prefix then gets the Live 11 runtime set (vcrun2019 and gdiplus instead of vcrun2022 and mfc42, plus Windows 10 mode). These pieces are downloaded during setup, so you need to be online:
+1. Set `ABLETON_LIVE_VERSION=11` when you run the installer. Live 11 needs a different set of support files than Live 12, and this installs the right ones. They are downloaded during setup, so you need to be online:
 
     ```
     ABLETON_LIVE_VERSION=11 sh ~/Downloads/install-ableton-latest.run
@@ -114,14 +121,14 @@ Like all other MIDI and Audio devices, Push will survive in-session disconnects.
 
 ## Ableton Link
 
-Link syncs tempo, beat and phase between apps on your LAN over UDP multicast (port 20808). Support is new and experimental. Two complementary setups, both applied by `./scripts/setup-link.sh` from a checkout of this repository (optional, idempotent, uses sudo for the route and firewall changes):
+Link syncs tempo, beat and phase between apps and devices on your local network (UDP port 20808). Support is new and experimental. Two complementary setups, both applied by `./scripts/setup-link.sh` from a checkout of this repository (optional, safe to re-run, uses sudo for the network and firewall changes):
 
-- Option A: Live joins directly. The script detects your primary LAN interface (refusing VPN carriers; Link does not work over VPN), adds a multicast route for `224.0.0.0/4`, and allows UDP 20808 in ufw/firewalld. Then enable the Link toggle in Live (Preferences → Link, Tempo & MIDI → "Show Link Toggle").
-- Option B: native bridge (recommended). [jack_link](https://github.com/rncbc/jack_link), a small native Link peer, anchors the session on the JACK transport hosted by PipeWire, so it survives Live restarts and can sync native Linux apps. Build jack_link and create the `jack-link.service` user unit per [notes/ABLETON-WINE-LINK.md](notes/ABLETON-WINE-LINK.md), then re-run the script to enable it. The launcher also starts the bridge when it is installed but not already running.
+- Option A: Live joins directly. The script finds your network interface (refusing VPNs; Link does not work over one), adds the network route Link's traffic needs, and opens UDP port 20808 in your firewall. Then enable the Link toggle in Live (Preferences → Link, Tempo & MIDI → "Show Link Toggle").
+- Option B: native bridge (recommended). [jack_link](https://github.com/rncbc/jack_link) is a small helper that joins the Link session natively on your machine, so the session survives Live restarts and native Linux apps can sync too. Build jack_link and create the `jack-link.service` user unit per [notes/ABLETON-WINE-LINK.md](notes/ABLETON-WINE-LINK.md), then re-run the script to enable it. The launcher also starts the bridge when it is installed but not already running.
 
-Your router must forward multicast, and Link never crosses VPNs. Option A is unverified end-to-end under Wine: if Live's peer count stays at zero while traffic shows in tcpdump, the bridge still anchors and monitors the session.
+Your router must forward multicast, and Link never crosses VPNs. Option A is unverified under Wine: if Live's peer count stays at zero, the bridge still joins and syncs the session.
 
-Verification checklist:
+Not working? Check these, in order:
 
 - [ ] `ip route show 224.0.0.0/4` lists a route via the physical LAN interface, not a VPN device
 - [ ] Firewall: `sudo ufw status | grep 20808` or `firewall-cmd --list-ports` shows `20808/udp`
@@ -138,9 +145,11 @@ From a checkout of this repository, run:
 ./scripts/setup-realtime.sh
 ```
 
-It installs the standard Linux pro-audio profile: realtime scheduling rights for the `audio` group, `vm.swappiness=10`, and a systemd unit that keeps the CPU governor on `performance`. It uses sudo, prints every file it writes, and never touches your bootloader (it advises about `threadirqs` and realtime kernels instead).
+It applies the standard Linux pro-audio settings: permission for Live to use realtime scheduling, less eager memory swapping, and a service that keeps the CPU at full speed. It uses sudo and prints every file it writes. Deeper tweaks (kernel options) are only suggested, never applied.
 
-Log out and back in, then check that `ulimit -r` prints 95. The launcher probes for realtime rights on every start and from now on runs Live under realtime scheduling.
+Log out and back in, then check that `ulimit -r` prints 95. The launcher checks for realtime permission on every start and from now on runs Live with it.
+
+Some distributions grant realtime permission out of the box (CachyOS is one), so Live may already run with realtime scheduling before you run the script. `ulimit -r` printing 10 or higher means the launcher uses it. Launch with `ABLETON_RT=off ableton-live` to run without realtime scheduling, for a comparison run or on a machine with few CPU cores.
 
 ## Project structure
 
@@ -187,19 +196,13 @@ Mostly unnecessary. But in case you need them:
 - `ABLETON_DPI_MODE` `auto` | `preserve` | `100` | `fractional` | `dpi<N>` (force `LogPixels` N with no per-monitor flag, e.g. `dpi144` for 150% on a non-GNOME desktop)
 - `ABLETON_THEME_MODE` `auto` | `dark` | `light` | `preserve`: the launcher syncs Live's light/dark theme key to the desktop scheme on every start; this overrides it
 - `ABLETON_DCOMP` `on` (default) | `off`: disables DirectComposition for that launch; an A/B check if the Learn View misrenders
+- `ABLETON_RT` `on` (default) | `off`: runs Live without realtime scheduling even when the system permits it (see [Lower latency](#lower-latency-optional))
 - `PIPEASIO_*` audio driver overrides, e.g. `PIPEASIO_PREFERRED_BUFFERSIZE=512` if you hear crackles; defaults live in `~/.config/pipeasio/config.ini`
 - `ENGINE=docker` for `build.sh` / `make-installer.sh`
 
 ### Steam Deck
 
-Desktop Mode only. Add the host packages once, and (unfortunately) again after every SteamOS update.
-
-```bash
-sudo steamos-readonly disable
-sudo pacman-key --init && sudo pacman-key --populate archlinux holo
-sudo pacman -S cabextract binutils
-sudo steamos-readonly enable
-```
+Desktop Mode only. The installer bundles everything it needs, so no extra SteamOS packages are required and updates survive SteamOS upgrades.
 
 ## More
 

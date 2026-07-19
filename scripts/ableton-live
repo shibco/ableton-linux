@@ -3,7 +3,8 @@
 # (Intro/Lite/Standard/Suite/Trial, any major version) is installed in the prefix.
 # Overrides: ABLETON_WINE_ROOT=/usr (stock wine), ABLETON_VDESK=2560x1600 (virtual desktop),
 #            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
-#            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version).
+#            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
+#            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling).
 set -u
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
@@ -317,7 +318,13 @@ require_live() {
 exec 9>&-
 
 run=(wine)
-if command -v chrt >/dev/null 2>&1 && chrt -r 10 true >/dev/null 2>&1; then
+# The probe fires wherever rtprio rights exist — setup-realtime.sh grants them,
+# but some distributions (CachyOS among them) grant them out of the box, so RR
+# can be active without any opt-in here. SCHED_RR covers the whole process, GUI
+# threads included; ABLETON_RT=off exists for A/B runs and low-core machines
+# where that is a net loss. See notes/ABLETON-WINE-RT-SCHEDULING.md.
+if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
+    && chrt -r 10 true >/dev/null 2>&1; then
     run=(chrt -r 10 wine)
 fi
 

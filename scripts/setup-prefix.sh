@@ -176,27 +176,32 @@ check_mutter_knob() {  # warn when mutter's xwayland-native-scaling disagrees wi
     return 0
 }
 
-# Append-only Options.txt seeding: -DontCombineAPCs disables Live's APC coalescing,
-# which costs a steady 30-40% CPU thread under Wine. Prefix setup runs before Live's
-# installer, so on a fresh prefix the glob matches nothing; the first --refresh pass
-# after Live is installed seeds it.
-seed_options_txt() {
-    local line="-DontCombineAPCs" prefs f
+# 2026.07.18.1 seeded -DontCombineAPCs into Options.txt to cut a 30-40% idle CPU
+# thread. Under playback the uncoalesced APCs flood the wineserver and starve the
+# PipeASIO callback: choppy, slowed-down audio (issue #29). Strip the line from
+# every prefs copy — including hand-added ones, since the old changelog entry
+# advertised it. The idle CPU cost is back until the Wine-side fix lands; see
+# notes/ABLETON-WINE-APC-COALESCING.md.
+strip_options_txt() {
+    local line="-DontCombineAPCs" prefs f tmp
     shopt -s nullglob
     for prefs in "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/Ableton/Live*/Preferences; do
         f="$prefs/Options.txt"
-        touch "$f"
-        # Strip CR for the match so a CRLF-written copy isn't seeded twice.
-        if tr -d '\r' < "$f" | grep -qxF -- "$line"; then
-            continue
+        [ -f "$f" ] || continue
+        # Match with CR stripped so a CRLF-edited copy is caught too.
+        tr -d '\r' < "$f" | grep -qxF -- "$line" || continue
+        tmp="$(mktemp)"
+        awk -v opt="$line" '{ l = $0; sub(/\r$/, "", l) } l != opt { print }' "$f" > "$tmp"
+        if [ -s "$tmp" ]; then
+            # Write through the existing inode: keeps the file's permissions.
+            cat "$tmp" > "$f"
+            rm -f "$tmp"
+            echo "   removed $line from $f"
+        else
+            # The seed's touch created the file; nothing else in it — undo fully.
+            rm -f "$tmp" "$f"
+            echo "   removed $f (held only $line)"
         fi
-        # Never rewrite existing options: only append, and terminate an
-        # unterminated last line first so the option isn't glued onto it.
-        if [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ]; then
-            printf '\n' >> "$f"
-        fi
-        printf '%s\n' "$line" >> "$f"
-        echo "   seeded $line -> $f"
     done
     shopt -u nullglob
 }
@@ -510,8 +515,8 @@ done
 update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" 2>/dev/null || true
 "$WINESERVER" -w
 
-echo "== [5b/5] seed Ableton performance options (Options.txt) =="
-seed_options_txt
+echo "== [5b/5] remove the 2026.07.18.1 Options.txt seed (issue #29) =="
+strip_options_txt
 
 echo
 echo "OK: prefix ready at $WINEPREFIX"

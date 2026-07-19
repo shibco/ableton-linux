@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.07.19.1
+
+- Fix choppy, slowed-down, stuttering audio under PipeASIO after updating to 2026.07.18.1 (issue #29). That release seeded `-DontCombineAPCs` into Live's Options.txt. The option cuts idle CPU, but during playback the uncoalesced APCs flood the wineserver and starve the audio callback. The prefix refresh now removes the line instead of adding it. If you added the line by hand after reading the 2026.07.18.1 changelog, remove it. This supersedes that release's "CPU eating" item: the 30-40% idle CPU thread is back until the fix lands on the Wine side (notes/ABLETON-WINE-APC-COALESCING.md).
+- New launcher override: `ABLETON_RT=off` runs Live without realtime scheduling. Some distributions grant realtime rights out of the box, so the launcher's probe can be active without ever running setup-realtime.sh. The override exists for A/B runs and low-core machines (notes/ABLETON-WINE-RT-SCHEDULING.md).
+- The build container is now fully pinned: base image by digest, Ubuntu archive by snapshot date, LLVM toolchain by exact version. Between 2026.07.17.3 and 2026.07.18.1 two shipped binaries rebuilt differently with no source change; a rebuild can no longer pick up drifted inputs silently.
+
 ## 2026.07.18.1
 
 This one's a big one. Hope I didn't break anything!!!!!

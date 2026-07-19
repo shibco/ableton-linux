@@ -1,22 +1,45 @@
 # Build environment for Ableton Live 12 Wine.
 #
-FROM ubuntu:22.04
+# Every input is pinned: base image by digest, the Ubuntu archive by snapshot
+# date, the LLVM toolchain by exact package version, the PipeWire SDK and
+# ntsync header as sha256-checked vendored files. Rebuilding from the same
+# git tree must not pick up drifted toolchains or libraries — between
+# 2026.07.17.3 and 2026.07.18.1 an unpinned rebuild changed pipeasio-unix and
+# libusb-pe with no source change (see BUILD-INFO hashes). Bumping any pin is
+# a deliberate commit, and PE/unix artifact hashes in BUILD-INFO move with it.
+FROM docker.io/library/ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982
 
 ENV DEBIAN_FRONTEND=noninteractive
 ARG LLVM_VERSION=21
+# apt.llvm.org is a moving snapshot repo with no archive service, so the exact
+# package version is pinned. When it ages out of the repo the install fails
+# loudly: bump the pin, rebuild, expect PE hashes in BUILD-INFO to change.
+ARG LLVM_PKG_VERSION=1:21.1.8~++20251221032842+2078da43e25a-1~exp1~20251221153008.77
+# Ubuntu archive state used for every jammy package below (snapshot.ubuntu.com).
+ARG UBUNTU_SNAPSHOT=20260718T000000Z
 
-# 1. LLVM apt repo (pinned major version) for a modern clang/lld on glibc 2.35.
+# 1. Bootstrap tools + LLVM apt repo. This step alone installs from the live
+# archive: apt needs ca-certificates before it can reach the https snapshot
+# service. Tools only (ca-certificates/curl/gnupg) — nothing here is linked
+# into shipped artifacts.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg \
  && install -d -m0755 /etc/apt/keyrings \
  && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/keyrings/llvm.asc \
  && echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_VERSION} main" \
-      > /etc/apt/sources.list.d/llvm.list
+      > /etc/apt/sources.list.d/llvm.list \
+ # From here on, jammy resolves against the pinned snapshot only.
+ && for suite in jammy jammy-updates jammy-security; do \
+        echo "deb https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} $suite main restricted universe multiverse"; \
+    done > /etc/apt/sources.list
 
 # 2. toolchain + Wine build dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      # toolchain: gcc for the Unix side, clang/lld for the PE side
-      build-essential clang-${LLVM_VERSION} lld-${LLVM_VERSION} llvm-${LLVM_VERSION} \
+      # toolchain: gcc for the Unix side, clang/lld (exact-pinned) for the PE side
+      build-essential \
+      clang-${LLVM_VERSION}=${LLVM_PKG_VERSION} \
+      lld-${LLVM_VERSION}=${LLVM_PKG_VERSION} \
+      llvm-${LLVM_VERSION}=${LLVM_PKG_VERSION} \
       flex bison perl gettext pkg-config \
       git xz-utils zstd python3 \
       # X11 / GL / Vulkan (the d2d1-dcomp + winex11 stack the fixes live in)
@@ -39,7 +62,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && for t in clang clang++ lld ld.lld llvm-dlltool llvm-ar llvm-strip llvm-ranlib llvm-readobj; do \
         ln -sf "$t-${LLVM_VERSION}" "/usr/bin/$t"; \
     done \
- && clang --version | head -1
+ && clang --version | head -1 \
+ # Record the full build-environment package set for BUILD-INFO / drift diffing.
+ && dpkg-query -W -f '${Package} ${Version}\n' | sort > /opt/build-env-packages.txt
 
 # 3. ntsync UAPI header: jammy's linux-libc-dev is 5.15, but Wine needs
 # linux/ntsync.h (kernel >= 6.14) or configure silently drops ntsync and every
