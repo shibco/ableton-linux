@@ -40,7 +40,7 @@
       setup-prefix = {
         type = "app";
         program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/setup-prefix.sh";
-        meta.description = "Create or refresh the Ableton Wine prefix (installs Live from ~/Proprietary when present)";
+        meta.description = "Create or refresh the Ableton Wine prefix (ABLETON_LIVE_AUTOINSTALL=1 also installs Live from ~/Proprietary)";
       };
       setup-realtime = {
         type = "app";

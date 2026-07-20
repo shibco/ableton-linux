@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # End-user step 2: create or refresh the Ableton Wine prefix. Idempotent.
-# Ships no Ableton Live payload and no license; when the user's own
-# ableton_live*.zip download is present (~/Proprietary by default) the final
-# step runs that installer — see step [6/6].
+# Ships no Ableton Live payload and no license; step [6/6] can run the user's
+# own ableton_live*.zip download (~/Proprietary by default) — strictly opt-in
+# via ABLETON_LIVE_AUTOINSTALL=1, otherwise the manual steps are printed.
 # --refresh: maintenance pass on an EXISTING prefix (used by the .run's update
 # mode) — re-applies registry policy and heals runtime DLLs, but skips the slow
 # winetricks pass; the fonts/runtimes it installs are already in the prefix.
@@ -580,32 +580,40 @@ echo "== [5b/6] remove the 2026.07.18.1 Options.txt seed (issue #29) =="
 strip_options_txt
 
 echo "== [6/6] Ableton Live =="
-# Runs the USER'S OWN Ableton download when one is present — this repo ships
-# no Live payload and no license; the installer's window opens and Ableton's
-# EULA is accepted there, exactly as the .run flow has always done.
-# Search dir: ~/Proprietary (the official ableton_live*.zip from ableton.com).
-# ABLETON_INSTALLER_DIR overrides; ABLETON_LIVE_AUTOINSTALL=0 disables (the
-# .run sets it — it drives the Ableton installer itself, with its own UX).
+# Runs the USER'S OWN Ableton download — this repo ships no Live payload and
+# no license. OPT-IN ONLY (ABLETON_LIVE_AUTOINSTALL=1): the automatic run is
+# silent, which defers Ableton's EULA to first launch, and a prefix refresh
+# must never execute an installer the user didn't explicitly ask it to.
+# Search dir: ~/Proprietary (the official ableton_live*.zip from ableton.com);
+# ABLETON_INSTALLER_DIR overrides. The .run pins ABLETON_LIVE_AUTOINSTALL=0 —
+# it drives the Ableton installer itself, with its own UX.
 live_installed() { ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe >/dev/null 2>&1; }
 installer_dir="${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
+live_zip=""
+if [ -d "$installer_dir" ]; then
+    if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
+        # An explicit major pin only accepts a matching installer — never
+        # silently install another major into a prefix prepared for this one.
+        live_zip="$(find "$installer_dir" -maxdepth 1 -iname "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip" | sort -V | tail -n 1)"
+    else
+        # Newest by version-sort when several editions/versions are present.
+        live_zip="$(find "$installer_dir" -maxdepth 1 -iname 'ableton_live*.zip' | sort -V | tail -n 1)"
+    fi
+fi
 live_ready=0
 if live_installed; then
     live_ready=1
     echo "   Live is already installed in this prefix — not touching it"
-elif [ "${ABLETON_LIVE_AUTOINSTALL:-1}" = 0 ]; then
+elif [ "${ABLETON_LIVE_AUTOINSTALL:-}" = 0 ]; then
     echo "   skipped (ABLETON_LIVE_AUTOINSTALL=0)"
-else
-    live_zip=""
-    if [ -d "$installer_dir" ]; then
-        if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
-            # An explicit major pin only accepts a matching installer — never
-            # silently install another major into a prefix prepared for this one.
-            live_zip="$(find "$installer_dir" -maxdepth 1 -iname "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip" | sort -V | tail -n 1)"
-        else
-            # Newest by version-sort when several editions/versions are present.
-            live_zip="$(find "$installer_dir" -maxdepth 1 -iname 'ableton_live*.zip' | sort -V | tail -n 1)"
-        fi
+elif [ "${ABLETON_LIVE_AUTOINSTALL:-0}" != 1 ]; then
+    if [ -n "$live_zip" ]; then
+        echo "   found $(basename "$live_zip") — rerun with ABLETON_LIVE_AUTOINSTALL=1 to install it"
+        echo "   (silent install: Ableton's EULA is then shown on Live's first launch, not before)"
+    else
+        echo "   skipped — ABLETON_LIVE_AUTOINSTALL=1 (opt-in) installs your ableton_live*.zip from $installer_dir"
     fi
+else
     if [ -z "$live_zip" ]; then
         if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
             echo "   no Live $ABLETON_LIVE_VERSION installer (ableton_live*_${ABLETON_LIVE_VERSION}.*.zip) in $installer_dir — manual install steps are printed below"

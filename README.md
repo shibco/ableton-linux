@@ -75,8 +75,10 @@ Quick start (flakes enabled, x86_64-linux only):
 
 ```bash
 # 1. put your ableton_live*.zip (any edition, from ableton.com) in ~/Proprietary
-# 2. build the runtime and create the prefix — installs Live from that zip
-nix run github:shibco/ableton-linux#setup-prefix
+# 2. build the runtime and create the prefix; ABLETON_LIVE_AUTOINSTALL=1 opts in
+#    to running that zip's installer (silent — Ableton's EULA then appears on
+#    Live's first launch; leave it unset to install Live yourself)
+ABLETON_LIVE_AUTOINSTALL=1 nix run github:shibco/ableton-linux#setup-prefix
 # 3. launch
 nix run github:shibco/ableton-linux
 ```
@@ -260,7 +262,7 @@ Mostly unnecessary. But in case you need them:
 - `ABLETON_RT` `on` (default) | `off`: runs Live without realtime scheduling even when the system permits it (see [Lower latency](#lower-latency-optional))
 - `PIPEASIO_*` audio driver overrides, e.g. `PIPEASIO_PREFERRED_BUFFERSIZE=512` if you hear crackles; defaults live in `~/.config/pipeasio/config.ini`
 - `ABLETON_INSTALLER_DIR` where `setup-prefix.sh` looks for your `ableton_live*.zip` (default `~/Proprietary`)
-- `ABLETON_LIVE_AUTOINSTALL` set to `0` to stop `setup-prefix.sh` from running the Ableton installer it finds
+- `ABLETON_LIVE_AUTOINSTALL` set to `1` to let `setup-prefix.sh` run the Ableton installer it finds (opt-in; by default it only prints the manual install steps)
 - `ABLETON_INSTALLER_UI` set to `1` for the Ableton installer window instead of the default silent install
 - `ENGINE=docker` for `build.sh` / `make-installer.sh`
 
