@@ -9,7 +9,8 @@
 # --post-first-run: standalone fixup to run after Live's first launch — moves
 # Max for Live 8's preferences aside (never deletes) so its second start stops
 # crashing. Needs no wine and skips every other step.
-# ABLETON_LIVE_VERSION=11|12 selects the winetricks recipe (default 12).
+# ABLETON_LIVE_VERSION=11|12 pins the winetricks recipe; unpinned, an opted-in
+# auto-install derives it from the chosen zip's filename (default 12).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -307,6 +308,47 @@ case "$dpi_mode" in
     ;;
 esac
 
+# Ableton Live auto-install candidate (run by step [6/6]) and the Live major
+# the winetricks/redist recipes target — resolved together, up front, so an
+# opted-in auto-install can never put a Live 11 zip into a prefix prepared
+# with the Live 12 recipe. Major precedence: ABLETON_LIVE_VERSION pin >
+# the major parsed from the chosen zip > 12.
+live_installed() { ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe >/dev/null 2>&1; }
+installer_dir="${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
+live_zip=""
+if [ -d "$installer_dir" ]; then
+    if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
+        # An explicit major pin only accepts a matching installer — never
+        # silently install another major into a prefix prepared for this one.
+        live_zip="$(find "$installer_dir" -maxdepth 1 -iname "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip" | sort -V | tail -n 1)"
+    else
+        # Newest by version-sort when several editions/versions are present.
+        live_zip="$(find "$installer_dir" -maxdepth 1 -iname 'ableton_live*.zip' | sort -V | tail -n 1)"
+    fi
+fi
+live_major="${ABLETON_LIVE_VERSION:-12}"
+if [ -z "${ABLETON_LIVE_VERSION:-}" ] && [ "${ABLETON_LIVE_AUTOINSTALL:-0}" = 1 ] \
+    && [ -n "$live_zip" ] && ! live_installed; then
+    # ableton_live_<edition>_<major>.<minor>.<patch>_64.zip; sed -n exits 0
+    # whether or not it matches, so set -e/pipefail stay happy.
+    zip_major="$(basename "$live_zip" | sed -nE 's/^[^0-9]*_([0-9]+)\.[0-9]+.*$/\1/p')"
+    case "$zip_major" in
+        11|12)
+            live_major="$zip_major"
+            if [ "$live_major" != 12 ]; then
+                echo ":: $(basename "$live_zip") is Live $live_major — using the Live $live_major recipe (ABLETON_LIVE_VERSION overrides)"
+            fi
+            ;;
+        "")
+            echo ":: cannot read a Live version from $(basename "$live_zip") — using the Live 12 recipe (set ABLETON_LIVE_VERSION if that is wrong)"
+            ;;
+        *)
+            echo "!! $(basename "$live_zip") looks like Live $zip_major — no recipe for that major (11|12); set ABLETON_LIVE_VERSION or remove the zip" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 echo "== [1/6] initialize prefix at $WINEPREFIX =="
 # Live's Learn View brings in WebView2; its MicrosoftEdgeUpdate.exe autostart
 # is useless under Wine and holds the boot session open for minutes (the
@@ -325,11 +367,10 @@ else
     # Verb set per Live major: Live 12 needs vcrun2022 + mfc42; Live 11 needs
     # vcrun2019 + gdiplus (the Ableton forum Live-on-Linux guide). vcrun2019/gdiplus
     # payloads are not vendored yet — Live 11 setup downloads them on first run.
-    live_major="${ABLETON_LIVE_VERSION:-12}"
     case "$live_major" in
         11) verbs="corefonts vcrun2019 gdiplus" ;;
         12) verbs="corefonts vcrun2022 mfc42" ;;
-        *)  echo "!! ABLETON_LIVE_VERSION must be 11 or 12 (got '$live_major')" >&2; exit 2 ;;
+        *)  echo "!! internal: live_major '$live_major' has no winetricks recipe" >&2; exit 2 ;;
     esac
     echo "== [2/6] winetricks (Live $live_major): $verbs =="
     kit_root_or_die
@@ -409,7 +450,7 @@ install_live_redist() {
 # doesn't touch). The redist comes from the same source winetricks used: vcrun2022 (Live 12)
 # or vcrun2019 (Live 11) — both ship the vc_redist.x64/x86.exe pair with the same cab layout.
 redist_verb=vcrun2022
-[ "${ABLETON_LIVE_VERSION:-12}" = 11 ] && redist_verb=vcrun2019
+[ "$live_major" = 11 ] && redist_verb=vcrun2019
 echo "== [2b/6] force native VC++ runtime over wine's builtin stubs ($redist_verb) =="
 kit_root || true   # vendored cache is only a candidate; absence is not fatal here
 if ! vc_runtime_ready; then
@@ -585,21 +626,9 @@ echo "== [6/6] Ableton Live =="
 # silent, which defers Ableton's EULA to first launch, and a prefix refresh
 # must never execute an installer the user didn't explicitly ask it to.
 # Search dir: ~/Proprietary (the official ableton_live*.zip from ableton.com);
-# ABLETON_INSTALLER_DIR overrides. The .run pins ABLETON_LIVE_AUTOINSTALL=0 —
-# it drives the Ableton installer itself, with its own UX.
-live_installed() { ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe >/dev/null 2>&1; }
-installer_dir="${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
-live_zip=""
-if [ -d "$installer_dir" ]; then
-    if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
-        # An explicit major pin only accepts a matching installer — never
-        # silently install another major into a prefix prepared for this one.
-        live_zip="$(find "$installer_dir" -maxdepth 1 -iname "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip" | sort -V | tail -n 1)"
-    else
-        # Newest by version-sort when several editions/versions are present.
-        live_zip="$(find "$installer_dir" -maxdepth 1 -iname 'ableton_live*.zip' | sort -V | tail -n 1)"
-    fi
-fi
+# ABLETON_INSTALLER_DIR overrides. The zip candidate — and the recipe major it
+# implies — was resolved up front, before step [2/6]. The .run pins
+# ABLETON_LIVE_AUTOINSTALL=0: it drives the Ableton installer itself.
 live_ready=0
 if live_installed; then
     live_ready=1
