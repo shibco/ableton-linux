@@ -17,14 +17,12 @@ stdenv.mkDerivation {
     builtins.attrNames (builtins.readDir pipeasioPatches)
   );
 
-  # winegcc / winebuild from the patched Wine drive the PE + unix halves;
-  # libpipewire only backs the unix half.
+  # winegcc/winebuild come from the patched Wine; libpipewire backs the unix half.
   nativeBuildInputs = [ wine ];
   buildInputs = [ pipewire ];
 
-  # Upstream builds with CMake; this drives the same five-object build as
-  # scripts/container-build.sh [4/8], against this Wine's headers and
-  # nixpkgs' PipeWire. 64-bit only — Live 12 is 64-bit.
+  # Same five-object build as scripts/container-build.sh, against this Wine's
+  # headers and nixpkgs' PipeWire. 64-bit only — Live 12 is 64-bit.
   buildPhase = ''
     runHook preBuild
     mkdir -p build64
@@ -47,8 +45,8 @@ stdenv.mkDerivation {
     runHook postBuild
   '';
 
-  # Install both names: Wine resolves pipeasio64.dll to builtin "pipeasio.dll"
-  # (from its spec) and looks for the unix half under that name. Without both,
+  # Both names: Wine resolves pipeasio64.dll to builtin "pipeasio.dll" (from
+  # its spec) and looks for the unix half under that name; without both,
   # LoadLibrary fails with STATUS_DLL_NOT_FOUND.
   installPhase = ''
     runHook preInstall
@@ -60,10 +58,9 @@ stdenv.mkDerivation {
     runHook postInstall
   '';
 
-  # Unlike the container tarball (which must resolve the HOST distro's
-  # PipeWire and therefore forbids an rpath), the nix build pins nixpkgs'
-  # libpipewire via RUNPATH; the client<->daemon protocol is stable, so it
-  # talks to whatever PipeWire daemon (0.3.56+) the host runs.
+  # Unlike the tarball (which must resolve the HOST's PipeWire, so no rpath),
+  # this pins nixpkgs' libpipewire via RUNPATH; the client<->daemon protocol
+  # is stable across daemon versions.
   doInstallCheck = true;
   installCheckPhase = ''
     test -s $out/lib/wine/x86_64-windows/pipeasio64.dll
@@ -82,6 +79,6 @@ stdenv.mkDerivation {
   meta = with lib; {
     description = "PipeASIO 1.2.2 — native PipeWire ASIO driver, compiled against patched Wine";
     platforms = [ "x86_64-linux" ];
-    license = licenses.gpl3Plus; # SPDX GPL-3.0-or-later in src/*.c, COPYING is GPLv3
+    license = licenses.gpl3Plus; # SPDX GPL-3.0-or-later in src/*.c
   };
 }

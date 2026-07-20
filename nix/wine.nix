@@ -53,10 +53,9 @@ stdenv.mkDerivation rec {
   nativeBuildInputs = [
     zstd
     # LLVM for PE (Windows) cross-compilation: WoW64 needs clang/lld
-    llvmPackages.llvm # llvm-strip, llvm-dlltool, llvm-ar, llvm-ranlib, llvm-readobj
-    llvmPackages.clang # clang, clang++ (PE compiler — both 32-bit and 64-bit targets)
-    llvmPackages.lld # lld (PE linker)
-    # Standard build tools
+    llvmPackages.llvm
+    llvmPackages.clang
+    llvmPackages.lld
     flex
     bison
     perl
@@ -103,12 +102,8 @@ stdenv.mkDerivation rec {
   '';
   sourceRoot = ".";
 
-  # Apply the wine patch series, driven by SERIES.sha256 (the pinned-series
-  # manifest): checksums must match, every on-disk wine patch must be listed,
-  # and an empty series fails the build — a silently unpatched wine would
-  # still pass the ntsync/relocation gates below.
-  # Patches are git format-patch style (Subject: + diff --git) without
-  # From:/Date: headers — patch -p1 handles them directly.
+  # Verify and apply the patch series pinned by SERIES.sha256: checksum
+  # mismatches, unlisted on-disk patches, and an empty series all fail loud.
   postUnpack = ''
     echo "Applying patch series from ${patchesDir} (pinned by SERIES.sha256)"
     series=$(grep -E '^[0-9a-f]{64}  [0-9]{4}-.*\.patch$' ${patchesDir}/SERIES.sha256 | awk '{print $2}')
@@ -128,11 +123,9 @@ stdenv.mkDerivation rec {
     echo "Applied $n wine patches"
   '';
 
-  # The Nix clang wrapper adds --no-default-config and host-target flags that
-  # prevent `clang -target i686-windows` from working. Wine's configure needs
-  # a clean clang to cross-compile PE (Windows) binaries for WoW64.
-  # Create target-prefixed wrappers around clang-unwrapped so configure finds
-  # them first (it probes i686-w64-mingw32-clang before bare clang).
+  # The Nix clang wrapper breaks `clang -target i686-windows`; configure
+  # probes <target>-clang before bare clang, so expose clang-unwrapped
+  # under the target-prefixed names.
   preConfigure = ''
         mkdir -p "$TMPDIR/wine-pe-tools"
         for target in i686-w64-mingw32 x86_64-w64-mingw32; do
@@ -145,19 +138,16 @@ stdenv.mkDerivation rec {
         export PATH="$TMPDIR/wine-pe-tools:$PATH"
   '';
 
-  # WoW64: build both 32-bit and 64-bit PE sides with clang.
-  # Unix side built with stdenv's gcc. --disable-tests saves ~40% build time.
+  # WoW64 (both PE arches); --disable-tests saves ~40% build time.
   configureFlags = [
     "--prefix=${placeholder "out"}"
     "--enable-archs=i386,x86_64"
     "--disable-tests"
   ];
 
-  # ntsync: configure silently drops it without linux/ntsync.h; every NT sync
-  # wait then becomes a wineserver round trip (~1.3 cores with Live running).
-  # The vendored UAPI header pins it regardless of nixpkgs' kernel headers;
-  # the dir holds ONLY linux/ntsync.h, so system headers stay authoritative
-  # for everything else. Runtime needs /dev/ntsync (kernel 6.14+, CONFIG_NTSYNC).
+  # configure silently drops ntsync without linux/ntsync.h (every NT wait then
+  # costs a wineserver round trip). The vendored dir holds ONLY that header,
+  # so system headers stay authoritative for everything else.
   CPPFLAGS = "-I${ntsyncUapi}";
   postConfigure = ''
     grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h \
@@ -165,18 +155,15 @@ stdenv.mkDerivation rec {
   '';
 
   enableParallelBuilding = true;
-  # Strip PE files with llvm-strip (standard strip can't touch COFF),
-  # then strip ELF .so files. Prune dev files that have no runtime role.
+  # PE files need llvm-strip (standard strip can't touch COFF) — done in postInstall.
   dontStrip = true;
-  # Wine dlopen's many system libs (freetype, X11, GL, etc.) at runtime.
-  # Nix's shrink-rpath removes paths without DT_NEEDED — we need them all.
+  # Wine dlopen's many system libs at runtime; Nix's shrink-rpath would drop
+  # everything not in DT_NEEDED.
   dontPatchELF = true;
 
   postInstall = ''
-        # ntsync gate — BEFORE stripping (ntdll's client half has no string
-        # literals, only symbol names; wineserver owns /dev/ntsync). Check BOTH
-        # halves: the 2026-07-12 container build lost only the wineserver one
-        # (notes/ABLETON-WINE-NTSYNC-REGRESSION.md).
+        # ntsync gate — BEFORE stripping (only symbol names carry "ntsync").
+        # Check both halves; each can lose it independently.
         for f in bin/wineserver lib/wine/x86_64-unix/ntdll.so; do
           n=$(strings $out/$f | grep -c ntsync || true)
           [ "$n" -gt 0 ] || { echo "!! no ntsync in $f; waits would fall back to server round trips" >&2; exit 1; }
@@ -195,40 +182,36 @@ stdenv.mkDerivation rec {
         done
 
         echo "Pruning dev-only files"
-        rm -f $out/lib/wine/*-windows/*.a
+        # Import libs (*.a) stay: nix/pipeasio.nix links against this output;
+        # ableton-wine.nix prunes them afterwards (container-build.sh order).
         rm -f $out/bin/widl $out/bin/winecpp \
               $out/bin/winedump $out/bin/winemaker $out/bin/wmc $out/bin/wrc \
               $out/bin/function_grep.pl
 
-        # Wine dlopen's system libraries (freetype, X11, GL, ALSA, etc.) at
-        # runtime. Nix's RPATH only covers DT_NEEDED — dlopen needs LD_LIBRARY_PATH.
+        # dlopen needs LD_LIBRARY_PATH; RPATH only covers DT_NEEDED.
         mv $out/bin/wine $out/bin/.wine-wrapped
         cat > $out/bin/wine <<WRAPWRP
     #!/bin/sh
     export LD_LIBRARY_PATH="${passthru.libPath}\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
     # -a "\$0": the apploader symlinks (wineboot, regsvr32, ...) point here and
-    # the wine loader picks the app to run from argv[0]; losing it makes
-    # "wineboot -u" try to ShellExecute "-u".
+    # the loader picks the app from argv[0].
     exec -a "\$0" $out/bin/.wine-wrapped "\$@"
     WRAPWRP
         chmod +x $out/bin/wine
   '';
 
-  # Runtime dlopen path for downstream wrappers (ableton-wine regenerates
-  # bin/wine against its own tree using this same list).
+  # dlopen path, reused by ableton-wine's regenerated wrapper.
   passthru.libPath = lib.makeLibraryPath buildInputs;
 
-  # Build-time smoke gate: the installed tree must run wine end to end
-  # (prefix creation, builtin load). Note: bin/wine execs $out by absolute
-  # path, so this does not prove path-relocatability — only a working tree.
+  # Smoke gate: the installed tree must boot a prefix and run a builtin.
   doInstallCheck = true;
   installCheckPhase = ''
-    echo "Relocation gate: verify wine runs from its installed path"
+    echo "Smoke gate: verify wine runs from its installed path"
     reloc=$(mktemp -d)
     cp -a $out $reloc/wine
     WINEPREFIX=$reloc/prefix WINEDEBUG=-all \
-      $reloc/wine/bin/wine cmd /c "echo relocation-ok" 2>/dev/null | grep -q relocation-ok
-    echo "  relocation gate passed"
+      $reloc/wine/bin/wine cmd /c "echo smoke-ok" 2>/dev/null | grep -q smoke-ok
+    echo "  smoke gate passed"
     rm -rf $reloc
   '';
 
