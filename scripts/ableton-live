@@ -596,9 +596,10 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
     sync_ui_font
 fi
 
-# Audio: PipeASIO -> PipeWire (native client, no JACK layer). Defaults live in
-# ~/.config/pipeasio/config.ini (seeded by setup-prefix.sh); PIPEASIO_* variables
-# override per launch — raise PIPEASIO_PREFERRED_BUFFERSIZE to 512 if crackles.
+# Audio: PipeASIO -> PipeWire (native client, no JACK layer). Settings live in
+# ~/.config/pipeasio/config.ini (seeded by setup-prefix.sh) — the driver's only
+# config surface; raise buffer_size to 512 there if crackles. PIPEASIO_DEBUG=1
+# is the only env var it reads (driver logging).
 
 require_live() {
     [ -n "$EXE" ] && return 0

@@ -260,7 +260,7 @@ Mostly unnecessary. But in case you need them:
 - `ABLETON_UI_FONT` `auto` | `preserve` | `off` | a font family name: the launcher renders Live's menu bar and dialogs with the Ableton Sans typeface shipped inside your Live install. `off` restores Tahoma, a family name uses that instead
 - `ABLETON_DCOMP` `on` (default) | `off`: disables DirectComposition for that launch; an A/B check if the Learn View misrenders
 - `ABLETON_RT` `on` (default) | `off`: runs Live without realtime scheduling even when the system permits it (see [Lower latency](#lower-latency-optional))
-- `PIPEASIO_*` audio driver overrides, e.g. `PIPEASIO_PREFERRED_BUFFERSIZE=512` if you hear crackles; defaults live in `~/.config/pipeasio/config.ini`
+- `PIPEASIO_DEBUG` set to `1` for PipeASIO driver logging. The driver's settings live in `~/.config/pipeasio/config.ini` (seeded by `setup-prefix.sh`) — raise `buffer_size` to `512` there if you hear crackles; it reads no other `PIPEASIO_*` environment variables
 - `ABLETON_INSTALLER_DIR` where `setup-prefix.sh` looks for your `ableton_live*.zip` (default `~/Proprietary`)
 - `ABLETON_LIVE_AUTOINSTALL` set to `1` to let `setup-prefix.sh` run the Ableton installer it finds (opt-in; by default it only prints the manual install steps)
 - `ABLETON_INSTALLER_UI` set to `1` for the Ableton installer window instead of the default silent install
