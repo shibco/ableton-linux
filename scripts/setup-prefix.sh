@@ -468,7 +468,7 @@ wine reg delete 'HKLM\Software\ASIO\WineASIO' /f >/dev/null 2>&1 || true
 wine reg delete 'HKCR\CLSID\{48D0C522-BFCC-45CC-8B84-17F25F33E6E8}' /f >/dev/null 2>&1 || true
 rm -f "$WINEPREFIX"/drive_c/windows/system32/wineasio64.dll \
       "$WINEPREFIX"/drive_c/windows/system32/wineasio.dll
-wine regsvr32 pipeasio64.dll
+wine regsvr32 /s pipeasio64.dll
 "$WINESERVER" -w
 
 # Seed the driver defaults once; the file is the config surface (PIPEASIO_*
