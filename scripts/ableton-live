@@ -4,161 +4,27 @@
 # Overrides: ABLETON_WINE_ROOT=/usr (stock wine), ABLETON_VDESK=2560x1600 (virtual desktop),
 #            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
 #            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
-#            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
-#            ABLETON_SHORTCUTS=take (GNOME: hold the desktop shortcuts that shadow Live
-#              bindings, Ctrl+Alt+Up/Down and for Live 11 Ctrl+Alt+Delete, while Live
-#              runs; they restore when Live exits; default preserve touches nothing),
-#            ABLETON_POWER=off (skip the session performance power-profile hold),
-#            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
-#            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
-#            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
-#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
-#            WINE_D3D_FORCE_GPU_RENDERING=1 (offer Live's GPU renderer on Intel models its
-#              list refuses; the device name Live shows discloses the substitution),
-#            WINE_X11_SMOOTH_SCROLLING / WINE_X11_PINCH_ZOOM / WINE_X11_MIDDLE_DRAG /
-#            WINE_X11_TOUCHPAD_INERTIA / WINE_X11_MIDDLE_DRAG_THROW /
-#            WINE_X11_WHEEL_WHILE_BUTTON_HELD / WINE_X11_INERTIA_CURVE /
-#            WINE_X11_INERTIA_RATE / WINE_X11_WARP_EMULATION
-#              (pointer overrides for one launch; registry values hold the persistent
-#              settings, see notes/ABLETON-WINE-POINTER-GESTURES.md; this launcher
-#              exports none of them).
+#            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling).
 set -u
-
-# Immutable preflight.  Nothing above the success boundary below creates a
-# directory, boots Wine, writes registry state, repairs MIME handlers, or starts
-# a helper.  A runtime-only installation therefore fails cleanly when Live is
-# absent.
-launcher_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for config_lib in "$launcher_here/lib/config.sh" \
-                  "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
-    if [ -r "$config_lib" ]; then . "$config_lib"; break; fi
-done
-declare -F ableton_config_init >/dev/null 2>&1 || { echo "ableton-live: configuration helper is missing" >&2; exit 1; }
-ableton_config_init
-for lifecycle_lib in "$launcher_here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/lifecycle.sh"; do
-    if [ -r "$lifecycle_lib" ]; then . "$lifecycle_lib"; break; fi
-done
-declare -F ableton_live_running >/dev/null 2>&1 || { echo "ableton-live: lifecycle helper is missing" >&2; exit 1; }
-
-WINE_ROOT="$ABLETON_WINE_ROOT"
-export WINEPREFIX="$ABLETON_WINEPREFIX"
-[ -x "$WINE_ROOT/bin/wine" ] || { echo "ableton-live: Wine runtime is missing at $WINE_ROOT" >&2; exit 1; }
-[ -x "$WINE_ROOT/bin/wineserver" ] || { echo "ableton-live: wineserver is missing at $WINE_ROOT" >&2; exit 1; }
-[ -f "$WINEPREFIX/system.reg" ] || { echo "ableton-live: Wine prefix is missing or incomplete at $WINEPREFIX" >&2; exit 1; }
-case "${ABLETON_LIVE_VERSION:-}" in ''|11|12) ;;
-    *) echo "ableton-live: ABLETON_LIVE_VERSION must be 11 or 12" >&2; exit 2 ;;
-esac
-
-find_live_exe()
-{
-    local major="${1:-}" f
-    if [ -n "${ABLETON_LIVE_EXE:-}" ]; then
-        [ -f "$ABLETON_LIVE_EXE" ] || {
-            echo "ableton-live: ABLETON_LIVE_EXE does not name a file: $ABLETON_LIVE_EXE" >&2
-            return 2
-        }
-        readlink -f -- "$ABLETON_LIVE_EXE"
-        return
-    fi
-    if [ -n "$major" ]; then
-        for f in "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live $major "*.exe; do
-            [ -f "$f" ] && printf '%s\n' "$f"
-        done | sort -V
-    else
-        for f in "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe; do
-            [ -f "$f" ] && printf '%s\n' "$f"
-        done | sort -V
-    fi
-}
-# Protocol and licence callbacks belong to the prefix registry.  They do not
-# need launcher-side Live discovery, and discovery must not block them when a
-# prefix contains more than one edition of the same major version.
-callback_kind=""
-if [ "$#" -eq 1 ]; then
-    case "$1" in
-        [aA][bB][lL][eE][tT][oO][nN]:*) callback_kind=protocol ;;
-        *.[aA][uU][zZ]) [ -f "$1" ] && callback_kind=auz ;;
-    esac
-fi
-
-live_candidates=()
-live_exe_unix=""
-live_count=0
-exe_base=""
-EXE=""
-if [ -z "$callback_kind" ]; then
-    mapfile -t live_candidates < <(find_live_exe "${ABLETON_LIVE_VERSION:-}") || exit $?
-    [ "${#live_candidates[@]}" -gt 0 ] || {
-        echo "ableton-live: no Ableton Live installation found in $WINEPREFIX" >&2
-        exit 1
-    }
-    live_exe_unix="${live_candidates[-1]}"
-    live_count="${#live_candidates[@]}"
-    exe_base="$(basename "$live_exe_unix")"
-    if [ "$live_count" -gt 1 ] && [ -z "${ABLETON_LIVE_EXE:-}" ]; then
-        live_majors="$(printf '%s\n' "${live_candidates[@]}" | while IFS= read -r f; do basename "$f"; done | awk '{print $3}' | sort -u | paste -sd' ' -)"
-        if [ "$(printf '%s' "$live_majors" | wc -w)" -eq 1 ]; then
-            echo "ableton-live: multiple Live $live_majors editions are installed; set ABLETON_LIVE_EXE explicitly:" >&2
-            printf 'ableton-live:   %s\n' "${live_candidates[@]}" >&2
-            exit 1
-        fi
-    fi
-    rel="${live_exe_unix#"$WINEPREFIX/drive_c/"}"
-    if [ "$rel" != "$live_exe_unix" ]; then EXE="C:\\${rel//\//\\}"; else EXE="$live_exe_unix"; fi
-fi
-
-caller_winedlloverrides="${WINEDLLOVERRIDES:-}"
-
-# Keep diagnostics from the current launch at one stable path. Tee preserves
-# terminal output while also covering desktop launchers whose stderr is
-# otherwise inherited from the desktop environment (and may be /dev/null).
-# ">>" creates the file and proves it writable without discarding anything.
-diagnostic_dir="$ABLETON_STATE_HOME/logs"
-if ableton_mark_state_home && mkdir -p -- "$diagnostic_dir" && : >> "$diagnostic_dir/live.log"; then
-    # Rotate to a fresh log only when this launcher is the one bringing Live up. Every
-    # Live desktop entry - .als, .auz, ableton:// - runs this same script to hand
-    # its argument to the running instance, so truncating unconditionally would
-    # wipe the running session's diagnostics, including the patch 0071 present
-    # fallback warning that lands about two seconds into a faulted session. Same
-    # already-running test as the single-instance guard below. Rotation preserves
-    # the previous session when a later guard refuses this launch.
-    ableton_live_running || mv -f -- "$diagnostic_dir/live.log" "$diagnostic_dir/live.log.1"
-    exec 2> >(tee -a "$diagnostic_dir/live.log" >&2)
-else
-    echo "ableton-live: cannot write diagnostics to $diagnostic_dir/live.log" >&2
-fi
-
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
 # Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
-# Keep the winediag channel on: it carries only rare one-line notices that a
-# person should read, such as the present-fallback warning from patch 0071.
-export WINEDEBUG="${WINEDEBUG:--all,+winediag}"
+export WINEDEBUG="${WINEDEBUG:--all}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
-# M4L child visibility otherwise makes winex11 detach and reattach Live's whole
-# client surface. Keep Live on the offscreen path; "off" is a non-matching class
-# value and therefore provides a one-launch A/B override.
-export WINE_X11_FORCE_OFFSCREEN_CLASS="${WINE_X11_FORCE_OFFSCREEN_CLASS:-Ableton Live Window Class}"
-# Live leaves its native menu attached in fullscreen, and a redundant X11
-# configure can otherwise delay fullscreen removal on exit. Select only Live's
-# exact top-level class; "off" is a non-matching one-launch A/B override.
-export WINE_WIN32_FULLSCREEN_CLASS="${WINE_WIN32_FULLSCREEN_CLASS:-Ableton Live Window Class}"
-# A captioned Live window may legitimately cover its monitor. Keep that window
-# resizable independently of the fullscreen normalization selector above;
-# "off" is a non-matching one-launch A/B override.
-export WINE_WIN32_RESIZABLE_CLASS="${WINE_WIN32_RESIZABLE_CLASS:-Ableton Live Window Class}"
 # Report host mount points as plain dirs (patch 0033); Live's browser treats
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 
-# Keep Wine's Mono/.NET and HTML-help hooks out of Live: nothing in the
+# Keep Wine's Mono/.NET and HTML-help hooks out of Live — nothing in the
 # stack loads them. winemenubuilder.exe is deliberately absent here: setup-prefix.sh
 # already disables it registry-side, and that form stays canonical.
-export WINEDLLOVERRIDES="${caller_winedlloverrides:+$caller_winedlloverrides;}mscoree,mshtml="
-# Opt-in A/B against the Learn View flicker fix:
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}mscoree,mshtml="
+# Opt-in A/B against the open Learn View flicker (notes/ABLETON-WINE-LEARNVIEW-FLICKER.md):
 # ABLETON_DCOMP=off disables DirectComposition outright. Off contradicts the d2d1-dcomp
 # stack this runtime ships (WINED3D_DCOMP_FORCE_FULL_REDRAW above), so it is no default.
 if [ "${ABLETON_DCOMP:-on}" = "off" ]; then
@@ -169,57 +35,7 @@ fi
 # mandatory: nothing under Wine can sandbox the renderer. User-supplied flags come first.
 export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:+$WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS }--use-gl=angle --use-angle=swiftshader --disable-gpu-compositing --disable-gpu-rasterization --disable-direct-composition --disable-features=ForceSWDCompWhenDCompFallbackRequired --edge-webview-foreground-boost-opt-out --no-sandbox"
 
-# Reinstate the project-owned authorisation handlers and pin their defaults on
-# every launch.  The reverse-DNS desktop IDs cannot collide with Wine's global
-# wine-protocol-*.desktop exports.  install.sh stages authoritative copies so a
-# missing or changed entry can be repaired before the next browser round trip.
-repair_handler_entries() {
-    local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    local staged id type current i repaired=0
-    local -a ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
-    local -a types=(x-scheme-handler/ableton application/x-wine-extension-auz)
-    for id in "${ids[@]}"; do
-        staged="$ABLETON_DATA_HOME/$id"
-        if [ ! -f "$staged" ]; then
-            echo "ableton-live: cannot repair $id: staged handler is missing at $staged" >&2
-            continue
-        fi
-        if ! cmp -s -- "$staged" "$apps/$id"; then
-            echo "ableton-live: reinstating project handler $id" >&2
-            if ! mkdir -p -- "$apps" || ! cp -- "$staged" "$apps/$id"; then
-                echo "ableton-live: failed to install $apps/$id" >&2
-                continue
-            fi
-            repaired=1
-        fi
-    done
-    if [ "$repaired" -eq 1 ]; then
-        if command -v update-desktop-database >/dev/null 2>&1; then
-            update-desktop-database "$apps" || \
-                echo "ableton-live: failed to refresh the desktop application database at $apps" >&2
-        else
-            echo "ableton-live: update-desktop-database is unavailable; repaired handlers may not be visible yet" >&2
-        fi
-    fi
-    if ! command -v xdg-mime >/dev/null 2>&1; then
-        echo "ableton-live: xdg-mime is unavailable; cannot verify the Ableton callback defaults" >&2
-        return 0
-    fi
-    for ((i=0; i<${#ids[@]}; i++)); do
-        id="${ids[i]}"; type="${types[i]}"
-        if ! xdg-mime default "$id" "$type"; then
-            echo "ableton-live: failed to set $type to $id" >&2
-            continue
-        fi
-        current="$(xdg-mime query default "$type" 2>/dev/null || true)"
-        if [ "$current" != "$id" ]; then
-            echo "ableton-live: $type still resolves to '${current:-no handler}', expected $id" >&2
-        fi
-    done
-}
-repair_handler_entries
-
-# Report a stable, small CPU count to Live: cap 8, honouring taskset/cgroup cpusets. 
+# Report a stable, small CPU count to Live — cap 8, honoring taskset/cgroup cpusets. 
 # Emit 8 when usable CPUs exceed 8, the allowed-set size when affinity-constrained 
 # below that, and nothing otherwise (Wine's default is fine).
 # A user-set WINE_CPU_TOPOLOGY always wins. Inert on this runtime until the patched
@@ -254,72 +70,105 @@ if [ -z "${WINE_CPU_TOPOLOGY:-}" ]; then
     [ -n "$cpu_topology" ] && export WINE_CPU_TOPOLOGY="$cpu_topology"
 fi
 
-# Live and Max share this coordinator.  It is acquired only for a cold Live
-# start and remains held until the selected prefix exposes the Live process.
-cold_launch=0
-launch_lock_held=0
-if ! ableton_live_running; then
-    cold_launch=1
-    coordinator_dir="$(ableton_lifecycle_runtime_dir)"
-    mkdir -p -- "$coordinator_dir"
-    launch_lock="$coordinator_dir/bring-up.lock"
-    exec 9>"$launch_lock"
-    if ! flock -n 9; then
-        echo "ableton-live: another Live/Max launcher is bringing this prefix up" >&2
-        exit 1
-    fi
-    launch_lock_held=1
-    printf 'live %s\n' "$$" >&9
-fi
-
-# Keep the menu entry tracking the installed edition: install.sh renders it
-# before Live exists in the prefix, so name, icon and window class heal here
-# on each start. An entry that does not route through this launcher is
-# hand-made and stays untouched.
-if [ -n "$exe_base" ]; then
-    apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    live_entry="$apps_dir/ableton-live.desktop"
-    if [ -f "$live_entry" ] && grep -qF "$ABLETON_BIN_HOME/ableton-live" "$live_entry"; then
-        entry_name="${exe_base%.exe}"
-        entry_wmclass="$(printf '%s' "$exe_base" | tr '[:upper:]' '[:lower:]')"
-        entry_edition="$(printf '%s' "$entry_name" | awk '{print tolower($NF)}')"
-        entry_icon="live-suite"
-        [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/live-$entry_edition.svg" ] \
-            && entry_icon="live-$entry_edition"
-        if ! grep -qxF "Name=$entry_name" "$live_entry" \
-            || ! grep -qxF "Icon=$entry_icon" "$live_entry" \
-            || ! grep -qxF "StartupWMClass=$entry_wmclass" "$live_entry"; then
-            awk -v name="$entry_name" -v icon="$entry_icon" -v wmclass="$entry_wmclass" '
-                /^Name=/           { print "Name=" name; next }
-                /^Icon=/           { print "Icon=" icon; next }
-                /^StartupWMClass=/ { print "StartupWMClass=" wmclass; seen = 1; next }
-                { print }
-                END { if (!seen) print "StartupWMClass=" wmclass }
-            ' "$live_entry" > "$live_entry.tmp" && mv "$live_entry.tmp" "$live_entry"
-            update-desktop-database "$apps_dir" 2>/dev/null || true
+# Single-instance guard with no Live process up, exactly one
+# launcher may bring it up — a concurrent second launch would race the wineserver kill
+# and the DPI/theme re-sync below. Once Live runs there is nothing to serialize (the
+# pgrep checks skip the re-sync; wine forwards to the running instance), so the guard
+# stays off that path. fd 9 must never leak into a wine child: a spawned wineserver
+# would pin the lock for the whole session (start_server posix_spawns with inherited
+# fds), so the lock is dropped again just before the exec at the bottom, and every
+# wine registry call made during bring-up closes it explicitly (9>&-) — without that,
+# a failed launch leaves the sync-spawned wineserver holding the lock, and relaunching
+# is refused until that server exits.
+launch_lock="$WINEPREFIX/.ableton-live.lock"
+if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
+    if [ -d "$WINEPREFIX" ] && [ -w "$WINEPREFIX" ] && command -v flock >/dev/null 2>&1; then
+        exec 9>"$launch_lock"
+        if ! flock -n 9; then
+            echo "ableton-live: another launcher is bringing Live up (lock: $launch_lock) — refusing a second instance" >&2
+            exit 1
         fi
+        printf '%s\n' "$$" >&9   # lock owner PID, for debugging
     fi
 fi
 
-# Never kill a prefix merely because Live is absent: standalone Max and other
-# clients intentionally share it.  Boot only an entirely idle prefix, under the
-# shared bring-up lock, and supervise the cold boot.
-if [ "$cold_launch" -eq 1 ] && ! ableton_prefix_busy; then
-    if ! ableton_run_bounded "${ABLETON_WINEBOOT_TIMEOUT:-60}" \
-        env WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wineboot" -u >/dev/null 2>&1 9>&-; then
-        echo "ableton-live: bounded wineboot failed; refusing to launch into a partial boot" >&2
-        exit 1
+# Locate the installed Live: any 'Ableton Live*.exe' under ProgramData/Ableton.
+# Several installs (editions or majors) may coexist. ABLETON_LIVE_EXE pins one exact
+# install; ABLETON_LIVE_VERSION (e.g. 11) restricts discovery to one major. Without a
+# pin the newest wins, unless every install shares one major — ambiguity inside a
+# single major is a hard failure (refuse to guess) that prints the discovery list.
+case "${ABLETON_LIVE_VERSION:-}" in
+    "") ;;
+    *[!0-9]*)
+        echo "ableton-live: ABLETON_LIVE_VERSION must be a major version number (e.g. 11 or 12), got '$ABLETON_LIVE_VERSION'" >&2
+        exit 2 ;;
+esac
+find_live_exe() {  # $1 = optional major-version filter
+    if [ -n "${ABLETON_LIVE_EXE:-}" ]; then
+        printf '%s\n' "$ABLETON_LIVE_EXE"
+        return
     fi
+    if [ -n "${1:-}" ]; then
+        ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live $1 "*.exe 2>/dev/null | sort -V
+    else
+        ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe 2>/dev/null | sort -V
+    fi
+}
+live_exe_unix="$(find_live_exe "${ABLETON_LIVE_VERSION:-}" | tail -n 1)"
+live_count="$(find_live_exe "${ABLETON_LIVE_VERSION:-}" | grep -c .)"
+if [ -z "$live_exe_unix" ] && [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
+    echo "ableton-live: no Live $ABLETON_LIVE_VERSION install found in $WINEPREFIX" >&2
+    if find_live_exe | grep -q .; then
+        echo "ableton-live: the prefix holds other majors (unset ABLETON_LIVE_VERSION to use them):" >&2
+        find_live_exe | sed 's/^/ableton-live:   /' >&2
+    fi
+    exit 1
+fi
+EXE=""; exe_base=""
+if [ -n "$live_exe_unix" ]; then
+    exe_base="$(basename "$live_exe_unix")"
+    if [ "$live_count" -gt 1 ] && [ -z "${ABLETON_LIVE_EXE:-}" ]; then
+        live_majors="$(find_live_exe "${ABLETON_LIVE_VERSION:-}" \
+            | while IFS= read -r f; do basename "$f"; done | awk '{print $3}' | sort -u | paste -sd' ' -)"
+        if [ "$(printf '%s' "$live_majors" | wc -w)" -eq 1 ]; then
+            # One major, several installs, no exact pin: never guess which edition.
+            echo "ableton-live: $live_count Live $live_majors installs in this prefix — refusing to guess:" >&2
+            find_live_exe "${ABLETON_LIVE_VERSION:-}" | sed 's/^/ableton-live:   /' >&2
+            echo "ableton-live: set ABLETON_LIVE_EXE=/path/into/prefix/.../'Ableton Live NN Edition.exe' to pick one" >&2
+            exit 1
+        fi
+        echo "ableton-live: $live_count Live installs in this prefix (majors: $live_majors) — launching '${exe_base%.exe}' (set ABLETON_LIVE_VERSION to pin a major, or ABLETON_LIVE_EXE to pick an exact install)" >&2
+    fi
+    rel="${live_exe_unix#"$WINEPREFIX/drive_c/"}"
+    if [ "$rel" != "$live_exe_unix" ]; then
+        EXE="C:\\${rel//\//\\}"
+    else
+        EXE="$live_exe_unix"    # outside the prefix: wine resolves unix paths too
+    fi
+fi
+
+# If Live isn't running, kill any stale wineserver so the prefix binds to this build's server.
+if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
+    "$WINE_ROOT/bin/wineserver" -k 2>/dev/null || true
+    /usr/bin/wineserver -k 2>/dev/null || true
+    # Boot the session synchronously before the registry sync below. Console clients
+    # (reg.exe) skip the wineboot-event wait GUI apps honor, and a write racing the
+    # async session boot can be dropped (observed: the FontSubstitutes sync lost its
+    # HKLM write on a fresh session). wineboot exits when the boot pass is done; Live
+    # would spin this server up moments later anyway.
+    "$WINE_ROOT/bin/wine" wineboot >/dev/null 2>&1 9>&- || true
 fi
 
 # Recalibrate prefix DPI to the detected scale before each launch. The block comes from
 # detect-scale.sh: GNOME (upscaled framebuffer) -> LogPixels = 96 x ceil(scale) + IFEO=2;
 # other compositors -> LogPixels = round(96 x scale), no IFEO. Scales outside 100-250%
 # keep current values. ABLETON_DPI_MODE=100|fractional|dpi<N>|preserve overrides.
-if ! ableton_live_running; then
+if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
     dpi_mode="${ABLETON_DPI_MODE:-auto}"
     dpi_family=""; dpi_scale=""
-    dpi_lib="$ABLETON_DATA_HOME/detect-scale.sh"
+    dpi_lib="$HOME/.local/share/ableton-wine/detect-scale.sh"
+    # Packaged installs (nix) ship the libs under the runtime root instead of $HOME.
+    [ -r "$dpi_lib" ] || dpi_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-scale.sh"
     [ -r "$dpi_lib" ] && . "$dpi_lib"
     if ! declare -F ableton_dpi_block_values >/dev/null 2>&1; then
         # no (or an older) detect-scale.sh: the two legacy blocks still resolve inline
@@ -340,7 +189,7 @@ if ! ableton_live_running; then
                 dpi_family="${detected#* }"
                 if ! dpi_mode="$(ableton_dpi_block_for_scale "$dpi_scale" "$dpi_family")"; then
                     dpi_mode=preserve
-                    echo "ableton-live: scale $dpi_scale is outside the calibrated 100-250% range: keeping current DPI values (set ABLETON_DPI_MODE to force)" >&2
+                    echo "ableton-live: scale $dpi_scale is outside the calibrated 100-250% range — keeping current DPI values (set ABLETON_DPI_MODE to force)" >&2
                 fi
             fi
         elif declare -F ableton_detect_scale >/dev/null 2>&1; then
@@ -350,7 +199,7 @@ if ! ableton_live_running; then
                 1)    dpi_mode=100 ;;
                 1.25) dpi_mode=fractional ;;
                 "")   ;;
-                *)    echo "ableton-live: scale $dpi_scale detected, but only 100%/125% are calibrated: keeping current DPI values (set ABLETON_DPI_MODE to force)" >&2 ;;
+                *)    echo "ableton-live: scale $dpi_scale detected, but only 100%/125% are calibrated — keeping current DPI values (set ABLETON_DPI_MODE to force)" >&2 ;;
             esac
         fi
     fi
@@ -367,7 +216,7 @@ if ! ableton_live_running; then
         *)
             lp_ifeo="$(ableton_dpi_block_values "$dpi_mode" 2>/dev/null)" || lp_ifeo=""
             if [ -z "$lp_ifeo" ]; then
-                echo "ableton-live: unknown ABLETON_DPI_MODE '$dpi_mode': keeping current DPI values" >&2
+                echo "ableton-live: unknown ABLETON_DPI_MODE '$dpi_mode' — keeping current DPI values" >&2
             else
                 want_lp="${lp_ifeo% *}"
                 want_ifeo="${lp_ifeo#* }"
@@ -375,57 +224,44 @@ if ! ableton_live_running; then
                 if [ "$want_ifeo" = 2 ]; then
                     if [ "${cur_lp:-}" != "$want_lp_hex" ] || { [ -n "$dpi_ifeo" ] && [ "${cur_ifeo:-}" != 00000002 ]; }; then
                         echo "ableton-live: recalibrating prefix DPI to the '$dpi_mode' set (LogPixels $want_lp, IFEO=2)" >&2
-                        ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1 9>&-
-                        [ -z "$dpi_ifeo" ] || ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f >/dev/null 2>&1 9>&-
+                        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1 9>&-
+                        [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg add "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f >/dev/null 2>&1 9>&-
                     fi
                 else
                     if [ "${cur_lp:-00000060}" != "$want_lp_hex" ] || [ -n "$cur_ifeo" ]; then
                         echo "ableton-live: recalibrating prefix DPI to the '$dpi_mode' set (LogPixels $want_lp, no IFEO)" >&2
-                        ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1 9>&-
-                        [ -z "$dpi_ifeo" ] || ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" /v dpiAwareness /f >/dev/null 2>&1 9>&- || true
+                        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1 9>&-
+                        [ -z "$dpi_ifeo" ] || "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" /v dpiAwareness /f >/dev/null 2>&1 9>&- || true
                     fi
                 fi
             fi ;;
     esac
     # Warn if mutter's xwayland-native-scaling disagrees with the DPI set; never change it.
-    # The knob only exists under mutter: skip when another compositor family was detected.
+    # The knob only exists under mutter — skip when another compositor family was detected.
     if [ -z "$dpi_family" ] || [ "$dpi_family" = gnome ]; then
         if command -v gsettings >/dev/null 2>&1; then
             mutter_feats="$(gsettings get org.gnome.mutter experimental-features 2>/dev/null || true)"
             case "$dpi_mode" in
                 fractional*)   # upscaled-framebuffer sets expect the knob ON
                     case "$mutter_feats" in *xwayland-native-scaling*) ;; *)
-                        [ -n "$mutter_feats" ] && echo "ableton-live: warn: mutter xwayland-native-scaling is OFF; the '$dpi_mode' set expects it ON" >&2 ;; esac ;;
+                        [ -n "$mutter_feats" ] && echo "ableton-live: warn — mutter xwayland-native-scaling is OFF; the '$dpi_mode' set expects it ON" >&2 ;; esac ;;
                 100|dpi*)
                     case "$mutter_feats" in *xwayland-native-scaling*)
-                        echo "ableton-live: warn: mutter xwayland-native-scaling is ON; the '$dpi_mode' set expects it OFF" >&2 ;; esac ;;
+                        echo "ableton-live: warn — mutter xwayland-native-scaling is ON; the '$dpi_mode' set expects it OFF" >&2 ;; esac ;;
             esac
         fi
     fi
 fi
 
-# GrayText (disabled menu items, e.g. Options when no track is selected) has no
-# per-theme source: Live's own TextDisabled token is calibrated for its layered
-# Skia surfaces (borders, icons, spacing), and copying it verbatim onto a flat
-# win32u menu fill tests worse than doing nothing (checked against the active
-# theme: TextDisabled sits closer to Menu than even wine's compiled-in default
-# does). Derive it instead: blend 45% of the way from Menu towards MenuText, per
-# channel. That tracks whatever Menu/MenuText resolve to (theme, dark/light,
-# live-follow) with no extra parsing, and lands near Windows' own classic
-# GrayText (128,128,128) on the hardcoded dark/light fallbacks. Shared by
-# sync_win32_colors and theme_watch_loop below.
-blend_gray_text() {   # <menu "R G B"> <menutext "R G B"> -> "R G B"
-    local mr mg mb tr tg tb
-    read -r mr mg mb <<< "$1"
-    read -r tr tg tb <<< "$2"
-    printf '%d %d %d' $(( mr + (tr - mr) * 45 / 100 )) $(( mg + (tg - mg) * 45 / 100 )) $(( mb + (tb - mb) * 45 / 100 ))
-}
-
-# win32u-drawn menu bar/dropdowns take their colours from [Control Panel\Colors],
-# which nothing else ever writes, so they'd otherwise stay stock light in dark
-# mode. When the host titlebar colours are known (issue #32), the bar/text take
-# those too, unifying the WM titlebar with Live's menu bar. Do NOT add "Window"
-# here: a dark Window colour blacks out comdlg32 dialog lists.
+# win32u-drawn menus — Live's menu bar and dropdowns — take their colors from the
+# [Control Panel\Colors] table, which neither the prefix setup nor the theme sync below
+# has ever written, so the bar keeps stock light colors in dark mode. Sync the entries
+# the bar uses alongside AppsUseLightTheme (current values read from the registry file,
+# no wineserver spin-up when unchanged). When the host titlebar colors are known
+# (issue #32), the bar and its text take those instead, so the WM titlebar and Live's
+# menu bar read as one unified strip; the wine-drawn title colors (virtual desktops)
+# follow along. Do NOT add "Window" here: a dark Window color blacks out comdlg32
+# dialog lists.
 sync_win32_colors() {   # dark|light [bar-bg bar-fg [menu-bg sel-bg sel-fg]]  ("R G B")
     local scheme="$1" bar_bg="${2:-}" bar_fg="${3:-}" menu_bg="${4:-}" sel_bg="${5:-}" sel_fg="${6:-}"
     local pair name want cur changed=0 menubar menutext menu
@@ -442,10 +278,9 @@ sync_win32_colors() {   # dark|light [bar-bg bar-fg [menu-bg sel-bg sel-fg]]  ("
         pairs+=("ActiveTitle=$bar_bg" "GradientActiveTitle=$bar_bg" "TitleText=$bar_fg")
     fi
     [ -n "$menu_bg" ] && menu="$menu_bg"
-    pairs+=("GrayText=$(blend_gray_text "$menu" "$menutext")")
-    # Selected-item colours only ever move as a set: the menu highlight fill
+    # Selected-item colors only ever move as a set: the menu highlight fill
     # (MenuHilight), the general selection fill (Hilight) and the selection text
-    # (HilightText): win32u draws selected menu text with HilightText, so a themed
+    # (HilightText) — win32u draws selected menu text with HilightText, so a themed
     # fill under the stock white text would be unreadable.
     if [ -n "$sel_bg" ] && [ -n "$sel_fg" ]; then
         pairs+=("MenuHilight=$sel_bg" "Hilight=$sel_bg" "HilightText=$sel_fg")
@@ -463,17 +298,17 @@ sync_win32_colors() {   # dark|light [bar-bg bar-fg [menu-bg sel-bg sel-fg]]  ("
                 print v; exit
             }' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
         if [ "$cur" != "$want" ]; then
-            [ "$changed" -eq 0 ] && echo "ableton-live: syncing the win32 menu colours to the $scheme scheme" >&2
+            [ "$changed" -eq 0 ] && echo "ableton-live: syncing the win32 menu colors to the $scheme scheme" >&2
             changed=1
-            ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Colors' /v "$name" /t REG_SZ /d "$want" /f >/dev/null 2>&1 9>&-
+            "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Colors' /v "$name" /t REG_SZ /d "$want" /f >/dev/null 2>&1 9>&-
         fi
     done
 }
 
-# The bar only paints with the MenuBar colour when the flat-menu preference is on
+# The bar only paints with the MenuBar color when the flat-menu preference is on
 # (win32u picks COLOR_MENUBAR over COLOR_MENU off SPI_GETFLATMENU); flat is also how
 # Windows 10/11 draw menus. The preference is bit 0x02 of byte 2 in the
-# UserPreferencesMask blob: set that one bit, keep every other preference.
+# UserPreferencesMask blob — set that one bit, keep every other preference.
 ensure_flat_menu() {
     local cur b2 hex
     local -a bytes
@@ -485,8 +320,8 @@ ensure_flat_menu() {
     [ $(( b2 & 0x02 )) -ne 0 ] && return 0
     printf -v 'bytes[2]' '%02x' $(( b2 | 0x02 ))
     hex="$(IFS=''; printf '%s' "${bytes[*]}")"
-    echo "ableton-live: enabling flat menus so the bar can take the titlebar colour" >&2
-    ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v UserPreferencesMask /t REG_BINARY /d "$hex" /f >/dev/null 2>&1 9>&-
+    echo "ableton-live: enabling flat menus so the bar can take the titlebar color" >&2
+    "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v UserPreferencesMask /t REG_BINARY /d "$hex" /f >/dev/null 2>&1 9>&-
 }
 
 # "#RRGGBB #RRGGBB" (ABLETON_TOPBAR_MODE override) -> "R G B|R G B" (bg|text)
@@ -505,13 +340,10 @@ parse_topbar_override() {
         $(( 16#${fg:1:2} )) $(( 16#${fg:3:2} )) $(( 16#${fg:5:2} ))
 }
 
-# ABLETON_TOPBAR_MODE=live: colour the chrome with Live's active theme (the
-# Push 3 standalone look). Bar takes Desktop, dropdowns take ControlBackground;
-# selection set from SelectionBackground/SelectionForeground (see
-# detect-theme.sh for resolution). Swapped from the first cut (bar<-
-# ControlBackground) after a light-mode screenshot showed the always-visible
-# bar lighter than its own dropdowns - backwards from every reference (a
-# darker chrome strip framing lighter content).
+# ABLETON_TOPBAR_MODE=live: color the chrome with Live's active theme, so the bar
+# and menus continue Live's own surface (the Push 3 standalone look). Ground and
+# text come from the theme's Desktop and ControlForeground; the selection set from
+# SelectionBackground/SelectionForeground (see detect-theme.sh for the resolution).
 resolve_live_topbar() {   # sets topbar/menu_bg/sel_bg/sel_fg; fails when unresolvable
     local themes major theme_file bg fg
     [ -n "$live_exe_unix" ] || return 1
@@ -519,10 +351,13 @@ resolve_live_topbar() {   # sets topbar/menu_bg/sel_bg/sel_fg; fails when unreso
     themes="${live_exe_unix%/Program/*}/Resources/Themes"
     major="$(printf '%s\n' "$exe_base" | awk '{print $3}')"
     theme_file="$(ableton_live_theme_file "$WINEPREFIX" "$themes" "$major" "$theme_mode")" || return 1
-    bg="$(ableton_ask_color "$theme_file" Desktop)" || return 1
+    # The bar sits on Live's transport strip, which renders ControlBackground —
+    # Desktop (the surface behind the views) reads as a visible seam there.
+    # Dropdowns take Desktop, matching Live's own popup surfaces.
+    bg="$(ableton_ask_color "$theme_file" ControlBackground)" || return 1
     fg="$(ableton_ask_color "$theme_file" ControlForeground)" || return 1
     topbar="$bg|$fg"
-    menu_bg="$(ableton_ask_color "$theme_file" ControlBackground)" || menu_bg="$bg"
+    menu_bg="$(ableton_ask_color "$theme_file" Desktop)" || menu_bg="$bg"
     sel_bg="$(ableton_ask_color "$theme_file" SelectionBackground)" || sel_bg=""
     sel_fg="$(ableton_ask_color "$theme_file" SelectionForeground)" || sel_fg=""
     return 0
@@ -536,34 +371,22 @@ detect_system_topbar() {   # sets topbar from the host titlebar colors
 # With ABLETON_TOPBAR_MODE=live the bar keeps following while Live runs: Live
 # flushes Preferences.cfg when its settings dialog closes (and on exit), so a
 # theme picked there lands on disk moments later. Watch the newest cfg and
-# re-apply through setsyscolors.exe: SetSysColors updates the running session
+# re-apply through setsyscolors.exe — SetSysColors updates the running session
 # (volatile color entries plus a WM_SYSCOLORCHANGE broadcast and redraw), so the
 # bar and menus repaint without a restart; the per-launch sync persists the
 # colors for the next session. One watcher per prefix (own lock, fd 8); exits
 # when Live does.
 theme_watch_prefs_cfg() {
-    # Newest Preferences.cfg across installed "Live <major>.*" editions: see
-    # ableton_newest_prefs_dir in detect-theme.sh (sourced above) for why this
-    # isn't sort -V on the path.
-    local major dir
+    local major
     major="$(printf '%s\n' "$exe_base" | awk '{print $3}')"
-    dir="$(ableton_newest_prefs_dir "$WINEPREFIX" "$major")"
-    [ -n "$dir" ] && printf '%s\n' "$dir/Preferences.cfg"
+    ls "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/Ableton/"Live ${major:-}"*/Preferences/Preferences.cfg 2>/dev/null | sort -V | tail -n 1
 }
 theme_watch_loop() {
-    local apply="$ABLETON_DATA_HOME/setsyscolors.exe"
+    local apply="$HOME/.local/share/ableton-wine/setsyscolors.exe"
+    [ -f "$apply" ] || apply="$WINE_ROOT/share/ableton-wine/scripts/setsyscolors.exe"
     local lock="$WINEPREFIX/.ableton-theme-watch.lock" cfg last="" cur bar_bg bar_fg
-    local applied=""    # last color set actually broadcast; skip re-firing when unchanged
-    local major have_inotify=0 f
-    local -a watch_files
     [ -f "$apply" ] || return 0
     command -v flock >/dev/null 2>&1 || return 0
-    # inotifywait (inotify-tools) turns this into an event-driven wait instead
-    # of a fixed poll: wakes up on the write itself rather than up to 2s later.
-    # Optional - falls back to the plain sleep-poll below when not installed,
-    # same as the flock check above already does for its own dependency.
-    command -v inotifywait >/dev/null 2>&1 && have_inotify=1
-    major="$(printf '%s\n' "$exe_base" | awk '{print $3}')"
     exec 8>"$lock" || return 0
     # the previous session's watcher exits within seconds of Live going down;
     # wait it out rather than losing the handover race
@@ -573,32 +396,13 @@ theme_watch_loop() {
     done
     flock -n 8 || return 0
     for _ in {1..30}; do
-        ableton_live_running && break
+        pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData && break
         sleep 2
     done
     cfg="$(theme_watch_prefs_cfg)"
     [ -n "$cfg" ] && last="$(stat -c %Y "$cfg" 2>/dev/null)"
-    while ableton_live_running; do
-        if [ "$have_inotify" -eq 1 ]; then
-            watch_files=()
-            for f in "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/Ableton/"Live ${major:-}"*/Preferences/Preferences.cfg; do
-                [ -f "$f" ] && watch_files+=("$f")
-            done
-            if [ "${#watch_files[@]}" -gt 0 ]; then
-                # timeout keeps the process liveness check above from stalling
-                # indefinitely if Live exits without ever touching the file again
-                inotifywait -q -e close_write,modify -t 30 "${watch_files[@]}" >/dev/null 2>&1
-                # exit 2 is a plain timeout and exit 0 is a real event - both
-                # already waited. exit 1 means inotifywait itself failed (bad
-                # path, inotify watch limit, ...); without a fallback sleep
-                # here the loop would spin with no delay at all until Live exits.
-                [ $? -eq 1 ] && sleep 2
-            else
-                sleep 2
-            fi
-        else
-            sleep 2
-        fi
+    while pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData; do
+        sleep 2
         cfg="$(theme_watch_prefs_cfg)"
         [ -n "$cfg" ] || continue
         cur="$(stat -c %Y "$cfg" 2>/dev/null)" || continue
@@ -606,32 +410,21 @@ theme_watch_loop() {
         last="$cur"
         topbar=""; menu_bg=""; sel_bg=""; sel_fg=""
         resolve_live_topbar || continue
-        local gray
-        gray="$(blend_gray_text "$menu_bg" "${topbar##*|}")"; gray="${gray// /,}"
         bar_bg="${topbar%%|*}"; bar_bg="${bar_bg// /,}"
         bar_fg="${topbar##*|}"; bar_fg="${bar_fg// /,}"
         set -- "MenuBar=$bar_bg" "MenuText=$bar_fg" "ActiveTitle=$bar_bg" \
-               "GradientActiveTitle=$bar_bg" "TitleText=$bar_fg" "GrayText=$gray"
+               "GradientActiveTitle=$bar_bg" "TitleText=$bar_fg"
         [ -n "$menu_bg" ] && set -- "$@" "Menu=${menu_bg// /,}"
         if [ -n "$sel_bg" ] && [ -n "$sel_fg" ]; then
             set -- "$@" "MenuHilight=${sel_bg// /,}" "Hilight=${sel_bg// /,}" "HilightText=${sel_fg// /,}"
         fi
-        # Preferences.cfg is touched for plenty of reasons beyond a theme pick (window
-        # layout, focus state, ...), and this poll can't tell those apart from a real
-        # theme change — only whether the file moved. Re-deriving is cheap; broadcasting
-        # a live SetSysColors + WM_SYSCOLORCHANGE repaint is not, so only actually fire
-        # it when the resolved colors differ from what's already applied.
-        if [ "$*" = "$applied" ]; then
-            continue
-        fi
-        applied="$*"
-        ableton_run_bounded 30 "$WINE_ROOT/bin/wine" "$apply" "$@" >/dev/null 2>&1
+        "$WINE_ROOT/bin/wine" "$apply" "$@" >/dev/null 2>&1
     done
 }
 
 # Chrome typeface (issue #32): Live ships its own UI faces (Ableton Sans, plus the
 # small-size cut Ableton Sans Small) in the install's Resources/Fonts, but the win32
-# chrome around it: menu bar, context menus, message boxes: still renders Tahoma.
+# chrome around it — menu bar, context menus, message boxes — still renders Tahoma.
 # Symlink the faces into the prefix's Fonts dir (win32u rescans it on every process
 # start) and point both the shell-dialog substitutes and the WindowMetrics non-client
 # fonts at them. The WindowMetrics LOGFONTs are patched in place: only the 64
@@ -684,7 +477,7 @@ sync_metric_fonts() {   # family -> repoint the non-client LOGFONTs, heights pre
         [ "$cur_face" = "$face_hex" ] && continue
         [ "$changed" -eq 0 ] && echo "ableton-live: pointing the win32 chrome fonts at '$fam'" >&2
         changed=1
-        ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop\WindowMetrics' /v "$name" \
+        "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop\WindowMetrics' /v "$name" \
             /t REG_BINARY /d "$(printf '%s,%s' "$head" "$face_hex" | tr -d ,)" /f >/dev/null 2>&1 9>&-
     done
 }
@@ -703,97 +496,10 @@ sync_font_substitutes() {   # family -> route the shell-dialog faces to it
         if [ "$cur" != "$fam" ]; then
             [ "$changed" -eq 0 ] && echo "ableton-live: substituting the shell dialog faces with '$fam'" >&2
             changed=1
-            ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes' \
+            "$WINE_ROOT/bin/wine" reg add 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes' \
                 /v "$name" /t REG_SZ /d "$fam" /f >/dev/null 2>&1 9>&-
         fi
     done
-}
-
-# Ableton Sans/Ableton Sans Small are Latin-only, so register a SystemLink
-# chain for the substituted family: Tahoma, then the Noto Sans CJK cuts Live
-# bundles in Resources/Fonts, then Unifont as a full-Unicode last resort.
-# Patch 0054's get_fallback_font_for_text walks it; the registry data alone
-# does nothing, since win32u consults SystemLink only when selecting a whole
-# font by charset, never when rendering a glyph.
-#
-# Taken from Live's install, read directly with fc-scan, rather than asking
-# the host's fontconfig for "some" CJK font: Live ships these because its own
-# UI is localized into Japanese and Chinese, so they are present whenever Live
-# is, and the chain is then identical on every distro.
-sync_font_fallback() {   # family -> register its SystemLink chain from what sync_ui_font linked into winfonts
-    local fam="$1" want="tahoma.ttf,Tahoma" cur pat f base fc_fam pair
-    local winfonts="$WINEPREFIX/drive_c/windows/Fonts"
-    local -a pairs=()
-    if command -v fc-scan >/dev/null 2>&1; then
-        for pat in "$winfonts"/NotoSansCJKjp-Regular.otf "$winfonts"/NotoSansCJKsc-Regular.otf \
-                   "$winfonts"/NotoSansCJKkr-Regular.otf "$winfonts"/unifont_jp-*.ttf "$winfonts"/unifont_upper-*.ttf; do
-            for f in $pat; do
-                [ -e "$f" ] || continue
-                base="${f##*/}"
-                # %{fullname}, not %{family}: win32u matches a SystemLink entry
-                # on filename plus the name-ID-1 family, and %{family} reports
-                # ID 16 first. Live's NotoSansCJKjp-Regular.otf is
-                # "Noto Sans CJK JP Regular" in ID 1, so the ID 16 name matched
-                # nothing and the entry was dropped at load with a silent
-                # "Unable to find file", dumping CJK text onto Unifont.
-                fc_fam="$(fc-scan -f '%{fullname}\n' "$f" 2>/dev/null | head -1)"
-                [ -n "$fc_fam" ] && pairs+=("$base,$fc_fam")
-            done
-        done
-    fi
-    for pair in "${pairs[@]}"; do
-        want="${want}\\0${pair}"
-    done
-    cur="$(awk -v n="\"$fam\"=" '
-        /^\[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontLink\\\\SystemLink\]/ { f=1; next }
-        /^\[/ { f=0 }
-        f && index($0, n) == 1 {
-            v = substr($0, length(n) + 1)
-            sub(/^str\(7\):"/, "", v); sub(/\\0"\r?$/, "", v)
-            print v; exit
-        }' "$WINEPREFIX/system.reg" 2>/dev/null || true)"
-    [ "$cur" = "$want" ] && return 0
-    echo "ableton-live: linking Tahoma + bundled CJK/Unicode fallback fonts for '$fam'" >&2
-    ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontLink\SystemLink' \
-        /v "$fam" /t REG_MULTI_SZ /d "${want}\0" /f >/dev/null 2>&1 9>&-
-}
-
-# Wine takes the antialiasing mode for GDI text from the host's Xft resources,
-# so a desktop set to grayscale renders Live's menus and dialogs grayscale
-# whatever the prefix asks for. An explicit prefix policy outranks that
-# (patch 0087), and this is what keeps it set: setup-prefix.sh
-# seeds it, and a prefix made by an older release has nothing.
-# ABLETON_TEXT_SMOOTHING=grayscale writes a deliberate grayscale marker,
-# preserve leaves whatever the prefix already carries.
-sync_text_smoothing() {
-    local want_enabled want_type order cur_enabled cur_type
-    case "${ABLETON_TEXT_SMOOTHING:-subpixel}" in
-        preserve) return 0 ;;
-        grayscale) want_enabled=1; want_type=1 ;;
-        subpixel)  want_enabled=2; want_type=2 ;;
-        *)
-            echo "ableton-live: ABLETON_TEXT_SMOOTHING must be subpixel, grayscale, or preserve: using subpixel" >&2
-            want_enabled=2; want_type=2 ;;
-    esac
-    cur_enabled="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"FontSmoothing"=/{gsub(/.*="?/,""); gsub(/"\r?$/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
-    cur_type="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"FontSmoothingType"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
-    # Smoothing off is itself an explicit prefix policy. Never turn it back on
-    # merely because the launcher defaults to subpixel rendering.
-    [ "$cur_enabled" = 0 ] && return 0
-    [ "$cur_enabled" = "$want_enabled" ] && [ "$((16#${cur_type:-0}))" = "$want_type" ] && return 0
-
-    # A BGR panel rendered as RGB fringes the wrong way, so follow the host
-    # where it states an order.
-    order=1
-    if command -v gsettings >/dev/null 2>&1; then
-        case "$(gsettings get org.gnome.desktop.interface font-rgba-order 2>/dev/null | tr -d "'")" in
-            bgr) order=0 ;;
-        esac
-    fi
-    echo "ableton-live: setting text antialiasing to ${ABLETON_TEXT_SMOOTHING:-subpixel}" >&2
-    ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d "$want_enabled" /f >/dev/null 2>&1 9>&-
-    ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d "$want_type" /f >/dev/null 2>&1 9>&-
-    ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$order" /f >/dev/null 2>&1 9>&-
 }
 
 sync_ui_font() {
@@ -802,23 +508,15 @@ sync_ui_font() {
     [ "$mode" = preserve ] && return 0
     [ -d "$winfonts" ] || return 0
     # Links from an install that was since removed or upgraded must not linger.
-    for f in "$winfonts"/AbletonSans* "$winfonts"/NotoSansCJK* "$winfonts"/unifont_*; do
+    for f in "$winfonts"/AbletonSans*; do
         [ -L "$f" ] && [ ! -e "$f" ] && rm -f "$f"
     done
     if [ "$mode" = off ]; then
-        for f in "$winfonts"/AbletonSans* "$winfonts"/NotoSansCJK* "$winfonts"/unifont_*; do
+        for f in "$winfonts"/AbletonSans*; do
             [ -L "$f" ] && rm -f "$f"
         done
         sync_font_substitutes Tahoma
         sync_metric_fonts Tahoma
-        # Tahoma gets its chain from win32u's hardcoded substitute list, so
-        # it needs no entry here. Clear any a previous auto/named run left for
-        # the Ableton families, which are no longer selected anywhere.
-        local fam
-        for fam in "Ableton Sans" "Ableton Sans Small"; do
-            ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg delete 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontLink\SystemLink' \
-                /v "$fam" /f >/dev/null 2>&1 9>&- || true
-        done
         return 0
     fi
     [ -n "$live_exe_unix" ] && fonts_dir="${live_exe_unix%/Program/*}/Resources/Fonts"
@@ -840,31 +538,18 @@ sync_ui_font() {
     else
         family="$mode"
     fi
-    # Fallback faces for the chain sync_font_fallback registers below. Linked
-    # for every mode that reaches here, not just auto: a named family is as
-    # Latin-limited as Ableton Sans, so keeping these under auto left
-    # ABLETON_UI_FONT=<name> with a Tahoma-only chain and CJK back to tofu.
-    # Both weights, so bold menu items get a real bold face. The auto path has
-    # already returned by now if nothing was substituted, so this cannot leave
-    # unreferenced symlinks behind.
-    if [ -d "$fonts_dir" ]; then
-        for f in "$fonts_dir"/NotoSansCJK*.otf "$fonts_dir"/unifont_*.ttf; do
-            [ -e "$f" ] || continue
-            ln -sf "$f" "$winfonts/${f##*/}"
-        done
-    fi
     sync_font_substitutes "$family"
     sync_metric_fonts "$family"
-    sync_font_fallback "$family"
 }
 
 # Mirror the host light/dark scheme into the prefix before each launch: Live's "Follow system"
 # theme reads AppsUseLightTheme, which a scripted prefix never carries (the early snapshot-based
 # installs inherited it). ABLETON_THEME_MODE=auto|dark|light|preserve overrides detection.
-if ! ableton_live_running; then
+if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
     # Sourced outside the auto branch: the topbar color detection below wants the lib
     # even when ABLETON_THEME_MODE pins the scheme.
-    theme_lib="$ABLETON_DATA_HOME/detect-theme.sh"
+    theme_lib="$HOME/.local/share/ableton-wine/detect-theme.sh"
+    [ -r "$theme_lib" ] || theme_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-theme.sh"
     [ -r "$theme_lib" ] && . "$theme_lib"
     theme_mode="${ABLETON_THEME_MODE:-auto}"
     if [ "$theme_mode" = auto ]; then
@@ -879,8 +564,8 @@ if ! ableton_live_running; then
         # Current value straight from the registry file (no wineserver spin-up when unchanged).
         cur_light="$(awk '/^\[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Themes\\\\Personalize\]/{f=1;next} /^\[/{f=0} f&&/"AppsUseLightTheme"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
         if [ "${cur_light:-absent}" != "0000000$want_light" ]; then
-            echo "ableton-live: host scheme is $theme_mode: setting the prefix theme to match" >&2
-            ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$want_light" /f >/dev/null 2>&1 9>&-
+            echo "ableton-live: host scheme is $theme_mode — setting the prefix theme to match" >&2
+            "$WINE_ROOT/bin/wine" reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$want_light" /f >/dev/null 2>&1 9>&-
         fi
         # Unified top bar (issue #32): live (the default) colors the bar and menus
         # with Live's active theme so the chrome continues Live's own surface;
@@ -894,11 +579,11 @@ if ! ableton_live_running; then
             system) detect_system_topbar ;;
             \#*)
                 if ! topbar="$(parse_topbar_override "$ABLETON_TOPBAR_MODE")"; then
-                    echo "ableton-live: cannot parse ABLETON_TOPBAR_MODE '$ABLETON_TOPBAR_MODE' (want '#RRGGBB #RRGGBB'): following the Live theme instead" >&2
+                    echo "ableton-live: cannot parse ABLETON_TOPBAR_MODE '$ABLETON_TOPBAR_MODE' (want '#RRGGBB #RRGGBB') — following the Live theme instead" >&2
                     resolve_live_topbar || detect_system_topbar
                 fi ;;
             *)
-                echo "ableton-live: ABLETON_TOPBAR_MODE must be live, system, preserve, or '#RRGGBB #RRGGBB': following the Live theme instead" >&2
+                echo "ableton-live: ABLETON_TOPBAR_MODE must be live, system, preserve, or '#RRGGBB #RRGGBB' — following the Live theme instead" >&2
                 resolve_live_topbar || detect_system_topbar ;;
         esac
         if [ -n "$topbar" ]; then
@@ -909,180 +594,58 @@ if ! ableton_live_running; then
         fi
     fi
     sync_ui_font
-    sync_text_smoothing
 fi
 
-# GNOME consumes Live's Ctrl+Alt+Up/Down shortcuts (and Live 11's
-# Ctrl+Alt+Delete) before Wine sees them.  ABLETON_SHORTCUTS=take temporarily
-# removes only those entries.  The helper uses session-global, crash-recoverable
-# state because GSettings itself is session-global; it also preserves any user
-# edit made while Live runs.  Opt-in: the held keys are unavailable to every
-# other window until the last opted-in Live exits.  See the shortcut support note.
-shortcut_lib=""
-for f in "$ABLETON_DATA_HOME/shortcut-hold.sh" \
-         "${BASH_SOURCE[0]%/*}/shortcut-hold.sh"; do
-    if [ -r "$f" ]; then shortcut_lib="$f"; break; fi
-done
-ableton_shortcuts_active=0
-if [ -n "$shortcut_lib" ]; then
-    . "$shortcut_lib"
-    shortcut_allow_hold=0
-    [ -n "$EXE" ] && shortcut_allow_hold=1
-    # Always run recovery, even if Live was uninstalled after an interrupted
-    # hold.  A new hold is allowed only after discovery confirmed an executable.
-    ableton_shortcuts_prepare "$exe_base" "$WINEPREFIX/.ableton-shortcut-hold" "$shortcut_allow_hold"
-    if [ "$ableton_shortcuts_active" -eq 1 ]; then
-        # The watcher can outlive a failed launch.  Do not let it keep the
-        # single-launch guard open while it waits to restore the desktop.
-        ( exec 9>&-; ableton_shortcuts_watch_loop ) </dev/null >/dev/null 2>&1 &
-        disown
-    fi
-elif [ "${ABLETON_SHORTCUTS:-preserve}" = take ] && [ -n "$EXE" ]; then
-    echo "ableton-live: shortcut hold helper is missing; leaving desktop shortcuts unchanged" >&2
-fi
-
-# Audio: PipeASIO -> PipeWire (native client, no JACK layer). Defaults live in
-# ~/.config/pipeasio/config.ini (seeded by setup-prefix.sh); PIPEASIO_* variables
-# override per launch: raise PIPEASIO_PREFERRED_BUFFERSIZE to 512 if crackles.
+# Audio: PipeASIO -> PipeWire (native client, no JACK layer). Settings live in
+# ~/.config/pipeasio/config.ini (seeded by setup-prefix.sh) — the driver's only
+# config surface; raise buffer_size to 512 there if crackles. PIPEASIO_DEBUG=1
+# is the only env var it reads (driver logging).
 
 require_live() {
     [ -n "$EXE" ] && return 0
     echo "ableton-live: no Ableton Live installation found in $WINEPREFIX" >&2
-    echo "ableton-live: run the ableton-wine-setup .run with the install command and your Ableton download next to it, or install Live manually: see the README" >&2
+    echo "ableton-live: put your ableton_live*.zip (any edition) in ~/Proprietary and rerun the setup (.run installer or setup-prefix.sh), or install Live manually — see the README" >&2
     exit 1
 }
 
-run=("$WINE_ROOT/bin/wine")
-# The probe fires wherever rtprio rights exist: setup-realtime.sh grants them,
+# Bring-up done — drop the single-instance lock so exec'ing wine cannot inherit fd 9.
+exec 9>&-
+
+run=(wine)
+# The probe fires wherever rtprio rights exist — setup-realtime.sh grants them,
 # but some distributions (CachyOS among them) grant them out of the box, so RR
 # can be active without any opt-in here. SCHED_RR covers the whole process, GUI
 # threads included; ABLETON_RT=off exists for A/B runs and low-core machines
-# where that is a net loss.
+# where that is a net loss. See notes/ABLETON-WINE-RT-SCHEDULING.md.
 if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
     && chrt -r 10 true >/dev/null 2>&1; then
-    run=(chrt -r 10 "$WINE_ROOT/bin/wine")
+    run=(chrt -r 10 wine)
 fi
 
-# CPU speed for the session: hold the "performance" power profile while Live
-# runs, through power-profiles-daemon (tuned-ppd answers the same CLI). The
-# hold needs no root, shows up in the desktop's power menu, and is released
-# when Live exits or crashes. This replaces the boot-time governor unit that
-# setup-realtime.sh installed before 2026-08; ABLETON_POWER=off skips it for
-# one launch. The probe runs the exact call with `true`, so a missing daemon,
-# a host without a performance profile, or an old powerprofilesctl all fall
-# back to launching without the hold. The timeout bounds a wedged daemon:
-# powerprofilesctl waits on GLib's 25 s D-Bus default per call, and the hold
-# call would wait a second time. The start.exe paths below pass /w so
-# start.exe waits on the process it spawns; without it start.exe exits right
-# after the handoff and the hold dies with it, leaving cold starts through
-# ableton:// URLs and .auz files uncovered. The chrt wrapper is unaffected
-# either way: scheduling policy is inherited across fork/exec. One side
-# effect: with /w the spawned process sits in a kill-on-close job object, so
-# killing the launcher chain now takes Live down with it.
-if [ "${ABLETON_POWER:-on}" != off ] && command -v powerprofilesctl >/dev/null 2>&1 \
-    && ableton_run_bounded 10 powerprofilesctl launch -p performance -r "Ableton Live session" -i ableton-live -- true >/dev/null 2>&1; then
-    run=(powerprofilesctl launch -p performance -r "Ableton Live session" -i ableton-live -- "${run[@]}")
-fi
-
-# Ableton Link session anchor (optional): if ableton-linkd is installed but
-# not running, start it so the Link session is anchored before Live launches.
-# The daemon is session-scoped: it exits on its own after 15 minutes with no
-# peers (ABLETON_LINKD_LINGER overrides; the user unit runs --linger 0 for an
-# always-on anchor). Daemon mode logs under XDG_STATE_HOME/ableton-wine/logs/.
-# ABLETON_LINKD overrides the binary path.
-linkctl="$ABLETON_DATA_HOME/ableton-linkctl"
-if [ "$ABLETON_LINK_MODE" != off ] && [ -x "$linkctl" ]; then
-    "$linkctl" start || echo "ableton-live: configured Link anchor failed to start" >&2
+# Ableton Link bridge (optional): if jack_link is installed but not running
+# (e.g. the jack-link.service user unit is disabled), start it under PipeWire's
+# JACK layer so the Link session is anchored before Live launches; daemon mode
+# logs to ~/.log/jack_link/. See notes/ABLETON-WINE-LINK.md.
+if command -v jack_link >/dev/null 2>&1 && command -v pw-jack >/dev/null 2>&1 \
+    && ! pgrep -x jack_link >/dev/null 2>&1; then
+    pw-jack jack_link --daemon || echo "ableton-live: jack_link failed to start" >&2
 fi
 
 # Follow Live-theme changes while it runs (see theme_watch_loop above). Spawned
 # after the launch lock is closed, fully detached; a no-op when the helper exe
 # is not installed or another watcher already holds the prefix's watch lock.
 if [ "${ABLETON_TOPBAR_MODE:-live}" = live ] && [ -n "$EXE" ] && [ -n "${want_light:-}" ]; then
-    ( exec 9>&-; theme_watch_loop ) </dev/null >/dev/null 2>&1 &
+    ( theme_watch_loop ) </dev/null >/dev/null 2>&1 &
     disown
 fi
 
-# Auto-heal the Learn View / doc sidebar WebView2 fossil-on-open: a resident
-# helper nudges each
-# settled lesson pane once, replacing the manual splitter nudge. It waits for
-# a pane to hold a stable rect before poking (bind-time pokes leave Chromium
-# resize-deaf) and exits on its own after Live is gone. No-op when the helper
-# is not installed.
-learnheal="$ABLETON_DATA_HOME/learnheal.exe"
-if [ -n "$EXE" ] && [ -f "$learnheal" ]; then
-    ( exec 9>&-; ableton_run_bounded 90 env WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wine" "$learnheal" ) </dev/null >/dev/null 2>&1 &
-    disown
-fi
-
-launch_command()
-{
-    if [ "$launch_lock_held" -ne 1 ]; then
-        exec "$@"
-    fi
-    local child rc=0 timeout_secs i ready=0 process_group=0
-    timeout_secs="$(ableton_timeout_value "${ABLETON_LAUNCH_TIMEOUT:-90}" ABLETON_LAUNCH_TIMEOUT 5 600)" || return 2
-    if command -v setsid >/dev/null 2>&1; then
-        setsid -- "$@" 9>&- &
-        process_group=1
-    else
-        "$@" 9>&- &
-    fi
-    child=$!
-    for ((i=0; i<timeout_secs*10; i++)); do
-        if ableton_live_running; then ready=1; break; fi
-        if ! kill -0 "$child" 2>/dev/null; then break; fi
-        sleep 0.1
-    done
-    flock -u 9 2>/dev/null || true
-    exec 9>&-
-    launch_lock_held=0
-    if [ "$ready" -ne 1 ]; then
-        if [ "$process_group" -eq 1 ] && kill -0 -- "-$child" 2>/dev/null; then
-            kill -TERM -- "-$child" 2>/dev/null || true
-            for _ in {1..50}; do kill -0 -- "-$child" 2>/dev/null || break; sleep 0.1; done
-            kill -0 -- "-$child" 2>/dev/null && kill -KILL -- "-$child" 2>/dev/null || true
-        elif kill -0 "$child" 2>/dev/null; then
-            kill -TERM "$child" 2>/dev/null || true
-            for _ in {1..50}; do kill -0 "$child" 2>/dev/null || break; sleep 0.1; done
-            kill -0 "$child" 2>/dev/null && kill -KILL "$child" 2>/dev/null || true
-        fi
-        wait "$child" || rc=$?
-        echo "ableton-live: Live did not become observable in the selected prefix within ${timeout_secs}s (launcher exit $rc)" >&2
-        return 1
-    fi
-    wait "$child"
-}
-
-if [ "$callback_kind" = protocol ]; then
-    launch_command "${run[@]}" start /w "$1"
-elif [ "$callback_kind" = auz ]; then
-    launch_command "${run[@]}" start /w /unix "$1"
-elif [ -n "${ABLETON_VDESK:-}" ]; then
+if [ -n "${ABLETON_VDESK:-}" ]; then
     require_live
-    launch_command "${run[@]}" explorer "/desktop=AbletonLive,${ABLETON_VDESK}" "$EXE"
+    exec "${run[@]}" explorer "/desktop=AbletonLive,${ABLETON_VDESK}" "$EXE"
 elif [ "$#" -gt 0 ]; then
-    # ableton:// URLs, .auz license files, Live documents from the file
-    # manager or command line. A single existing file arrives as a unix path
-    # (%f in the desktop entry). Live documents go straight to the Live exe:
-    # sets, clips and packs have no association inside the prefix, and
-    # start.exe reads a bare unix path as a switch (issue #38). Other files
-    # keep the start.exe path, which resolves unix paths behind /unix.
-    if [ "$#" -eq 1 ] && [ -f "$1" ]; then
-        case "$1" in
-            *.[aA][lL][sS]|*.[aA][lL][cC]|*.[aA][lL][pP])
-                require_live
-                doc="$(ableton_run_bounded 30 "$WINE_ROOT/bin/winepath" -w "$1" 9>&- 2>/dev/null || true)"
-                if [ -n "$doc" ]; then
-                    launch_command "${run[@]}" "$EXE" "$doc"
-                    exit $?
-                fi
-                ;;
-        esac
-        case "$1" in /*) launch_command "${run[@]}" start /w /unix "$1"; exit $? ;; esac
-    fi
-    launch_command "${run[@]}" start /w "$@"
+    # ableton:// URLs, .auz license files, .als sets from the file manager
+    exec "${run[@]}" start "$@"
 else
     require_live
-    launch_command "${run[@]}" "$EXE"
+    exec "${run[@]}" "$EXE"
 fi
