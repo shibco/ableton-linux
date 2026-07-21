@@ -24,6 +24,10 @@ zstd -dc --long=27 "$SRC/vendor/wine-base-5c23dd1c.tar.zst" | tar -x -C "$WORK/w
 
 echo "== [2/8] git init + apply the $npatch-patch fix series =="
 cd "$WORK/wine-src"
+# Rootless podman can bind-mount /work owned by a UID outside the container's
+# user namespace; git (>=2.35.2) refuses to operate on a tree it doesn't own.
+# Scoped to this exact path, not a global opt-out.
+git config --global --add safe.directory "$WORK/wine-src"
 git init -q
 git -c user.email=build@localhost -c user.name=dist add -A
 git -c user.email=build@localhost -c user.name=dist commit -q -m "base 5c23dd1c"
