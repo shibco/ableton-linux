@@ -225,7 +225,7 @@ discover_wine() {
     [[ -n "$WINE_BIN" ]] && candidates+=("$WINE_BIN")
     candidates+=(
         "$HOME/.local/opt/ableton-wine/current/bin/wine"
-        "$HOME/.local/opt/wine-d2d1-nspa-11.11/bin/wine"
+        "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine"
     )
     if [[ -r "${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine/runtime-path" ]]; then
         candidate="$(head -n 1 "${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine/runtime-path")"

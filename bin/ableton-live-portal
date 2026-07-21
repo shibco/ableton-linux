@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-runtime="${ABLETON_PORTAL_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11-portal}"
+runtime="${ABLETON_PORTAL_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13-portal}"
 stable_launcher="${ABLETON_STABLE_LAUNCHER:-$HOME/.local/bin/ableton-live}"
 
 if [[ ! -x "$runtime/bin/wine" || ! -x "$runtime/bin/wineserver" ]]; then

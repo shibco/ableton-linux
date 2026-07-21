@@ -2,7 +2,7 @@
 # Ableton Live 12 Beta launcher — isolated prefix, existing patched Wine stack.
 set -u
 
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_BETA_WINEPREFIX:-$HOME/.wine-ableton-beta}"
 export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG="${WINEDEBUG:--all}"
