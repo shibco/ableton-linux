@@ -40,16 +40,32 @@ before resolving:
     Substituted through 0020's sRGB-colorspace surface-creation hunk;
     confirmed has_EGL_KHR_gl_colorspace and the rest of 0020's own struct
     additions applied cleanly elsewhere in the same commit.
-Patches 0021-0042 (dcomp reblit/stale-buffer fixes, the Push2 USB bridge,
+Patches 0021-0041 (dcomp reblit/stale-buffer fixes, the Push2 USB bridge,
 the XDG file portal, the config-rounding patch) all applied with zero
-conflicts despite touching dxgi/factory.c, dcomp/device.c and similar
-files upstream also touched — the overlap turned out to be smaller than
-the line-count churn suggested.
+textual conflicts despite touching dxgi/factory.c, dcomp/device.c and
+similar files upstream also touched — the overlap turned out to be
+smaller than the line-count churn suggested. That clean apply hid one
+real semantic break, only caught at build time (not by the rebase):
+`struct d3d11_swapchain` no longer carries its own `frame_latency_event`
+HANDLE upstream (frame-latency signalling moved into wined3d, exposed
+only via `wined3d_swapchain_get_frame_latency_waitable_object()`, which
+duplicates a semaphore handle per call rather than exposing a plain
+event). The old field reference in the dcomp reblit-timer's idle-tick
+signal (from the original sashaduke redraw patchset, carried through
+0025/0041's stale-buffer and null-device hardening) compiled against
+nothing rather than conflicting textually. Fixed as a new patch —
+0042 — rather than folding into the historical patches it touches:
+fetches the waitable object, releases it as a semaphore, and closes the
+duplicated handle each tick (the old code held no handle to leak; the
+new API duplicates one per call, so closing it is now this project's
+responsibility). A reminder that a clean `git rebase` is necessary but
+not sufficient — the container build is still the real gate.
 
 Renumbered 0001-0041, closing the historical 0027 gap (see below) since a
 patch file no longer needs to be reserved for it against this new base;
 every old-number -> new-number mapping is a straight one-for-one rename
-except old 0028-0042 -> new 0027-0041.
+except old 0028-0042 -> new 0027-0041. Patch 0042 is new, added directly
+against this base (no old-numbering equivalent).
 
 Apply the 00*.patch series in order on top of that branch tip with `git am`
 (rebuild-wine.sh does this). Patches 0001-0030 were regenerated 2026-07-09 with

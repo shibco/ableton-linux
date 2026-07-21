@@ -1,0 +1,48 @@
+From 1a523ae589660802e408e270e5c111e4433bbaca Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Tue, 21 Jul 2026 17:04:55 -0230
+Subject: [PATCH] dxgi: fix build against 11.13's frame-latency-as-semaphore
+ refactor
+
+struct d3d11_swapchain no longer carries its own frame_latency_event
+HANDLE (dropped between 11.11 and 11.13; frame-latency signalling moved
+into wined3d, exposed only via wined3d_swapchain_get_frame_latency_waitable_object(),
+which duplicates a semaphore handle per call). The dcomp reblit-timer's
+idle-tick signal (originally added in the sashaduke redraw patchset,
+carried through 0025/0041's stale-buffer and null-device hardening)
+referenced the removed field directly, which the rebase onto 11.13
+silently carried through as a struct-member-not-found compile error
+rather than a merge conflict. Fetch the waitable object and release it
+as a semaphore instead of SetEvent, closing the duplicated handle each
+tick to avoid leaking one every 200ms while idle.
+---
+ dlls/dxgi/factory.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index bc07aec7..cad2d364 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -818,8 +818,20 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                          * let the sibling software frame show through (the
+                          * Learn View ~3s revert). Liveness comes from
+                          * teardown (Release/NCDESTROY), not idle. */
+-                        if (swapchain->frame_latency_event)
+-                            SetEvent(swapchain->frame_latency_event);
++                        {
++                            /* d3d11_swapchain no longer keeps its own frame-latency
++                             * event (upstream moved frame-latency signalling into
++                             * wined3d, exposed only as a duplicated waitable-object
++                             * handle, released as a semaphore); fetch and close it
++                             * per signal rather than caching a handle we'd leak. */
++                            HANDLE latency_obj = wined3d_swapchain_get_frame_latency_waitable_object(
++                                    swapchain->wined3d_swapchain);
++                            if (latency_obj)
++                            {
++                                ReleaseSemaphore(latency_obj, 1, NULL);
++                                CloseHandle(latency_obj);
++                            }
++                        }
+                         if (GetPropW(hwnd, L"__wine_dcomp_null_device")
+                                 && count != (LONG)(LONG_PTR)GetPropW(hwnd, L"__wine_dcomp_nulldev_presents"))
+                         {
