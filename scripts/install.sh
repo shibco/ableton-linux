@@ -2,6 +2,9 @@
 # End-user step 1: install the Wine runtime, launcher, and desktop entries (reverse with uninstall.sh).
 # Does not touch the Wine prefix — that is setup-prefix.sh.
 set -euo pipefail
+# readelf and sha256sum output is parsed below; localised output breaks the
+# checks (issue #36).
+export LC_ALL=C
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 

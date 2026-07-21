@@ -15,6 +15,9 @@
 # Everything after the marker line is a tar archive; this header never changes it.
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail
+# Tool output is parsed below (sha256sum, readelf, ldd); localised output
+# breaks the checks (issue #36).
+export LC_ALL=C
 
 VERSION="@VERSION@"
 PAYLOAD_SHA="@PAYLOAD_SHA@"

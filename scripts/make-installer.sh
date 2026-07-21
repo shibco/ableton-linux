@@ -2,6 +2,8 @@
 # Assemble dist/ableton-wine-setup-<VERSION>.run: setup-run-header.sh + a tar of the end-user kit
 # (runtime tarball, scripts, winetricks payloads, static cabextract). Repackaging only; Wine is not rebuilt.
 set -euo pipefail
+# ldd and sha256sum output is parsed below; localised output breaks the checks.
+export LC_ALL=C
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 cd "$root"
