@@ -75,14 +75,44 @@ every other `get_dpi_for_window`/`get_win_monitor_dpi`/`get_thread_dpi`
 call this patch stack adds, and for any raw int/UINT/DWORD variable
 assigned directly from one — no further instances found. Two for two on
 "clean rebase, broken build" so far being the exact same upstream
-refactor recurring in untouched files; if a third build attempt fails,
-suspect this refactor again before assuming a new cause.
+refactor recurring in untouched files.
+
+That prediction was wrong for the third: 0031's Push2 bridge is gated on
+`configure.ac` detecting host libusb-1.0 (only built if present), checked
+via `$ac_cv_lib_usb_1_0_libusb_interrupt_event_handler` — a cache variable
+only `AC_CHECK_LIB` sets. Upstream switched this exact detection from
+`AC_CHECK_LIB` to `AC_CHECK_FUNC` between 11.11 and 11.13 (now sets
+`ac_cv_func_libusb_interrupt_event_handler` instead), and 0031's added
+line sat right after the block with no textual overlap — carried through
+unconflicted, silently checking a variable configure never sets under
+the new macro, always true, so `enable_libusb_1_0` was unconditionally
+forced to `no` and the bridge DLL never got built. This one wasn't
+caught by the rebase *or* by two build attempts: container-build.sh's
+own post-build sanity checks (which exist precisely to catch this) were
+bare `test` commands with no error message, so `set -e` aborted silently
+right after the Wine version print with no indication of which check
+failed or why — indistinguishable in the log from truncated output.
+Fixed both: patch 0044 corrects the cache-variable name (also grepped
+the whole patch series for any other `ac_cv_lib_`/`ac_cv_func_` reference
+— only this one existed), and container-build.sh's existence/non-existence
+checks around the Push2 bridge and comdlg32 portal now print what they
+checked and what they expected before exiting.
+
+Separately: two build attempts in the middle of this bump were run
+through `./build.sh | tee logfile` without `pipefail` in the invoking
+shell, so a real failure inside `build.sh` reported the *pipeline's*
+exit status (`tee`'s, 0) instead of the actual failure — two apparently
+"successful" builds were actually silent failures, indistinguishable
+from success until rerun with `set -o pipefail` (or plain `>`) exposed
+the real exit code. Worth remembering for anyone scripting around this
+build: `build.sh`'s own exit code is only trustworthy if nothing
+downstream of it in a pipe swallows it.
 
 Renumbered 0001-0041, closing the historical 0027 gap (see below) since a
 patch file no longer needs to be reserved for it against this new base;
 every old-number -> new-number mapping is a straight one-for-one rename
-except old 0028-0042 -> new 0027-0041. Patches 0042 and 0043 are new,
-added directly against this base (no old-numbering equivalent).
+except old 0028-0042 -> new 0027-0041. Patches 0042, 0043 and 0044 are
+new, added directly against this base (no old-numbering equivalent).
 
 Apply the 00*.patch series in order on top of that branch tip with `git am`
 (rebuild-wine.sh does this). Patches 0001-0030 were regenerated 2026-07-09 with

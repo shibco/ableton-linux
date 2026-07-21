@@ -41,5 +41,6 @@ b4db16c9b1d2baaa26deb8ac05824a63fd64cd7af04357262394c34675242d4c  0037-winex11-d
 83b331a97c8d295db3bca355090f2840f8b4dd4dd981eaad392e84dc5eed9011  0041-winex11-alias-sub-scale-WM-config-rounding-instead-o.patch
 14ba78e7c929325bcaa3cfab099dcd2f6390cbf6fcf3f1a95866200b50aad71e  0042-dxgi-fix-build-against-11.13-s-frame-latency-as-sema.patch
 5a8a74adf0473a8dfcb3a0f24b18f80c2fd23039a55d59797b716f2b84a116ef  0043-win32u-fix-build-against-11.13-s-fractional-DPI-stru.patch
+175386aedf2a18130054af42a5670dbe153da707281e82508647ffea1634a3df  0044-configure-fix-libusb-1.0-detection-check-against-11..patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

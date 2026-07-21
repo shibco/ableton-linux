@@ -1,0 +1,34 @@
+From f778fe70879f990634cc8018d17a3d2569d36283 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Tue, 21 Jul 2026 17:45:45 -0230
+Subject: [PATCH] configure: fix libusb-1.0 detection check against 11.13's
+ AC_CHECK_FUNC switch
+
+The Push2 bridge's build-gate (0031: builds dlls/libusb-1.0 only when the
+host actually has libusb-1.0) checked ac_cv_lib_usb_1_0_libusb_interrupt_event_handler,
+which is only set when configure detects libusb-1.0 via AC_CHECK_LIB.
+Upstream switched this exact check from AC_CHECK_LIB to AC_CHECK_FUNC
+between 11.11 and 11.13 (producing ac_cv_func_libusb_interrupt_event_handler
+instead) -- our patch's added AS_IF line sat right after this block with
+no textual overlap, so the rebase carried it through unconflicted while
+silently checking a cache variable configure never sets under the new
+macro. Always-true, so enable_libusb_1_0 was unconditionally forced to
+no: dlls/libusb-1.0/libusb-1.0.dll never got built, tripping the Push 2
+bridge sanity check container-build.sh now actually reports clearly.
+---
+ configure.ac | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/configure.ac b/configure.ac
+index 5297a4f8..d33b7463 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1609,7 +1609,7 @@ fi
+ WINE_NOTICE_WITH(usb,[test "$ac_cv_func_libusb_interrupt_event_handler" != "yes"],
+                  [libusb-1.0 ${notice_platform}development files not found (or too old), USB devices won't be supported.],
+                  [enable_wineusb_sys])
+-AS_IF([test "$ac_cv_lib_usb_1_0_libusb_interrupt_event_handler" != "yes"],
++AS_IF([test "$ac_cv_func_libusb_interrupt_event_handler" != "yes"],
+       [enable_libusb_1_0=no])
+ 
+ dnl **** Check for libv4l2 ****
