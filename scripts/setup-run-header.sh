@@ -11,7 +11,7 @@
 # Environment:
 #   ABLETON_DPI_MODE    auto|preserve|100|fractional|dpi<N> (overrides scale auto-detection)
 #   ABLETON_THEME_MODE  auto|dark|light|preserve (overrides the light/dark sync)
-#   ABLETON_LIVE_VERSION  11|12 (prepare the prefix for this Live version; default 12)
+#   ABLETON_LIVE_VERSION  11|12 (prepare the prefix for this Live version; default: read from the chosen download, else 12)
 # Everything after the marker line is a tar archive; this header never changes it.
 # shellcheck shell=bash # the next line re-execs into bash before any bashism runs
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
@@ -88,8 +88,12 @@ find_live_payload() {
             esac
         done
     done
+    # Version-sort by basename; on full paths the directory name would outrank
+    # the version.
     [ "${#live_payloads[@]}" -le 1 ] || \
-        mapfile -t live_payloads < <(printf '%s\n' "${live_payloads[@]}" | sort -V)
+        mapfile -t live_payloads < <(
+            for f in "${live_payloads[@]}"; do printf '%s\t%s\n' "${f##*/}" "$f"; done \
+                | sort -t "$(printf '\t')" -k1,1V | cut -f2-)
 }
 choose_live_payload() {    # picks one of live_payloads into live_exe or live_zip
     live_exe=""; live_zip=""
@@ -140,6 +144,21 @@ if [ "$mode" = install ] && [ "$do_launch" -eq 1 ]; then
     if [ -n "$live_exe$live_zip" ]; then
         manual_install=0
         say "-- will install: $(basename "${live_exe:-$live_zip}")"
+    fi
+    # The chosen payload's major picks the prefix recipe; an explicit
+    # ABLETON_LIVE_VERSION pin wins.
+    if [ -z "${ABLETON_LIVE_VERSION:-}" ] && [ -n "$live_exe$live_zip" ]; then
+        payload_base="$(basename "${live_exe:-$live_zip}" | tr '[:upper:]' '[:lower:]')"
+        # ableton_live_<edition>_<major>.<minor>... (zip) / "ableton live <major> ..." (exe)
+        payload_major="$(printf '%s\n' "$payload_base" | sed -nE 's/^[^0-9]*_([0-9]+)\.[0-9]+.*$/\1/p')"
+        [ -n "$payload_major" ] || \
+            payload_major="$(printf '%s\n' "$payload_base" | sed -nE 's/^.*live[ _]([0-9]+).*$/\1/p')"
+        case "$payload_major" in
+            11|12) export ABLETON_LIVE_VERSION="$payload_major"
+                   [ "$payload_major" = 12 ] || say "-- Live $payload_major download: the prefix will be prepared with the Live $payload_major recipe" ;;
+            "")    say "-- cannot read a Live version from $(basename "${live_exe:-$live_zip}"); the prefix uses the Live 12 recipe (ABLETON_LIVE_VERSION overrides)" ;;
+            *)     fail "$(basename "${live_exe:-$live_zip}") looks like Live $payload_major — this kit has recipes for 11 and 12 only (set ABLETON_LIVE_VERSION or pick another download)" ;;
+        esac
     fi
 fi
 
