@@ -136,8 +136,8 @@ stdenv.mkDerivation {
     SHIM
         ${lib.optionalString (s != { }) ''
               cat >> $out/bin/ableton-live <<'SHIM'
-          # Nix-pinned PipeASIO settings (config.ini is the driver's only config
-          # surface): pin exactly the configured keys, leave the rest alone.
+          # Pin exactly the configured keys in config.ini, leave the rest alone;
+          # PIPEASIO_* environment variables still override per launch.
           ini="''${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
           if [ ! -s "$ini" ]; then
               mkdir -p "''${ini%/*}"

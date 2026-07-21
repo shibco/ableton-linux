@@ -573,9 +573,8 @@ rm -f "$WINEPREFIX"/drive_c/windows/system32/wineasio64.dll \
 regsvr32 /s pipeasio64.dll
 settle
 
-# Seed the driver defaults once. config.ini is the driver's only config
-# surface in PipeASIO 1.2.2 — edit it (e.g. buffer_size = 512 if you hear
-# crackles); PIPEASIO_DEBUG is the only environment variable it reads.
+# Seed the driver defaults once; the file is the config surface (PIPEASIO_*
+# environment variables override it per launch, see the README).
 pipeasio_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
 if [ ! -s "$pipeasio_cfg" ]; then
     mkdir -p "$(dirname "$pipeasio_cfg")"
