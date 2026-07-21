@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Standalone Max 9 support: a max9 launcher on the shared runtime and prefix, a menu entry with a stable icon, c74max URL handling, and Max for Live devices open with it by default. Installed when Max 9 is present in the prefix; rerun the installer after adding Max. Winemenubuilder entries from a stray default-prefix Max run (they point at stock wine against the patched-runtime prefix) are removed.
+- The kit stages learnheal.exe; the 2026.07.21.2 run file omitted it, so kit installs from that release lack the Learn View auto-heal until the next release. Repo installs were unaffected.
+
 ## 2026.07.21.2
 
 - Fixed the main-window growth properly. The 2026.07.21.1 fix held for WM tiles, but any interactive resize still grew the window without bound at 125% display scale, 2 px per cycle, until it ran off the screen. Cause, from two traced sessions: at a 2x framebuffer the window manager grants only even physical sizes, Live's per-monitor layout also produces only even sizes, and Wine's frame offset between the two is odd, so each round of the resize negotiation flips parity and no size satisfies both sides. No menu-band constant can converge; 7 px and 8 px at 192 dpi both ratchet. Wine now keeps the Win32 geometry at the requested value when the window manager's reply differs only by sub-scale rounding, and answers sub-scale requests locally instead of forwarding them to X, which also removes the extra request per pointer motion that made drags rough (Wine patch 0042, adapted from ENCORE; notes/ABLETON-WINE-DPI-SCALE-100.md). Verified on Live 12.4.3 at 125%: interactive resizes, tiles and moves settle once and hold.

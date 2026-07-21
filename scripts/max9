@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Max 9 launcher for the patched Wine stack: same runtime and prefix as
+# ableton-live, so standalone Max, Max for Live editing and PipeASIO all
+# share one wineserver. Args: Max documents as unix paths, or c74max: URLs.
+# Overrides: ABLETON_WINE_ROOT, ABLETON_WINEPREFIX, ABLETON_RT=off.
+set -u
+unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+export PATH="$WINE_ROOT/bin:$PATH"
+export WINEDEBUG="${WINEDEBUG:--all}"
+export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
+export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
+export WINESERVER="$WINE_ROOT/bin/wineserver"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}mscoree,mshtml="
+
+MAX_EXE="C:\\Program Files\\Cycling '74\\Max 9\\Max.exe"
+MAX_UNIX="$WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
+if [ ! -f "$MAX_UNIX" ]; then
+    echo "max9: no Max 9 installation in $WINEPREFIX" >&2
+    exit 1
+fi
+
+run=(wine)
+# Same realtime probe as the ableton-live launcher.
+if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
+    && chrt -r 10 true >/dev/null 2>&1; then
+    run=(chrt -r 10 wine)
+fi
+
+# Unix file paths become Windows paths; URLs and anything else pass through.
+args=()
+for a in "$@"; do
+    if [ -f "$a" ]; then
+        w="$(winepath -w "$a" 2>/dev/null || true)"
+        [ -n "$w" ] && a="$w"
+    fi
+    args+=("$a")
+done
+exec "${run[@]}" "$MAX_EXE" ${args[@]+"${args[@]}"}

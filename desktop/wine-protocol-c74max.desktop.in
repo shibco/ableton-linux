@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Max 9
+MimeType=x-scheme-handler/c74max;
+Exec=@HOME@/.local/bin/max9 %u
+NoDisplay=true
+StartupNotify=true
+Icon=max9

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Max 9
+Comment=Visual programming for music and sound (Wine, patched d2d1-dcomp stack)
+Exec=@HOME@/.local/bin/max9 %f
+Type=Application
+StartupNotify=true
+Path=@HOME@/.wine-ableton/drive_c/Program Files/Cycling '74/Max 9
+Icon=max9
+StartupWMClass=max.exe
+MimeType=application/x-ableton-live-max-device;
+Categories=AudioVideo;Audio;

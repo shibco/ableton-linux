@@ -230,6 +230,46 @@ if command -v xdg-mime >/dev/null 2>&1; then
         application/x-ableton-live-clip application/x-ableton-live-pack 2>/dev/null || true
 fi
 
+# Standalone Max 9 in the same prefix (installed with msiexec, see the
+# README). Only when present; rerun the installer after adding Max. The
+# winemenubuilder exports a stray run leaves behind point at stock wine
+# against the patched-runtime prefix and their MIME claims shadow ours;
+# they are removed.
+max_unix="$live_prefix/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
+if [ -f "$max_unix" ]; then
+    echo "== install the Max 9 launcher =="
+    install -m755 "$here/max9" "$BIN/max9"
+    if [ -e "$APPS/max9.desktop" ] && ! grep -qF "$BIN/max9" "$APPS/max9.desktop"; then
+        echo "   preserving existing $APPS/max9.desktop (it does not route through the launcher)"
+    else
+        sed "s#@HOME@#$HOME#g" "$root/desktop/max9.desktop.in" > "$APPS/max9.desktop"
+    fi
+    sed "s#@HOME@#$HOME#g" "$root/desktop/wine-protocol-c74max.desktop.in" > "$APPS/wine-protocol-c74max.desktop"
+    # Stable icon name from the winemenubuilder-extracted set, when present
+    # (the hex prefix varies per install).
+    for d in 16x16 24x24 32x32 48x48 128x128 256x256; do
+        for f in "$ICONS/$d/apps/"*_Max.0.png; do
+            [ -e "$f" ] || continue
+            cp -f "$f" "$ICONS/$d/apps/max9.png"
+            break
+        done
+    done
+    rm -f "$APPS/wine/Programs/Cycling '74/Max 9/Max 9.desktop"
+    rmdir -p "$APPS/wine/Programs/Cycling '74/Max 9" 2>/dev/null || true
+    for e in maxpat maxproj maxhelp maxzip amxd mxf; do
+        f="$APPS/wine-extension-$e.desktop"
+        if [ -e "$f" ] && ! grep -qF "$BIN/" "$f"; then rm -f "$f"; fi
+        rm -f "$HOME/.local/share/mime/packages/x-wine-extension-$e.xml"
+    done
+    update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
+    update-desktop-database "$APPS" 2>/dev/null || true
+    if command -v xdg-mime >/dev/null 2>&1; then
+        xdg-mime default max9.desktop application/x-ableton-live-max-device 2>/dev/null || true
+        xdg-mime default wine-protocol-c74max.desktop x-scheme-handler/c74max 2>/dev/null || true
+    fi
+    echo "   installed max9 launcher and desktop entry"
+fi
+
 case ":$PATH:" in
     *":$BIN:"*) ;;
     *) echo "!! note: $BIN is not on your PATH — add it or call ~/.local/bin/ableton-live directly" ;;
