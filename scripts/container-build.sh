@@ -63,11 +63,13 @@ ln -s "$PREFIX_ROOT" "$CONFIGURE_PREFIX"
 bridge_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/libusb-1.0.dll"
 bridge_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/libusb-1.0.so"
 portal_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/comdlg32.so"
-test -f "$bridge_pe"
-test -f "$bridge_unix"
-test -f "$portal_unix"
-test ! -e "$PREFIX_ROOT/lib/wine/i386-windows/libusb-1.0.dll"
-test ! -e "$PREFIX_ROOT/lib/wine/i386-unix/libusb-1.0.so"
+i386_bridge_pe="$PREFIX_ROOT/lib/wine/i386-windows/libusb-1.0.dll"
+i386_bridge_unix="$PREFIX_ROOT/lib/wine/i386-unix/libusb-1.0.so"
+[ -f "$bridge_pe" ] || { echo "!! Push 2 bridge PE missing: $bridge_pe" >&2; exit 1; }
+[ -f "$bridge_unix" ] || { echo "!! Push 2 bridge Unix side missing: $bridge_unix" >&2; exit 1; }
+[ -f "$portal_unix" ] || { echo "!! comdlg32 (XDG portal) missing: $portal_unix" >&2; exit 1; }
+[ ! -e "$i386_bridge_pe" ] || { echo "!! Push 2 bridge unexpectedly built for i386: $i386_bridge_pe" >&2; exit 1; }
+[ ! -e "$i386_bridge_unix" ] || { echo "!! Push 2 bridge unexpectedly built for i386: $i386_bridge_unix" >&2; exit 1; }
 
 expected_exports=$'4 libusb_alloc_transfer\n10 libusb_cancel_transfer\n12 libusb_claim_interface\n16 libusb_close\n26 libusb_error_name\n32 libusb_exit\n40 libusb_free_device_list\n50 libusb_free_transfer\n72 libusb_get_device_descriptor\n74 libusb_get_device_list\n110 libusb_handle_events_timeout\n120 libusb_init\n132 libusb_open\n140 libusb_release_interface\n154 libusb_set_option\n161 libusb_submit_transfer'
 actual_exports="$(llvm-readobj --coff-exports "$bridge_pe" | awk '
