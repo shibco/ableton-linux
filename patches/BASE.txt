@@ -61,11 +61,28 @@ new API duplicates one per call, so closing it is now this project's
 responsibility). A reminder that a clean `git rebase` is necessary but
 not sufficient — the container build is still the real gate.
 
+A second, same-shaped break surfaced on the next build attempt: 0028
+(carried through 0039's revised band law) computes the menu-bar band
+overshoot via `muldiv( 4, get_dpi_for_window( owner ), 96 )`, and
+`get_dpi_for_window()` also now returns `struct ratio` upstream (was a
+plain `UINT`) — the same fractional-DPI refactor that the win32u/window.c
+rebase conflict above was actually about, just showing up in a different
+file (dlls/win32u/menu.c) that the rebase never touched, so it compiled
+against the wrong type instead of conflicting. Fixed as patch 0043:
+wrap with `round_dpi()`, matching the convention the refactor established
+everywhere else. Grepped the full diff against upstream afterward for
+every other `get_dpi_for_window`/`get_win_monitor_dpi`/`get_thread_dpi`
+call this patch stack adds, and for any raw int/UINT/DWORD variable
+assigned directly from one — no further instances found. Two for two on
+"clean rebase, broken build" so far being the exact same upstream
+refactor recurring in untouched files; if a third build attempt fails,
+suspect this refactor again before assuming a new cause.
+
 Renumbered 0001-0041, closing the historical 0027 gap (see below) since a
 patch file no longer needs to be reserved for it against this new base;
 every old-number -> new-number mapping is a straight one-for-one rename
-except old 0028-0042 -> new 0027-0041. Patch 0042 is new, added directly
-against this base (no old-numbering equivalent).
+except old 0028-0042 -> new 0027-0041. Patches 0042 and 0043 are new,
+added directly against this base (no old-numbering equivalent).
 
 Apply the 00*.patch series in order on top of that branch tip with `git am`
 (rebuild-wine.sh does this). Patches 0001-0030 were regenerated 2026-07-09 with

@@ -1,0 +1,41 @@
+From b0de28ff44420319c1225562f292072fc7a241a8 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Tue, 21 Jul 2026 17:12:35 -0230
+Subject: [PATCH] win32u: fix build against 11.13's fractional-DPI struct ratio
+ refactor
+
+get_dpi_for_window() returns struct ratio upstream now (11.11 returned a
+plain UINT), and this patch stack's menu-bar-band DPI-scaling code (0028,
+carried through 0039's revised band law) called muldiv() with it
+directly. Unlike the same refactor's collision in win32u/window.c
+(resolved during the rebase itself, see BASE.txt), this one lived in a
+file/region the rebase never touched, so it carried through as a
+compile error (incompatible argument type) rather than a merge conflict.
+Wrap with round_dpi(), matching the convention used everywhere else in
+this codebase since the refactor.
+---
+ dlls/win32u/menu.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/win32u/menu.c b/dlls/win32u/menu.c
+index 88d27e67..70d48e2c 100644
+--- a/dlls/win32u/menu.c
++++ b/dlls/win32u/menu.c
+@@ -2127,7 +2127,7 @@ static void calc_menu_item_size( HDC hdc, struct menu_item *item, HWND owner, IN
+              * 44 = SM_CYMENU + 7); max(4, 4*dpi/96 - 1) reproduces both. */
+             item_height = max( max( item_height, txt_height ),
+                                get_system_metrics( SM_CYMENU ) +
+-                               max( 4, muldiv( 4, get_dpi_for_window( owner ), 96 ) - 1 ) - 1 );
++                               max( 4, muldiv( 4, round_dpi( get_dpi_for_window( owner ) ), 96 ) - 1 ) - 1 );
+             item->rect.right +=  2 * menucharsize.cx;
+         }
+         else
+@@ -2164,7 +2164,7 @@ static void calc_menu_item_size( HDC hdc, struct menu_item *item, HWND owner, IN
+     {
+         /* SM_CYMENU + max(4, 4*dpi/96 - 1) - 1: keep in sync with the text-item floor above */
+         item_height = max( item_height, get_system_metrics( SM_CYMENU ) +
+-                           max( 4, muldiv( 4, get_dpi_for_window( owner ), 96 ) - 1 ) - 1 );
++                           max( 4, muldiv( 4, round_dpi( get_dpi_for_window( owner ) ), 96 ) - 1 ) - 1 );
+     }
+     item->rect.bottom += item_height;
+     TRACE( "%s\n", wine_dbgstr_rect( &item->rect ));
