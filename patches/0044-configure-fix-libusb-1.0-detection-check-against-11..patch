@@ -1,4 +1,4 @@
-From f778fe70879f990634cc8018d17a3d2569d36283 Mon Sep 17 00:00:00 2001
+From aa1c670fd14438511bb516e0db5f90cd332d17a6 Mon Sep 17 00:00:00 2001
 From: dist <build@localhost>
 Date: Tue, 21 Jul 2026 17:45:45 -0230
 Subject: [PATCH] configure: fix libusb-1.0 detection check against 11.13's
@@ -9,16 +9,33 @@ host actually has libusb-1.0) checked ac_cv_lib_usb_1_0_libusb_interrupt_event_h
 which is only set when configure detects libusb-1.0 via AC_CHECK_LIB.
 Upstream switched this exact check from AC_CHECK_LIB to AC_CHECK_FUNC
 between 11.11 and 11.13 (producing ac_cv_func_libusb_interrupt_event_handler
-instead) -- our patch's added AS_IF line sat right after this block with
-no textual overlap, so the rebase carried it through unconflicted while
-silently checking a cache variable configure never sets under the new
-macro. Always-true, so enable_libusb_1_0 was unconditionally forced to
-no: dlls/libusb-1.0/libusb-1.0.dll never got built, tripping the Push 2
-bridge sanity check container-build.sh now actually reports clearly.
+instead) -- 0031's added lines sat right after this block in both
+configure.ac and the generated configure script with no textual overlap,
+so the rebase carried them through unconflicted while silently checking
+a cache variable configure never sets under the new macro. Always-true,
+so enable_libusb_1_0 was unconditionally forced to no: dlls/libusb-1.0's
+libusb-1.0.dll never got built. Fixed in BOTH files this patch touches
+(container-build.sh runs the pre-generated ./configure directly, never
+autoreconf -- a configure.ac-only fix is a no-op at build time; the
+generated configure script is what actually needs to be correct).
 ---
+ configure    | 2 +-
  configure.ac | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ 2 files changed, 2 insertions(+), 2 deletions(-)
 
+diff --git a/configure b/configure
+index c76787b9..7799c7f7 100755
+--- a/configure
++++ b/configure
+@@ -17830,7 +17830,7 @@ This is an error since --with-usb was requested." "$LINENO" 5 ;;
+ esac
+ enable_wineusb_sys=${enable_wineusb_sys:-no}
+ fi
+-if test "$ac_cv_lib_usb_1_0_libusb_interrupt_event_handler" != "yes"
++if test "$ac_cv_func_libusb_interrupt_event_handler" != "yes"
+ then :
+   enable_libusb_1_0=no
+ fi
 diff --git a/configure.ac b/configure.ac
 index 5297a4f8..d33b7463 100644
 --- a/configure.ac

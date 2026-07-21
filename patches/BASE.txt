@@ -98,6 +98,16 @@ the whole patch series for any other `ac_cv_lib_`/`ac_cv_func_` reference
 checks around the Push2 bridge and comdlg32 portal now print what they
 checked and what they expected before exiting.
 
+Correction to 0044 (same day, one build attempt later): the first cut
+only fixed `configure.ac`, which is a no-op at build time —
+container-build.sh runs the pre-generated `./configure` script directly
+and never regenerates it (no `autoreconf`/`autoconf` step anywhere in
+this build), so the actual cache-variable reference the build sees lives
+in the committed `configure` shell script, a separate generated artifact
+0031 already patches directly (a real Wine module addition always
+touches both — see 0031's own `configure`/`configure.ac` hunks). Fixed
+that copy too; 0044 now carries both hunks, same as 0031's shape.
+
 Separately: two build attempts in the middle of this bump were run
 through `./build.sh | tee logfile` without `pipefail` in the invoking
 shell, so a real failure inside `build.sh` reported the *pipeline's*
