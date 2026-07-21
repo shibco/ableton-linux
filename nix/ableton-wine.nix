@@ -179,6 +179,9 @@ stdenv.mkDerivation {
         install -m755 ${../scripts/setup-prefix.sh}      $out/share/ableton-wine/scripts/setup-prefix.sh
         install -m755 ${../scripts/check-live-audio.sh}  $out/share/ableton-wine/scripts/check-live-audio.sh
         install -m755 ${../scripts/check-ntsync.sh}      $out/share/ableton-wine/scripts/check-ntsync.sh
+        # check-ntsync.sh looks for its probe at ../beta/tester-kit/probes/windows/
+        install -Dm644 ${../beta/tester-kit/probes/windows/ntsyncprobe.exe} \
+          $out/share/ableton-wine/beta/tester-kit/probes/windows/ntsyncprobe.exe
         install -m644 ${../tools/setsyscolors.exe}       $out/share/ableton-wine/scripts/setsyscolors.exe
         install -m755 ${../scripts/setup-realtime.sh}    $out/share/ableton-wine/scripts/setup-realtime.sh
         install -m755 ${../scripts/setup-link.sh}        $out/share/ableton-wine/scripts/setup-link.sh
@@ -195,19 +198,29 @@ stdenv.mkDerivation {
         substituteInPlace $out/share/ableton-wine/scripts/check-live-audio.sh \
           --replace-fail '$HOME/.local/bin/ableton-live' "$out/bin/ableton-live"
 
-        # The vendored (pinned) winetricks, not nixpkgs' — same setup path as
-        # the tarball install. Its download cache stays out of the read-only store.
+        # The vendored (pinned) winetricks + payload cache, not nixpkgs' — same
+        # setup path as the tarball install; the Live 12 verbs need no network.
         install -m755 ${../vendor/winetricks}       $out/share/ableton-wine/vendor/winetricks
+        cp -a ${../vendor/winetricks-cache}         $out/share/ableton-wine/vendor/winetricks-cache
         # cabextract: winetricks corefonts; unzip: setup-prefix's Live installer step.
         ln -s ${cabextract}/bin/cabextract   $out/bin/cabextract
         ln -s ${lib.getBin unzip}/bin/unzip  $out/bin/unzip
 
-        # -- Desktop entries (manual install; see README) --
-        mkdir -p $out/share/ableton-wine/desktop
-        cp ${../desktop/ableton-live.desktop.in} \
-           $out/share/ableton-wine/desktop/ableton-live.desktop.in
-        cp ${../desktop/wine-protocol-ableton.desktop.in} \
-           $out/share/ableton-wine/desktop/wine-protocol-ableton.desktop.in
+        # -- Desktop entries --
+        # Rendered into share/applications so profiles surface them; Path= is
+        # unknowable at build time and the launcher is cwd-agnostic.
+        # wine.desktop (from the wine tree copy) is Wine's .exe/.msi MIME
+        # handler — not this package's job.
+        rm -f $out/share/applications/wine.desktop
+        mkdir -p $out/share/applications
+        for f in ableton-live wine-protocol-ableton; do
+          sed -e "s#@HOME@/.local/bin/ableton-live#$out/bin/ableton-live#" \
+              -e '/^Path=/d' \
+              ${../desktop}/$f.desktop.in > $out/share/applications/$f.desktop
+          if grep -q '@HOME@' $out/share/applications/$f.desktop; then
+            echo "!! unsubstituted @HOME@ token in $f.desktop" >&2; exit 1
+          fi
+        done
 
         runHook postInstall
   '';

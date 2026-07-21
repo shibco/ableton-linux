@@ -83,7 +83,7 @@ ABLETON_LIVE_AUTOINSTALL=1 nix run github:shibco/ableton-linux#setup-prefix
 nix run github:shibco/ableton-linux
 ```
 
-The first build compiles Wine from source (no binary cache) and takes a while; after that everything comes from your Nix store. The prefix step is per user and idempotent — rerunning it later heals the prefix without touching Live. Host requirements: a running PipeWire daemon and `/dev/ntsync` (kernel 6.14+ with the `ntsync` module; `scripts/check-ntsync.sh` verifies).
+The first build compiles Wine from source (no binary cache) and takes a while; after that everything comes from your Nix store. The prefix step is per user and idempotent — rerunning it later heals the prefix without touching Live. The Live 12 support files (corefonts, vcrun2022, mfc42) install from the winetricks cache vendored in the package, so `setup-prefix` needs no network for them; the Live 11 recipe still downloads its extras (see [Live 11](#live-11)). Host requirements: a running PipeWire daemon and `/dev/ntsync` (kernel 6.14+ with the `ntsync` module; `scripts/check-ntsync.sh` verifies).
 
 For daily use prefer `nix profile install github:shibco/ableton-linux` (or the NixOS config below) over bare `nix run`: `nix run` leaves no GC root, so a `nix-collect-garbage` deletes the compiled Wine and the next run rebuilds it.
 
@@ -121,7 +121,7 @@ inputs.ableton-linux.url = "github:shibco/ableton-linux";
 }
 ```
 
-This puts `ableton-live` on every user's PATH. Each user still runs the one-time `nix run github:shibco/ableton-linux#setup-prefix` — the prefix is per-user state in `~/.wine-ableton`, not something a system rebuild can produce. Desktop menu entries are not registered automatically; templates ship in the package under `share/ableton-wine/desktop/`.
+This puts `ableton-live` on every user's PATH. Each user still runs the one-time `nix run github:shibco/ableton-linux#setup-prefix` — the prefix is per-user state in `~/.wine-ableton`, not something a system rebuild can produce. Desktop menu entries ship rendered in `share/applications/`, so a profile install or `environment.systemPackages` puts Ableton Live in the menu automatically; bare `nix run` registers nothing.
 
 ## Issues?
 
@@ -152,6 +152,8 @@ Live 11 support is new and experimental. A Live 11 install differs in three ways
    sh ~/Downloads/install-ableton-latest.run --extract /tmp/ableton-kit
    bash /tmp/ableton-kit/scripts/setup-prefix.sh --post-first-run
    ```
+
+   On Nix: `nix run github:shibco/ableton-linux#setup-prefix -- --post-first-run`
 
 3. Known limitation: previewing or importing WMA or video files crashes Live 11. A fix is planned. Avoid those files in Live's browser for now; details in [notes/ABLETON-WINE-LIVE11-WMVCORE-STUB.md](notes/ABLETON-WINE-LIVE11-WMVCORE-STUB.md).
 

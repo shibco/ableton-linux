@@ -376,11 +376,13 @@ else
     kit_root_or_die
     export W_CACHE_OVERRIDE=""            # unused
     export WINETRICKS_LATEST_VERSION_CHECK=disabled
-    # Use the bundled payload cache if present (mfc42 downloads if not vendored).
+    # Per-verb symlinks, not one dir link: the vendored cache may be read-only
+    # (nix store), and verbs missing from it must still be able to download.
     tmpc=""
     if [ -d "$root/vendor/winetricks-cache" ]; then
         tmpc="$(mktemp -d)"
-        ln -s "$root/vendor/winetricks-cache" "$tmpc/winetricks"
+        mkdir "$tmpc/winetricks"
+        ln -s "$root/vendor/winetricks-cache"/* "$tmpc/winetricks/"
         export XDG_CACHE_HOME="$tmpc"
         echo "   using bundled winetricks cache ($root/vendor/winetricks-cache)"
     fi
