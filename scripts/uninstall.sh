@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Remove what install.sh added. The Wine prefix (~/.wine-ableton) is kept unless you pass --prefix.
 set -euo pipefail
-OPT="$HOME/.local/opt/wine-d2d1-nspa-11.11"
+OPT="$HOME/.local/opt/wine-d2d1-nspa-11.13"
 BIN="$HOME/.local/bin/ableton-live"
 APPS="$HOME/.local/share/applications"
 

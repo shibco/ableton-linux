@@ -3,7 +3,7 @@
 #   ./build.sh                # build the relocatable tarball with podman
 #   ENGINE=docker ./build.sh  # or docker
 #   JOBS=8 ./build.sh         # limit parallelism
-#   INSTALL_PREFIX=/target/path/wine-d2d1-nspa-11.11 ./build.sh
+#   INSTALL_PREFIX=/target/path/wine-d2d1-nspa-11.13 ./build.sh
 #                             # strict path-identity build; normally unnecessary —
 #                             # the tarball self-locates (relocation gate proves it)
 set -euo pipefail
@@ -15,7 +15,7 @@ IMAGE="${IMAGE:-ableton-wine-build:22.04}"
 JOBS="${JOBS:-$(nproc)}"
 # Wine locates bin/ -> lib/wine -> share/wine relative to the running binary.
 # One tarball can serve any user and any $HOME. 
-INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/wine-d2d1-nspa-11.11}"
+INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/wine-d2d1-nspa-11.13}"
 
 command -v "$ENGINE" >/dev/null || { echo "!! '$ENGINE' not found (set ENGINE=docker?)"; exit 1; }
 

@@ -1,4 +1,7 @@
-Subject: win32u,winex11: give captioned tool windows the native
+From 750a4fbc295dbd832764eed1482f60bc42968152 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 14/41] win32u,winex11: give captioned tool windows the native
  WM frame (plugin-editor titlebar)
 
 winex11: captioned tool windows get MWM decorations (close-only). win32u: when such a window's NC area
@@ -9,10 +12,10 @@ is caption+borders only, map the X window to exactly the client area so the Win3
  2 files changed, 17 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
-index d325f2eb..b2289f5a 100644
+index 755aeed1..2c869747 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -2004,6 +2004,16 @@ static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style,
+@@ -2067,6 +2067,16 @@ static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style,
       * app-drawn chrome, leaving a permanently repainted border rim. */
      if (EqualRect( &rects->window, &rects->client )) return rects->window;
      if (!user_driver->pGetWindowStyleMasks( hwnd, style, ex_style, &style_mask, &ex_style_mask )) return rects->window;
@@ -28,9 +31,9 @@ index d325f2eb..b2289f5a 100644
 +        return rects->client;
      if (!user_driver->pGetFrameExtents( hwnd, &rect ))
      {
-         if (EqualRect( &rects->window, &rects->client ) && !style_mask && !ex_style_mask) return rects->window;
+         /* NSPA: Move the window==client check AFTER GetWindowStyleMasks.  Apps that handle
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 20dae46f..dad59628 100644
+index 92e611fa..c9f9fd24 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
 @@ -500,7 +500,13 @@ static unsigned long get_mwm_decorations_for_style( DWORD style, DWORD ex_style

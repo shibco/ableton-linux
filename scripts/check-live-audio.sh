@@ -3,7 +3,7 @@
 # Run on the target machine after Live is installed. Exit 0 = driver opened, no FatalError logged.
 set -uo pipefail
 
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 LAUNCH="${ABLETON_LAUNCHER:-$HOME/.local/bin/ableton-live}"
 TIMEOUT="${ABLETON_CHECK_TIMEOUT:-180}"

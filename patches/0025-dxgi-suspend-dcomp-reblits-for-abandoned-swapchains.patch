@@ -1,20 +1,19 @@
-Subject: dxgi: suspend dcomp reblits for abandoned swapchains
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
+From 03bc7e72283b1f70ac69cb5116989dff5af68dec Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 25/41] dxgi: suspend dcomp reblits for abandoned swapchains
 
 Count consecutive idle ticks per target; after DCOMP_STALE_TICKS (3s) skip comp-buffer blits and forward
 WM_PAINT to the original wndproc. frame_latency_event keeps firing; a new present resets the counter.
-
 ---
  dlls/dxgi/factory.c | 45 +++++++++++++++++++++++++++++++++++++++++----
  1 file changed, 41 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
-index 9fd77076..0b0b8ba8 100644
+index 7912cd60..cf1ef6e7 100644
 --- a/dlls/dxgi/factory.c
 +++ b/dlls/dxgi/factory.c
-@@ -381,6 +381,14 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
+@@ -390,6 +390,14 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
  #define WM_WINE_DCOMP_SET_TARGET (WM_USER + 0x100)
  #define WM_WINE_DCOMP_SET_CHILD_MODE (WM_USER + 0x101)
  
@@ -29,7 +28,7 @@ index 9fd77076..0b0b8ba8 100644
  static inline struct d3d11_swapchain *d3d11_swapchain_from_IDXGISwapChain4(IDXGISwapChain4 *iface)
  {
      return CONTAINING_RECORD(iface, struct d3d11_swapchain, IDXGISwapChain4_iface);
-@@ -397,6 +405,12 @@ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+@@ -406,6 +414,12 @@ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
      HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
      LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
  
@@ -42,7 +41,7 @@ index 9fd77076..0b0b8ba8 100644
      if (comp_dc && dims)
      {
          unsigned int w = LOWORD(dims);
-@@ -632,6 +646,12 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+@@ -641,6 +655,12 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
              HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
              LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
  
@@ -55,7 +54,7 @@ index 9fd77076..0b0b8ba8 100644
              BeginPaint(hwnd, &ps);
              if (comp_dc && dims)
              {
-@@ -686,13 +706,29 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+@@ -695,13 +715,29 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
  
                      if (count == last)
                      {
@@ -89,7 +88,7 @@ index 9fd77076..0b0b8ba8 100644
                      SetPropW(hwnd, L"__wine_dcomp_last_present", (HANDLE)(LONG_PTR)count);
                  }
                  else
-@@ -753,6 +789,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+@@ -762,6 +798,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
              RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
              RemovePropW(hwnd, L"__wine_dcomp_comp_size");
              RemovePropW(hwnd, L"__wine_dcomp_last_present");

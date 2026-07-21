@@ -6,7 +6,7 @@
 # prefix while Live is running.
 set -uo pipefail
 
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export WINEDEBUG=-all
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

@@ -1,4 +1,7 @@
-Subject: Revert "winex11: reconstruct frame extents for tool
+From 09de0e47453ca8fe99838152045d3e84983e2822 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 12/41] Revert "winex11: reconstruct frame extents for tool
  windows (kill double title bar)"
 
 This reverts commit ef753f14c5632b9e7ccdd0ba265fd0625f5dac93.
@@ -7,10 +10,10 @@ This reverts commit ef753f14c5632b9e7ccdd0ba265fd0625f5dac93.
  1 file changed, 7 insertions(+), 19 deletions(-)
 
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 3178c911..33f9e3cb 100644
+index fa1f3729..109b1067 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1724,25 +1724,13 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
+@@ -1775,25 +1775,13 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
  
  void window_net_frame_extents_notify( struct x11drv_win_data *data, const long *extents, BOOL valid )
  {

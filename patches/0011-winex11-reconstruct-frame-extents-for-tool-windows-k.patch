@@ -1,18 +1,20 @@
-Subject: winex11: reconstruct frame extents for tool windows
+From 696d57736b01ebccd4292b002b1bfdd568becad2 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 11/41] winex11: reconstruct frame extents for tool windows
  (kill double title bar)
 
 Re-enable _NET_FRAME_EXTENTS reconstruction for WS_EX_TOOLWINDOW windows only,
 so the WM frame absorbs the caption; all other windows stay on the disabled baseline.
-
 ---
  dlls/winex11.drv/window.c | 26 +++++++++++++++++++-------
  1 file changed, 19 insertions(+), 7 deletions(-)
 
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 33f9e3cb..3178c911 100644
+index 109b1067..fa1f3729 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1724,13 +1724,25 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
+@@ -1775,13 +1775,25 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
  
  void window_net_frame_extents_notify( struct x11drv_win_data *data, const long *extents, BOOL valid )
  {

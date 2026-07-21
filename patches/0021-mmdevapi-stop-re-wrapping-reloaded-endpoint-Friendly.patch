@@ -1,9 +1,11 @@
-Subject: mmdevapi: stop re-wrapping reloaded endpoint
+From a636a4a98860a1d62277ede2152ce7ffe0e1fe4e Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 21/41] mmdevapi: stop re-wrapping reloaded endpoint
  FriendlyNames
 
 Add an init_props flag: generate endpoint name properties only when creating a device from a raw
 driver name (load_driver_devices); reloading from the registry keeps the stored values.
-
 ---
  dlls/mmdevapi/devenum.c | 14 ++++++++++----
  1 file changed, 10 insertions(+), 4 deletions(-)

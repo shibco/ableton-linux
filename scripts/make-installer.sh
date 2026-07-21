@@ -10,7 +10,7 @@ cd "$root"
 
 ENGINE="${ENGINE:-podman}"
 IMAGE="${IMAGE:-ableton-wine-build:22.04}"
-NAME="wine-d2d1-nspa-11.11"
+NAME="wine-d2d1-nspa-11.13"
 VERSION="$(cat VERSION)"
 # exact-version runtime if present, else the newest built one
 tarball="dist/${NAME}-${VERSION}.tar.zst"

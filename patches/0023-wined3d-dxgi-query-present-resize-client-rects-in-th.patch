@@ -1,22 +1,21 @@
-Subject: wined3d, dxgi: query present/resize client rects in the
+From 67d9eb853ab457e54a892b031800f51e05b898e8 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 23/41] wined3d, dxgi: query present/resize client rects in the
  window's DPI context
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 Bracket the client-rect queries in wined3d_swapchain_present, resize_buffers, state_init and
 d3d12_swapchain ResizeBuffers with the window's own DPI awareness context.
-
 ---
  dlls/dxgi/swapchain.c    | 13 +++++++++++--
  dlls/wined3d/swapchain.c | 28 +++++++++++++++++++++++++---
  2 files changed, 36 insertions(+), 5 deletions(-)
 
 diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
-index 0d308156..577ae1fd 100644
+index 518f33df..0454a2d0 100644
 --- a/dlls/dxgi/swapchain.c
 +++ b/dlls/dxgi/swapchain.c
-@@ -2709,8 +2709,17 @@ static HRESULT d3d12_swapchain_resize_buffers(struct d3d12_swapchain *swapchain,
+@@ -2743,8 +2743,17 @@ static HRESULT d3d12_swapchain_resize_buffers(struct d3d12_swapchain *swapchain,
      if (!width || !height)
      {
          RECT client_rect;
@@ -37,10 +36,10 @@ index 0d308156..577ae1fd 100644
              WARN("Failed to get client rect, last error %#lx.\n", GetLastError());
              return DXGI_ERROR_INVALID_CALL;
 diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
-index b322556c..77be38da 100644
+index 7fe5e8ff..f171e1ad 100644
 --- a/dlls/wined3d/swapchain.c
 +++ b/dlls/wined3d/swapchain.c
-@@ -344,7 +344,19 @@ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
+@@ -346,7 +346,19 @@ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
          if (!desc->windowed)
              SetRect(&d, 0, 0, desc->backbuffer_width, desc->backbuffer_height);
          else
@@ -60,7 +59,7 @@ index b322556c..77be38da 100644
          dst_rect = &d;
      }
  
-@@ -2093,7 +2105,12 @@ static HRESULT wined3d_swapchain_state_init(struct wined3d_swapchain_state *stat
+@@ -2142,7 +2154,12 @@ static HRESULT wined3d_swapchain_state_init(struct wined3d_swapchain_state *stat
      {
          RECT client_rect;
  
@@ -73,7 +72,7 @@ index b322556c..77be38da 100644
          TRACE("Client rect %s.\n", wine_dbgstr_rect(&client_rect));
  
          if (!state->desc.backbuffer_width)
-@@ -2650,9 +2667,14 @@ HRESULT CDECL wined3d_swapchain_resize_buffers(struct wined3d_swapchain *swapcha
+@@ -2710,9 +2727,14 @@ HRESULT CDECL wined3d_swapchain_resize_buffers(struct wined3d_swapchain *swapcha
  
          /* The application is requesting that either the swapchain width or
           * height be set to the corresponding dimension in the window's

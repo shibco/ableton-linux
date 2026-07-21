@@ -1,4 +1,7 @@
-Subject: GNOME fixes: per-thread reentrant-wpchanged state (menu
+From 8e72aed284f098093a0dde89e4376972ac01f13a Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 04/41] GNOME fixes: per-thread reentrant-wpchanged state (menu
  wedge race); no MWM decor for custom-NC windows (double-frame/white border)
 
 ---
@@ -8,23 +11,23 @@ Subject: GNOME fixes: per-thread reentrant-wpchanged state (menu
  3 files changed, 15 insertions(+), 16 deletions(-)
 
 diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
-index 978700a3..4fcb5c11 100644
+index 26bab84b..381e4262 100644
 --- a/dlls/win32u/ntuser_private.h
 +++ b/dlls/win32u/ntuser_private.h
-@@ -127,6 +127,8 @@ struct user_thread_info
-     DWORD                         clipping_reset;         /* time when clipping was last reset */
-     struct session_thread_data   *session_data;           /* shared session thread data */
+@@ -132,6 +132,8 @@ struct user_thread_info
      struct mouse_tracking_info   *mouse_tracking_info;    /* NtUserTrackMouseEvent handling */
+     struct opengl_thread_data    *opengl_data;            /* OpenGL private thread data */
+     struct list                   known_pointers;         /* list of known pointers */
 +    HWND                          reentrant_wpchanged_hwnd;  /* window inside a nested WM_WINDOWPOSCHANGED send */
 +    UINT                          reentrant_wpchanged_depth; /* nesting depth of WM_WINDOWPOSCHANGED sends */
  };
  
  extern struct user_thread_info *get_user_thread_info(void);
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
-index 384682b1..cc924a93 100644
+index 8c43f101..0ad16c29 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -54,9 +54,6 @@ static void *client_objects[MAX_USER_HANDLES];
+@@ -56,9 +56,6 @@ static void *client_objects[MAX_USER_HANDLES];
  
  static volatile unsigned int startup_info_flags;
  static unsigned int startup_show_window;
@@ -34,7 +37,7 @@ index 384682b1..cc924a93 100644
  
  static unsigned int set_startup_info_flags( unsigned int mask, unsigned int flags )
  {
-@@ -4059,12 +4056,11 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
+@@ -4213,12 +4210,11 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
          static const UINT reentrant_resize_flags =
              SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
          DWORD style = get_window_long( winpos->hwnd, GWL_STYLE );
@@ -50,7 +53,7 @@ index 384682b1..cc924a93 100644
              (orig_flags & reentrant_resize_flags) == reentrant_resize_flags &&
              !(orig_flags & (SWP_NOSIZE | SWP_SHOWWINDOW | SWP_HIDEWINDOW));
          /* WM_WINDOWPOSCHANGED is sent even if SWP_NOSENDCHANGING is set
-@@ -4078,17 +4074,14 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
+@@ -4232,17 +4228,14 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
           * size-only WM_WINDOWPOSCHANGED update. */
          if (!suppress_reentrant_wpch)
          {
@@ -75,7 +78,7 @@ index 384682b1..cc924a93 100644
      }
  
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 9c16ade0..0f6d34ee 100644
+index f9fe4e49..e68ad83a 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
 @@ -519,6 +519,10 @@ static unsigned long get_mwm_decorations_for_style( DWORD style, DWORD ex_style

@@ -1,13 +1,19 @@
-Subject: revert frame-extents re-enable (a5ab9f00): reintroduced
+From c12dc076861d50767b2f1cd3428681202dcea515 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 09/41] revert frame-extents re-enable (a5ab9f00): reintroduced
  strobing white border and did not stop the resize loop; back to disabled
  baseline for handoff
 
 ---
+ dlls/winex11.drv/window.c | 17 +++++++----------
+ 1 file changed, 7 insertions(+), 10 deletions(-)
+
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 9727669d..20dae46f 100644
+index 8a68045c..92e611fa 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1718,16 +1718,13 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
+@@ -1769,16 +1769,13 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
  
  void window_net_frame_extents_notify( struct x11drv_win_data *data, const long *extents, BOOL valid )
  {

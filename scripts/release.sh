@@ -15,7 +15,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 cd "$root"
 
-NAME="wine-d2d1-nspa-11.11"
+NAME="wine-d2d1-nspa-11.13"
 VERSION="$(cat VERSION)"
 TAG="v$VERSION"
 run="dist/ableton-wine-setup-${VERSION}.run"

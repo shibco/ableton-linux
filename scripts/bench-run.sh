@@ -43,7 +43,7 @@ for v in "$xruns" "$dsp"; do
     esac
 done
 
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 
 # The xruns figure is operator-entered from pw-top's ERR delta over the reference
 # playback; without pw-top there is no sanctioned way to have measured it.

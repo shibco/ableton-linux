@@ -1,4 +1,7 @@
-Subject: winex11: disable frame-extents reconstruction (comdlg32
+From 8775d1c1550dfa10bc70eac64858a3c2edc3ebda Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 06/41] winex11: disable frame-extents reconstruction (comdlg32
  dialogs off-screen at high DPI); keep custom-NC + reentrancy fixes
 
 ---
@@ -6,10 +9,10 @@ Subject: winex11: disable frame-extents reconstruction (comdlg32
  1 file changed, 9 insertions(+), 5 deletions(-)
 
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 0f6d34ee..aff22a5a 100644
+index e68ad83a..3c3166f1 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1718,11 +1718,15 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
+@@ -1769,11 +1769,15 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
  
  void window_net_frame_extents_notify( struct x11drv_win_data *data, const long *extents, BOOL valid )
  {

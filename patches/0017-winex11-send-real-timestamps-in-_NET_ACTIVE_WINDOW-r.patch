@@ -1,4 +1,7 @@
-Subject: winex11: send real timestamps in _NET_ACTIVE_WINDOW
+From 5fef147cd2b03c047e123c15ca6474b37b18931b Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 17/41] winex11: send real timestamps in _NET_ACTIVE_WINDOW
  requests and allow retries
 
 Send _NET_ACTIVE_WINDOW requests with the timestamp of the last processed user input (mutter
@@ -9,10 +12,10 @@ drops timestamp-0 requests) and re-send when a newer timestamp is available.
  2 files changed, 19 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index dad59628..2fc1d147 100644
+index c9f9fd24..3d7b6e21 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -2282,10 +2282,23 @@ void set_net_active_window( HWND hwnd, HWND previous )
+@@ -2333,10 +2333,23 @@ void set_net_active_window( HWND hwnd, HWND previous )
      BOOL withdrawn = FALSE;
      Window window;
      XEvent xev;
@@ -37,7 +40,7 @@ index dad59628..2fc1d147 100644
      if (window_set_pending_activate( hwnd, &withdrawn )) return;
  
      xev.xclient.type = ClientMessage;
-@@ -2296,12 +2309,13 @@ void set_net_active_window( HWND hwnd, HWND previous )
+@@ -2347,12 +2360,13 @@ void set_net_active_window( HWND hwnd, HWND previous )
      xev.xclient.send_event = True;
      xev.xclient.format = 32;
      xev.xclient.data.l[0] = 2; /* source: pager */
@@ -52,7 +55,7 @@ index dad59628..2fc1d147 100644
  
      if (withdrawn)
      {
-@@ -2312,7 +2326,8 @@ void set_net_active_window( HWND hwnd, HWND previous )
+@@ -2363,7 +2377,8 @@ void set_net_active_window( HWND hwnd, HWND previous )
      }
      data->pending_state.net_active_window = window;
  
@@ -63,10 +66,10 @@ index dad59628..2fc1d147 100644
                  SubstructureRedirectMask | SubstructureNotifyMask, &xev );
  }
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index a74c975d..6f15d022 100644
+index 409c5dfa..4d1aa53c 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -424,6 +424,7 @@ struct x11drv_thread_data
+@@ -438,6 +438,7 @@ struct x11drv_thread_data
      struct display_state pending_state;       /* display state tracking the pending / requested state */
      struct display_state current_state;       /* display state tracking the current X11 state */
      unsigned long net_active_window_serial;   /* serial of last pending _NET_ACTIVE_WINDOW request */

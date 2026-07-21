@@ -105,7 +105,7 @@ The launcher finds Live 11 by itself. With both 11 and 12 in the prefix the newe
 
 To run a plugin installer inside your Live environment:
 ```
-WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.11/bin/wine \
+WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.13/bin/wine \
     "/path/to/PluginInstaller.exe"
 ```
 You can also manually install plugin .vst3 files inside the `~/.wine-ableton/drive_c/Program Files/Common Files/VST3/` directory.
@@ -171,7 +171,7 @@ Building needs `podman` or `docker`, about 10 GB of disk, `zstd`, `cabextract` a
 ./build.sh
 ./scripts/install.sh
 ./scripts/setup-prefix.sh
-WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.11/bin/wine \
+WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.13/bin/wine \
     "/path/to/Ableton Live 12 Suite Installer.exe"
 ableton-live
 ```
@@ -190,7 +190,7 @@ It verifies itself, installs the runtime, detects the display scale, creates the
 
 Mostly unnecessary. But in case you need them: 
 
-- `ABLETON_WINE_ROOT` runtime path (default `~/.local/opt/wine-d2d1-nspa-11.11`)
+- `ABLETON_WINE_ROOT` runtime path (default `~/.local/opt/wine-d2d1-nspa-11.13`)
 - `ABLETON_WINEPREFIX` prefix path (default `~/.wine-ableton`)
 - `ABLETON_LIVE_VERSION` `11` | `12`: the Live version the prefix setup prepares for and the launcher picks (see [Live 11](#live-11))
 - `ABLETON_LIVE_EXE` full path to a Live exe inside the prefix; picks one exact install when several editions coexist (the launcher refuses to guess)

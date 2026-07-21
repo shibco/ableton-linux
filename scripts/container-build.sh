@@ -8,7 +8,7 @@ OUT=/out
 WORK=/work
 JOBS="${JOBS:-$(nproc)}"
 VERSION="$(cat "$SRC/VERSION")"
-NAME="wine-d2d1-nspa-11.11"
+NAME="wine-d2d1-nspa-11.13"
 CONFIGURE_PREFIX="${INSTALL_PREFIX:?build.sh must pass INSTALL_PREFIX}"
 [ "$(basename "$CONFIGURE_PREFIX")" = "$NAME" ] || {
     echo "!! INSTALL_PREFIX must end in /$NAME" >&2
@@ -18,15 +18,15 @@ DESTDIR="$WORK/stage"
 PREFIX_ROOT="$DESTDIR$CONFIGURE_PREFIX"
 npatch="$(ls "$SRC"/patches/00*.patch | wc -l)"
 
-echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.11 @ 7ea0c8b7) =="
+echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.13 @ 5c23dd1c) =="
 mkdir -p "$WORK/wine-src"
-zstd -dc --long=27 "$SRC/vendor/wine-base-7ea0c8b7.tar.zst" | tar -x -C "$WORK/wine-src"
+zstd -dc --long=27 "$SRC/vendor/wine-base-5c23dd1c.tar.zst" | tar -x -C "$WORK/wine-src"
 
 echo "== [2/8] git init + apply the $npatch-patch fix series =="
 cd "$WORK/wine-src"
 git init -q
 git -c user.email=build@localhost -c user.name=dist add -A
-git -c user.email=build@localhost -c user.name=dist commit -q -m "base 7ea0c8b7"
+git -c user.email=build@localhost -c user.name=dist commit -q -m "base 5c23dd1c"
 # The series ships without From:/Date: mail headers; git am refuses to commit
 # with an empty author, so supply a fixed neutral ident (fixed date keeps the
 # apply reproducible). Patches that still carry headers keep their own.
@@ -198,7 +198,7 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 {
     echo "dist-version: $VERSION"
     echo "wine:         $("$PREFIX_ROOT/bin/wine" --version)"
-    echo "base:         giang17/wine d2d1-dcomp-11.11 @ 7ea0c8b7"
+    echo "base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c"
     echo "prefix:       $CONFIGURE_PREFIX (configure-time only; tarball is relocatable, see relocation gate)"
     echo "patches:      $((npatch + nasio))"     # wine series + pipeasio series
     echo "wine-patches: $npatch"

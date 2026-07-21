@@ -21,7 +21,7 @@ export LC_ALL=C
 
 VERSION="@VERSION@"
 PAYLOAD_SHA="@PAYLOAD_SHA@"
-RUNTIME_NAME="wine-d2d1-nspa-11.11"
+RUNTIME_NAME="wine-d2d1-nspa-11.13"
 
 self="$(readlink -f -- "$0")"
 stick_dir="$(dirname -- "$self")"

@@ -1,5 +1,55 @@
 Base tree: https://github.com/giang17/wine.git
-Branch:    d2d1-dcomp-11.11  (wine-11.11 + squash commit 7ea0c8b7dd "d2d1-dcomp stack: port to wine-11.11")
+Branch:    d2d1-dcomp-11.13  (wine-11.13, at upstream commit 5c23dd1cf6:
+           "winex11: use NORMAL not UTILITY for non-DComp ownerless
+           TOOLWINDOW popups (issue 84)")
+
+Bumped 2026-07-21 from d2d1-dcomp-11.11 (7ea0c8b7dd). Rationale: 11.11 was
+two point releases behind upstream's actively-maintained branch (11.12 and
+11.13 both already existed, unlike the 11.0/11.8/11.10 snapshots — 11.13
+carries a real incremental commit history, last updated the same day as
+this bump, including issues 78-84: ownerless WS_POPUP|WS_EX_TOOLWINDOW
+z-order/window-type fixes, directly adjacent to this project's own 0037-0039
+popup-management patches). Also closes the Wine point-version gap with
+ENCORE (github.com/wowitsjack/ENCORE), which runs plain Wine 11.13.
+
+Rebase method: the 42-patch series (as it stood at 7ea0c8b7dd) was applied
+as real commits on the original 7ea0c8b7dd checkout (all 41 patch files
+applied cleanly — see note on the missing 0027 below — confirming the
+vendored tarball matches upstream exactly), then `git rebase --onto
+5c23dd1cf6 7ea0c8b7dd` replayed that commit stack onto the new base. Real
+3-way merges (using actual historical blobs, not blind patch replay) hit 5
+conflicts, all resolved and re-verified against the new base's own code
+before resolving:
+  - dlls/dxgi/swapchain.c (old 0001): upstream's own GetFullscreenDesc
+    rewrite (caches a `fullscreen_desc` struct, populated with a correct
+    rational refresh rate elsewhere) already supersedes old 0001's fix for
+    this function — confirmed by checking the sibling
+    d3d12_swapchain_GetFullscreenDesc, which already does exactly what
+    0001 wanted. Kept upstream's version, dropped 0001's hunk here.
+  - dlls/win32u/window.c, two spots (old 0002, 0003): upstream refactored
+    DPI handling to a `struct ratio` type (round_dpi()) and the internal
+    adjust_window_rect() instead of the public NtUserAdjustWindowRect()
+    wrapper — unrelated to these patches' actual fix (the window==client
+    decoration-mask gate, then patch 0003's pGetFrameExtents wrapping).
+    Kept both: upstream's DPI call convention + this project's gate logic
+    and wrapping structure, combined.
+  - dlls/win32u/ntuser_private.h (old 0004): both sides purely added
+    different struct fields at the same point. Kept both.
+  - dlls/winex11.drv/opengl.c (old 0020): a local variable rename upstream
+    (`window` -> `surface->window` in x11drv_egl_surface_create).
+    Substituted through 0020's sRGB-colorspace surface-creation hunk;
+    confirmed has_EGL_KHR_gl_colorspace and the rest of 0020's own struct
+    additions applied cleanly elsewhere in the same commit.
+Patches 0021-0042 (dcomp reblit/stale-buffer fixes, the Push2 USB bridge,
+the XDG file portal, the config-rounding patch) all applied with zero
+conflicts despite touching dxgi/factory.c, dcomp/device.c and similar
+files upstream also touched — the overlap turned out to be smaller than
+the line-count churn suggested.
+
+Renumbered 0001-0041, closing the historical 0027 gap (see below) since a
+patch file no longer needs to be reserved for it against this new base;
+every old-number -> new-number mapping is a straight one-for-one rename
+except old 0028-0042 -> new 0027-0041.
 
 Apply the 00*.patch series in order on top of that branch tip with `git am`
 (rebuild-wine.sh does this). Patches 0001-0030 were regenerated 2026-07-09 with

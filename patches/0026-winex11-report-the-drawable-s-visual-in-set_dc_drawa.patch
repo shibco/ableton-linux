@@ -1,19 +1,21 @@
-Subject: winex11: report the drawable's visual in
+From 781c8fbb4f794bc69d0b623321c4ad3d08543934 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 26/41] winex11: report the drawable's visual in
  set_dc_drawable and X11DRV_ReleaseDC
 
 set_dc_drawable: fill escape.visual via XGetWindowAttributes so xrender matches the drawable's depth
 (non-window drawables unchanged). X11DRV_ReleaseDC: park the DC on the root window with default_visual.
-
 ---
  dlls/winex11.drv/init.c   | 24 ++++++++++++++++++++++++
  dlls/winex11.drv/window.c |  9 +++++++++
  2 files changed, 33 insertions(+)
 
 diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
-index 96fd532f..c3217d76 100644
+index e1239891..b3ebc0b3 100644
 --- a/dlls/winex11.drv/init.c
 +++ b/dlls/winex11.drv/init.c
-@@ -276,6 +276,30 @@ void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode )
+@@ -270,6 +270,30 @@ void set_dc_drawable( HDC hdc, Drawable drawable, const RECT *rect, int mode )
          .dc_rect = *rect,
          .mode = mode,
      };
@@ -45,10 +47,10 @@ index 96fd532f..c3217d76 100644
  }
  
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 2fc1d147..9d1697d6 100644
+index 3d7b6e21..adcbeb8e 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -3334,6 +3334,15 @@ void X11DRV_ReleaseDC( HWND hwnd, HDC hdc )
+@@ -3391,6 +3391,15 @@ void X11DRV_ReleaseDC( HWND hwnd, HDC hdc )
      escape.mode = IncludeInferiors;
      escape.dc_rect = NtUserGetVirtualScreenRect( MDT_DEFAULT );
      OffsetRect( &escape.dc_rect, -2 * escape.dc_rect.left, -2 * escape.dc_rect.top );

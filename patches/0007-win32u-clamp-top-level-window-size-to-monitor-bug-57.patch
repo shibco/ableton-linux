@@ -1,4 +1,7 @@
-Subject: win32u: clamp top-level window size to monitor
+From 4427a36df7675427e18dddecb592acc1c2b573af Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 07/41] win32u: clamp top-level window size to monitor
  (bug-57955 anti-growth; size-only, small-overshoot only)
 
 ---
@@ -6,10 +9,10 @@ Subject: win32u: clamp top-level window size to monitor
  1 file changed, 18 insertions(+)
 
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
-index d325f2eb..c30a88c9 100644
+index 755aeed1..8d8e3839 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -4123,6 +4123,24 @@ BOOL WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT
+@@ -4277,6 +4277,24 @@ BOOL WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT
      winpos.cy = cy;
      winpos.flags = flags;
  

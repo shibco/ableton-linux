@@ -1,17 +1,19 @@
-Subject: wined3d: keep present/resize DPI diagnostics at trace
+From a59b60df1121896eb6ae0b6c03d1c6af71b768cc Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 24/41] wined3d: keep present/resize DPI diagnostics at trace
  level
 
 Emit the PRESENT-DBG/RESIZE-DBG probes at trace level instead of fixme.
-
 ---
  dlls/wined3d/swapchain.c | 34 ++++++++++++++++++++++++++++++++++
  1 file changed, 34 insertions(+)
 
 diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
-index 77be38da..e694ae5c 100644
+index f171e1ad..d93ae04b 100644
 --- a/dlls/wined3d/swapchain.c
 +++ b/dlls/wined3d/swapchain.c
-@@ -360,6 +360,32 @@ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
+@@ -362,6 +362,32 @@ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
          dst_rect = &d;
      }
  
@@ -44,7 +46,7 @@ index 77be38da..e694ae5c 100644
      wined3d_cs_emit_present(swapchain->device->cs, swapchain, src_rect,
              dst_rect, dst_window_override, swap_interval, flags);
  
-@@ -2687,6 +2713,14 @@ HRESULT CDECL wined3d_swapchain_resize_buffers(struct wined3d_swapchain *swapcha
+@@ -2747,6 +2773,14 @@ HRESULT CDECL wined3d_swapchain_resize_buffers(struct wined3d_swapchain *swapcha
              height = client_rect.bottom;
      }
  

@@ -1,4 +1,7 @@
-Subject: NSPA 1a+1b (57955 visible-rect + decoration gates)
+From 57418e320c8edc77993752f6df9ef517f0c5ab2a Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 02/41] NSPA 1a+1b (57955 visible-rect + decoration gates)
 
 ---
  dlls/win32u/window.c      | 7 ++++++-
@@ -6,10 +9,10 @@ Subject: NSPA 1a+1b (57955 visible-rect + decoration gates)
  2 files changed, 11 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
-index 96a04bbe..7825a95f 100644
+index fd76942b..919f6bb7 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -1997,8 +1997,13 @@ static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style,
+@@ -2060,8 +2060,13 @@ static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style,
      RECT visible_rect, rect = {0};
  
      if (get_present_rect( hwnd, &rect, get_thread_dpi() )) return rect;
@@ -21,11 +24,11 @@ index 96a04bbe..7825a95f 100644
 +     * still need decoration masking when the WM provides decorations.  Without this,
 +     * visible == window, and the configure feedback loop causes 4px/frame growth. */
 +    if (EqualRect( &rects->window, &rects->client ) && !style_mask && !ex_style_mask) return rects->window;
-     if (!NtUserAdjustWindowRect( &rect, style & style_mask, FALSE, ex_style & ex_style_mask, dpi )) return rects->window;
+     if (!adjust_window_rect( &rect, style & style_mask, FALSE, ex_style & ex_style_mask, round_dpi( dpi ) )) return rects->window;
  
      visible_rect = rects->window;
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index b126802c..c271491f 100644
+index 225f0f05..64e4961d 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
 @@ -501,7 +501,6 @@ static unsigned long get_mwm_decorations_for_style( DWORD style, DWORD ex_style

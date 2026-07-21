@@ -1,4 +1,7 @@
-Subject: server: pre-dirty shared session mapping pages; win32u:
+From b658a93a14363bbec45e3fdda4d2414b7616da6d Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 18/41] server: pre-dirty shared session mapping pages; win32u:
  fix block match + diagnostics
 
 memset the region in set_session_mapping/grow_session_mapping so every page is a real shmem page before

@@ -1,4 +1,7 @@
-Subject: win32u: no frame allowance for custom-NC windows (white
+From e85948b1a86dbb30d865a3125cc3965aea2256db Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 05/41] win32u: no frame allowance for custom-NC windows (white
  rim around Live modals)
 
 ---
@@ -6,10 +9,10 @@ Subject: win32u: no frame allowance for custom-NC windows (white
  1 file changed, 5 insertions(+)
 
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
-index cc924a93..d325f2eb 100644
+index 0ad16c29..755aeed1 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -1998,6 +1998,11 @@ static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style,
+@@ -2061,6 +2061,11 @@ static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style,
  
      if (get_present_rect( hwnd, &rect, get_thread_dpi() )) return rect;
      if (IsRectEmpty( &rects->window ) || shaped || !decorated_mode) return rects->window;

@@ -1,4 +1,7 @@
-Subject: Revert "winex11: let captioned tool windows use WM
+From 4c6915343e8a4098eeaf711f8de44eed07ae1553 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 13/41] Revert "winex11: let captioned tool windows use WM
  decorations at high DPI"
 
 This reverts commit 02afb562af4977fd669abda8bed37ac3c2230692.
@@ -7,7 +10,7 @@ This reverts commit 02afb562af4977fd669abda8bed37ac3c2230692.
  1 file changed, 1 insertion(+), 7 deletions(-)
 
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 33f9e3cb..20dae46f 100644
+index 109b1067..92e611fa 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
 @@ -500,13 +500,7 @@ static unsigned long get_mwm_decorations_for_style( DWORD style, DWORD ex_style

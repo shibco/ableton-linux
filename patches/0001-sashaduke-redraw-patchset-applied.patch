@@ -1,16 +1,19 @@
-Subject: sashaduke redraw patchset (applied)
+From 68528f4c00f0ac54eb3255419052c8a52e8967e5 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 01/41] sashaduke redraw patchset (applied)
 
 ---
  dlls/dcomp/device.c      | 34 +++++++++++++--
  dlls/dxgi/output.c       | 48 +++++++++++++++++++--
- dlls/dxgi/swapchain.c    | 93 ++++++++++++++++++++++++++++++++++------
+ dlls/dxgi/swapchain.c    | 90 +++++++++++++++++++++++++++++++++++-----
  dlls/dxgi/utils.c        | 15 +++++++
  dlls/wined3d/cs.c        | 15 ++++---
- dlls/wined3d/swapchain.c | 35 +++++++++++++++
- 6 files changed, 215 insertions(+), 25 deletions(-)
+ dlls/wined3d/swapchain.c | 35 ++++++++++++++++
+ 6 files changed, 214 insertions(+), 23 deletions(-)
 
 diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
-index 293cd359..cb6e26c6 100644
+index 2c9431f4..bf2b9a98 100644
 --- a/dlls/dcomp/device.c
 +++ b/dlls/dcomp/device.c
 @@ -35,6 +35,19 @@
@@ -33,7 +36,7 @@ index 293cd359..cb6e26c6 100644
  /* Private heap for dcomp — isolates surface/visual/target lifecycle
   * allocations (BeginDraw/EndDraw cycles, dirty-rect tracking, persistent
   * context wrappers) from the process heap. */
-@@ -1999,10 +2012,25 @@ static HRESULT STDMETHODCALLTYPE dcomp_device_WaitForCommitCompletion(IDComposit
+@@ -2135,10 +2148,25 @@ static HRESULT STDMETHODCALLTYPE dcomp_device_WaitForCommitCompletion(IDComposit
  static HRESULT STDMETHODCALLTYPE dcomp_device_GetFrameStatistics(IDCompositionDevice *iface,
          DCOMPOSITION_FRAME_STATISTICS *statistics)
  {
@@ -138,7 +141,7 @@ index 6f911266..a8956ff7 100644
  
  /* IDXGIOutput1 methods */
 diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
-index 474176f0..0d308156 100644
+index 25826eae..518f33df 100644
 --- a/dlls/dxgi/swapchain.c
 +++ b/dlls/dxgi/swapchain.c
 @@ -27,6 +27,44 @@
@@ -186,7 +189,7 @@ index 474176f0..0d308156 100644
  static DXGI_SWAP_EFFECT dxgi_swap_effect_from_wined3d(enum wined3d_swap_effect swap_effect)
  {
      switch (swap_effect)
-@@ -546,8 +584,7 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetDesc(IDXGISwapChain4 *iface,
+@@ -573,8 +611,7 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetDesc(IDXGISwapChain4 *iface,
  
      desc->BufferDesc.Width = wined3d_desc.backbuffer_width;
      desc->BufferDesc.Height = wined3d_desc.backbuffer_height;
@@ -196,7 +199,7 @@ index 474176f0..0d308156 100644
      desc->BufferDesc.Format = dxgi_format_from_wined3dformat(wined3d_desc.backbuffer_format);
      desc->BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
      desc->BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
-@@ -643,9 +680,15 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetContainingOutput(IDXGISwapCh
+@@ -670,9 +707,15 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetContainingOutput(IDXGISwapCh
  static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetFrameStatistics(IDXGISwapChain4 *iface,
          DXGI_FRAME_STATISTICS *stats)
  {
@@ -214,17 +217,7 @@ index 474176f0..0d308156 100644
  }
  
  static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetLastPresentCount(IDXGISwapChain4 *iface,
-@@ -717,8 +760,7 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetFullscreenDesc(IDXGISwapChai
- 
-     FIXME("Ignoring ScanlineOrdering and Scaling.\n");
- 
--    desc->RefreshRate.Numerator = wined3d_desc.refresh_rate;
--    desc->RefreshRate.Denominator = 1;
-+    desc->RefreshRate = dxgi_get_effective_refresh_rate(wined3d_desc.refresh_rate);
-     desc->ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
-     desc->Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
-     desc->Windowed = wined3d_desc.windowed;
-@@ -906,18 +948,33 @@ static UINT STDMETHODCALLTYPE d3d11_swapchain_GetCurrentBackBufferIndex(IDXGISwa
+@@ -929,18 +972,33 @@ static UINT STDMETHODCALLTYPE d3d11_swapchain_GetCurrentBackBufferIndex(IDXGISwa
  static HRESULT STDMETHODCALLTYPE d3d11_swapchain_CheckColorSpaceSupport(IDXGISwapChain4 *iface,
          DXGI_COLOR_SPACE_TYPE colour_space, UINT *colour_space_support)
  {
@@ -262,7 +255,7 @@ index 474176f0..0d308156 100644
  }
  
  static HRESULT STDMETHODCALLTYPE d3d11_swapchain_ResizeBuffers1(IDXGISwapChain4 *iface,
-@@ -2597,7 +2654,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetDesc(IDXGISwapChain4 *iface,
+@@ -2630,7 +2688,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetDesc(IDXGISwapChain4 *iface,
  
      desc->BufferDesc.Width = swapchain_desc->Width;
      desc->BufferDesc.Height = swapchain_desc->Height;
@@ -273,7 +266,7 @@ index 474176f0..0d308156 100644
      desc->BufferDesc.Format = swapchain_desc->Format;
      desc->BufferDesc.ScanlineOrdering = fullscreen_desc->ScanlineOrdering;
      desc->BufferDesc.Scaling = fullscreen_desc->Scaling;
-@@ -2767,9 +2826,15 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetContainingOutput(IDXGISwapCh
+@@ -2800,9 +2860,15 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetContainingOutput(IDXGISwapCh
  static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetFrameStatistics(IDXGISwapChain4 *iface,
          DXGI_FRAME_STATISTICS *stats)
  {
@@ -291,7 +284,7 @@ index 474176f0..0d308156 100644
  }
  
  static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetLastPresentCount(IDXGISwapChain4 *iface,
-@@ -2821,6 +2886,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetFullscreenDesc(IDXGISwapChai
+@@ -2854,6 +2920,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetFullscreenDesc(IDXGISwapChai
      wined3d_mutex_unlock();
  
      *desc = swapchain->fullscreen_desc;
@@ -301,10 +294,10 @@ index 474176f0..0d308156 100644
      return S_OK;
  }
 diff --git a/dlls/dxgi/utils.c b/dlls/dxgi/utils.c
-index 35fcc076..4bf81c35 100644
+index 3e07f27f..8b434341 100644
 --- a/dlls/dxgi/utils.c
 +++ b/dlls/dxgi/utils.c
-@@ -568,6 +568,19 @@ static unsigned int wined3d_swapchain_flags_from_dxgi(unsigned int flags)
+@@ -574,6 +574,19 @@ static unsigned int wined3d_swapchain_flags_from_dxgi(unsigned int flags)
      return wined3d_flags;
  }
  
@@ -324,7 +317,7 @@ index 35fcc076..4bf81c35 100644
  HRESULT wined3d_swapchain_desc_from_dxgi(struct wined3d_swapchain_desc *wined3d_desc,
          IDXGIOutput *dxgi_containing_output, HWND window, const DXGI_SWAP_CHAIN_DESC1 *dxgi_desc,
          const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *dxgi_fullscreen_desc)
-@@ -625,6 +638,8 @@ HRESULT wined3d_swapchain_desc_from_dxgi(struct wined3d_swapchain_desc *wined3d_
+@@ -631,6 +644,8 @@ HRESULT wined3d_swapchain_desc_from_dxgi(struct wined3d_swapchain_desc *wined3d_
      wined3d_desc->auto_depth_stencil_format = 0;
      wined3d_desc->flags = wined3d_swapchain_flags_from_dxgi(dxgi_desc->Flags);
      wined3d_desc->refresh_rate = dxgi_fullscreen_desc ? dxgi_rational_to_uint(&dxgi_fullscreen_desc->RefreshRate) : 0;
@@ -334,10 +327,10 @@ index 35fcc076..4bf81c35 100644
  
      return S_OK;
 diff --git a/dlls/wined3d/cs.c b/dlls/wined3d/cs.c
-index 5c94c347..183e7cc9 100644
+index df6e927b..0250c586 100644
 --- a/dlls/wined3d/cs.c
 +++ b/dlls/wined3d/cs.c
-@@ -3257,9 +3257,12 @@ static bool wined3d_cs_map_upload_bo(struct wined3d_device_context *context, str
+@@ -3241,9 +3241,12 @@ static bool wined3d_cs_map_upload_bo(struct wined3d_device_context *context, str
              if (!map_ptr)
              {
                  /* adapter_alloc_bo() should have given us a mapped BO if we are
@@ -353,7 +346,7 @@ index 5c94c347..183e7cc9 100644
                  return false;
              }
          }
-@@ -3267,8 +3270,10 @@ static bool wined3d_cs_map_upload_bo(struct wined3d_device_context *context, str
+@@ -3251,8 +3254,10 @@ static bool wined3d_cs_map_upload_bo(struct wined3d_device_context *context, str
  
          if (!map_ptr)
          {
@@ -367,10 +360,10 @@ index 5c94c347..183e7cc9 100644
          }
  
 diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
-index e86f381b..b322556c 100644
+index c5555135..7fe5e8ff 100644
 --- a/dlls/wined3d/swapchain.c
 +++ b/dlls/wined3d/swapchain.c
-@@ -574,6 +574,25 @@ static void comp_buffer_alpha_copy(DWORD *dst_bits, unsigned int dst_pitch,
+@@ -576,6 +576,25 @@ static void comp_buffer_alpha_copy(DWORD *dst_bits, unsigned int dst_pitch,
      }
  }
  
@@ -396,7 +389,7 @@ index e86f381b..b322556c 100644
  /* Porter-Duff Over: C_out = C_src + C_dst * (1 - alpha_src)
   * Both src and dst are premultiplied alpha BGRA. */
  static void composite_over_premul(DWORD *dst, const DWORD *src,
-@@ -853,6 +872,22 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
+@@ -855,6 +874,22 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
                  swapchain->surface_valid = TRUE;
              }
          }

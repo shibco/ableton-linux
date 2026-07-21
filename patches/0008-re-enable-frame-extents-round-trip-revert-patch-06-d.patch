@@ -1,13 +1,20 @@
-Subject: re-enable frame-extents round-trip (revert patch 06) +
+From 2e45813d2c69b5ef9ea9e9794a6807273e6b4819 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 08/41] re-enable frame-extents round-trip (revert patch 06) +
  drop size clamp (revert patch 07): converge Live window feedback via the real
  WM frame
 
 ---
+ dlls/win32u/window.c      | 18 ------------------
+ dlls/winex11.drv/window.c | 19 ++++++++++---------
+ 2 files changed, 10 insertions(+), 27 deletions(-)
+
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
-index c30a88c9..d325f2eb 100644
+index 8d8e3839..755aeed1 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -4123,24 +4123,6 @@ BOOL WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT
+@@ -4277,24 +4277,6 @@ BOOL WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT
      winpos.cy = cy;
      winpos.flags = flags;
  
@@ -33,10 +40,10 @@ index c30a88c9..d325f2eb 100644
  
      if (is_current_thread_window( hwnd ))
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index aff22a5a..9727669d 100644
+index 3c3166f1..8a68045c 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1718,15 +1718,16 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
+@@ -1769,15 +1769,16 @@ BOOL read_net_frame_extents( Display *display, Window window, long *extents )
  
  void window_net_frame_extents_notify( struct x11drv_win_data *data, const long *extents, BOOL valid )
  {

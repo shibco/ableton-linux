@@ -1,4 +1,7 @@
-Subject: dcomp: never let an orphaned target subclass swallow
+From 268843917c3ca0861cf52e633a5abb9d94a517fb Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 16/41] dcomp: never let an orphaned target subclass swallow
  window messages
 
 Keep the window's true original wndproc in the __wine_dcomp_origproc property; forward to it when the
@@ -8,10 +11,10 @@ target property is missing, unhook on WM_NCDESTROY, and on release only restore 
  1 file changed, 64 insertions(+), 10 deletions(-)
 
 diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
-index cb6e26c6..5090a695 100644
+index bf2b9a98..63e94055 100644
 --- a/dlls/dcomp/device.c
 +++ b/dlls/dcomp/device.c
-@@ -1475,6 +1475,17 @@ static void dcomp_visual_try_reparent(struct dcomp_visual *visual)
+@@ -1399,6 +1399,17 @@ static void dcomp_visual_try_reparent(struct dcomp_visual *visual)
  
  /* Property name for storing target pointer on HWND (Phase 5 subclass) */
  static const WCHAR dcomp_target_prop[] = L"__wine_dcomp_target";
@@ -29,7 +32,7 @@ index cb6e26c6..5090a695 100644
  
  struct dcomp_target
  {
-@@ -1540,12 +1551,24 @@ static ULONG STDMETHODCALLTYPE dcomp_target_Release(IDCompositionTarget *iface)
+@@ -1466,12 +1477,24 @@ static ULONG STDMETHODCALLTYPE dcomp_target_Release(IDCompositionTarget *iface)
          if (target->device)
              dcomp_device_remove_target(target->device, target);
  
@@ -58,7 +61,7 @@ index cb6e26c6..5090a695 100644
          }
  
          /* Clean up presentation state */
-@@ -1864,12 +1887,25 @@ static void dcomp_target_ensure_comp_dc(struct dcomp_target *target, UINT width,
+@@ -2040,12 +2063,25 @@ static void dcomp_target_flush_present(struct dcomp_target *target, struct dcomp
  static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
  {
      struct dcomp_target *target = (struct dcomp_target *)GetPropW(hwnd, dcomp_target_prop);
@@ -87,7 +90,7 @@ index cb6e26c6..5090a695 100644
  
      switch (msg)
      {
-@@ -1883,6 +1919,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+@@ -2079,6 +2115,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
          /* Window is being destroyed — clean up subclass and forward */
          SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)orig_wndproc);
          RemovePropW(hwnd, dcomp_target_prop);
@@ -95,7 +98,7 @@ index cb6e26c6..5090a695 100644
          target->orig_wndproc = NULL;
          return CallWindowProcW(orig_wndproc, hwnd, msg, wparam, lparam);
      }
-@@ -2066,10 +2103,27 @@ static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTargetForHwnd(IDCompositionD
+@@ -2202,10 +2239,27 @@ static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTargetForHwnd(IDCompositionD
       * The installed WndProc suppresses WM_ERASEBKGND per-window (returns 1), so
       * the class background brush is never painted for this target — we no longer
       * zero the class-wide GCLP_HBRBACKGROUND, which would also affect unrelated

@@ -81,7 +81,7 @@ jobs:
           ver="${TAG#v}"
           cd assets
           for f in "ableton-wine-setup-$ver.run" "ableton-wine-setup-$ver.run.sha256" \
-                   "wine-d2d1-nspa-11.11-$ver.tar.zst" "wine-d2d1-nspa-11.11-$ver.tar.zst.sha256" \
+                   "wine-d2d1-nspa-11.13-$ver.tar.zst" "wine-d2d1-nspa-11.13-$ver.tar.zst.sha256" \
                    "BUILD-INFO-$ver.txt" \
                    install-ableton-latest.run install-ableton-latest.run.sha256; do
               [ -f "$f" ] || { echo "!! missing asset: $f"; exit 1; }

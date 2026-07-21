@@ -1,8 +1,8 @@
-Subject: dxgi: stop forcing swapchain presents from the dcomp
+From 265ac562dd67d990f728691ba70e8077f1df07fb Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 22/41] dxgi: stop forcing swapchain presents from the dcomp
  reblit timer
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 On reblit-timer ticks, signal frame_latency_event and refresh the window surface from the
 persistent comp buffer instead of forcing a Present; ticks where the app presented on its own do nothing.
@@ -11,10 +11,10 @@ persistent comp buffer instead of forcing a Present; ticks where the app present
  1 file changed, 29 insertions(+), 8 deletions(-)
 
 diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
-index 7f96e332..9fd77076 100644
+index b6c87980..7912cd60 100644
 --- a/dlls/dxgi/factory.c
 +++ b/dlls/dxgi/factory.c
-@@ -666,14 +666,34 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+@@ -675,14 +675,34 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
  
                  if (sc)
                  {
@@ -57,7 +57,7 @@ index 7f96e332..9fd77076 100644
                  }
                  else
                  {
-@@ -732,6 +752,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+@@ -741,6 +761,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
              RemovePropW(hwnd, L"__wine_dcomp_swapchain");
              RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
              RemovePropW(hwnd, L"__wine_dcomp_comp_size");

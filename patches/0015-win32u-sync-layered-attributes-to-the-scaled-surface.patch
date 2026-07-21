@@ -1,4 +1,7 @@
-Subject: win32u: sync layered attributes to the scaled surface
+From 966cd552feb7b6510d97f7d246d096c96b266e39 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 15/41] win32u: sync layered attributes to the scaled surface
  target on every flush
 
 Forward color_key/alpha_bits/alpha_mask to the target driver surface on every scaled-surface
@@ -8,7 +11,7 @@ flush, not only when the window shape changes; unchanged values cost nothing.
  1 file changed, 8 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
-index 2a999b83..6755e41c 100644
+index c972544f..71db6ec6 100644
 --- a/dlls/win32u/dce.c
 +++ b/dlls/win32u/dce.c
 @@ -201,11 +201,16 @@ static BOOL scaled_surface_flush( struct window_surface *window_surface, const R
