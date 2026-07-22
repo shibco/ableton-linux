@@ -85,10 +85,13 @@ settle_procs() {   # basenames of windows processes still running under this run
 }
 settle() {
     "$WINESERVER" -w &
-    local w=$! t=0 now last="(unset)"   # sentinel: the first tick past 15s always narrates
+    local w=$! t=0 tick now last="(unset)"   # sentinel: the first tick past 15s always narrates
     while kill -0 "$w" 2>/dev/null; do
-        sleep 5
-        t=$((t + 5))
+        # 1s ticks while a fast settle can still finish (they add latency, not
+        # noise); 5s once we are narrating anyway.
+        tick=1; [ "$t" -ge 15 ] && tick=5
+        sleep "$tick"
+        t=$((t + tick))
         [ "$t" -lt 15 ] && continue   # fast settles stay quiet
         now="$(settle_procs)"
         if [ "$now" != "$last" ] || [ $((t % 30)) -eq 0 ]; then
