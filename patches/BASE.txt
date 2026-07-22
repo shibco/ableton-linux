@@ -40,7 +40,7 @@ before resolving:
     Substituted through 0020's sRGB-colorspace surface-creation hunk;
     confirmed has_EGL_KHR_gl_colorspace and the rest of 0020's own struct
     additions applied cleanly elsewhere in the same commit.
-Patches 0021-0041 (dcomp reblit/stale-buffer fixes, the Push2 USB bridge,
+Patches 0021-0042 (dcomp reblit/stale-buffer fixes, the Push2 USB bridge,
 the XDG file portal, the config-rounding patch) all applied with zero
 textual conflicts despite touching dxgi/factory.c, dcomp/device.c and
 similar files upstream also touched — the overlap turned out to be
@@ -54,21 +54,21 @@ event). The old field reference in the dcomp reblit-timer's idle-tick
 signal (from the original sashaduke redraw patchset, carried through
 0025/0041's stale-buffer and null-device hardening) compiled against
 nothing rather than conflicting textually. Fixed as a new patch —
-0042 — rather than folding into the historical patches it touches:
+0043 — rather than folding into the historical patches it touches:
 fetches the waitable object, releases it as a semaphore, and closes the
 duplicated handle each tick (the old code held no handle to leak; the
 new API duplicates one per call, so closing it is now this project's
 responsibility). A reminder that a clean `git rebase` is necessary but
 not sufficient — the container build is still the real gate.
 
-A second, same-shaped break surfaced on the next build attempt: 0028
-(carried through 0039's revised band law) computes the menu-bar band
+A second, same-shaped break surfaced on the next build attempt: 0029
+(carried through 0040's revised band law) computes the menu-bar band
 overshoot via `muldiv( 4, get_dpi_for_window( owner ), 96 )`, and
 `get_dpi_for_window()` also now returns `struct ratio` upstream (was a
 plain `UINT`) — the same fractional-DPI refactor that the win32u/window.c
 rebase conflict above was actually about, just showing up in a different
 file (dlls/win32u/menu.c) that the rebase never touched, so it compiled
-against the wrong type instead of conflicting. Fixed as patch 0043:
+against the wrong type instead of conflicting. Fixed as patch 0044:
 wrap with `round_dpi()`, matching the convention the refactor established
 everywhere else. Grepped the full diff against upstream afterward for
 every other `get_dpi_for_window`/`get_win_monitor_dpi`/`get_thread_dpi`
@@ -77,12 +77,12 @@ assigned directly from one — no further instances found. Two for two on
 "clean rebase, broken build" so far being the exact same upstream
 refactor recurring in untouched files.
 
-That prediction was wrong for the third: 0031's Push2 bridge is gated on
+That prediction was wrong for the third: 0032's Push2 bridge is gated on
 `configure.ac` detecting host libusb-1.0 (only built if present), checked
 via `$ac_cv_lib_usb_1_0_libusb_interrupt_event_handler` — a cache variable
 only `AC_CHECK_LIB` sets. Upstream switched this exact detection from
 `AC_CHECK_LIB` to `AC_CHECK_FUNC` between 11.11 and 11.13 (now sets
-`ac_cv_func_libusb_interrupt_event_handler` instead), and 0031's added
+`ac_cv_func_libusb_interrupt_event_handler` instead), and 0032's added
 line sat right after the block with no textual overlap — carried through
 unconflicted, silently checking a variable configure never sets under
 the new macro, always true, so `enable_libusb_1_0` was unconditionally
@@ -92,21 +92,21 @@ own post-build sanity checks (which exist precisely to catch this) were
 bare `test` commands with no error message, so `set -e` aborted silently
 right after the Wine version print with no indication of which check
 failed or why — indistinguishable in the log from truncated output.
-Fixed both: patch 0044 corrects the cache-variable name (also grepped
+Fixed both: patch 0045 corrects the cache-variable name (also grepped
 the whole patch series for any other `ac_cv_lib_`/`ac_cv_func_` reference
 — only this one existed), and container-build.sh's existence/non-existence
 checks around the Push2 bridge and comdlg32 portal now print what they
 checked and what they expected before exiting.
 
-Correction to 0044 (same day, one build attempt later): the first cut
+Correction to 0045 (same day, one build attempt later): the first cut
 only fixed `configure.ac`, which is a no-op at build time —
 container-build.sh runs the pre-generated `./configure` script directly
 and never regenerates it (no `autoreconf`/`autoconf` step anywhere in
 this build), so the actual cache-variable reference the build sees lives
 in the committed `configure` shell script, a separate generated artifact
-0031 already patches directly (a real Wine module addition always
-touches both — see 0031's own `configure`/`configure.ac` hunks). Fixed
-that copy too; 0044 now carries both hunks, same as 0031's shape.
+0032 already patches directly (a real Wine module addition always
+touches both — see 0032's own `configure`/`configure.ac` hunks). Fixed
+that copy too; 0045 now carries both hunks, same as 0032's shape.
 
 Separately: two build attempts in the middle of this bump were run
 through `./build.sh | tee logfile` without `pipefail` in the invoking
@@ -118,11 +118,10 @@ the real exit code. Worth remembering for anyone scripting around this
 build: `build.sh`'s own exit code is only trustworthy if nothing
 downstream of it in a pipe swallows it.
 
-Renumbered 0001-0041, closing the historical 0027 gap (see below) since a
-patch file no longer needs to be reserved for it against this new base;
-every old-number -> new-number mapping is a straight one-for-one rename
-except old 0028-0042 -> new 0027-0041. Patches 0042, 0043 and 0044 are
-new, added directly against this base (no old-numbering equivalent).
+Patch numbering is otherwise unchanged from the 7ea0c8b7dd series: 0027
+stays reserved (see below — its patch file was removed 2026-07-14, the
+gap is not closed by this bump). Patches 0043, 0044 and 0045 are new,
+added directly against this base (no old-numbering equivalent).
 
 Apply the 00*.patch series in order on top of that branch tip with `git am`
 (rebuild-wine.sh does this). Patches 0001-0030 were regenerated 2026-07-09 with
@@ -151,9 +150,7 @@ on base 182ae79b (commit dd25887c there).
 The previous 6-patch series (state of 2026-07-03, commit b826f21e) is in
 archive-2026-07-03/ for reference only.
 
-Provenance (current numbering, post-11.13-bump — the historical narrative
-above uses each patch's number at the time described, which for 0028-0042
-is one higher than its number here; see the renumbering note above):
+Provenance:
   0001      = sashaduke/ableton-live12-linux patches/0001-ableton-live12-wine-d2d-dcomp-redraw-fixes.patch
               (known-good-2026-06-30)
   0002-0003 = nine7nine/wine-nspa-src commits a63120d350 + ec6cc844f0 (winex11 hunks only)
@@ -165,15 +162,18 @@ is one higher than its number here; see the renumbering note above):
               (0020); mmdevapi FriendlyName re-wrap fix (0021); dxgi/wined3d dcomp
               reblit + DPI-context fixes (0022-0025); winex11 DC visual/depth
               tracking for GL plugin editors (0026).
-  0027      = winealsa MIDI hotplug re-subscribe (2026-07-07), see
+  0027      = gitignore housekeeping (untrack local build trees); patch file
+              removed from the shipped series 2026-07-14, commit remains in
+              the tree history.
+  0028      = winealsa MIDI hotplug re-subscribe (2026-07-07), see
               ABLETON-WINE-MIDI-HOTPLUG.md
-  0028      = win32u menu-bar +4px (2026-07-09): fixes the main-window +56px
+  0029      = win32u menu-bar +4px (2026-07-09): fixes the main-window +56px
               resize settle at 100% scale (Live models NC as adjust+4), see
               ABLETON-WINE-DPI-SCALE-100.md
-  0029      = dxgi stale-size dcomp blit gating (2026-07-09): partial fix for
+  0030      = dxgi stale-size dcomp blit gating (2026-07-09): partial fix for
               the Learn View mangled band, see ABLETON-WINE-LEARNVIEW-FLICKER.md
               (still open: LAYERED|NOREDIRECTIONBITMAP display path)
-  0030      = comdlg32/shell32 XDG file-dialog portal backend (2026-07-11).
+  0031      = comdlg32/shell32 XDG file-dialog portal backend (2026-07-11).
               Origin: Wine MR !10060 v5, runtime patches 0001 + 0002 + 0003 +
               0005, plus the responsiveness follow-up used by MusicBee — both
               written against Wine 11.0. Local adaptation: consolidated into
@@ -181,28 +181,28 @@ is one higher than its number here; see the renumbering note above):
               Excluded: MR patch 0004 (test-only; its Wine 11.0 test context
               does not match the evolved 11.11 test file).
               ABLETON-WINE-FILE-PORTAL.md
-  0031      = x64 helper-scoped host-libusb bridge for the Push 2 display
+  0032      = x64 helper-scoped host-libusb bridge for the Push 2 display
               (2026-07-11) with a suite of new new dlls and a libusb-1.0
               builtin exporting the exact 16-function Win64 libusb 1.0.23 ABI
               used by Push2DisplayProcess.exe; x86_64-only by design (i386
               subdir disabled at configure). See ABLETON-WINE-PUSH2-DISPLAY.md
-  0032      = ntdll WINE_DISABLE_UNIX_MOUNT_REPARSE opt-out (2026-07-14),
+  0033      = ntdll WINE_DISABLE_UNIX_MOUNT_REPARSE opt-out (2026-07-14),
               dlls/ntdll/unix/file.c hunks. With the variable set, Unix
               mount boundaries stop being reported as
               IO_REPARSE_TAG_MOUNT_POINT junctions (which carry no
               FSCTL_GET_REPARSE_POINT data); launchers set it to 1.
-  0033      = winex11 XdndStatus flush (2026-07-14),
+  0034      = winex11 XdndStatus flush (2026-07-14),
               dlls/winex11.drv/event.c hunk: flush each XdndStatus reply so
               a queued XdndLeave from a fast source cannot overtake the
               acceptance (intermittent refused drops dragging from file
               managers under Xwayland).
-  0034      = wined3d Intel Battlemage G21 GPU description (2026-07-18).
+  0035      = wined3d Intel Battlemage G21 GPU description (2026-07-18).
               Local fix for issue #11: without a table entry for device
               0xe20b, an Arc B580 is reported through the generic Intel
               fallback as "Intel(R) HD Graphics 4000", a name Live 12
               blacklists (D3D11 refused, GDI fallback). Should also be
               upstreamed to Wine.
-  0035      = dxgi suspend dcomp reblits on a null d2d1 device (2026-07-18).
+  0036      = dxgi suspend dcomp reblits on a null d2d1 device (2026-07-18).
               Local fix for issue #16: when the dcomp device's d2d1 device
               never comes up (e.g. Mesa libEGL without the NVIDIA GLVND
               vendor config under NixOS/steam-run), the 200ms reblit timer
@@ -211,7 +211,7 @@ is one higher than its number here; see the renumbering note above):
               the timer-idle reblit while no present has succeeded, backing
               the timer off exponentially and killing it after 20 null
               ticks until device recreation rebinds.
-  0036      = winex11 always advertise MWM_FUNC_CLOSE (2026-07-19).
+  0037      = winex11 always advertise MWM_FUNC_CLOSE (2026-07-19).
               Local fix for issue #31: Live's main window is WS_DISABLED
               while its startup modal is up, set_mwm_hints omits
               MWM_FUNC_CLOSE for disabled windows, and KWin derives the
@@ -222,7 +222,7 @@ is one higher than its number here; see the renumbering note above):
               while disabled, so the function is now advertised
               unconditionally. Exported from a disposable worktree on base
               182ae79b (commit a080cbd2 there).
-  0037      = winex11 menu-tracking FocusOut gate (2026-07-19). Local fix
+  0038      = winex11 menu-tracking FocusOut gate (2026-07-19). Local fix
               for issue #3: mutter and muffin shuffle the X input focus
               when an override-redirect menu popup maps or is clicked; the
               NotifyNormal FocusOut reached focus_out() mid menu-track and
@@ -232,7 +232,7 @@ is one higher than its number here; see the renumbering note above):
               reports GUI_INMENUMODE the cancel is only sent when
               XGetInputFocus shows another client's window holding the
               focus. See ABLETON-WINE-MENU-FOCUSOUT.md
-  0038      = winex11 mapped-window managed-flip refusal (2026-07-19).
+  0039      = winex11 mapped-window managed-flip refusal (2026-07-19).
               The root fix for issue #3, found by tracing a live repro:
               Live pokes its open Preferences dropdown lists (its own
               WS_POPUP windows, mapped override-redirect) with an
@@ -246,7 +246,7 @@ is one higher than its number here; see the renumbering note above):
               flip while the window is mapped; the managed decision is
               made at map time and re-evaluated on the next map. See
               ABLETON-WINE-DROPDOWN-MANAGED-FLIP.md
-  0039      = win32u menu-bar band DPI scaling (drafted 2026-07-19,
+  0040      = win32u menu-bar band DPI scaling (drafted 2026-07-19,
               revised 2026-07-21 before ever shipping). The draft's
               muldiv(4,dpi,96) overshoot fixed the wmresize2 mimic but
               not real Live; the live-resize-trace-20260721-0024
@@ -258,39 +258,39 @@ is one higher than its number here; see the renumbering note above):
               base 182ae79b (commit 1173c1d5 there). See
               ABLETON-WINE-DPI-SCALE-100.md and
               FINDINGS-RESIZE-GROWTH-2026-07-21.md.
-  0040      = dxgi dcomp display path for WebView2's unattributed
+  0041      = dxgi dcomp display path for WebView2's unattributed
               layered targets (2026-07-21): opaque LWA normalization at
               WM_WINE_DCOMP_SET_TARGET, one-shot delayed-resize reblit
-              closing the 0029 race, 0025 idle-abandonment removed so
+              closing the 0030 race, 0025 idle-abandonment removed so
               healed Learn View content holds instead of reverting at
               the 3s idle mark. Exported from a disposable worktree on
               base 182ae79b (commit 9d34f87f there). See
               ABLETON-WINE-LEARNVIEW-FLICKER.md.
-  0041      = winex11 alias sub-scale WM-config rounding instead of
+  0042      = winex11 alias sub-scale WM-config rounding instead of
               dropping the fractional remainder (2026-07-21). Exported
               from a worktree at ~/Projects/Code/ableton/wt-0042: base
-              182ae79b with the 0031-0041 (old numbering) mailbox series
-              applied first (git apply + commit), then this commit
-              (988ef771 there). The installed runtime's winex11.so was
-              built from that worktree; dist artifacts come from the
-              container rebuild as usual.
-  0042      = dxgi: fix build against 11.13's frame-latency-as-semaphore
+              182ae79b with the 0031-0041 mailbox series applied first
+              (git apply + commit), then this commit (988ef771 there).
+              The installed runtime's winex11.so was built from that
+              worktree; dist artifacts come from the container rebuild
+              as usual.
+  0043      = dxgi: fix build against 11.13's frame-latency-as-semaphore
               refactor (2026-07-21). `struct d3d11_swapchain` no longer
               carries its own `frame_latency_event` HANDLE upstream;
               fetches the waitable object via
               `wined3d_swapchain_get_frame_latency_waitable_object()`,
               releases it as a semaphore, and closes the duplicated
               handle each tick. See the rebase-method section above.
-  0043      = win32u: fix build against 11.13's fractional-DPI `struct
-              ratio` refactor (2026-07-21). 0028 (this stack's menu-bar
-              +4px fix, carried through 0039's revised band law)
+  0044      = win32u: fix build against 11.13's fractional-DPI `struct
+              ratio` refactor (2026-07-21). 0029 (this stack's menu-bar
+              +4px fix, carried through 0040's revised band law)
               computed its overshoot from a raw `UINT` DPI value that
               `get_dpi_for_window()` no longer returns upstream; wraps
               with `round_dpi()`, matching the convention the refactor
               established everywhere else. See the rebase-method section
               above.
-  0044      = configure: fix libusb-1.0 detection against 11.13's
-              `AC_CHECK_FUNC` switch (2026-07-21). 0031's Push2 bridge
+  0045      = configure: fix libusb-1.0 detection against 11.13's
+              `AC_CHECK_FUNC` switch (2026-07-21). 0032's Push2 bridge
               build gate checked a cache variable only `AC_CHECK_LIB` set;
               upstream's switch to `AC_CHECK_FUNC` between 11.11 and
               11.13 left it checking a variable configure never sets,
