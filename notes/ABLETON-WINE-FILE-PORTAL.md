@@ -36,6 +36,10 @@ via `bin/set-file-portal-policy` (applied by `setup-prefix.sh`):
 `bin/ableton-live-portal` / `bin/ableton-wine-portal` pin or test portal
 behavior explicitly.
 
+Patch 0043 reuses this portal plumbing to reveal explorer `/select`
+targets (Live's Show in Explorer) in the host file browser; see
+[ABLETON-WINE-SHOW-IN-EXPLORER.md](ABLETON-WINE-SHOW-IN-EXPLORER.md).
+
 ## Caveats
 
 - 32-bit applications always fall back to Wine's chooser: irrelevant to Live

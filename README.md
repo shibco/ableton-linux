@@ -21,6 +21,7 @@ Place this installer + an Ableton Live zip file downloaded from Ableton.com in t
 - Device recovery: audio and MIDI devices (Push included) survive in-session disconnect and reconnect.
 - Experimental Max/MSP and Max for Live support.
 - Open/save dialogs use your system's native file picker.
+- Show in Explorer opens your system's file manager with the file selected.
 - Dark/light theme mode that follows your system's settings.
 - Unified top bar: Live's menu bar and menus take the colors of your Ableton theme and render in Ableton's own typeface, like the official Push standalone. Theme changes apply to the running Live when the settings dialog closes.
 - System font support: display Ableton's UI with your desktop interface fonts.

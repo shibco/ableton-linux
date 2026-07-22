@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show in Explorer opens your file manager with the file selected, through the same XDG portal the open/save dialogs use, instead of Wine's explorer (issue 41, Wine patch 0043, notes/ABLETON-WINE-SHOW-IN-EXPLORER.md). Wine's explorer stays the fallback when the portal is missing or the portal policy is never. New tool: showexp.c.
+
 - Standalone Max 9 support: a max9 launcher on the shared runtime and prefix, a menu entry with a stable icon, c74max URL handling, and Max for Live devices open with it by default. Installed when Max 9 is present in the prefix; rerun the installer after adding Max. Winemenubuilder entries from a stray default-prefix Max run (they point at stock wine against the patched-runtime prefix) are removed.
 - The kit stages learnheal.exe; the 2026.07.21.2 run file omitted it, so kit installs from that release lack the Learn View auto-heal until the next release. Repo installs were unaffected.
 

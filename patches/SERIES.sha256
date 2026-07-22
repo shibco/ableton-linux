@@ -39,5 +39,6 @@ adb26b02cfd60ba4cb7c1204ffccd047d388679394c76e8b1753be9ba0629685  0037-winex11-a
 aa03b731a6785ee258d2fa75b29a526da33cc369f324c576d91f5b0ba884e669  0040-win32u-scale-the-menu-bar-band-with-the-menu-dpi.patch
 ace143ecd744e35417b6b549429cfee855d5d24d2b4241eda4fdb4b4248bb5eb  0041-dxgi-make-dcomp-presents-visible-on-webview2-s-unat.patch
 25e0bc84e188be5507c869ca63671ac66201e17564f18349b6490b560d5fa685  0042-winex11-alias-sub-scale-WM-config-rounding-instead-o.patch
+b8daff7e64239577a0563db6321826f47557503bbc458006a277191d2350c796  0043-shell32-reveal-explorer-select-targets-through-the-X.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
