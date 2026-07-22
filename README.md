@@ -10,7 +10,7 @@ DOWNLOAD HERE: https://github.com/shibco/ableton-linux/releases/latest/download/
 
 Place this installer + an Ableton Live zip file downloaded from Ableton.com in the same directory, and run. For more details, see [Getting Started](#getting-started).
 
-**Credits:** maintained by [Cade 'shibco' Diehm](https://shiba.computer/about), with support from [ClickSentinel](https://github.com/ClickSentinel) and the Ableton Linux Discord community including [jackson-57](https://github.com/jackson-57), [jttdev](https://github.com/jttdev), [astrazds](https://github.com/astrazds), [Version33](https://github.com/Version33) and [boxkitty](https://github.com/0tanh). Application and MIME type icons by [yioannides](https://github.com/yioannides). Shout out to [wowitsjack](https://github.com/wowitsjack)/Antlers! on the Ableton Linux Discord server for [ENCORE](https://github.com/wowitsjack/ENCORE).
+**Credits:** maintained by [Cade 'shibco' Diehm](https://shiba.computer/about), with support from [ClickSentinel](https://github.com/ClickSentinel) and the Ableton Linux Discord community including [jackson-57](https://github.com/jackson-57), [jttdev](https://github.com/jttdev), [astrazds](https://github.com/astrazds), [Version33](https://github.com/Version33) and [0tanh](https://github.com/0tanh). Application and MIME type icons by [yioannides](https://github.com/yioannides). Shout out to [wowitsjack](https://github.com/wowitsjack)/Antlers! on the Ableton Linux Discord server for [ENCORE](https://github.com/wowitsjack/ENCORE).
 
 ## Features
 
