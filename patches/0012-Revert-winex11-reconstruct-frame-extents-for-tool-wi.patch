@@ -1,7 +1,4 @@
-From 09de0e47453ca8fe99838152045d3e84983e2822 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 12/41] Revert "winex11: reconstruct frame extents for tool
+Subject: Revert "winex11: reconstruct frame extents for tool
  windows (kill double title bar)"
 
 This reverts commit ef753f14c5632b9e7ccdd0ba265fd0625f5dac93.

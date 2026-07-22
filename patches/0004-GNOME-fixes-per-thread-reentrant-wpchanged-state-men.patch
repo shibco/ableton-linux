@@ -1,7 +1,4 @@
-From 8e72aed284f098093a0dde89e4376972ac01f13a Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 04/41] GNOME fixes: per-thread reentrant-wpchanged state (menu
+Subject: GNOME fixes: per-thread reentrant-wpchanged state (menu
  wedge race); no MWM decor for custom-NC windows (double-frame/white border)
 
 ---

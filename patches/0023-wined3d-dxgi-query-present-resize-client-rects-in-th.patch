@@ -1,7 +1,4 @@
-From 67d9eb853ab457e54a892b031800f51e05b898e8 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 23/41] wined3d, dxgi: query present/resize client rects in the
+Subject: wined3d, dxgi: query present/resize client rects in the
  window's DPI context
 
 Bracket the client-rect queries in wined3d_swapchain_present, resize_buffers, state_init and

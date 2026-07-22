@@ -1,7 +1,4 @@
-From 1a523ae589660802e408e270e5c111e4433bbaca Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Tue, 21 Jul 2026 17:04:55 -0230
-Subject: [PATCH] dxgi: fix build against 11.13's frame-latency-as-semaphore
+Subject: dxgi: fix build against 11.13's frame-latency-as-semaphore
  refactor
 
 struct d3d11_swapchain no longer carries its own frame_latency_event

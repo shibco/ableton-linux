@@ -1,7 +1,4 @@
-From aa8fd2f375674a3643051f41906bb98dbc29d8b6 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 35/41] dxgi: suspend dcomp reblits on a null d2d1 device
+Subject: dxgi: suspend dcomp reblits on a null d2d1 device
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

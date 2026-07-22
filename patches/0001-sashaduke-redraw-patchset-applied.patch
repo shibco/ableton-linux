@@ -1,7 +1,4 @@
-From 68528f4c00f0ac54eb3255419052c8a52e8967e5 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 01/41] sashaduke redraw patchset (applied)
+Subject: sashaduke redraw patchset (applied)
 
 ---
  dlls/dcomp/device.c      | 34 +++++++++++++--

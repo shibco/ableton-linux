@@ -1,7 +1,4 @@
-From 743fa56772bf4c207b51ffd2654858978766d59d Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 33/41] winex11: flush XdndStatus replies before the source's
+Subject: winex11: flush XdndStatus replies before the source's
  next client message
 
 XdndStatus was queued but not flushed, so a fast source (GNOME Files,

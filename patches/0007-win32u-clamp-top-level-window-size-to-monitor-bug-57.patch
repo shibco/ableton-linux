@@ -1,7 +1,4 @@
-From 4427a36df7675427e18dddecb592acc1c2b573af Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 07/41] win32u: clamp top-level window size to monitor
+Subject: win32u: clamp top-level window size to monitor
  (bug-57955 anti-growth; size-only, small-overshoot only)
 
 ---

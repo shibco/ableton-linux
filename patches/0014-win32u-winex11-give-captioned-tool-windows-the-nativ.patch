@@ -1,7 +1,4 @@
-From 750a4fbc295dbd832764eed1482f60bc42968152 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 14/41] win32u,winex11: give captioned tool windows the native
+Subject: win32u,winex11: give captioned tool windows the native
  WM frame (plugin-editor titlebar)
 
 winex11: captioned tool windows get MWM decorations (close-only). win32u: when such a window's NC area

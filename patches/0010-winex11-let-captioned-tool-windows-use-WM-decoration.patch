@@ -1,7 +1,4 @@
-From c1483990bebcb7d4e71a8af99ef0771cda7bf478 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 10/41] winex11: let captioned tool windows use WM decorations
+Subject: winex11: let captioned tool windows use WM decorations
  at high DPI
 
 Request MWM decorations for tool windows that carry a real caption, so the WM

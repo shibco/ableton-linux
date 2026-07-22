@@ -1,7 +1,4 @@
-From 304dfe3791a0f32573df8a7545a89774d1ea1c21 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 29/41] dxgi: don't blit stale-sized dcomp comp buffers into
+Subject: dxgi: don't blit stale-sized dcomp comp buffers into
  the target
 
 Gate both comp-buffer blit sites on the buffer matching the swapchain's current desc (not the

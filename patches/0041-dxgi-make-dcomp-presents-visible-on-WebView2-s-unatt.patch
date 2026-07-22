@@ -1,7 +1,4 @@
-From a0aed9f6d22d88f8028048e7db667638cdc52b09 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Tue, 21 Jul 2026 07:01:07 +0200
-Subject: [PATCH 40/41] dxgi: make dcomp presents visible on WebView2's
+Subject: dxgi: make dcomp presents visible on WebView2's
  unattributed layered targets
 
 Three interlocked fixes for the Learn View display path

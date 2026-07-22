@@ -1,7 +1,4 @@
-From aa1c670fd14438511bb516e0db5f90cd332d17a6 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Tue, 21 Jul 2026 17:45:45 -0230
-Subject: [PATCH] configure: fix libusb-1.0 detection check against 11.13's
+Subject: configure: fix libusb-1.0 detection check against 11.13's
  AC_CHECK_FUNC switch
 
 The Push2 bridge's build-gate (0031: builds dlls/libusb-1.0 only when the

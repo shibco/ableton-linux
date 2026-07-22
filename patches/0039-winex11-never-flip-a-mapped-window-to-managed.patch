@@ -1,7 +1,4 @@
-From 687a5826974954161edf648a4f0a01976abf3fea Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 38/41] winex11: never flip a mapped window to managed
+Subject: winex11: never flip a mapped window to managed
 
 Issue #3, second half: Live's Preferences dropdown lists are its own
 WS_POPUP windows, shown unmanaged (override-redirect) via SetWindowPos

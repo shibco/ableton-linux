@@ -1,7 +1,4 @@
-From c12dc076861d50767b2f1cd3428681202dcea515 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 09/41] revert frame-extents re-enable (a5ab9f00): reintroduced
+Subject: revert frame-extents re-enable (a5ab9f00): reintroduced
  strobing white border and did not stop the resize loop; back to disabled
  baseline for handoff
 

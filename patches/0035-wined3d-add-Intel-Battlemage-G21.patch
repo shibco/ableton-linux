@@ -1,7 +1,4 @@
-From 33fe0d240a8a6140dff132c9a4561d654e4700f1 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 34/41] wined3d: add Intel Battlemage G21
+Subject: wined3d: add Intel Battlemage G21
 
 The GPU description table has no entry for device 0xe20b (Arc B580,
 Battlemage G21), so wined3d reports the card through the generic Intel

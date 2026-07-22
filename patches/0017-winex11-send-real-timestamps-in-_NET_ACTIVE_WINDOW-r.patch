@@ -1,7 +1,4 @@
-From 5fef147cd2b03c047e123c15ca6474b37b18931b Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 17/41] winex11: send real timestamps in _NET_ACTIVE_WINDOW
+Subject: winex11: send real timestamps in _NET_ACTIVE_WINDOW
  requests and allow retries
 
 Send _NET_ACTIVE_WINDOW requests with the timestamp of the last processed user input (mutter

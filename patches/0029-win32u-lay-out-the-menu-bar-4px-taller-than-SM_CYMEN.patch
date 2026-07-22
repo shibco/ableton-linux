@@ -1,7 +1,4 @@
-From b438a858b2eccf085f27356dcb17daea316d5dc7 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 28/41] win32u: lay out the menu bar 4px taller than SM_CYMENU
+Subject: win32u: lay out the menu bar 4px taller than SM_CYMENU
 
 Raise the menu-bar item floor to SM_CYMENU + 3 so NCCALCSIZE matches Live's
 client + AdjustWindowRectExForDpi(bMenu) + 4 model. Text stays centered; popup menus are unaffected.

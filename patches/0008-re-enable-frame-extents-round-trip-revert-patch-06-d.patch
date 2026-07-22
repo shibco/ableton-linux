@@ -1,7 +1,4 @@
-From 2e45813d2c69b5ef9ea9e9794a6807273e6b4819 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 08/41] re-enable frame-extents round-trip (revert patch 06) +
+Subject: re-enable frame-extents round-trip (revert patch 06) +
  drop size clamp (revert patch 07): converge Live window feedback via the real
  WM frame
 

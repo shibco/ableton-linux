@@ -1,7 +1,4 @@
-From d3ccefe93b5cee1ce2290e1367c52f4154cee8c6 Mon Sep 17 00:00:00 2001
-From: ableton-wine <local@ableton-wine>
-Date: Sun, 19 Jul 2026 11:37:13 +0200
-Subject: [PATCH 36/41] winex11: always advertise MWM_FUNC_CLOSE in the Motif
+Subject: winex11: always advertise MWM_FUNC_CLOSE in the Motif
  hints
 
 Live's main window is WS_DISABLED while its startup modal is up.  When

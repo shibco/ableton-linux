@@ -1,7 +1,4 @@
-From 3d8e1410d413b78f7980e231018716397f461ace Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 32/41] ntdll: let WINE_DISABLE_UNIX_MOUNT_REPARSE turn off
+Subject: ntdll: let WINE_DISABLE_UNIX_MOUNT_REPARSE turn off
  mount-point reparse reporting
 
 Wine reports Unix mount boundaries as IO_REPARSE_TAG_MOUNT_POINT reparse

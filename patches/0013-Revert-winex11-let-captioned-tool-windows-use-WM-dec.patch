@@ -1,7 +1,4 @@
-From 4c6915343e8a4098eeaf711f8de44eed07ae1553 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 13/41] Revert "winex11: let captioned tool windows use WM
+Subject: Revert "winex11: let captioned tool windows use WM
  decorations at high DPI"
 
 This reverts commit 02afb562af4977fd669abda8bed37ac3c2230692.

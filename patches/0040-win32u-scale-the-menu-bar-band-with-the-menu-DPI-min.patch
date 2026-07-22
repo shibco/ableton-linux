@@ -1,7 +1,4 @@
-From 9c01a7abc6a599d469a57f170f7a0bf94f5adcf6 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 39/41] win32u: scale the menu-bar band with the menu DPI,
+Subject: win32u: scale the menu-bar band with the menu DPI,
  minus one
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

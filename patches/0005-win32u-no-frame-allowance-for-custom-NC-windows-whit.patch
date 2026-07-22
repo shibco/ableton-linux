@@ -1,7 +1,4 @@
-From e85948b1a86dbb30d865a3125cc3965aea2256db Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 05/41] win32u: no frame allowance for custom-NC windows (white
+Subject: win32u: no frame allowance for custom-NC windows (white
  rim around Live modals)
 
 ---

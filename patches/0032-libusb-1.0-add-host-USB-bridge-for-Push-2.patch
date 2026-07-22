@@ -1,7 +1,4 @@
-From a13ddbb6c3e7ae6297ae9298e502482ab493eeca Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 31/41] libusb-1.0: add host USB bridge for Push 2
+Subject: libusb-1.0: add host USB bridge for Push 2
 
 ---
  configure                       |   8 +

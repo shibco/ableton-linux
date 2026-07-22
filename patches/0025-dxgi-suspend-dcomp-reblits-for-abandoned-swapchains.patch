@@ -1,7 +1,4 @@
-From 03bc7e72283b1f70ac69cb5116989dff5af68dec Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 25/41] dxgi: suspend dcomp reblits for abandoned swapchains
+Subject: dxgi: suspend dcomp reblits for abandoned swapchains
 
 Count consecutive idle ticks per target; after DCOMP_STALE_TICKS (3s) skip comp-buffer blits and forward
 WM_PAINT to the original wndproc. frame_latency_event keeps firing; a new present resets the counter.

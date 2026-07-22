@@ -1,7 +1,4 @@
-From a59b60df1121896eb6ae0b6c03d1c6af71b768cc Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 24/41] wined3d: keep present/resize DPI diagnostics at trace
+Subject: wined3d: keep present/resize DPI diagnostics at trace
  level
 
 Emit the PRESENT-DBG/RESIZE-DBG probes at trace level instead of fixme.

@@ -1,7 +1,4 @@
-From 11f9c695fc4f5418fa67f63d945563e2926d5d0c Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 03/41] NSPA 1c: frame extents, reentrancy suppression, ncsize
+Subject: NSPA 1c: frame extents, reentrancy suppression, ncsize
  guard (atom order fixed)
 
 ---

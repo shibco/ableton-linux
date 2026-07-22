@@ -1,7 +1,4 @@
-From 268843917c3ca0861cf52e633a5abb9d94a517fb Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 16/41] dcomp: never let an orphaned target subclass swallow
+Subject: dcomp: never let an orphaned target subclass swallow
  window messages
 
 Keep the window's true original wndproc in the __wine_dcomp_origproc property; forward to it when the

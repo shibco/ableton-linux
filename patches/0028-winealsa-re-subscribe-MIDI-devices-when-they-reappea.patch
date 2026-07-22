@@ -1,7 +1,4 @@
-From 6192d2f9d44dbb18fcb99aaed700e418ec1a9947 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 27/41] winealsa: re-subscribe MIDI devices when they reappear
+Subject: winealsa: re-subscribe MIDI devices when they reappear
  on the sequencer
 
 Subscribe the shared input port to the system announce port; on SND_SEQ_EVENT_PORT_START re-match

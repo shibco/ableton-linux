@@ -1,7 +1,4 @@
-From b0de28ff44420319c1225562f292072fc7a241a8 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Tue, 21 Jul 2026 17:12:35 -0230
-Subject: [PATCH] win32u: fix build against 11.13's fractional-DPI struct ratio
+Subject: win32u: fix build against 11.13's fractional-DPI struct ratio
  refactor
 
 get_dpi_for_window() returns struct ratio upstream now (11.11 returned a

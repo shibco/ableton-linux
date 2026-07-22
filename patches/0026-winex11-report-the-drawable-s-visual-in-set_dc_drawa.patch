@@ -1,7 +1,4 @@
-From 781c8fbb4f794bc69d0b623321c4ad3d08543934 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 26/41] winex11: report the drawable's visual in
+Subject: winex11: report the drawable's visual in
  set_dc_drawable and X11DRV_ReleaseDC
 
 set_dc_drawable: fill escape.visual via XGetWindowAttributes so xrender matches the drawable's depth

@@ -1,7 +1,4 @@
-From 696d57736b01ebccd4292b002b1bfdd568becad2 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 11/41] winex11: reconstruct frame extents for tool windows
+Subject: winex11: reconstruct frame extents for tool windows
  (kill double title bar)
 
 Re-enable _NET_FRAME_EXTENTS reconstruction for WS_EX_TOOLWINDOW windows only,

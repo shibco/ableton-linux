@@ -1,7 +1,4 @@
-From 265ac562dd67d990f728691ba70e8077f1df07fb Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 22/41] dxgi: stop forcing swapchain presents from the dcomp
+Subject: dxgi: stop forcing swapchain presents from the dcomp
  reblit timer
 
 On reblit-timer ticks, signal frame_latency_event and refresh the window surface from the

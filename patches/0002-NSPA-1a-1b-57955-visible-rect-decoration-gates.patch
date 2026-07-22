@@ -1,7 +1,4 @@
-From 57418e320c8edc77993752f6df9ef517f0c5ab2a Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 02/41] NSPA 1a+1b (57955 visible-rect + decoration gates)
+Subject: NSPA 1a+1b (57955 visible-rect + decoration gates)
 
 ---
  dlls/win32u/window.c      | 7 ++++++-

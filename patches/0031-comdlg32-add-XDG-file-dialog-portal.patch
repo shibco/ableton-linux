@@ -1,7 +1,4 @@
-From ac3cfc57054db004f84b46903709280bde5a84f7 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 30/41] comdlg32: add XDG file dialog portal
+Subject: comdlg32: add XDG file dialog portal
 
 ---
  dlls/comdlg32/Makefile.in   |    6 +-

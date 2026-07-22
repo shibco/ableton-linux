@@ -1,7 +1,4 @@
-From 1c6011e7baeafb495b2a016092078c120cc0f5e4 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 19/41] win32u: map shared session views MAP_SHARED
+Subject: win32u: map shared session views MAP_SHARED
  (read-write) instead of private
 
 Request SECTION_MAP_WRITE and map session views PAGE_READWRITE so they are MAP_SHARED and stay coherent

@@ -1,7 +1,4 @@
-From 7cb9533e352d07a19219c97aeb221ff897a90c66 Mon Sep 17 00:00:00 2001
-From: ableton-wine <local@ableton-wine>
-Date: Tue, 21 Jul 2026 10:47:11 +0200
-Subject: [PATCH 41/41] winex11: alias sub-scale WM config rounding instead of
+Subject: winex11: alias sub-scale WM config rounding instead of
  feeding it to Win32
 
 At integer display scales above 1 the window manager grants only

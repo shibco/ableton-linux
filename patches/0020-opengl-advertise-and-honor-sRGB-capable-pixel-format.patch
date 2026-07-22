@@ -1,7 +1,4 @@
-From 9e2917b35c16568f7faf1b9e6c8c54b7507d07b6 Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 20/41] opengl: advertise and honor sRGB-capable pixel formats
+Subject: opengl: advertise and honor sRGB-capable pixel formats
  on the EGL backend
 
 Report framebuffer_srgb_capable for 8-bit RGB formats when the EGL display supports EGL_KHR_gl_colorspace;

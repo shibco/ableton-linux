@@ -1,7 +1,4 @@
-From 9751ea77c170026c540e2566e9a946696c5d293e Mon Sep 17 00:00:00 2001
-From: dist <build@localhost>
-Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 37/41] winex11: don't cancel menu tracking while the focus
+Subject: winex11: don't cancel menu tracking while the focus
  stays in the process
 
 Issue #3: Live's Preferences dropdowns are win32u popup menus, mapped as
