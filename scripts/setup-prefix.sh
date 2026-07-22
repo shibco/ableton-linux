@@ -650,6 +650,15 @@ elif [ "${ABLETON_LIVE_AUTOINSTALL:-0}" != 1 ]; then
     if [ -n "$live_zip" ]; then
         echo "   found $(basename "$live_zip") — rerun with ABLETON_LIVE_AUTOINSTALL=1 to install it"
         echo "   (silent install: Ableton's EULA is then shown on Live's first launch, not before)"
+        # The recipe major only follows the zip when the install is opted in
+        # (see the resolution above step [1/6]) — so on this run the prefix got
+        # the Live $live_major verbs. Say so when the found zip disagrees, or a
+        # later manual Live 11 install silently misses vcrun2019/gdiplus.
+        hint_major="$(basename "$live_zip" | sed -nE 's/^[^0-9]*_([0-9]+)\.[0-9]+.*$/\1/p')"
+        if [ -n "$hint_major" ] && [ "$hint_major" != "$live_major" ]; then
+            echo "   note: this run prepared the prefix with the Live $live_major recipe; the opted-in rerun"
+            echo "   switches to the Live $hint_major verbs (or pin ABLETON_LIVE_VERSION=$hint_major yourself)"
+        fi
     else
         echo "   skipped — ABLETON_LIVE_AUTOINSTALL=1 (opt-in) installs your ableton_live*.zip from $installer_dir"
     fi
