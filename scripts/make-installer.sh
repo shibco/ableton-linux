@@ -2,6 +2,8 @@
 # Assemble dist/ableton-wine-setup-<VERSION>.run: setup-run-header.sh + a tar of the end-user kit
 # (runtime tarball, scripts, winetricks payloads, static cabextract). Repackaging only; Wine is not rebuilt.
 set -euo pipefail
+# ldd and sha256sum output is parsed below; localised output breaks the checks.
+export LC_ALL=C
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 cd "$root"
@@ -54,9 +56,10 @@ cp -a "$tarball" "$tarball.sha256" "$kit/dist/"
 cp -a "dist/BUILD-INFO-${VERSION}.txt" "$kit/" 2>/dev/null || true
 mkdir -p "$kit/scripts"
 cp -a scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
-      scripts/ableton-live scripts/detect-scale.sh scripts/detect-theme.sh \
-      scripts/check-live-audio.sh "$kit/scripts/"
+      scripts/ableton-live scripts/max9 scripts/detect-scale.sh \
+      scripts/detect-theme.sh scripts/check-live-audio.sh "$kit/scripts/"
 install -m644 tools/setsyscolors.exe "$kit/scripts/setsyscolors.exe"
+install -m644 tools/learnheal.exe "$kit/scripts/learnheal.exe"
 cp -a desktop "$kit/desktop"
 cp -a vendor/winetricks vendor/winetricks-cache "$kit/vendor/"
 cp -a VERSION README.md "$kit/"

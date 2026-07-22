@@ -2,6 +2,9 @@
 # End-user step 1: install the Wine runtime, launcher, and desktop entries (reverse with uninstall.sh).
 # Does not touch the Wine prefix — that is setup-prefix.sh.
 set -euo pipefail
+# readelf and sha256sum output is parsed below; localised output breaks the
+# checks (issue #36).
+export LC_ALL=C
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 
@@ -132,22 +135,140 @@ for f in "$here/setsyscolors.exe" "$root/tools/setsyscolors.exe"; do
         break
     fi
 done
+# learnheal.exe auto-heals the Learn View / doc sidebar fossil-on-open
+# (notes/ABLETON-WINE-LEARNVIEW-FLICKER.md); without it the pane needs a
+# manual splitter nudge once per session.
+for f in "$here/learnheal.exe" "$root/tools/learnheal.exe"; do
+    if [ -f "$f" ]; then
+        install -m644 "$f" "$HOME/.local/share/ableton-wine/learnheal.exe"
+        break
+    fi
+done
 
 # Record the kit version so a later installer can tell what it is updating
 # (the kit and the repo both carry VERSION at the root).
 printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" \
     > "$HOME/.local/share/ableton-wine/VERSION"
 
-echo "== install missing desktop entries -> $APPS =="
+echo "== install desktop entries -> $APPS =="
 mkdir -p "$APPS"
-for d in ableton-live wine-protocol-ableton; do
-    if [ -e "$APPS/$d.desktop" ]; then
+# Detect the installed Live edition for the menu entry (issue #39): the
+# newest Program exe under the prefix wins, matching the launcher's
+# discovery. Without an install yet, generic values apply; rerunning the
+# installer after Live is installed refreshes the entry.
+live_name="Ableton Live"
+live_icon="live-suite"
+live_wmclass="ableton live 12 suite.exe"
+live_prefix="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+newest=""
+for exe in "$live_prefix"/drive_c/ProgramData/Ableton/Live*/Program/Ableton\ Live*.exe; do
+    [ -e "$exe" ] || continue
+    if [ -z "$newest" ] || [ "$exe" -nt "$newest" ]; then newest="$exe"; fi
+done
+if [ -n "$newest" ]; then
+    live_name="$(basename "$newest" .exe)"
+    live_wmclass="$(basename "$newest" | tr '[:upper:]' '[:lower:]')"
+    edition="$(printf '%s' "$live_name" | awk '{print tolower($NF)}')"
+    if [ -f "$root/desktop/icons/scalable/apps/live-$edition.svg" ]; then
+        live_icon="live-$edition"
+    fi
+fi
+# The visible launcher entry: an entry whose Exec does not route through the
+# launcher is treated as hand-made and preserved; ours is refreshed so the
+# name, icon and WM class track the installed edition.
+if [ -e "$APPS/ableton-live.desktop" ] && ! grep -qF "$BIN/ableton-live" "$APPS/ableton-live.desktop"; then
+    echo "   preserving existing $APPS/ableton-live.desktop (it does not route through the launcher)"
+else
+    sed -e "s#@HOME@#$HOME#g" -e "s#@NAME@#$live_name#g" \
+        -e "s#@ICON@#$live_icon#g" -e "s#@WMCLASS@#$live_wmclass#g" \
+        "$root/desktop/ableton-live.desktop.in" > "$APPS/ableton-live.desktop"
+    echo "   installed $APPS/ableton-live.desktop ($live_name)"
+fi
+# The authorization handlers (ableton: URLs, .auz response files). They take
+# winemenubuilder's canonical names on purpose: a prefix where winemenubuilder
+# still runs (a Live beta in a scratch prefix, say) exports its own handler
+# over ours, pointing at stock wine and the wrong prefix. An entry that does
+# not route through the launcher is replaced, not preserved, and canonical
+# copies are staged for the launcher's start-time repair.
+# See notes/ABLETON-WINE-ONLINE-AUTH.md.
+for d in wine-protocol-ableton wine-extension-auz; do
+    sed "s#@HOME@#$HOME#g" "$root/desktop/$d.desktop.in" > "$HOME/.local/share/ableton-wine/$d.desktop"
+    if [ -e "$APPS/$d.desktop" ] && grep -qF "$BIN/ableton-live" "$APPS/$d.desktop"; then
         echo "   preserving existing $APPS/$d.desktop"
     else
-        sed "s#@HOME@#$HOME#g" "$root/desktop/$d.desktop.in" > "$APPS/$d.desktop"
+        [ ! -e "$APPS/$d.desktop" ] || echo "   replacing $APPS/$d.desktop (it does not route through the launcher)"
+        cp "$HOME/.local/share/ableton-wine/$d.desktop" "$APPS/$d.desktop"
     fi
 done
 update-desktop-database "$APPS" 2>/dev/null || true
+
+echo "== install icons =="
+# App and MIME icons (issue #39, PR #25). User-local hicolor is the fallback
+# theme on every desktop; scalable SVGs need no cache.
+ICONS="$HOME/.local/share/icons/hicolor"
+install -d "$ICONS/scalable/apps" "$ICONS/scalable/mimetypes" "$ICONS/symbolic/apps"
+install -m644 "$root"/desktop/icons/scalable/apps/*.svg "$ICONS/scalable/apps/"
+install -m644 "$root"/desktop/icons/scalable/mimetypes/*.svg "$ICONS/scalable/mimetypes/"
+install -m644 "$root"/desktop/icons/symbolic/apps/*.svg "$ICONS/symbolic/apps/"
+gtk-update-icon-cache -q "$ICONS" 2>/dev/null || true
+
+echo "== register the authorization MIME types =="
+# .auz is the response file ableton.com serves for offline authorization. The
+# prefix side is registered by Live's installer; the host side is ours, since
+# winemenubuilder (which would export it) is disabled by setup-prefix.sh.
+mkdir -p "$HOME/.local/share/mime/packages"
+install -m644 "$root/desktop/x-wine-extension-auz.xml" "$HOME/.local/share/mime/packages/x-wine-extension-auz.xml"
+# Live document types: sets, clips, packs and the rest (issue #40, PR #25).
+install -m644 "$root/desktop/icons/application-ableton-live.xml" "$HOME/.local/share/mime/packages/application-ableton-live.xml"
+update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
+# Pin the defaults: with a second claimant present, cache order decides, and
+# Chromium consults only the mimeapps.list default.
+if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default wine-protocol-ableton.desktop x-scheme-handler/ableton 2>/dev/null || true
+    xdg-mime default wine-extension-auz.desktop application/x-wine-extension-auz 2>/dev/null || true
+    xdg-mime default ableton-live.desktop application/x-ableton-live-set \
+        application/x-ableton-live-clip application/x-ableton-live-pack 2>/dev/null || true
+fi
+
+# Standalone Max 9 in the same prefix (installed with msiexec, see the
+# README). Only when present; rerun the installer after adding Max. The
+# winemenubuilder exports a stray run leaves behind point at stock wine
+# against the patched-runtime prefix and their MIME claims shadow ours;
+# they are removed.
+max_unix="$live_prefix/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
+if [ -f "$max_unix" ]; then
+    echo "== install the Max 9 launcher =="
+    install -m755 "$here/max9" "$BIN/max9"
+    if [ -e "$APPS/max9.desktop" ] && ! grep -qF "$BIN/max9" "$APPS/max9.desktop"; then
+        echo "   preserving existing $APPS/max9.desktop (it does not route through the launcher)"
+    else
+        sed "s#@HOME@#$HOME#g" "$root/desktop/max9.desktop.in" > "$APPS/max9.desktop"
+    fi
+    sed "s#@HOME@#$HOME#g" "$root/desktop/wine-protocol-c74max.desktop.in" > "$APPS/wine-protocol-c74max.desktop"
+    # Stable icon name from the winemenubuilder-extracted set, when present
+    # (the hex prefix varies per install).
+    for d in 16x16 24x24 32x32 48x48 128x128 256x256; do
+        for f in "$ICONS/$d/apps/"*_Max.0.png; do
+            [ -e "$f" ] || continue
+            cp -f "$f" "$ICONS/$d/apps/max9.png"
+            break
+        done
+    done
+    rm -f "$APPS/wine/Programs/Cycling '74/Max 9/Max 9.desktop"
+    rmdir -p "$APPS/wine/Programs/Cycling '74/Max 9" 2>/dev/null || true
+    for e in maxpat maxproj maxhelp maxzip amxd mxf; do
+        f="$APPS/wine-extension-$e.desktop"
+        if [ -e "$f" ] && ! grep -qF "$BIN/" "$f"; then rm -f "$f"; fi
+        rm -f "$HOME/.local/share/mime/packages/x-wine-extension-$e.xml"
+    done
+    update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
+    update-desktop-database "$APPS" 2>/dev/null || true
+    if command -v xdg-mime >/dev/null 2>&1; then
+        xdg-mime default max9.desktop application/x-ableton-live-max-device 2>/dev/null || true
+        xdg-mime default wine-protocol-c74max.desktop x-scheme-handler/c74max 2>/dev/null || true
+    fi
+    echo "   installed max9 launcher and desktop entry"
+fi
 
 case ":$PATH:" in
     *":$BIN:"*) ;;

@@ -1,0 +1,75 @@
+From 1173c1d54303670c9e8fb62e542b04dbd352fe57 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH] win32u: scale the menu-bar band with the menu DPI, minus one
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch 0029 pinned the menu-bar band at SM_CYMENU + 4 flat pixels so
+NCCALCSIZE matches the client + AdjustWindowRectExEx(bMenu) + 4 outer-rect
+model apps inherit from real Windows.  The overshoot is not a flat 4:
+Live 12.4.3's effective model is SM_CYMENU + 4 at 96 dpi (0029, verified
+against Live then) and SM_CYMENU + 7 at 192 dpi (trace
+live-resize-trace-20260721-0024: with the band at SM_CYMENU + 8 it
+re-requested window+1 per WM configure ack, forever — a self-sustaining
++1px/cycle vertical growth after any interactive resize or WM tile at
+125% display scale, with the IFEO dpiAwareness=2 mitigation fully in
+effect).  max(4, muldiv(4, dpi, 96) - 1) reproduces both (4 at 96, 5 at
+144, 7 at 192), so NCCALCSIZE matches Live's model at every scale and
+the resize loop converges in one pass.  Popup menus are unaffected
+(font-driven, no floor).  Verified with the metricprobe2 metrics dump
+(NCCALCSIZE vertical 105 at 192 dpi == Live's model) and with real Live
+12.4.3 and 12.4.2 sessions: WM moveresize cycles land pixel-exact and
+hold, zero geometry creep over 30s idle polls, normal idle CPU.
+---
+ dlls/win32u/menu.c | 25 ++++++++++++++++---------
+ 1 file changed, 16 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/win32u/menu.c b/dlls/win32u/menu.c
+index d6caea03..88d27e67 100644
+--- a/dlls/win32u/menu.c
++++ b/dlls/win32u/menu.c
+@@ -2114,14 +2114,20 @@ static void calc_menu_item_size( HDC hdc, struct menu_item *item, HWND owner, IN
+         {
+             txt_height = DrawTextW( hdc, item->text, -1, &rc, DT_SINGLELINE | DT_CALCRECT );
+             item->rect.right  += rc.right - rc.left;
+-            /* SM_CYMENU + 3: apps derive the menu-bar band as
+-             * AdjustWindowRectEx(bMenu) + 4 like on Windows, where the real
+-             * bar renders 4px taller than the metric; a metric-exact bar
+-             * makes their expected outer rect 4px taller than NCCALCSIZE's,
+-             * so every WM-initiated configure grows the window by 4px
+-             * (Ableton Live 12 main window, +56px per interactive resize). */
++            /* SM_CYMENU + max(4, 4*dpi/96 - 1) - 1: apps derive the menu-bar
++             * band as AdjustWindowRectEx(bMenu) + a scaled overshoot like on
++             * Windows, where the real bar renders taller than the metric; a
++             * bar that doesn't match their model makes their expected outer
++             * rect that much taller than NCCALCSIZE's, so every WM-initiated
++             * configure re-requests a taller window (Ableton Live 12 main
++             * window, +56px per interactive resize at 96 dpi).  Live's
++             * overshoot is 4 at 96 dpi (0029, verified against Live) and 7
++             * at 192 (12.4.3 trace 20260721-0024: it re-requests window+1 per
++             * WM configure with NCCALCSIZE at band 45, i.e. its model band is
++             * 44 = SM_CYMENU + 7); max(4, 4*dpi/96 - 1) reproduces both. */
+             item_height = max( max( item_height, txt_height ),
+-                               get_system_metrics( SM_CYMENU ) + 3 );
++                               get_system_metrics( SM_CYMENU ) +
++                               max( 4, muldiv( 4, get_dpi_for_window( owner ), 96 ) - 1 ) - 1 );
+             item->rect.right +=  2 * menucharsize.cx;
+         }
+         else
+@@ -2156,8 +2162,9 @@ static void calc_menu_item_size( HDC hdc, struct menu_item *item, HWND owner, IN
+     }
+     else if (menu_bar)
+     {
+-        /* SM_CYMENU + 3: keep in sync with the text-item floor above */
+-        item_height = max( item_height, get_system_metrics( SM_CYMENU ) + 3 );
++        /* SM_CYMENU + max(4, 4*dpi/96 - 1) - 1: keep in sync with the text-item floor above */
++        item_height = max( item_height, get_system_metrics( SM_CYMENU ) +
++                           max( 4, muldiv( 4, get_dpi_for_window( owner ), 96 ) - 1 ) - 1 );
+     }
+     item->rect.bottom += item_height;
+     TRACE( "%s\n", wine_dbgstr_rect( &item->rect ));
+-- 
+2.55.0
+

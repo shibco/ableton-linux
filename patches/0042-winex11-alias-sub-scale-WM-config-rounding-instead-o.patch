@@ -1,0 +1,458 @@
+From a014d2aa06ca241fb50cefeebfcf334e5a580700 Mon Sep 17 00:00:00 2001
+From: ableton-wine <local@ableton-wine>
+Date: Tue, 21 Jul 2026 10:47:11 +0200
+Subject: [PATCH] winex11: alias sub-scale WM config rounding instead of
+ feeding it to Win32
+
+At integer display scales above 1 the window manager grants only
+scale-aligned physical geometry, and a per-monitor-aware app whose own
+layout is also scale-aligned cannot hold an off-grid size either. Wine's
+frame model puts an odd offset between the two grids, so after any
+interactive resize the negotiation has no fixed point: the app requests
+one pixel over every grant, the window manager rounds every request back
+up, and the window grows two pixels per cycle without bound (Ableton
+Live 12 at 125% display scale; menu bands of 7 and 8 pixels both
+ratchet, so no frame constant can converge).
+
+Track each configure request. When the grant differs from the request
+only by sub-scale deltas on scale-aligned edges, alias the granted host
+rect to the requested Win32 rect and do not notify Win32. Requests
+within sub-scale deltas of the settled host geometry are answered
+locally without touching X, which also removes the extra request per
+pointer motion during interactive drags. The alias survives WM
+translations and is dropped on any genuine Win32 rect change via a
+generation counter. Adapted from ENCORE's encore-wine.patch.
+---
+ dlls/winex11.drv/window.c | 327 +++++++++++++++++++++++++++++++++++++-
+ dlls/winex11.drv/x11drv.h |   7 +
+ 2 files changed, 332 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index a496c35c..4ccd2abf 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1546,6 +1546,183 @@ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_stat
+     }
+ }
+ 
++/* Sub-scale config-rounding suppression.  At integer scales above 1 the
++ * window manager grants only scale-aligned physical geometry, so a request
++ * with an off-grid edge comes back one pixel off.  Feeding that back to
++ * Win32 makes an app whose layout is also scale-aligned (Ableton Live 12,
++ * per-monitor aware) re-request endlessly, growing 2px per cycle
++ * (notes/ABLETON-WINE-DPI-SCALE-100.md).  When a grant differs from our
++ * request only by sub-scale deltas on scale-aligned edges, alias the
++ * granted host rect to the requested Win32 rect and do not tell Win32.
++ * Adapted from ENCORE's encore-wine.patch (github.com/wowitsjack/ENCORE). */
++enum config_rounding_state
++{
++    CONFIG_ROUNDING_NONE,
++    CONFIG_ROUNDING_PENDING,
++    CONFIG_ROUNDING_ACKED,
++    CONFIG_ROUNDING_ACTIVE,
++};
++
++static void clear_config_rounding( struct x11drv_win_data *data, const char *reason )
++{
++    if (data->config_rounding_state == CONFIG_ROUNDING_NONE) return;
++
++    TRACE( "window %p/%lx clearing config rounding state %u request %lu generation %lu (%s)\n",
++           data->hwnd, data->whole_window, data->config_rounding_state,
++           data->config_rounding_serial, data->config_rounding_generation, reason );
++    data->config_rounding_state = CONFIG_ROUNDING_NONE;
++    data->config_rounding_serial = 0;
++    data->config_rounding_settle_serial = 0;
++    data->config_rounding_generation = 0;
++}
++
++static void track_config_rounding_request( struct x11drv_win_data *data, unsigned long serial,
++                                           const RECT *rect )
++{
++    data->config_rounding_state = CONFIG_ROUNDING_PENDING;
++    data->config_rounding_serial = serial;
++    data->config_rounding_settle_serial = serial;
++    data->config_rounding_generation = data->config_generation;
++    data->config_rounding_win32_rect = *rect;
++    data->config_rounding_host_rect = *rect;
++    TRACE( "window %p/%lx tracking config %s request %lu generation %lu\n", data->hwnd,
++           data->whole_window, wine_dbgstr_rect(rect), serial, data->config_generation );
++}
++
++static BOOL rect_sizes_equal( const RECT *first, const RECT *second )
++{
++    return first->right - first->left == second->right - second->left &&
++           first->bottom - first->top == second->bottom - second->top;
++}
++
++static BOOL config_matches_dpi_rounding( struct x11drv_win_data *data, const RECT *expected,
++                                         const RECT *value )
++{
++    const int expected_edges[] = {expected->left, expected->top, expected->right, expected->bottom};
++    const int value_edges[] = {value->left, value->top, value->right, value->bottom};
++    UINT dpi = NtUserGetDpiForWindow( data->hwnd ), scale;
++    BOOL different = FALSE;
++    unsigned int i;
++
++    if (dpi <= USER_DEFAULT_SCREEN_DPI || dpi % USER_DEFAULT_SCREEN_DPI) return FALSE;
++
++    scale = dpi / USER_DEFAULT_SCREEN_DPI;
++    for (i = 0; i < ARRAY_SIZE(expected_edges); i++)
++    {
++        int delta = value_edges[i] - expected_edges[i];
++
++        if (!delta) continue;
++        if (delta <= -(int)scale || delta >= (int)scale || value_edges[i] % (int)scale) return FALSE;
++        different = TRUE;
++    }
++
++    return different;
++}
++
++static BOOL config_edges_within_dpi_rounding( struct x11drv_win_data *data,
++                                              const RECT *expected, const RECT *value )
++{
++    const int expected_edges[] = {expected->left, expected->top, expected->right, expected->bottom};
++    const int value_edges[] = {value->left, value->top, value->right, value->bottom};
++    UINT dpi = NtUserGetDpiForWindow( data->hwnd ), scale, i;
++
++    if (dpi < USER_DEFAULT_SCREEN_DPI || dpi % USER_DEFAULT_SCREEN_DPI) return FALSE;
++    scale = dpi / USER_DEFAULT_SCREEN_DPI;
++
++    for (i = 0; i < ARRAY_SIZE(expected_edges); i++)
++    {
++        int delta = value_edges[i] - expected_edges[i];
++        if (delta <= -(int)scale || delta >= (int)scale) return FALSE;
++    }
++    return TRUE;
++}
++
++static BOOL axis_is_host_translation( int first, int second, UINT scale )
++{
++    if (!first && !second) return TRUE;
++    if (!first || !second || (first < 0) != (second < 0)) return FALSE;
++    return first - second > -(int)scale && first - second < (int)scale;
++}
++
++static void activate_config_rounding( struct x11drv_win_data *data, const RECT *host_rect )
++{
++    data->config_rounding_state = CONFIG_ROUNDING_ACTIVE;
++    data->config_rounding_host_rect = *host_rect;
++    TRACE( "window %p/%lx activating config rounding alias %s -> %s request %lu generation %lu\n",
++           data->hwnd, data->whole_window, wine_dbgstr_rect(&data->config_rounding_win32_rect),
++           wine_dbgstr_rect(host_rect), data->config_rounding_serial,
++           data->config_rounding_generation );
++}
++
++static BOOL config_rounding_alias_matches_rect( const struct x11drv_win_data *data,
++                                                const RECT *visible_rect )
++{
++    return data->config_rounding_state == CONFIG_ROUNDING_ACTIVE &&
++           data->config_rounding_generation == data->config_generation &&
++           EqualRect( visible_rect, &data->config_rounding_win32_rect ) &&
++           EqualRect( &data->current_state.rect, &data->config_rounding_host_rect );
++}
++
++static BOOL config_rounding_alias_matches( const struct x11drv_win_data *data )
++{
++    return config_rounding_alias_matches_rect( data, &data->rects.visible );
++}
++
++static BOOL config_rounding_move_pending( const struct x11drv_win_data *data )
++{
++    return data->config_rounding_state == CONFIG_ROUNDING_ACTIVE &&
++           data->config_rounding_generation == data->config_generation &&
++           EqualRect( &data->current_state.rect, &data->config_rounding_host_rect ) &&
++           !EqualRect( &data->rects.visible, &data->config_rounding_win32_rect ) &&
++           rect_sizes_equal( &data->rects.visible, &data->config_rounding_win32_rect );
++}
++
++static BOOL track_config_rounding_move( struct x11drv_win_data *data, const RECT *host_rect )
++{
++    const RECT old_host_rect = data->current_state.rect;
++    RECT win32_rect = data->rects.visible;
++    UINT dpi = NtUserGetDpiForWindow( data->hwnd ), scale;
++    int left, top, right, bottom;
++
++    if (!data->managed || data->desired_state.wm_state != NormalState ||
++        IsRectEmpty( &old_host_rect ) || IsRectEmpty( &win32_rect ))
++        return FALSE;
++    if (dpi < USER_DEFAULT_SCREEN_DPI || dpi % USER_DEFAULT_SCREEN_DPI) return FALSE;
++    scale = dpi / USER_DEFAULT_SCREEN_DPI;
++
++    left = host_rect->left - old_host_rect.left;
++    top = host_rect->top - old_host_rect.top;
++    right = host_rect->right - old_host_rect.right;
++    bottom = host_rect->bottom - old_host_rect.bottom;
++    if ((!left && !top && !right && !bottom) ||
++        !axis_is_host_translation( left, right, scale ) ||
++        !axis_is_host_translation( top, bottom, scale ))
++        return FALSE;
++
++    OffsetRect( &win32_rect, left, top );
++    if (!config_edges_within_dpi_rounding( data, &win32_rect, host_rect )) return FALSE;
++
++    data->config_rounding_serial = 0;
++    data->config_rounding_settle_serial = 0;
++    data->config_rounding_generation = data->config_generation;
++    data->config_rounding_win32_rect = win32_rect;
++    activate_config_rounding( data, host_rect );
++    TRACE( "window %p/%lx tracking host move as config rounding alias %s -> %s generation %lu\n",
++           data->hwnd, data->whole_window, wine_dbgstr_rect(&win32_rect),
++           wine_dbgstr_rect(host_rect), data->config_generation );
++    return TRUE;
++}
++
++static unsigned long get_config_rounding_settle_serial( const struct x11drv_win_data *data,
++                                                        unsigned long serial )
++{
++    serial = max( serial, data->wm_state_serial );
++    serial = max( serial, data->net_wm_state_serial );
++    serial = max( serial, data->mwm_hints_serial );
++    serial = max( serial, data->wm_normal_hints_serial );
++    return serial;
++}
++
+ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL above )
+ {
+     UINT style = NtUserGetWindowLongW( data->hwnd, GWL_STYLE ), mask = 0;
+@@ -1576,6 +1753,29 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
+         return;
+     }
+ 
++    /* An app request within sub-scale deltas of the settled host geometry
++     * cannot be represented by the WM; issuing it causes one pointless
++     * round trip, and during an interactive grab the extra requests
++     * conflict visibly with the drag.  Alias it locally, with no X
++     * traffic.  Only fires at integer scales above 1. */
++    if (data->managed && !above && !data->configure_serial &&
++        EqualRect( old_rect, &data->current_state.rect ) &&
++        !EqualRect( new_rect, &data->current_state.rect ) &&
++        config_edges_within_dpi_rounding( data, new_rect, &data->current_state.rect ))
++    {
++        data->desired_state.rect = data->current_state.rect;
++        data->pending_state.rect = data->current_state.rect;
++        data->config_rounding_serial = 0;
++        data->config_rounding_settle_serial = 0;
++        data->config_rounding_generation = data->config_generation;
++        data->config_rounding_win32_rect = *new_rect;
++        activate_config_rounding( data, &data->current_state.rect );
++        TRACE( "window %p/%lx aliasing sub-scale app request %s to host %s, not forwarded\n",
++               data->hwnd, data->whole_window, wine_dbgstr_rect(new_rect),
++               wine_dbgstr_rect(&data->current_state.rect) );
++        return;
++    }
++
+     if (old_rect->right - old_rect->left != new_rect->right - new_rect->left ||
+         old_rect->bottom - old_rect->top != new_rect->bottom - new_rect->top)
+     {
+@@ -1614,6 +1814,8 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
+     data->pending_state.rect = *new_rect;
+     data->pending_state.above = above;
+     data->configure_serial = NextRequest( data->display );
++    if (mask & (CWX | CWY | CWWidth | CWHeight))
++        track_config_rounding_request( data, data->configure_serial, new_rect );
+     TRACE( "window %p/%lx, requesting config %s mask %#x above %u, serial %lu\n", data->hwnd, data->whole_window,
+            wine_dbgstr_rect(new_rect), mask, above, data->configure_serial );
+     XReconfigureWMWindow( data->display, data->whole_window, data->vis.screen, mask, &changes );
+@@ -2016,6 +2218,29 @@ static UINT window_update_client_config( struct x11drv_win_data *data )
+     if (data->mwm_hints_serial) return 0; /* another MWM_HINT update is pending, wait for it to complete */
+     if (data->configure_serial) return 0; /* another config update is pending, wait for it to complete */
+ 
++    /* A managed title-bar drag changes only the host position. Keep the
++     * acknowledged rounded host size out of the Win32 move notification. */
++    if (config_rounding_move_pending( data ))
++    {
++        new_rect = window_rect_from_visible_state( data, data->config_rounding_win32_rect );
++        flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE;
++        if (new_rect.left == old_rect.left && new_rect.top == old_rect.top) flags |= SWP_NOMOVE;
++        if ((data->is_offscreen = !is_window_rect_mapped( &new_rect ))) flags |= SWP_NOMOVE;
++        TRACE( "window %p/%lx applying rounded config move %s -> %s without resizing\n", data->hwnd,
++               data->whole_window, wine_dbgstr_rect(&old_rect), wine_dbgstr_rect(&new_rect) );
++        return flags;
++    }
++
++    /* Don't feed a previously acknowledged host rounding adjustment back to
++     * Win32 while it still refers to the exact configure request generation. */
++    if (config_rounding_alias_matches( data ))
++    {
++        TRACE( "window %p/%lx ignoring acknowledged rounded config %s for %s generation %lu\n", data->hwnd,
++               data->whole_window, wine_dbgstr_rect(&data->current_state.rect),
++               wine_dbgstr_rect(&data->rects.visible), data->config_generation );
++        return 0;
++    }
++
+     /* Ignore fullscreen config changes when it's still on the same monitor. This is needed because
+      * adding __NET_WM_STATE_FULLSCREEN will make WMs move the window to cover exactly the monitor
+      * rect. If the application sets a visible rect slightly larger than the monitor rect and insists
+@@ -2074,7 +2299,10 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+     {
+         *state_cmd = window_update_client_state( data );
+         *swp_flags = window_update_client_config( data );
+-        *rect = window_rect_from_visible_state( data, data->current_state.rect );
++        if (*swp_flags && config_rounding_move_pending( data ))
++            *rect = window_rect_from_visible_state( data, data->config_rounding_win32_rect );
++        else
++            *rect = window_rect_from_visible_state( data, data->current_state.rect );
+         release_win_data( data );
+     }
+ 
+@@ -2214,12 +2442,50 @@ void window_configure_notify( struct x11drv_win_data *data, unsigned long serial
+ {
+     RECT *desired = &data->desired_state.rect, *pending = &data->pending_state.rect, *current = &data->current_state.rect;
+     unsigned long *expect_serial = &data->configure_serial;
++    UINT next_rounding_state = data->config_rounding_state;
++    BOOL tracked_request, newly_acked = FALSE;
++    RECT requested = *pending;
+     const char *expected, *received, *prefix;
+ 
+     prefix = wine_dbg_sprintf( "window %p/%lx ", data->hwnd, data->whole_window );
+     received = wine_dbg_sprintf( "config %s/%lu", wine_dbgstr_rect(value), serial );
+     expected = *expect_serial ? wine_dbg_sprintf( ", expected %s/%lu", wine_dbgstr_rect(pending), *expect_serial ) : "";
+ 
++    /* Preserve the size-rounding alias while the window manager translates
++     * the window during an interactive title-bar move. */
++    if (!*expect_serial) track_config_rounding_move( data, value );
++
++    tracked_request = data->config_rounding_state == CONFIG_ROUNDING_PENDING &&
++                      data->config_rounding_generation == data->config_generation &&
++                      *expect_serial == data->config_rounding_serial &&
++                      serial >= *expect_serial && EqualRect( &requested, &data->config_rounding_win32_rect ) &&
++                      EqualRect( desired, pending );
++
++    if (tracked_request)
++    {
++        if (EqualRect( &requested, value )) next_rounding_state = CONFIG_ROUNDING_ACKED;
++        else if (config_matches_dpi_rounding( data, &requested, value ))
++            next_rounding_state = CONFIG_ROUNDING_ACTIVE;
++        else next_rounding_state = CONFIG_ROUNDING_NONE;
++    }
++    else if (data->config_rounding_state == CONFIG_ROUNDING_ACKED && !*expect_serial &&
++             data->config_rounding_generation == data->config_generation &&
++             serial <= data->config_rounding_settle_serial &&
++             EqualRect( &data->rects.visible, &data->config_rounding_win32_rect ))
++    {
++        if (EqualRect( &data->config_rounding_win32_rect, value ))
++            next_rounding_state = CONFIG_ROUNDING_ACKED;
++        else if (config_matches_dpi_rounding( data, &data->config_rounding_win32_rect, value ))
++            next_rounding_state = CONFIG_ROUNDING_ACTIVE;
++        else next_rounding_state = CONFIG_ROUNDING_NONE;
++    }
++    else if (data->config_rounding_state == CONFIG_ROUNDING_ACTIVE &&
++             data->config_rounding_generation == data->config_generation &&
++             EqualRect( &data->config_rounding_host_rect, value ))
++        next_rounding_state = CONFIG_ROUNDING_ACTIVE;
++    else if (data->config_rounding_state != CONFIG_ROUNDING_NONE)
++        next_rounding_state = CONFIG_ROUNDING_NONE;
++
+     /* if we've delayed some config we want to continue with it, make sure handle_state_change doesn't overwrite it */
+     if ((*expect_serial || window_needs_config_change_delay( data )) &&
+         serial >= *expect_serial && !EqualRect( desired, pending ))
+@@ -2231,10 +2497,38 @@ void window_configure_notify( struct x11drv_win_data *data, unsigned long serial
+     if (!handle_state_change( serial, expect_serial, sizeof(*value), value, desired, pending,
+                               current, expected, prefix, received, NULL ))
+         return;
++
++    if (next_rounding_state == CONFIG_ROUNDING_NONE)
++        clear_config_rounding( data, "unrelated configure notify" );
++    else if (next_rounding_state == CONFIG_ROUNDING_ACKED &&
++             data->config_rounding_state != CONFIG_ROUNDING_ACKED)
++    {
++        data->config_rounding_state = CONFIG_ROUNDING_ACKED;
++        data->config_rounding_host_rect = *value;
++        data->config_rounding_settle_serial = serial;
++        newly_acked = TRUE;
++    }
++    else if (next_rounding_state == CONFIG_ROUNDING_ACTIVE &&
++             (data->config_rounding_state != CONFIG_ROUNDING_ACTIVE ||
++              !EqualRect( &data->config_rounding_host_rect, value )))
++        activate_config_rounding( data, value );
++
+     data->pending_state.above = FALSE; /* allow requesting it again */
+ 
+     /* send any pending changes from the desired state */
+     window_request_desired_state( data );
++
++    if (data->config_rounding_state == CONFIG_ROUNDING_ACKED)
++    {
++        unsigned long settle_serial = get_config_rounding_settle_serial( data,
++                                                  data->config_rounding_settle_serial );
++
++        if (newly_acked || settle_serial != data->config_rounding_settle_serial)
++            TRACE( "window %p/%lx config request %lu acknowledged, settling through serial %lu generation %lu\n",
++                   data->hwnd, data->whole_window, data->config_rounding_serial,
++                   settle_serial, data->config_rounding_generation );
++        data->config_rounding_settle_serial = settle_serial;
++    }
+ }
+ 
+ void net_active_window_notify( unsigned long serial, Window value, Time time )
+@@ -2446,6 +2740,18 @@ static void sync_window_position( struct x11drv_win_data *data, UINT swp_flags,
+     if (data->is_offscreen) OffsetRect( &new_rect, window_rect.left - old_rects->window.left,
+                                         window_rect.top - old_rects->window.top );
+ 
++    /* Reuse only the exact host rectangle acknowledged for this Win32
++     * configure generation. A later application resize starts a new generation
++     * before reaching this function and cannot be mistaken for rounding. */
++    if (config_rounding_alias_matches( data ) &&
++        EqualRect( &new_rect, &data->config_rounding_win32_rect ))
++    {
++        TRACE( "window %p/%lx reusing acknowledged rounded config %s for %s generation %lu\n", data->hwnd,
++               data->whole_window, wine_dbgstr_rect(&new_rect),
++               wine_dbgstr_rect(&data->config_rounding_host_rect), data->config_generation );
++        new_rect = data->config_rounding_host_rect;
++    }
++
+     window_set_config( data, new_rect, above );
+ }
+ 
+@@ -2786,6 +3092,8 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
+         }
+     }
+     if (data->whole_colormap) XFreeColormap( data->display, data->whole_colormap );
++    clear_config_rounding( data, "whole window destroyed" );
++    data->config_generation = 0;
+     data->whole_window = data->client_window = 0;
+     data->whole_colormap = 0;
+     data->managed = FALSE;
+@@ -3587,7 +3895,22 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+ 
+     old_rects = data->rects;
+     was_fullscreen = data->is_fullscreen;
+-    if (!(new_style & WS_MINIMIZE) || is_virtual_desktop()) data->rects = *new_rects;
++    if (!(new_style & WS_MINIMIZE) || is_virtual_desktop())
++    {
++        if (!EqualRect( &old_rects.visible, &new_rects->visible ))
++        {
++            if (config_rounding_alias_matches_rect( data, &new_rects->visible ))
++                TRACE( "window %p/%lx preserving config rounding alias across move to %s generation %lu\n",
++                       data->hwnd, data->whole_window, wine_dbgstr_rect(&new_rects->visible),
++                       data->config_generation );
++            else
++            {
++                data->config_generation++;
++                clear_config_rounding( data, "Win32 rect changed" );
++            }
++        }
++        data->rects = *new_rects;
++    }
+     data->is_fullscreen = fullscreen;
+     data->is_resizable = !!(swp_flags & WINE_SWP_RESIZABLE);
+ 
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 6f15d022..ba2698ee 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -701,6 +701,13 @@ struct x11drv_win_data
+     unsigned long wm_normal_hints_serial;/* serial of last pending WM_NORMAL_HINTS request */
+     unsigned long configure_serial;    /* serial of last pending configure request */
+     unsigned long net_wm_icon_serial;  /* serial of last pending _NET_WM_ICON request */
++    unsigned long config_generation;   /* generation of the current Win32 window rect */
++    unsigned long config_rounding_serial; /* configure request which may be rounded by the WM */
++    unsigned long config_rounding_settle_serial; /* last related request which may adjust the config */
++    unsigned long config_rounding_generation; /* Win32 rect generation of the configure request */
++    RECT config_rounding_win32_rect;   /* Win32 rect associated with a rounded configure request */
++    RECT config_rounding_host_rect;    /* host rect acknowledged for config_rounding_win32_rect */
++    UINT config_rounding_state;        /* state of the rounded configure request */
+ };
+ 
+ extern struct x11drv_win_data *get_win_data( HWND hwnd );

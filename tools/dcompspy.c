@@ -50,6 +50,12 @@ static void check( HWND hwnd, int depth )
            comp_size ? (unsigned)LOWORD((LPARAM)comp_size) : 0,
            comp_size ? (unsigned)HIWORD((LPARAM)comp_size) : 0,
            swapchain );
+        {
+            COLORREF key = 0; BYTE alpha = 0; DWORD lwa = 0;
+            if (GetLayeredWindowAttributes( hwnd, &key, &alpha, &lwa ))
+                P( "    layered attrs: colorkey=%08x alpha=%u flags=%08x\r\n",
+                   (unsigned)key, (unsigned)alpha, (unsigned)lwa );
+        }
     }
 
     for (child = GetWindow( hwnd, GW_CHILD ); child; child = GetWindow( child, GW_HWNDNEXT ))

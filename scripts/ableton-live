@@ -35,6 +35,37 @@ fi
 # mandatory: nothing under Wine can sandbox the renderer. User-supplied flags come first.
 export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:+$WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS }--use-gl=angle --use-angle=swiftshader --disable-gpu-compositing --disable-gpu-rasterization --disable-direct-composition --disable-features=ForceSWDCompWhenDCompFallbackRequired --edge-webview-foreground-boost-opt-out --no-sandbox"
 
+# Reinstate the authorization handler entries when a foreign prefix took them
+# over: winemenubuilder (disabled in kit prefixes, live everywhere else, e.g.
+# in a scratch prefix holding a Live beta) exports handlers under the same
+# canonical names with `env WINEPREFIX=<prefix> wine start` Exec lines, which
+# target stock wine and the wrong prefix. Online authorization then never
+# reaches this install. install.sh stages the canonical entries; missing or
+# winemenubuilder-signed copies are replaced and the defaults re-pinned.
+# Hand-edited entries stay. See notes/ABLETON-WINE-ONLINE-AUTH.md.
+repair_handler_entries() {
+    local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    local staged d repaired=0
+    for d in wine-protocol-ableton wine-extension-auz; do
+        staged="$HOME/.local/share/ableton-wine/$d.desktop"
+        [ -f "$staged" ] || continue
+        if [ ! -f "$apps/$d.desktop" ] \
+            || grep -qE '^Exec=env .*WINEPREFIX=.* wine start ' "$apps/$d.desktop"; then
+            echo "ableton-live: reinstating $d.desktop (a foreign wine prefix took the handler over)" >&2
+            mkdir -p "$apps"
+            cp "$staged" "$apps/$d.desktop"
+            repaired=1
+        fi
+    done
+    [ "$repaired" -eq 1 ] || return 0
+    update-desktop-database "$apps" 2>/dev/null || true
+    if command -v xdg-mime >/dev/null 2>&1; then
+        xdg-mime default wine-protocol-ableton.desktop x-scheme-handler/ableton 2>/dev/null || true
+        xdg-mime default wine-extension-auz.desktop application/x-wine-extension-auz 2>/dev/null || true
+    fi
+}
+repair_handler_entries
+
 # Report a stable, small CPU count to Live — cap 8, honoring taskset/cgroup cpusets. 
 # Emit 8 when usable CPUs exceed 8, the allowed-set size when affinity-constrained 
 # below that, and nothing otherwise (Wine's default is fine).
@@ -638,11 +669,40 @@ if [ "${ABLETON_TOPBAR_MODE:-live}" = live ] && [ -n "$EXE" ] && [ -n "${want_li
     disown
 fi
 
+# Auto-heal the Learn View / doc sidebar WebView2 fossil-on-open
+# (notes/ABLETON-WINE-LEARNVIEW-FLICKER.md): a resident helper nudges each
+# settled lesson pane once, replacing the manual splitter nudge. It waits for
+# a pane to hold a stable rect before poking (bind-time pokes leave Chromium
+# resize-deaf) and exits on its own after Live is gone. No-op when the helper
+# is not installed.
+learnheal="$HOME/.local/share/ableton-wine/learnheal.exe"
+if [ -n "$EXE" ] && [ -f "$learnheal" ]; then
+    ( "$WINE_ROOT/bin/wine" "$learnheal" ) </dev/null >/dev/null 2>&1 &
+    disown
+fi
+
 if [ -n "${ABLETON_VDESK:-}" ]; then
     require_live
     exec "${run[@]}" explorer "/desktop=AbletonLive,${ABLETON_VDESK}" "$EXE"
 elif [ "$#" -gt 0 ]; then
-    # ableton:// URLs, .auz license files, .als sets from the file manager
+    # ableton:// URLs, .auz license files, Live documents from the file
+    # manager or command line. A single existing file arrives as a unix path
+    # (%f in the desktop entry). Live documents go straight to the Live exe:
+    # sets, clips and packs have no association inside the prefix, and
+    # start.exe reads a bare unix path as a switch (issue #38). Other files
+    # keep the start.exe path, which resolves unix paths behind /unix.
+    if [ "$#" -eq 1 ] && [ -f "$1" ]; then
+        case "$1" in
+            *.[aA][lL][sS]|*.[aA][lL][cC]|*.[aA][lL][pP])
+                require_live
+                doc="$(winepath -w "$1" 2>/dev/null || true)"
+                if [ -n "$doc" ]; then
+                    exec "${run[@]}" "$EXE" "$doc"
+                fi
+                ;;
+        esac
+        case "$1" in /*) exec "${run[@]}" start /unix "$1" ;; esac
+    fi
     exec "${run[@]}" start "$@"
 else
     require_live

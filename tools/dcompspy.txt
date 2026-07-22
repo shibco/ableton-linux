@@ -1,11 +1,12 @@
 === desktop window props ===
 desktop prop: __wine_display_device_guid = 000000000000C01C
-desktop prop: __wine_x11_clip_window = 0000000000C00003
-desktop prop: __wine_dcomp_wnd_7ffffef6c4c0 = 0000000000040116
+desktop prop: __wine_x11_clip_window = 0000000001E00003
+desktop prop: __wine_dcomp_wnd_7fffff01dba0 = 00000000000301A4
 desktop prop: __wine_dcomp_active = 0000000000000001
 === windows with dcomp props ===
-000000000002010A pid=1240 cls="Intermediate D3D Window" title="" rect=(1792,413)-(2091,1217) style=5c000000 ex=00280024
-    target=00007F0584FC0960 origproc=00006FFFE4069570 orig_wndproc=00006FFFE09330C0 comp_dc=0000000003410051 comp_size=000000000324012B (299x804) swapchain=00007FFFFEF6C4C0
-0000000000040116 pid=1240 cls="WineDCompSwapchain" title="DComp Swapchain" rect=(0,0)-(1273,1568) style=40000000 ex=00000004
-    target=0000000000000000 origproc=0000000000000000 orig_wndproc=0000000000000000 comp_dc=0000000000000000 comp_size=0000000000000000 (0x0) swapchain=00007FFFFEF6C4C0
+000000000001019E pid=1328 cls="Intermediate D3D Window" title="" rect=(996,152)-(1291,1271) style=5c000000 ex=00280024
+    target=00007F6BAAFA0960 origproc=00006FFFE9209570 orig_wndproc=00006FFFE5DA30C0 comp_dc=0000000021410051 comp_size=0000000008BE024E (590x2238) swapchain=00007FFFFF01DBA0
+    layered attrs: colorkey=00000000 alpha=255 flags=00000002
+00000000000301A4 pid=1328 cls="WineDCompSwapchain" title="DComp Swapchain" rect=(0,0)-(1019,1251) style=40000000 ex=00000004
+    target=0000000000000000 origproc=0000000000000000 orig_wndproc=0000000000000000 comp_dc=0000000000000000 comp_size=0000000000000000 (0x0) swapchain=00007FFFFF01DBA0
 === message-only windows ===

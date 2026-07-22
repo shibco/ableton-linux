@@ -1,35 +1,7 @@
-0000000000040106 pid=1240 tid=1532 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000
-0000000000020110 pid=1240 tid=1540 cls="Chrome_WidgetWin_0" title="" rect=(0,0)-(0,0) style=8c000000 CLIPSIBLINGS hidden ex=00000080
-000000000002010C pid=1240 tid=1540 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000
-000000000001019A pid=668 tid=672 cls="Chrome_WidgetWin_0" title="" rect=(0,0)-(0,0) style=8c000000 CLIPSIBLINGS hidden ex=00000080
-0000000000010180 pid=668 tid=672 cls="Chrome_WidgetWin_0" title="" rect=(0,32)-(1920,1176) style=06cf0000 CLIPCHILDREN CLIPSIBLINGS hidden ex=00000100
-0000000000010168 pid=760 tid=764 cls="WineConsoleClass" title="C:\ProgramData\Ableton\Live 12 Suite\Resources\Extensions\Index\Ableton Index.exe" rect=(0,32)-(665,466) style=04ef0000 CLIPSIBLINGS hidden ex=00000100
-0000000000010170 pid=760 tid=764 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000
-0000000000010152 pid=736 tid=1116 cls="crashpad_SessionEndWatcher" title="" rect=(0,0)-(140,34) style=04c00000 CLIPSIBLINGS hidden ex=00000100
-0000000000010156 pid=736 tid=1116 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000
-0000000000040134 pid=32 tid=36 cls="JUCE_217dbf7b79" title="JUCEWindow" rect=(0,0)-(140,34) style=04c00000 CLIPSIBLINGS hidden ex=00000100
-0000000000010126 pid=668 tid=672 cls="Base_PowerMessageWindow" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=08000000
-000000000001012C pid=668 tid=672 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000
-00000000000100EE pid=700 tid=704 cls="WineConsoleClass" title="C:\ProgramData\Ableton\Live 12 Suite\Resources\Extensions\AddOns\Ableton AddOns.exe" rect=(0,32)-(665,466) style=04ef0000 CLIPSIBLINGS hidden ex=00000100
-00000000000100F6 pid=700 tid=704 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000
-000000000001009C pid=32 tid=36 cls="Ableton Live Window Class" title="Untitled - Ableton Live 12 Suite" rect=(696,296)-(2104,1230) style=16cf0000 CLIPCHILDREN CLIPSIBLINGS VIS ex=00000100
-  0000000000040194 pid=32 tid=36 cls="AbletonPlatformViewHost" title="AbletonPlatformViewContainer" rect=(1792,413)-(2091,1217) style=56000000 CLIPCHILDREN CLIPSIBLINGS VIS ex=00000000
-    00000000000100E2 pid=32 tid=36 cls="Chrome_WidgetWin_0" title="" rect=(1792,413)-(2091,1217) style=56010000 CLIPCHILDREN CLIPSIBLINGS VIS ex=00000000
-      000000000001018E pid=668 tid=672 cls="Chrome_WidgetWin_1" title="Learn View 12" rect=(1792,413)-(2091,1217) style=56000000 CLIPCHILDREN CLIPSIBLINGS VIS ex=00200000
-        0000000000020196 pid=668 tid=672 cls="Chrome_RenderWidgetHostHWND" title="Chrome Legacy Window" rect=(1792,413)-(2091,1217) style=56300000 CLIPCHILDREN CLIPSIBLINGS VIS ex=00000020
-        000000000002010A pid=1240 tid=1540 cls="Intermediate D3D Window" title="" rect=(1792,413)-(2091,1217) style=5c000000 CLIPSIBLINGS VIS ex=00280024 LAYERED
-00000000000300DE pid=32 tid=36 cls="AbletonWebViewHelperWindow" title="" rect=(0,32)-(140,66) style=04cf0000 CLIPSIBLINGS hidden ex=00000100
-00000000002000D6 pid=32 tid=36 cls="JUCE_217be9d86d" title="JUCEWindow" rect=(0,0)-(140,34) style=04c00000 CLIPSIBLINGS hidden ex=00000100
-0000000000010094 pid=32 tid=36 cls="Ableton Live Window Class" title="" rect=(0,0)-(140,34) style=04cf0000 CLIPSIBLINGS hidden ex=00000100
-00000000000100BE pid=32 tid=36 cls="Wine IME" title="" rect=(0,0)-(1,1) style=84000000 CLIPSIBLINGS hidden ex=00000080
-000000000001009A pid=32 tid=36 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000
-000000000001004A pid=132 tid=136 cls="WineDdeServerName" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=00000000
-0000000000010048 pid=132 tid=136 cls="WineDdeServerName" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=00000000
-0000000000010046 pid=132 tid=136 cls="WineDdeServerName" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=00000000
-0000000000010044 pid=132 tid=136 cls="WineDdeEventClass" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=00000000
-000000000001003C pid=132 tid=136 cls="Shell_TrayWnd" title="" rect=(0,32)-(166,84) style=04c80000 CLIPSIBLINGS hidden ex=00000100
-0000000000030148 pid=132 tid=136 cls="Wine IME" title="" rect=(0,0)-(1,1) style=84000000 CLIPSIBLINGS hidden ex=00000080
-0000000000010042 pid=132 tid=136 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000
-00000000000200DA pid=32 tid=36 cls="Static" title="DXGI device window" rect=(0,0)-(140,34) style=0cc00000 CLIPSIBLINGS hidden ex=00000100
-0000000000040108 pid=1240 tid=1532 cls="Static" title="DXGI device window" rect=(0,0)-(140,34) style=0cc00000 CLIPSIBLINGS hidden ex=00000100
-0000000000040116 pid=1240 tid=1532 cls="WineDCompSwapchain" title="DComp Swapchain" rect=(0,0)-(1273,1568) style=40000000 hidden ex=00000004
+000000000001004A pid=264 tid=268 cls="WineDdeServerName" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=00000000
+0000000000010048 pid=264 tid=268 cls="WineDdeServerName" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=00000000
+0000000000010046 pid=264 tid=268 cls="WineDdeServerName" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=00000000
+0000000000010044 pid=264 tid=268 cls="WineDdeEventClass" title="" rect=(0,0)-(0,0) style=84000000 CLIPSIBLINGS hidden ex=00000000
+000000000001003C pid=264 tid=268 cls="Shell_TrayWnd" title="" rect=(0,0)-(147,47) style=04c80000 CLIPSIBLINGS hidden ex=00000100
+00000000000100E6 pid=264 tid=268 cls="Wine IME" title="" rect=(0,0)-(1,1) style=84000000 CLIPSIBLINGS hidden ex=00000080
+0000000000010042 pid=264 tid=268 cls="IME" title="Default IME" rect=(0,0)-(1,1) style=8c000000 CLIPSIBLINGS hidden ex=00000000

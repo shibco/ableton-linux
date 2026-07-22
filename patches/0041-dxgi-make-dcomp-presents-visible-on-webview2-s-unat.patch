@@ -1,0 +1,329 @@
+From 9d34f87fddf84b07993fec96b41df7761a89deb9 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Tue, 21 Jul 2026 07:01:07 +0200
+Subject: [PATCH] dxgi: make dcomp presents visible on WebView2's unattributed
+ layered targets
+
+Three interlocked fixes for the Learn View display path
+(notes/ABLETON-WINE-LEARNVIEW-FLICKER.md):
+
+1. Root cause #3: Chromium binds composition swapchains to its
+   "Intermediate D3D Window" (WS_EX_LAYERED|WS_EX_NOREDIRECTIONBITMAP|
+   WS_EX_TRANSPARENT, never attributed).  On Windows the DWM shows the
+   DComp visual and the window has no GDI surface; here the comp buffer
+   is delivered by GDI blits into that window, and an unattributed
+   layered window has no working GDI display path (winex11 delays
+   mapping layered windows until attributes arrive; the server
+   suppresses their redraws), so presents executed but never reached
+   the screen.  At WM_WINE_DCOMP_SET_TARGET time, normalize such
+   targets with SetLayeredWindowAttributes(0, 255, LWA_ALPHA): a no-op
+   for a NOREDIRECTIONBITMAP window under Windows DWM semantics, here
+   it makes the window an ordinary opaque surface the blits land on.
+   Attributed layered windows (JUCE DropShadower, UpdateLayeredWindow
+   users) are never touched.
+
+2. One-shot delayed reblit closes the resize race against patch 0030's
+   stale gate: a windowposchanged reblit running in the same ms as a
+   cross-thread ResizeBuffers is skipped and nothing repaints until the
+   app's next present.  A stale-skip now arms a 120ms one-shot timer
+   (DCOMP_RESIZE_REBLIT_TIMER_ID), the reblit re-gates on currency, and
+   retries are capped at 5.  Timers/props are cleaned up in both
+   NCDESTROYs and in d3d11_swapchain_Release.
+
+3. Remove patch 0025's idle-abandonment (DCOMP_STALE_TICKS).  With the
+   target now visible, suspending reblits after 3s idle reverts any
+   healed Learn View pane to the fossil frame (Chromium keeps
+   GDI-painting the fossil into the same window; the suspended reblit
+   can no longer answer with the last good comp buffer).  Always-reblit
+   holds healed content indefinitely.  Trade-off, documented in the
+   note: while a pane is in its fossil state (before a layout refresh),
+   the two painters alternate at ~10Hz instead of showing a static
+   fossil.  A splitter nudge, pane reopen, or tools/posteresize.exe
+   heals it to correct-and-stable.
+
+Verified on Live 12.4.3 at 125% scale: Learn View heals fully and
+holds (previously correct content never showed, or reverted ~3s after
+any heal); guard fires exactly once per WebView2 bind and never for
+JUCE/SWAM editors; xgrid steady-state confirms.
+---
+ dlls/dxgi/dxgi_private.h |   1 +
+ dlls/dxgi/factory.c      | 143 ++++++++++++++++++++++++++++++---------
+ dlls/dxgi/swapchain.c    |   1 +
+ 3 files changed, 112 insertions(+), 33 deletions(-)
+
+diff --git a/dlls/dxgi/dxgi_private.h b/dlls/dxgi/dxgi_private.h
+index 3d0820ce..0e2fa0c3 100644
+--- a/dlls/dxgi/dxgi_private.h
++++ b/dlls/dxgi/dxgi_private.h
+@@ -173,6 +173,7 @@ struct dxgi_adapter *unsafe_impl_from_IDXGIAdapter(IDXGIAdapter *iface);
+  * and swapchain.c (kill on teardown). */
+ #define DCOMP_REBLIT_TIMER_ID 0xDC01
+ #define DCOMP_POPUP_REBLIT_TIMER_ID 0xDC02
++#define DCOMP_RESIZE_REBLIT_TIMER_ID 0xDC03
+ 
+ /* Count of currently subclassed DComp target windows (defined in factory.c).
+  * Controls full-vs-popup mode; d3d11_swapchain_Release() decrements it when it
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 436d5885..34751677 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -384,13 +384,16 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
+  * no d2d1 device (mirrored there, like the message id itself). */
+ #define DCOMP_SET_TARGET_NULL_D2D1_DEVICE 0x1
+ 
+-/* Consecutive idle reblit-timer ticks (200ms each) after which a dcomp target
+- * swapchain is considered abandoned: the app stopped presenting and paints the
+- * window by other means (WebView2's Chromium switches to layered/GDI painting
+- * after the initial loads). Re-blitting the comp snapshot then overpaints live
+- * content with a fossilized frame (Learn-View sidebar 200ms gray flashes).
+- * Presenting again resets the counter and re-enables the reblit machinery. */
+-#define DCOMP_STALE_TICKS 15
++/* Patch 0025's DCOMP_STALE_TICKS idle-abandonment was removed: idle is the
++ * normal state of static composition content (WebView2 Learn View), and
++ * suspending reblits/paints after 3s idle dropped the opaque target's
++ * composite so the sibling software frame showed through (the Learn View
++ * revert). The gray-flash overpaint 0025 guarded against came from 0022-era
++ * forced presents rotating fossil backbuffers; blitting the last published
++ * comp buffer is what the DWM shows anyway. Swapchain liveness is signalled
++ * by teardown (Release kills the timers and un-subclasses; NCDESTROY cleans
++ * the props), and 0036's null-device guard still suspends the timer for
++ * never-presenting dead devices. */
+ 
+ /* Issue #16 (NixOS/steam-run: the FHS provides Mesa's libEGL without the
+  * NVIDIA GLVND vendor config, so Wine's D2D1/EGL init fails): the dcomp
+@@ -415,6 +418,24 @@ static void dcomp_clear_null_device_props(HWND hwnd)
+     RemovePropW(hwnd, L"__wine_dcomp_nulldev_ms");
+ }
+ 
++#define DCOMP_RESIZE_REBLIT_MS 120
++#define DCOMP_RESIZE_REBLIT_MAX_TRIES 5
++
++/* One-shot delayed reblit, closing the resize race against the stale-size
++ * gate (patch 0030): a windowposchanged reblit running in the same ms as a
++ * cross-thread ResizeBuffers is skipped (or paints the old geometry just
++ * before the desc flips) and nothing repaints until the app's next present.
++ * When a blit is skipped for staleness, arm a one-shot retry; the reblit
++ * re-gates on currency, so a still-stale buffer is never painted. Capped
++ * retries; any new stale event re-arms. Armed only from wndproc context
++ * (SetTimer requires the window's owning thread). */
++static void dcomp_arm_delayed_reblit(HWND hwnd)
++{
++    if (!GetPropW(hwnd, L"__wine_dcomp_reblit_tries"))
++        SetPropW(hwnd, L"__wine_dcomp_reblit_tries", (HANDLE)(LONG_PTR)0);
++    SetTimer(hwnd, DCOMP_RESIZE_REBLIT_TIMER_ID, DCOMP_RESIZE_REBLIT_MS, NULL);
++}
++
+ static inline struct d3d11_swapchain *d3d11_swapchain_from_IDXGISwapChain4(IDXGISwapChain4 *iface)
+ {
+     return CONTAINING_RECORD(iface, struct d3d11_swapchain, IDXGISwapChain4_iface);
+@@ -447,18 +468,24 @@ static BOOL dcomp_comp_buffer_current(HWND hwnd, unsigned int w, unsigned int h)
+ 
+ /* Re-blit composition content from persistent buffer to window.
+  * Called on WM_PAINT, focus changes, timer tick, and other events
+- * that may cause the window surface to be overwritten. */
++ * that may cause the window surface to be overwritten.
++ *
++ * No idle/abandonment gate here (patch 0025's DCOMP_STALE_TICKS mechanism
++ * removed): for a composition target the comp buffer IS the published DComp
++ * visual — on Windows the DWM keeps showing it no matter how long the app
++ * stays idle, and static WebView2 content (Learn View) is idle by default.
++ * With the target normalized to an opaque attributed layered window, only a
++ * steady reblit keeps its composite pinned above the sibling
++ * Chrome_RenderWidgetHostHWND software frame; gating reblits on idle let
++ * that stale sibling show through ~3s after the last present (the Learn
++ * View revert). Liveness is signalled by teardown instead: Release/NCDESTROY
++ * kill the timer and remove the props, and 0036's null-device guard still
++ * suspends the timer for never-presenting dead devices. */
+ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+ {
+     HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
+     LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
+ 
+-    /* Abandoned swapchain (idle >= DCOMP_STALE_TICKS): the comp buffer is a
+-     * stale snapshot; blitting it would overpaint the app's live (non-dcomp)
+-     * painting. Covers the focus/windowpos event reblits as well. */
+-    if ((LONG)(LONG_PTR)GetPropW(hwnd, L"__wine_dcomp_idle_ticks") >= DCOMP_STALE_TICKS)
+-        return;
+-
+     if (comp_dc && dims)
+     {
+         unsigned int w = LOWORD(dims);
+@@ -472,6 +499,7 @@ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+             if (stale_count <= 5 || !(stale_count % 200))
+                 FIXME("Re-blit skipped (stale %ux%u buffer): hwnd %p reason=%s.\n",
+                         w, h, hwnd, reason);
++            dcomp_arm_delayed_reblit(hwnd);
+             return;
+         }
+ 
+@@ -635,6 +663,7 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             dcomp_update_active_prop();
+             dcomp_popup_stack_remove(hwnd);
+             KillTimer(hwnd, DCOMP_POPUP_REBLIT_TIMER_ID);
++            KillTimer(hwnd, DCOMP_RESIZE_REBLIT_TIMER_ID);
+ 
+             /* Before the popup window is destroyed, switch the swapchain back
+              * to its composition window.  This drains the CS queue (no more
+@@ -677,6 +706,7 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             RemovePropW(hwnd, L"__wine_dcomp_swapchain");
+             RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
+             RemovePropW(hwnd, L"__wine_dcomp_comp_size");
++            RemovePropW(hwnd, L"__wine_dcomp_reblit_tries");
+             dcomp_clear_null_device_props(hwnd);
+             return result;
+         }
+@@ -706,12 +736,12 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
+             LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
+ 
+-            /* Stale swapchain (see DCOMP_STALE_TICKS): let the app's own
+-             * wndproc paint — the comp snapshot is a fossil by now. */
+-            if ((LONG)(LONG_PTR)GetPropW(hwnd, L"__wine_dcomp_idle_ticks") >= DCOMP_STALE_TICKS)
+-                return orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
+-                            : DefWindowProcW(hwnd, msg, wparam, lparam);
+-
++            /* Always paint from the comp buffer, however long the app has
++             * been idle: it is the published DComp visual (Windows parity),
++             * and forwarding to the orig wndproc would erase the surface and
++             * let the sibling software frame show through (Learn View revert
++             * ~3s after the last present). When the buffer fails the 0030
++             * currency check, validate without blitting rather than forward. */
+             BeginPaint(hwnd, &ps);
+             if (comp_dc && dims
+                     && dcomp_comp_buffer_current(hwnd, LOWORD(dims), HIWORD(dims)))
+@@ -769,13 +799,16 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                     {
+                         /* App idle since the previous tick. Always signal the
+                          * frame-latency event (JUCE's swapchain event loop
+-                         * stalls input without it), but stop re-blitting once
+-                         * the swapchain has been idle long enough to be
+-                         * considered abandoned — the comp buffer then holds a
+-                         * stale snapshot that would overpaint whatever the app
+-                         * paints through non-dcomp means. */
+-                        LONG idle = (LONG)(LONG_PTR)GetPropW(hwnd, L"__wine_dcomp_idle_ticks") + 1;
+-                        SetPropW(hwnd, L"__wine_dcomp_idle_ticks", (HANDLE)(LONG_PTR)idle);
++                         * stalls input without it), and keep re-blitting the
++                         * last published comp buffer no matter how long the
++                         * idle lasts: for a composition target it is the
++                         * DComp visual, which the DWM would keep showing on
++                         * Windows — static WebView2 content (Learn View) is
++                         * idle by default, and suspending the reblit after
++                         * 0025's DCOMP_STALE_TICKS dropped the composite and
++                         * let the sibling software frame show through (the
++                         * Learn View ~3s revert). Liveness comes from
++                         * teardown (Release/NCDESTROY), not idle. */
+                         if (swapchain->frame_latency_event)
+                             SetEvent(swapchain->frame_latency_event);
+                         if (GetPropW(hwnd, L"__wine_dcomp_null_device")
+@@ -812,17 +845,15 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                                 SetTimer(hwnd, DCOMP_REBLIT_TIMER_ID, ms, NULL);
+                             }
+                         }
+-                        else if (idle < DCOMP_STALE_TICKS)
++                        else
++                        {
+                             dcomp_reblit_comp_buffer(hwnd, "timer-idle");
+-                        else if (idle == DCOMP_STALE_TICKS)
+-                            FIXME("DComp: target %p idle for %d ticks, reblit suspended until next present.\n",
+-                                    hwnd, DCOMP_STALE_TICKS);
++                        }
+                     }
+                     else
+                     {
+                         /* The app is presenting on its own — the window
+                          * surface is already fresh, nothing to do. */
+-                        RemovePropW(hwnd, L"__wine_dcomp_idle_ticks");
+                         if (GetPropW(hwnd, L"__wine_dcomp_null_device"))
+                         {
+                             /* Presents are flowing: disarm the null-device
+@@ -839,6 +870,19 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                 }
+                 return 0;
+             }
++            if (wparam == DCOMP_RESIZE_REBLIT_TIMER_ID)
++            {
++                LONG tries = (LONG)(LONG_PTR)GetPropW(hwnd, L"__wine_dcomp_reblit_tries") + 1;
++                SetPropW(hwnd, L"__wine_dcomp_reblit_tries", (HANDLE)(LONG_PTR)tries);
++
++                dcomp_reblit_comp_buffer(hwnd, "delayed-resize"); /* self-gating (0030) */
++                if (tries >= DCOMP_RESIZE_REBLIT_MAX_TRIES)
++                {
++                    KillTimer(hwnd, DCOMP_RESIZE_REBLIT_TIMER_ID);
++                    RemovePropW(hwnd, L"__wine_dcomp_reblit_tries");
++                }
++                return 0;
++            }
+             break;
+ 
+         case WM_WINDOWPOSCHANGED:
+@@ -879,6 +923,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             dcomp_update_active_prop();
+             dcomp_popup_stack_remove(hwnd);
+             KillTimer(hwnd, DCOMP_REBLIT_TIMER_ID);
++            KillTimer(hwnd, DCOMP_RESIZE_REBLIT_TIMER_ID);
+             /* Window dies first: clear the back-pointer so a later
+              * d3d11_swapchain_Release won't touch this (recycled) HWND. */
+             if (sc)
+@@ -891,7 +936,7 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
+             RemovePropW(hwnd, L"__wine_dcomp_comp_size");
+             RemovePropW(hwnd, L"__wine_dcomp_last_present");
+-            RemovePropW(hwnd, L"__wine_dcomp_idle_ticks");
++            RemovePropW(hwnd, L"__wine_dcomp_reblit_tries");
+             dcomp_clear_null_device_props(hwnd);
+             return result;
+         }
+@@ -1008,6 +1053,38 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                 RemovePropW(target_hwnd, L"__wine_dcomp_nulldev_ticks");
+                 RemovePropW(target_hwnd, L"__wine_dcomp_nulldev_ms");
+ 
++                /* WebView2/Chromium binds composition swapchains to its "Intermediate D3D
++                 * Window" (WS_EX_LAYERED|WS_EX_NOREDIRECTIONBITMAP|WS_EX_TRANSPARENT,
++                 * never attributed): on Windows the DWM shows the DComp visual directly
++                 * and the window has no GDI surface at all; here the swapchain's comp
++                 * buffer IS delivered by GDI blits into this window, and an unattributed
++                 * layered window has no working GDI display path (winex11 delays mapping
++                 * layered windows until attributes arrive; the server suppresses their
++                 * redraws) — presents execute but never reach the screen (Learn View
++                 * flicker, root cause #3). Normalize to the documented "layered window
++                 * painted via GDI" configuration: SetLayeredWindowAttributes(LWA_ALPHA,
++                 * 255) is a no-op for a NOREDIRECTIONBITMAP window on Windows and makes
++                 * the window an ordinary opaque surface here. Only touch windows that
++                 * never received attributes: attributed layered windows (JUCE
++                 * DropShadower, UpdateLayeredWindow users) already have a working path
++                 * and keep their alpha semantics. */
++                {
++                    DWORD target_exstyle = GetWindowLongW(target_hwnd, GWL_EXSTYLE);
++
++                    if ((target_exstyle & WS_EX_NOREDIRECTIONBITMAP)
++                            || ((target_exstyle & WS_EX_LAYERED)
++                                && !GetLayeredWindowAttributes(target_hwnd, NULL, NULL, NULL)))
++                    {
++                        if (SetLayeredWindowAttributes(target_hwnd, 0, 255, LWA_ALPHA))
++                            FIXME("DComp: target %p exstyle 0x%08lx was layered without attributes,"
++                                    " set opaque LWA_ALPHA so comp-buffer blits are visible.\n",
++                                    target_hwnd, (unsigned long)target_exstyle);
++                        else
++                            WARN("DComp: SetLayeredWindowAttributes failed for target %p, err %lu.\n",
++                                    target_hwnd, GetLastError());
++                    }
++                }
++
+                 ShowWindow(hwnd, SW_HIDE);
+ 
+                 /* Detect popup mode via subclassed target count.
+diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
+index 577ae1fd..289c11eb 100644
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -298,6 +298,7 @@ static ULONG STDMETHODCALLTYPE d3d11_swapchain_Release(IDXGISwapChain4 *iface)
+ 
+                 KillTimer(t, DCOMP_REBLIT_TIMER_ID);
+                 KillTimer(t, DCOMP_POPUP_REBLIT_TIMER_ID);
++                KillTimer(t, DCOMP_RESIZE_REBLIT_TIMER_ID);
+                 if (orig)
+                     SetWindowLongPtrW(t, GWLP_WNDPROC, (LONG_PTR)orig);
+                 RemovePropW(t, L"__wine_dcomp_orig_wndproc");
+-- 
+2.55.0
+

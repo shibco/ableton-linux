@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+
+  <mime-type type="application/x-ableton-live-set">
+    <comment>Ableton Live set</comment>
+    <generic-icon name="application-x-ableton-live-generic"/>
+    <glob pattern="*.als"/>
+  </mime-type>
+
+  <mime-type type="application/x-ableton-live-clip">
+    <comment>Ableton Live clip</comment>
+    <generic-icon name="application-x-ableton-live-generic"/>
+    <glob pattern="*.alc"/>
+  </mime-type>
+
+  <mime-type type="application/x-ableton-live-pack">
+    <comment>Ableton Live pack</comment>
+    <generic-icon name="application-x-ableton-live-generic"/>
+    <glob pattern="*.alp"/>
+  </mime-type>
+
+  <mime-type type="application/x-ableton-live-device-group">
+    <comment>Ableton Live device rack</comment>
+    <generic-icon name="application-x-ableton-live-generic"/>
+    <glob pattern="*.adg"/>
+  </mime-type>
+
+  <mime-type type="application/x-ableton-live-device-preset">
+    <comment>Ableton Live device preset</comment>
+    <generic-icon name="application-x-ableton-live-generic"/>
+    <glob pattern="*.adv"/>
+  </mime-type>
+
+  <mime-type type="application/x-ableton-live-sample-analysis">
+    <comment>Ableton Live sample analysis</comment>
+    <generic-icon name="application-x-ableton-live-generic"/>
+    <glob pattern="*.asd"/>
+  </mime-type>
+
+  <mime-type type="application/x-ableton-live-meta-sound">
+    <comment>Ableton Live meta sound</comment>
+    <generic-icon name="application-x-ableton-live-generic"/>
+    <glob pattern="*.ams"/>
+  </mime-type>
+
+  <mime-type type="application/x-ableton-live-max-device">
+    <comment>Max for Live device</comment>
+    <generic-icon name="application-x-ableton-live-generic"/>
+    <glob pattern="*.amxd"/>
+  </mime-type>
+
+</mime-info>

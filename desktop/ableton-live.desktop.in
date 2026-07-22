@@ -1,10 +1,11 @@
 [Desktop Entry]
-Name=Ableton Live
+Name=@NAME@
 Comment=Music production (Wine, patched d2d1-dcomp stack)
-Exec=@HOME@/.local/bin/ableton-live
+Exec=@HOME@/.local/bin/ableton-live %f
 Type=Application
 StartupNotify=true
 Path=@HOME@/.wine-ableton
-Icon=7CC2_Ableton Live 12 Suite.0
-StartupWMClass=ableton live 12 suite.exe
+Icon=@ICON@
+StartupWMClass=@WMCLASS@
+MimeType=application/x-ableton-live-set;application/x-ableton-live-clip;application/x-ableton-live-pack;
 Categories=AudioVideo;Audio;

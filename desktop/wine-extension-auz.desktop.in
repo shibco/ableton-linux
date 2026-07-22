@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ableton Live
+MimeType=application/x-wine-extension-auz;
+Exec=@HOME@/.local/bin/ableton-live %f
+NoDisplay=true
+StartupNotify=true
+Icon=7CC2_Ableton Live 12 Suite.0

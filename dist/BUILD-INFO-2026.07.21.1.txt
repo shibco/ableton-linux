@@ -1,0 +1,18 @@
+dist-version: 2026.07.21.1
+wine:         wine-11.11
+base:         giang17/wine d2d1-dcomp-11.11 @ 7ea0c8b7
+prefix:       /opt/wine-d2d1-nspa-11.11 (configure-time only; tarball is relocatable, see relocation gate)
+patches:      42
+wine-patches: 40
+pipeasio-patches: 2
+patch-head:   c79be64423bc49e82ce71f026ea2bd939f8ac5d8
+patch-stack:  a6a0c1eb78e3ef96aa50a66ef7e58c4d635bb1fe674add932eb3d37244818a46
+pipeasio:     1.2.2
+pipewire-floor: 0.3.56 (pw_context_get_data_loop, pw_data_loop_set_thread_utils)
+ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
+libusb-pe:    98542d47d6d065722767f8e1a51e72dd95f7e5dddf610849a483feb0811696db
+libusb-unix:  78d08809fb95d0c2cfd8a118e854a1350e54980023c31df1a75d3e1212ba5acb
+portal-unix:  497ae6169bfefb925021ece061c1d0a51ed91f561a8f933834569795b7a3aad5
+pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
+pipeasio-unix: 303bcba1dbb23e0983905aa3117b350bf89816d31440b028530285449da293ee
+built-on:     Ubuntu 22.04 (glibc 2.35)

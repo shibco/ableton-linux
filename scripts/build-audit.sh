@@ -114,13 +114,13 @@ FINGERPRINTS='
 0003|ascii|lib/wine/x86_64-unix/winex11.so|_NET_FRAME_EXTENTS
 0016|wide|lib/wine/x86_64-windows/dcomp.dll|__wine_dcomp_origproc
 0022|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_last_present
-0025|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_idle_ticks
 0031|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.portal.FileChooser
 0031|wide|lib/wine/x86_64-windows/comdlg32.dll|FileDialogPortal
 0032|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|libusb_submit_transfer
 0033|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_DISABLE_UNIX_MOUNT_REPARSE
 0035|ascii|lib/wine/x86_64-windows/wined3d.dll|Arc(tm) B580
 0036|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_null_device
+0041|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_reblit_tries
 0038|ascii|lib/wine/x86_64-unix/winex11.so|Ignoring FocusOut on %p during menu tracking
 0039|ascii|lib/wine/x86_64-unix/winex11.so|is mapped, refusing to make it managed
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
@@ -148,12 +148,15 @@ STAMP_ONLY='
 0021|logic-only (FriendlyName re-wrap guard; literals are comments)
 0023|logic-only (client rects in present thread)
 0024|logic-only (diagnostics severity change)
+0025|idle-abandonment mechanism removed by 0041 — its fingerprint string is intentionally gone
 0026|logic-only (DC drawable visual; literals not compiled in)
 0028|logic-only (MIDI announce-port re-subscribe)
 0029|logic-only (menu bar +4px arithmetic)
 0030|literal __wine_dcomp_swapchain pre-exists in base — not distinctive
 0034|logic-only (XdndStatus reply flush; adds no string literal)
 0037|logic-only (MWM_FUNC_CLOSE advertised unconditionally; adds no string literal)
+0040|logic-only (DPI-scaled menu-bar band; amends 0029 arithmetic)
+0042|logic-only (sub-scale WM config-rounding alias; literals are TRACE-only)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \

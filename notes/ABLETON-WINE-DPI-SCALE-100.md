@@ -66,6 +66,49 @@ tracks adjust; the mismatch just moves).
   `SM_CYMENU + 4` and NCCALCSIZE matches Live's expectation. WM-forced
   resizes land pixel-exact and hold; adjust/metrics unchanged; popup menus
   unaffected (font-driven).
+  - Addendum 2026-07-21: the +4 band is DPI-proportional on Windows. Live
+    in the per-monitor regime (the dpiAwareness=2 IFEO set) derives
+    `adjust + 4 × dpi/96`, so 0029's flat +4 is 4px short at 192 and the
+    growth returns on every interactive resize at 125%: +4 real px per
+    WM configure, latent until resize was exercised aware at that scale.
+    [../patches/0040-win32u-scale-the-menu-bar-band-with-the-menu-dpi.patch](../patches/0040-win32u-scale-the-menu-bar-band-with-the-menu-dpi.patch)
+    scales the floor by the owner window's DPI; verified drift 0 at 96
+    and 192 with `tools/wmresize2.c` (differential mimic: flat vs scaled
+    band, driven by `xsettle moveresize`).
+  - Superseded 2026-07-21, same day: the 0040 draft's scaled band fixed
+    the mimic, not Live — and the live-resize-trace-20260721-0024
+    analysis then pinned the real law. Live 12.4.3's model band is
+    `SM_CYMENU + 4` at 96 dpi and `SM_CYMENU + 7` at 192 (with the band
+    at +8 it re-requested window+1 per WM configure ack forever — the
+    observed +1px/cycle, self-sustaining, vertical-only growth). Patch
+    0040 was revised before shipping to
+    `max(4, muldiv(4, dpi, 96) - 1)` (4 at 96, 5 at 144, 7 at 192) and
+    the growth is FIXED: WM resizes land pixel-exact and hold with zero
+    creep over 30 s idle polls, verified on Live 12.4.3 and 12.4.2.
+    Status and evidence: [../FINDINGS-RESIZE-GROWTH-2026-07-21.md](../FINDINGS-RESIZE-GROWTH-2026-07-21.md).
+  - Corrected 2026-07-21, later again, release 2026.07.21.2: the revised
+    band satisfied the programmatic paths that were checked, but any
+    interactive resize (a WM grab op) still ratcheted +2 px per cycle,
+    reproduced on demand with real-input keyboard grabs. Two traced
+    sessions showed the true mechanism is parity, not arithmetic: Wine
+    applies the WM grant (always an odd window height, because the
+    window-to-visible frame offset is odd while the WM grants only even
+    physical sizes under xwayland-native-scaling), Live rounds up to its
+    even per-monitor layout grid and re-requests +1, Wine's X request
+    goes out odd, the WM rounds it up again. Bands 7 and 8 both ratchet
+    (traces live-trace-interactive-20260721 and live-trace-band8-20260721
+    in ~/Projects/Code/ableton/); no band constant can produce a fixed
+    point through an odd frame offset. Fixed at the event layer by patch
+    0042: Wine tracks each configure request and, when the grant differs
+    only by sub-scale deltas on scale-aligned edges, aliases the granted
+    host rect to the requested Win32 rect, so the app never sees the
+    rounding and the loop ends in one pass (adapted from ENCORE's
+    winex11 config-rounding machine, previously evaluated and declined
+    in [ABLETON-WINE-ENCORE-REVIEW.md](ABLETON-WINE-ENCORE-REVIEW.md);
+    the decline reasoning assumed the frame-model term could be exact,
+    which the parity analysis disproves). 0040 stays for one-shot
+    accuracy. Verified on Live 12.4.3 at 125%: interactive resizes, WM
+    tiles and moves settle within 2 px once and hold, across sessions.
 - Manual recalibration (what the scripts automate):
 
 ```bash

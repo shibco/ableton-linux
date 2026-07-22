@@ -124,3 +124,24 @@ Provenance:
               flip while the window is mapped; the managed decision is
               made at map time and re-evaluated on the next map. See
               ABLETON-WINE-DROPDOWN-MANAGED-FLIP.md
+  0040      = win32u menu-bar band DPI scaling (drafted 2026-07-19,
+              revised 2026-07-21 before ever shipping). The draft's
+              muldiv(4,dpi,96) overshoot fixed the wmresize2 mimic but
+              not real Live; the live-resize-trace-20260721-0024
+              analysis showed Live 12.4.3's model band is SM_CYMENU + 4
+              at 96 dpi and SM_CYMENU + 7 at 192, so the final law is
+              max(4, muldiv(4,dpi,96)-1). Fixes the 12.4.3 main-window
+              +1px/WM-configure growth ratchet at 125% (verified on
+              12.4.2 and 12.4.3). Exported from a disposable worktree on
+              base 182ae79b (commit 1173c1d5 there). See
+              ABLETON-WINE-DPI-SCALE-100.md and
+              FINDINGS-RESIZE-GROWTH-2026-07-21.md.
+  0041      = dxgi dcomp display path for WebView2's unattributed
+              layered targets (2026-07-21): opaque LWA normalization at
+              WM_WINE_DCOMP_SET_TARGET, one-shot delayed-resize reblit
+              closing the 0030 race, 0025 idle-abandonment removed so
+              healed Learn View content holds instead of reverting at
+              the 3s idle mark. Exported from a disposable worktree on
+              base 182ae79b (commit 9d34f87f there). See
+              ABLETON-WINE-LEARNVIEW-FLICKER.md.
+Patch 0042 was exported 2026-07-21 from a worktree at ~/Projects/Code/ableton/wt-0042: base 182ae79b with the 0031-0041 mailbox series applied first (git apply + commit), then the 0042 commit (988ef771 there). The installed runtime's winex11.so was built from that worktree; dist artifacts come from the container rebuild as usual.
