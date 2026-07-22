@@ -6,49 +6,56 @@
   pipeasio,
   cabextract,
   unzip,
-  # Pin PipeASIO config.ini keys, e.g.
+  # Pin PipeASIO settings, e.g.
   #   ableton-wine.override { pipeasioSettings = { buffer_size = 256; inputs = 8; }; }
-  # The launch shim re-asserts exactly these keys in ~/.config/pipeasio/config.ini
-  # on every start (so they win over hand/panel edits) and leaves other keys alone.
-  # Keys and limits are the driver's own (src/config.c):
+  # The launch shim exports each pin as the driver's matching PIPEASIO_*
+  # variable — the driver reads those over config.ini (src/asio.c:1875,
+  # "Environment variables override INI values") — so pins win over hand/panel
+  # edits without ever rewriting the user's file. A PIPEASIO_* variable already
+  # set in the environment still wins per launch; unpinned keys keep following
+  # config.ini. Keys and limits are the driver's own (src/config.c, src/asio.c):
   #   inputs, outputs        int, 0..256
   #   buffer_size            int, power of two, 16..8192 frames
   #   sample_rate            int Hz, 0 = follow the PipeWire graph
   #   fixed_buffer_size, auto_connect, follow_device_clock   bool
-  #   output_device, input_device, node_name                 string
+  #   output_device, input_device  string, <= 255 chars
+  #   node_name              string, <= 31 chars (the driver's client-name cap)
   pipeasioSettings ? { },
 }:
 
 let
   s = pipeasioSettings;
-  validKeys = [
-    "inputs"
-    "outputs"
-    "buffer_size"
-    "fixed_buffer_size"
-    "sample_rate"
-    "auto_connect"
-    "follow_device_clock"
-    "output_device"
-    "input_device"
-    "node_name"
-  ];
+  # config.ini key -> the driver's env override name (src/asio.c:1875-1950).
+  envName = {
+    inputs = "PIPEASIO_NUMBER_INPUTS";
+    outputs = "PIPEASIO_NUMBER_OUTPUTS";
+    buffer_size = "PIPEASIO_PREFERRED_BUFFERSIZE";
+    fixed_buffer_size = "PIPEASIO_FIXED_BUFFERSIZE";
+    sample_rate = "PIPEASIO_SAMPLE_RATE";
+    auto_connect = "PIPEASIO_CONNECT_TO_HARDWARE";
+    follow_device_clock = "PIPEASIO_FOLLOW_DEVICE_CLOCK";
+    output_device = "PIPEASIO_OUTPUT_DEVICE";
+    input_device = "PIPEASIO_INPUT_DEVICE";
+    node_name = "PIPEASIO_CLIENT_NAME";
+  };
+  validKeys = lib.attrNames envName;
   unknownKeys = lib.filter (k: !(lib.elem k validKeys)) (lib.attrNames s);
   intIn = k: lo: hi: !(s ? ${k}) || (lib.isInt s.${k} && lo <= s.${k} && s.${k} <= hi);
   isPow2 = n: lib.isInt n && n > 0 && builtins.bitAnd n (n - 1) == 0;
+  strOk = k: max: !(s ? ${k}) || (lib.isString s.${k} && !lib.hasInfix "\n" s.${k} && lib.stringLength s.${k} <= max);
 
-  renderValue = v: if lib.isBool v then lib.boolToString v else toString v;
+  # The env path parses booleans as on/off only (config.ini also takes true/1).
+  renderValue = v: if lib.isBool v then (if v then "on" else "off") else toString v;
 
-  # Fresh-file seed: setup-prefix.sh's defaults plus the pins.
-  seed = {
-    inputs = 2;
-    outputs = 2;
-    buffer_size = 256;
-    fixed_buffer_size = true;
-    auto_connect = true;
-  }
-  // s;
-  seedLines = [ "[pipeasio]" ] ++ lib.mapAttrsToList (k: v: "${k} = ${renderValue v}") seed;
+  # One guarded export per pinned key; interpolated into the launch shim below.
+  pinBlock = lib.optionalString (s != { }) (
+    "# pipeasioSettings pins (nix). Guarded: your own PIPEASIO_* wins per launch.\n"
+    + lib.concatStrings (
+      lib.mapAttrsToList (
+        k: v: "[ -n \"\${${envName.${k}}:-}\" ] || export ${envName.${k}}=${lib.escapeShellArg (renderValue v)}\n"
+      ) s
+    )
+  );
 in
 
 assert lib.assertMsg (unknownKeys == [ ]) ''
@@ -63,13 +70,10 @@ assert lib.assertMsg (!(s ? sample_rate) || (lib.isInt s.sample_rate && s.sample
 assert lib.assertMsg
   (lib.all (k: !(s ? ${k}) || lib.isBool s.${k}) [ "fixed_buffer_size" "auto_connect" "follow_device_clock" ])
   "ableton-wine: pipeasioSettings.fixed_buffer_size/auto_connect/follow_device_clock must be booleans";
-assert lib.assertMsg
-  (lib.all (k: !(s ? ${k}) || (lib.isString s.${k} && !lib.hasInfix "\n" s.${k})) [
-    "output_device"
-    "input_device"
-    "node_name"
-  ])
-  "ableton-wine: pipeasioSettings.output_device/input_device/node_name must be single-line strings";
+assert lib.assertMsg (strOk "output_device" 255 && strOk "input_device" 255)
+  "ableton-wine: pipeasioSettings.output_device/input_device must be single-line strings of at most 255 chars (the driver ignores longer env overrides)";
+assert lib.assertMsg (strOk "node_name" 31)
+  "ableton-wine: pipeasioSettings.node_name must be a single-line string of at most 31 chars (the driver's client-name cap)";
 
 stdenv.mkDerivation {
   pname = "ableton-wine";
@@ -125,48 +129,16 @@ stdenv.mkDerivation {
         # -- Launcher --
         mkdir -p $out/bin $out/libexec
         install -m755 ${../scripts/ableton-live} $out/libexec/ableton-live
-        # Quoted heredocs ('SHIM'): nothing shell-expands at build; @out@ is
-        # substituted after. Runtime shell ''${...} is written with the '''' escape.
+        # Quoted heredoc ('SHIM'): nothing shell-expands at build; @out@ is
+        # substituted after. Runtime shell ''${...} is written with the '''' escape;
+        # the pinBlock lines (nix-interpolated) are already literal shell.
         cat > $out/bin/ableton-live <<'SHIM'
     #!/bin/sh
-    # Generated by nix/ableton-wine.nix. pipeasioSettings pins are appended
-    # below when configured: ableton-wine.override { pipeasioSettings = { ... }; }
+    # Generated by nix/ableton-wine.nix. PipeASIO pins come from
+    # ableton-wine.override { pipeasioSettings = { ... }; }
     export ABLETON_WINE_ROOT="''${ABLETON_WINE_ROOT:-@out@}"
     export PATH="@out@/bin:$PATH"
-    SHIM
-        ${lib.optionalString (s != { }) ''
-              cat >> $out/bin/ableton-live <<'SHIM'
-          # Pin exactly the configured keys in config.ini, leave the rest alone;
-          # PIPEASIO_* environment variables still override per launch.
-          ini="''${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
-          if [ ! -s "$ini" ]; then
-              mkdir -p "''${ini%/*}"
-              printf '%s\n' ${lib.escapeShellArgs seedLines} > "$ini"
-          fi
-          SHIM
-              cat >> $out/bin/ableton-live <<'SHIM'
-          ${lib.concatStrings (
-            lib.mapAttrsToList (
-              k: v:
-              let
-                val = renderValue v;
-              in
-              # Keys come from the validKeys whitelist (no regex metacharacters);
-              # values only ever appear shell-quoted, never in a sed replacement.
-              # The driver honors the LAST occurrence of a key — the probe reads
-              # that one, and the pin is delete + append.
-              ''
-                if [ "$(sed -n 's/^[[:space:]]*${k}[[:space:]]*=[[:space:]]*//p' "$ini" | tail -n 1)" != ${lib.escapeShellArg val} ]; then
-                    echo "ableton-live: pinning PipeASIO ${k} (nix pipeasioSettings)" >&2
-                    sed -i '/^[[:space:]]*${k}[[:space:]]*=/d' "$ini"
-                    printf '%s\n' ${lib.escapeShellArg "${k} = ${val}"} >> "$ini"
-                fi
-              ''
-            ) s
-          )}SHIM
-        ''}
-        cat >> $out/bin/ableton-live <<'SHIM'
-    exec "@out@/libexec/ableton-live" "$@"
+    ${pinBlock}exec "@out@/libexec/ableton-live" "$@"
     SHIM
         chmod +x $out/bin/ableton-live
         substituteInPlace $out/bin/ableton-live --replace-fail '@out@' "$out"

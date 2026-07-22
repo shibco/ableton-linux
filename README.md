@@ -104,9 +104,10 @@ inputs.ableton-linux.url = "github:shibco/ableton-linux";
 { inputs, ... }: {
   environment.systemPackages = [
     inputs.ableton-linux.packages.x86_64-linux.default
-    # or pin PipeASIO audio settings declaratively — the launcher re-asserts
-    # exactly these keys in ~/.config/pipeasio/config.ini on every start and
-    # leaves the rest alone (all config.ini keys are accepted):
+    # or pin PipeASIO audio settings declaratively — the launcher exports each
+    # pin as the driver's own PIPEASIO_* override, which beats config.ini/panel
+    # edits without touching that file; unpinned keys keep following config.ini,
+    # and PIPEASIO_* variables you set yourself still win per launch:
     # (inputs.ableton-linux.packages.x86_64-linux.default.override {
     #   pipeasioSettings = {
     #     buffer_size = 256;             # frames; match your PipeWire quantum
