@@ -1,29 +1,41 @@
+# shellcheck shell=bash
 # Sourceable theme detection helpers.
 # ableton_detect_theme prints "dark" or "light" or returns 1 when no probe answers
-# (probes: XDG settings portal, GNOME gsettings).
+# (probes: XDG settings portal via gdbus, busctl, then dbus-send — each tried
+# until one answers — then GNOME gsettings).
 # ableton_detect_topbar_colors <dark|light> prints the host titlebar colors as
 # "R G B|R G B" (background|text) or returns 1 when the scheme argument is unusable.
 # ableton_ask_color and ableton_live_theme_file read Ableton Live's own theme
 # (.ask) files, for coloring the win32 chrome like Live's surface.
 
-_adt_run() {
-    if declare -F ableton_run_bounded >/dev/null 2>&1; then
-        ableton_run_bounded 5 "$@"
-    else
-        timeout --signal=TERM --kill-after=2s 5s "$@"
-    fi
-}
-
 _adt_portal() {
-    local out val
-    out="$(_adt_run gdbus call --session \
-        --dest org.freedesktop.portal.Desktop \
-        --object-path /org/freedesktop/portal/desktop \
-        --method org.freedesktop.portal.Settings.Read \
-        org.freedesktop.appearance color-scheme 2>/dev/null)" || return 1
-    # serialises as "(<<uint32 1>>,)": 0 = no preference, 1 = prefer dark, 2 = prefer light
-    val="$(printf '%s\n' "$out" | grep -oE 'uint32 [0-9]+' | awk '{print $2; exit}')"
-    [ -n "$val" ] || return 1
+    local out val=""
+    if command -v gdbus >/dev/null 2>&1; then
+        # serializes as "(<<uint32 1>>,)"
+        out="$(timeout 5 gdbus call --session \
+            --dest org.freedesktop.portal.Desktop \
+            --object-path /org/freedesktop/portal/desktop \
+            --method org.freedesktop.portal.Settings.Read \
+            org.freedesktop.appearance color-scheme 2>/dev/null)" &&
+            val="$(printf '%s\n' "$out" | grep -oE 'uint32 [0-9]+' | awk '{print $2; exit}')"
+    fi
+    if [ -z "$val" ] && command -v busctl >/dev/null 2>&1; then
+        # replies "v v u 1"
+        out="$(timeout 5 busctl --user call org.freedesktop.portal.Desktop \
+            /org/freedesktop/portal/desktop org.freedesktop.portal.Settings Read \
+            ss org.freedesktop.appearance color-scheme 2>/dev/null)" &&
+            val="$(printf '%s\n' "$out" | awk '{print $NF; exit}' | grep -xE '[0-9]+')"
+    fi
+    if [ -z "$val" ] && command -v dbus-send >/dev/null 2>&1; then
+        # replies "   variant       variant          uint32 1"
+        out="$(timeout 5 dbus-send --session --print-reply \
+            --dest=org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
+            org.freedesktop.portal.Settings.Read \
+            string:org.freedesktop.appearance string:color-scheme 2>/dev/null)" &&
+            val="$(printf '%s\n' "$out" | grep -oE 'uint32 [0-9]+' | awk '{print $2; exit}')"
+    fi
+    case "$val" in ''|*[!0-9]*) return 1 ;; esac
+    # 0 = no preference, 1 = prefer dark, 2 = prefer light
     case "$val" in
         1) echo dark ;;
         *) echo light ;;
@@ -33,7 +45,7 @@ _adt_portal() {
 _adt_gsettings() {
     command -v gsettings >/dev/null 2>&1 || return 1
     local scheme
-    scheme="$(_adt_run gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null)" || return 1
+    scheme="$(timeout 5 gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null)" || return 1
     case "$scheme" in
         *prefer-dark*)            echo dark ;;
         *prefer-light*|*default*) echo light ;;
@@ -121,35 +133,15 @@ ableton_ask_color() {   # <ask-file> <key> -> "R G B"
     printf '%d %d %d\n' $(( 16#${hex:0:2} )) $(( 16#${hex:2:2} )) $(( 16#${hex:4:2} ))
 }
 
-# ableton_newest_prefs_dir <wineprefix> <live-major> -> the Preferences dir
-# whose Preferences.cfg was written to most recently, for whichever installed
-# "Live <major>.*" edition has one. Not sort -V | tail -1 on the path: that has
-# a real gotcha - "Live 12.4/Preferences" sorts AFTER "Live 12.4.3/Preferences"
-# because the strings diverge right after "12.4" into "/" (0x2F) vs "." (0x2E),
-# and strverscmp falls back to a plain byte compare there, where '/' > '.'.
-# That silently read a stale, long-dead "Live 12.4" prefs dir instead of the
-# live "Live 12.4.3" one every time - always resolving whatever was active
-# back when that older dir was last written, never the actual current
-# selection. mtime of the real prefs file is both simpler and semantically
-# correct: whichever was written most recently is the one Live actually
-# renders with. Shared by ableton_live_theme_file below and
-# theme_watch_prefs_cfg in scripts/ableton-live, which both hit this same bug.
-ableton_newest_prefs_dir() {
-    local prefix="$1" major="$2" d t newest_t=0 newest=""
-    for d in "$prefix"/drive_c/users/*/AppData/Roaming/Ableton/"Live ${major:-}"*/Preferences; do
-        [ -f "$d/Preferences.cfg" ] || continue
-        t="$(stat -c %Y "$d/Preferences.cfg" 2>/dev/null)" || continue
-        if [ "$t" -gt "$newest_t" ]; then newest_t="$t"; newest="$d"; fi
-    done
-    [ -n "$newest" ] && printf '%s\n' "$newest"
-}
-
 # ableton_live_theme_file <wineprefix> <install-themes-dir> <live-major> <dark|light>
-# prints the .ask Live renders with, resolved by grepping Preferences.cfg's
-# UTF-16 strings for an installed theme's name (factory dir + User Library,
-# last match wins) since the binary has no tag-anchored values. Falls back
-# to the follow-system default (Neutral Medium) when there's no match or no
-# binutils. ABLETON_TOPBAR_MODE=system or a hex pair overrides.
+# prints the .ask Live renders with. Preferences.cfg is an opaque binary whose
+# values are not anchored to their tags, but a picked theme is stored as its plain
+# name ("Catppuccin Auto"), so the newest cfg's UTF-16 strings (via `strings`,
+# binutils) are matched against the themes actually installed — the factory Themes
+# dir and the User Library — and the last match wins. No match (the stock Default
+# theme, or no binutils) falls back to the follow-system default pair; the Tone and
+# Contrast variant enums are not recoverable from the binary, so default-theme
+# users get Neutral Medium. ABLETON_TOPBAR_MODE=system or a hex pair overrides.
 ableton_live_theme_file() {
     local prefix="$1" themes="$2" major="$3" scheme="$4" prefs line drive cand d file=""
     local -a dirs
@@ -157,7 +149,7 @@ ableton_live_theme_file() {
     for d in "$prefix"/drive_c/users/*/Documents/Ableton/"User Library"/Themes; do
         [ -d "$d" ] && dirs+=("$d")
     done
-    prefs="$(ableton_newest_prefs_dir "$prefix" "$major")"
+    prefs="$(ls -d "$prefix"/drive_c/users/*/AppData/Roaming/Ableton/"Live ${major:-}"*/Preferences 2>/dev/null | sort -V | tail -n 1)"
     if [ -n "$prefs" ] && [ -r "$prefs/Preferences.cfg" ] && command -v strings >/dev/null 2>&1; then
         while IFS= read -r line; do
             case "$line" in
