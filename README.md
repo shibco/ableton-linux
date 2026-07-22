@@ -123,6 +123,8 @@ inputs.ableton-linux.url = "github:shibco/ableton-linux";
 
 This puts `ableton-live` on every user's PATH. Each user still runs the one-time `nix run github:shibco/ableton-linux#setup-prefix` — the prefix is per-user state in `~/.wine-ableton`, not something a system rebuild can produce. Desktop menu entries ship rendered in `share/applications/`, so a profile install or `environment.systemPackages` puts Ableton Live in the menu automatically; bare `nix run` registers nothing.
 
+Standalone Max 9 (installed into the same prefix with `msiexec`) launches with `max9` from the package. Its menu entries are not active by default — the store cannot see whether Max is installed; copy them from `share/ableton-wine/desktop/` into `~/.local/share/applications` if you use Max.
+
 ## Issues?
 
 File an issue on GitHub. There are diagnostic scripts in ./beta/scripts that will help pin down the problem.

@@ -48,6 +48,8 @@ repair_handler_entries() {
     local staged d repaired=0
     for d in wine-protocol-ableton wine-extension-auz; do
         staged="$HOME/.local/share/ableton-wine/$d.desktop"
+        # Packaged installs (nix) stage them under the runtime root instead of $HOME.
+        [ -f "$staged" ] || staged="$WINE_ROOT/share/ableton-wine/$d.desktop"
         [ -f "$staged" ] || continue
         if [ ! -f "$apps/$d.desktop" ] \
             || grep -qE '^Exec=env .*WINEPREFIX=.* wine start ' "$apps/$d.desktop"; then
@@ -676,6 +678,7 @@ fi
 # resize-deaf) and exits on its own after Live is gone. No-op when the helper
 # is not installed.
 learnheal="$HOME/.local/share/ableton-wine/learnheal.exe"
+[ -f "$learnheal" ] || learnheal="$WINE_ROOT/share/ableton-wine/learnheal.exe"
 if [ -n "$EXE" ] && [ -f "$learnheal" ]; then
     ( "$WINE_ROOT/bin/wine" "$learnheal" ) </dev/null >/dev/null 2>&1 &
     disown
