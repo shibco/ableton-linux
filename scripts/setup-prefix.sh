@@ -133,6 +133,15 @@ for required in \
     [ -s "$WINE_ROOT/$required" ] || { echo "!! packaged runtime is missing $required"; exit 1; }
 done
 
+# Bind the prefix to this build's wineserver. A server from another build can
+# outlive Live (the USB Audio Driver helper stays resident) and never exits —
+# every settle would wait on it forever. Same kill the launcher does.
+if pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
+    echo "!! Ableton Live is running in this prefix — close it and rerun" >&2
+    exit 2
+fi
+"$WINESERVER" -k 2>/dev/null || true
+
 # Host tools winetricks needs to unpack the redistributables.
 for t in cabextract; do
     command -v "$t" >/dev/null || echo "!! missing host tool '$t' (needed by winetricks) — install it (e.g. 'pacman -S cabextract' / 'apt install cabextract')"
