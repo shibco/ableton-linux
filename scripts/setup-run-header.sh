@@ -16,8 +16,11 @@
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail
 # Tool output is parsed below (sha256sum, readelf, ldd); localised output
-# breaks the checks (issue #36).
-export LC_ALL=C
+# breaks the checks (issue #36). C.UTF-8, never plain C: wine inherits this
+# environment, and under a non-UTF-8 locale it cannot create the non-ASCII
+# filenames Live's Max content ships, which kills the Ableton installer
+# (issues #51, #55). glibc 2.35+, the floor checked below, always has C.UTF-8.
+export LC_ALL=C.UTF-8
 
 VERSION="@VERSION@"
 PAYLOAD_SHA="@PAYLOAD_SHA@"

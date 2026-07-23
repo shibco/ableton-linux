@@ -3,8 +3,9 @@
 # Does not touch the Wine prefix: that is setup-prefix.sh.
 set -euo pipefail
 # readelf and sha256sum output is parsed below; localised output breaks the
-# checks (issue #36).
-export LC_ALL=C
+# checks (issue #36). C.UTF-8, never plain C: wine cannot create non-ASCII
+# filenames under a non-UTF-8 locale (issues #51, #55).
+export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 
