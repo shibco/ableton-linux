@@ -1,8 +1,8 @@
 # Sourceable display-scale detection. ableton_detect_scale prints the primary monitor's scale
-# ("1", "1.25", ...) or returns 1 when no probe answers (probes: GNOME, KDE, sway, Hyprland, Xft.dpi).
-# ableton_detect_scale_ex also prints which probe answered (the compositor family), and
-# ableton_dpi_block_for_scale / ableton_dpi_block_values map a detected scale to the
-# calibrated DPI block for that family (see the mapping comment at the bottom).
+# ("1", "1.25", ...) or returns 1 when no probe answers (probes: GNOME, KDE, sway, Hyprland,
+# COSMIC, Xft.dpi). ableton_detect_scale_ex also prints which probe answered (the compositor
+# family), and ableton_dpi_block_for_scale / ableton_dpi_block_values map a detected scale to
+# the calibrated DPI block for that family (see the mapping comment at the bottom).
 
 _ads_gnome() {
     local state rows all prim
@@ -63,6 +63,29 @@ _ads_hyprland() {
     printf '%s\n' "$s"
 }
 
+_ads_cosmic() {
+    command -v cosmic-randr >/dev/null 2>&1 || return 1
+    [ "${XDG_CURRENT_DESKTOP:-}" = COSMIC ] || return 1
+    local out prim
+    out="$(timeout 5 cosmic-randr list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+    [ -n "$out" ] || return 1
+    # One "<output> (enabled|disabled)" block per monitor. Disabled outputs (e.g. a
+    # closed laptop lid) can still report a Scale, so they're excluded entirely -
+    # never picked as primary, never as the fallback (older COSMIC has no primary line).
+    prim="$(printf '%s\n' "$out" | awk '
+        /^[A-Za-z0-9_-]+ \(/ { blk++; en[blk] = ($0 ~ /\(enabled\)/) }
+        blk && en[blk] {
+            if (match($0, /Scale: [0-9]+%/)) s[blk] = substr($0, RSTART+7, RLENGTH-8)
+            if ($0 ~ /Xwayland primary: true/) p = blk
+        }
+        END {
+            if (p && (p in s)) { print s[p]; exit }
+            for (i = 1; i <= blk; i++) if (en[i] && (i in s)) { print s[i]; exit }
+        }')"
+    [ -n "$prim" ] || return 1
+    awk -v s="$prim" 'BEGIN { printf "%g\n", s/100 }'
+}
+
 _ads_xft() {
     [ -n "${DISPLAY:-}" ] || return 1
     command -v xrdb >/dev/null 2>&1 || return 1
@@ -74,7 +97,7 @@ _ads_xft() {
 
 ableton_detect_scale() {
     local scale
-    for probe in _ads_gnome _ads_kde _ads_sway _ads_hyprland _ads_xft; do
+    for probe in _ads_gnome _ads_kde _ads_sway _ads_hyprland _ads_cosmic _ads_xft; do
         if scale="$($probe)"; then
             # normalize: 1.0 -> 1, 1.250 -> 1.25
             printf '%s\n' "$scale" | awk '{ printf "%g\n", $1 }'
@@ -85,10 +108,10 @@ ableton_detect_scale() {
 }
 
 # Like ableton_detect_scale, but prints "<scale> <family>": the family names the probe
-# that answered (gnome|kde|sway|hyprland|xft) and picks the DPI policy below.
+# that answered (gnome|kde|sway|hyprland|cosmic|xft) and picks the DPI policy below.
 ableton_detect_scale_ex() {
     local scale family
-    for family in gnome kde sway hyprland xft; do
+    for family in gnome kde sway hyprland cosmic xft; do
         if scale="$("_ads_$family")"; then
             awk -v s="$scale" -v f="$family" 'BEGIN { printf "%g %s\n", s, f }'
             return 0
@@ -103,6 +126,9 @@ ableton_detect_scale_ex() {
 # framebuffer and expects application-side scaling: plain LogPixels = round(96 x scale),
 # no IFEO. Block tokens: 100 (LogPixels 96, no IFEO), fractional (192, IFEO=2),
 # dpi<N> (N, no IFEO), fractional<N> (N, IFEO=2). Scales outside 100-250% are refused.
+# COSMIC is bucketed with the generic (non-GNOME) group: confirmed at 125% scale that
+# xrandr reports the monitor's native mode unscaled, not an upscaled framebuffer — COSMIC
+# expects application-side scaling, like sway/Hyprland/KDE, not mutter's model.
 ableton_dpi_block_for_scale() {  # scale family -> block token
     local scale="$1" family="${2:-}" lp ceil
     case "$scale" in
