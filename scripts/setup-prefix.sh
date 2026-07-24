@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # End-user step 2: create or refresh the Ableton Wine prefix. Idempotent.
-# Does not install Ableton Live itself and carries no license.
+# Ships no Ableton Live payload and no license; step [6/6] can run the user's
+# own ableton_live*.zip download (~/Proprietary by default) — strictly opt-in
+# via ABLETON_LIVE_AUTOINSTALL=1, otherwise the manual steps are printed.
 # --refresh: maintenance pass on an EXISTING prefix (used by the .run's update
 # mode): re-applies registry policy and heals runtime DLLs, but skips the slow
 # winetricks pass; the fonts/runtimes it installs are already in the prefix.
 # --post-first-run: standalone fixup to run after Live's first launch: moves
 # Max for Live 8's preferences aside (never deletes) so its second start stops
 # crashing. Needs no wine and skips every other step.
-# ABLETON_LIVE_VERSION=11|12 selects the winetricks recipe (default 12).
+# ABLETON_LIVE_VERSION=11|12 pins the winetricks recipe; unpinned, an opted-in
+# auto-install derives it from the chosen zip's filename (default 12).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -59,6 +62,45 @@ export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG=-all
 export WINESERVER="$WINE_ROOT/bin/wineserver"
+# Mesa prints "radv is not a conformant Vulkan implementation" once per wine
+# process spawn; winetricks spawns dozens — pure noise that drowns progress.
+export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
+
+# "$WINESERVER" -w with narration: name the processes still holding the
+# session open instead of blocking silently — a stray autostart like
+# MicrosoftEdgeUpdate.exe can pin the session for minutes.
+settle_procs() {   # basenames of windows processes still running under this runtime
+    local p cmd out=""
+    for p in $(pgrep -f '\.exe' 2>/dev/null || true); do
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in
+            "$WINE_ROOT"/*) ;;
+            *) continue ;;
+        esac
+        cmd=""
+        IFS= read -rd "" cmd <"/proc/$p/cmdline" 2>/dev/null || true
+        cmd="${cmd##*[\\/]}"
+        [ -n "$cmd" ] && out="$out $cmd"
+    done
+    printf '%s\n' "${out# }"
+}
+settle() {
+    "$WINESERVER" -w &
+    local w=$! t=0 tick now last="(unset)"   # sentinel: the first tick past 15s always narrates
+    while kill -0 "$w" 2>/dev/null; do
+        # 1s ticks while a fast settle can still finish (they add latency, not
+        # noise); 5s once we are narrating anyway.
+        tick=1; [ "$t" -ge 15 ] && tick=5
+        sleep "$tick"
+        t=$((t + tick))
+        [ "$t" -lt 15 ] && continue   # fast settles stay quiet
+        now="$(settle_procs)"
+        if [ "$now" != "$last" ] || [ $((t % 30)) -eq 0 ]; then
+            echo "   ...waiting for the prefix session to settle (${t}s): ${now:-device/driver hosts}"
+            last="$now"
+        fi
+    done
+    wait "$w" 2>/dev/null || true
+}
 
 # --post-first-run: Max for Live 8 (ships with Live 11) crashes on its SECOND start
 # with a stale preferences file. Move it aside: never delete: so Max regenerates
@@ -93,6 +135,15 @@ for required in \
     lib/wine/x86_64-unix/pipeasio.dll.so; do
     [ -s "$WINE_ROOT/$required" ] || { echo "!! packaged runtime is missing $required"; exit 1; }
 done
+
+# Bind the prefix to this build's wineserver. A server from another build can
+# outlive Live (the USB Audio Driver helper stays resident) and never exits —
+# every settle would wait on it forever. Same kill the launcher does.
+if pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
+    echo "!! Ableton Live is running in this prefix — close it and rerun" >&2
+    exit 2
+fi
+"$WINESERVER" -k 2>/dev/null || true
 
 # Host tools winetricks needs to unpack the redistributables.
 for t in cabextract; do
@@ -269,45 +320,99 @@ case "$dpi_mode" in
     ;;
 esac
 
-echo "== [1/5] initialise prefix at $WINEPREFIX =="
-wineboot -u
-"$WINESERVER" -w
+# Ableton Live auto-install candidate (run by step [6/6]) and the Live major
+# the winetricks/redist recipes target: resolved together, up front, so an
+# opted-in auto-install can never put a Live 11 zip into a prefix prepared
+# with the Live 12 recipe. Major precedence: ABLETON_LIVE_VERSION pin >
+# the major parsed from the chosen zip > 12.
+live_installed() { ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe >/dev/null 2>&1; }
+installer_dir="${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
+live_zip=""
+if [ -d "$installer_dir" ]; then
+    if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
+        # An explicit major pin only accepts a matching installer: never
+        # silently install another major into a prefix prepared for this one.
+        live_zip="$(find "$installer_dir" -maxdepth 1 -iname "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip" | sort -V | tail -n 1)"
+    else
+        # Newest by version-sort when several editions/versions are present.
+        live_zip="$(find "$installer_dir" -maxdepth 1 -iname 'ableton_live*.zip' | sort -V | tail -n 1)"
+    fi
+fi
+live_major="${ABLETON_LIVE_VERSION:-12}"
+if [ -z "${ABLETON_LIVE_VERSION:-}" ] && [ "${ABLETON_LIVE_AUTOINSTALL:-0}" = 1 ] \
+    && [ -n "$live_zip" ] && ! live_installed; then
+    # ableton_live_<edition>_<major>.<minor>.<patch>_64.zip; sed -n exits 0
+    # whether or not it matches, so set -e/pipefail stay happy.
+    zip_major="$(basename "$live_zip" | sed -nE 's/^[^0-9]*_([0-9]+)\.[0-9]+.*$/\1/p')"
+    case "$zip_major" in
+        11|12)
+            live_major="$zip_major"
+            if [ "$live_major" != 12 ]; then
+                echo ":: $(basename "$live_zip") is Live $live_major: using the Live $live_major recipe (ABLETON_LIVE_VERSION overrides)"
+            fi
+            ;;
+        "")
+            echo ":: cannot read a Live version from $(basename "$live_zip"): using the Live 12 recipe (set ABLETON_LIVE_VERSION if that is wrong)"
+            ;;
+        *)
+            echo "!! $(basename "$live_zip") looks like Live $zip_major: no recipe for that major (11|12); set ABLETON_LIVE_VERSION or remove the zip" >&2
+            exit 2
+            ;;
+    esac
+fi
+
+echo "== [1/6] initialise prefix at $WINEPREFIX =="
+# Live's Learn View brings in WebView2; its MicrosoftEdgeUpdate.exe autostart
+# is useless under Wine and holds the boot session open for minutes (the
+# settle below waits on it). Disable it up front, like winemenubuilder (step 5).
+# On a fresh prefix this reg add also performs the initial prefix creation.
+# Headless (no DISPLAY/WAYLAND): prefix creation needs no display and the
+# wineboot update banner is the only UI it produces: the nix build gate
+# creates prefixes with no display at all, so this is a proven-safe path.
+DISPLAY='' WAYLAND_DISPLAY='' wine reg add 'HKCU\Software\Wine\DllOverrides' /v MicrosoftEdgeUpdate.exe /t REG_SZ /d '' /f >/dev/null
+DISPLAY='' WAYLAND_DISPLAY='' wineboot -u
+settle
 
 if [ "$refresh" -eq 1 ]; then
-    echo "== [2/5] winetricks: skipped (--refresh keeps the installed fonts/runtimes) =="
+    echo "== [2/6] winetricks: skipped (--refresh keeps the installed fonts/runtimes) =="
 else
     # Verb set per Live major: Live 12 needs vcrun2022 + mfc42; Live 11 needs
     # vcrun2019 + gdiplus (the Ableton forum Live-on-Linux guide). vcrun2019/gdiplus
     # payloads are not vendored yet: Live 11 setup downloads them on first run.
-    live_major="${ABLETON_LIVE_VERSION:-12}"
     case "$live_major" in
         11) verbs="corefonts vcrun2019 gdiplus" ;;
         12) verbs="corefonts vcrun2022 mfc42" ;;
-        *)  echo "!! ABLETON_LIVE_VERSION must be 11 or 12 (got '$live_major')" >&2; exit 2 ;;
+        *)  echo "!! internal: live_major '$live_major' has no winetricks recipe" >&2; exit 2 ;;
     esac
-    echo "== [2/5] winetricks (Live $live_major): $verbs =="
+    echo "== [2/6] winetricks (Live $live_major): $verbs =="
     kit_root_or_die
     export W_CACHE_OVERRIDE=""            # unused
     export WINETRICKS_LATEST_VERSION_CHECK=disabled
-    export WINETRICKS_SUPER_QUIET=1
-    # Use the bundled payload cache if present (mfc42 downloads if not vendored).
+    # Per-verb symlinks, not one dir link: the vendored cache may be read-only
+    # (nix store), and verbs missing from it must still be able to download.
     tmpc=""
     if [ -d "$root/vendor/winetricks-cache" ]; then
         tmpc="$(mktemp -d)"
-        ln -s "$root/vendor/winetricks-cache" "$tmpc/winetricks"
+        mkdir "$tmpc/winetricks"
+        ln -s "$root/vendor/winetricks-cache"/* "$tmpc/winetricks/"
         export XDG_CACHE_HOME="$tmpc"
         echo "   using bundled winetricks cache ($root/vendor/winetricks-cache)"
     fi
-    WINE="$WINE_ROOT/bin/wine" bash "$root/vendor/winetricks" -q -f $verbs
+    # WINE64 preset: this is a new-style WoW64 tree (single wine binary, no
+    # wine64). winetricks' arch autodetection reads the ELF header of $WINE,
+    # which fails when bin/wine is a wrapper script (nix) — preset both.
+    WINE="$WINE_ROOT/bin/wine" WINE64="$WINE_ROOT/bin/wine" \
+        bash "$root/vendor/winetricks" -q -f $verbs
     if [ "$live_major" = 11 ]; then
         # Live 11 targets Windows 10 explicitly. Live 12 stays unpinned: nothing in
         # this script ever sets a Windows version, and a fresh wineboot prefix
         # already defaults to win10 (winetricks assumes the same), so the Live 12
         # recipe keeps its historical effective mode.
-        WINE="$WINE_ROOT/bin/wine" bash "$root/vendor/winetricks" -q win10
+        WINE="$WINE_ROOT/bin/wine" WINE64="$WINE_ROOT/bin/wine" \
+            bash "$root/vendor/winetricks" -q win10
     fi
     [ -n "$tmpc" ] && rm -rf "$tmpc"
-    "$WINESERVER" -w
+    settle
 fi
 
 # Live bundles the exact VC++ redistributable it was built against in its own
@@ -345,7 +450,7 @@ vc_runtime_ready() {
 install_live_redist() {
     local status=0
     wine "$1" /install /quiet /norestart || status=$?
-    "$WINESERVER" -w
+    settle
     case "$status" in
         0|102|194) ;;
         *) echo "!! Live's bundled VC++ redist failed (exit $status)" >&2; return 1 ;;
@@ -359,8 +464,8 @@ install_live_redist() {
 # doesn't touch). The redist comes from the same source winetricks used: vcrun2022 (Live 12)
 # or vcrun2019 (Live 11): both ship the vc_redist.x64/x86.exe pair with the same cab layout.
 redist_verb=vcrun2022
-[ "${ABLETON_LIVE_VERSION:-12}" = 11 ] && redist_verb=vcrun2019
-echo "== [2b/5] force native VC++ runtime over wine's builtin stubs ($redist_verb) =="
+[ "$live_major" = 11 ] && redist_verb=vcrun2019
+echo "== [2b/6] force native VC++ runtime over wine's builtin stubs ($redist_verb) =="
 kit_root || true   # vendored cache is only a candidate; absence is not fatal here
 if ! vc_runtime_ready; then
     live_redist="$(find_live_redist || true)"
@@ -411,7 +516,7 @@ else
     [ "$vc_bad" -eq 0 ] || { echo "!! native VC++ runtime gate FAILED" >&2; exit 1; }
 fi
 
-echo "== [3/5] DPI policy ($dpi_mode -> $dpi_block) =="
+echo "== [3/6] DPI policy ($dpi_mode -> $dpi_block) =="
 case "$dpi_block" in
   preserve)
     echo "   preserving current LogPixels and dpiAwareness values"
@@ -442,9 +547,9 @@ case "$dpi_block" in
     check_mutter_knob "$dpi_block" "$dpi_family"
     ;;
 esac
-"$WINESERVER" -w
+settle
 
-echo "== [3b/5] theme: mirror the host light/dark scheme =="
+echo "== [3b/6] theme: mirror the host light/dark scheme =="
 # Live's "Follow system" theme reads AppsUseLightTheme; without the key it always renders
 # light. Seed it from the host scheme (the launcher re-syncs on every start), plus the
 # EnableTransparency=0 the known-good prefixes carry.
@@ -456,11 +561,18 @@ else
     echo "   host scheme not detectable: leaving the theme key as-is (the launcher retries on every start)"
 fi
 wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f
-"$WINESERVER" -w
+settle
 
-echo "== [4/5] register packaged PipeASIO =="
-ldconfig -p 2>/dev/null | grep -F 'libpipewire-0.3.so.0' >/dev/null || \
-  echo "!! host libpipewire-0.3.so.0 not found; install pipewire (0.3.56 or newer, 1.6+ recommended)"
+echo "== [4/6] register packaged PipeASIO =="
+# The driver's unix half must resolve libpipewire-0.3.so.0 — the tarball build
+# from the host's libs (it carries no rpath on purpose), the nix build from its
+# nixpkgs RUNPATH. ldd follows both; ldconfig -p sees neither on NixOS.
+if ldd "$WINE_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null \
+    | grep -F 'libpipewire-0.3.so.0' | grep -q 'not found'; then
+    echo "!! the PipeASIO driver cannot resolve libpipewire-0.3.so.0; install pipewire (0.3.56 or newer, 1.6+ recommended)"
+fi
+[ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pipewire-0" ] || \
+    echo "!! no PipeWire socket at ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pipewire-0 — Live will list no PipeASIO device until the PipeWire daemon runs"
 # Pre-2026-07 runtimes shipped WineASIO; drop its registration and the stale
 # system32 placeholders so nothing references the removed driver. Harmless on
 # fresh prefixes.
@@ -468,8 +580,12 @@ wine reg delete 'HKLM\Software\ASIO\WineASIO' /f >/dev/null 2>&1 || true
 wine reg delete 'HKCR\CLSID\{48D0C522-BFCC-45CC-8B84-17F25F33E6E8}' /f >/dev/null 2>&1 || true
 rm -f "$WINEPREFIX"/drive_c/windows/system32/wineasio64.dll \
       "$WINEPREFIX"/drive_c/windows/system32/wineasio.dll
-wine regsvr32 /s pipeasio64.dll
-"$WINESERVER" -w
+# Direct apploader call (not "wine regsvr32"): skips start.exe /exec + conhost,
+# whose exit path stalled a live session for minutes once (2026-07-17); the nix
+# build gate exercises this exact invocation. /s: without it regsvr32 reports
+# success as a MessageBox (Windows semantics) and blocks until it's clicked.
+regsvr32 /s pipeasio64.dll
+settle
 
 # Seed the driver defaults once; the file is the config surface (PIPEASIO_*
 # environment variables override it per launch, see the README).
@@ -487,7 +603,7 @@ EOF
     echo "   seeded $pipeasio_cfg (2 in / 2 out, fixed 256-frame buffer)"
 fi
 
-echo "== [5/5] set portal policy and scope Push 2 bridge to its helper =="
+echo "== [5/6] set portal policy and scope Push 2 bridge to its helper =="
 # Default only: a policy the user set with set-file-portal-policy survives re-runs.
 if ! wine reg query 'HKCU\Software\Wine\X11 Driver' /v FileDialogPortal >/dev/null 2>&1; then
   wine reg add 'HKCU\Software\Wine\X11 Driver' \
@@ -513,22 +629,134 @@ for entry_dir in "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "$HOME/Desk
     done
 done
 update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" 2>/dev/null || true
-"$WINESERVER" -w
+settle
 
-echo "== [5b/5] remove the 2026.07.18.1 Options.txt seed (issue #29) =="
+echo "== [5b/6] remove the 2026.07.18.1 Options.txt seed (issue #29) =="
 strip_options_txt
+
+echo "== [6/6] Ableton Live =="
+# Runs the USER'S OWN Ableton download — this repo ships no Live payload and
+# no license. OPT-IN ONLY (ABLETON_LIVE_AUTOINSTALL=1): the automatic run is
+# silent, which defers Ableton's EULA to first launch, and a prefix refresh
+# must never execute an installer the user didn't explicitly ask it to.
+# Search dir: ~/Proprietary (the official ableton_live*.zip from ableton.com);
+# ABLETON_INSTALLER_DIR overrides. The zip candidate — and the recipe major it
+# implies — was resolved up front, before step [2/6]. The .run pins
+# ABLETON_LIVE_AUTOINSTALL=0: it drives the Ableton installer itself.
+live_ready=0
+if live_installed; then
+    live_ready=1
+    echo "   Live is already installed in this prefix — not touching it"
+elif [ "${ABLETON_LIVE_AUTOINSTALL:-}" = 0 ]; then
+    echo "   skipped (ABLETON_LIVE_AUTOINSTALL=0)"
+elif [ "${ABLETON_LIVE_AUTOINSTALL:-0}" != 1 ]; then
+    if [ -n "$live_zip" ]; then
+        echo "   found $(basename "$live_zip") — rerun with ABLETON_LIVE_AUTOINSTALL=1 to install it"
+        echo "   (silent install: Ableton's EULA is then shown on Live's first launch, not before)"
+        # The recipe major only follows the zip when the install is opted in
+        # (see the resolution above step [1/6]) — so on this run the prefix got
+        # the Live $live_major verbs. Say so when the found zip disagrees, or a
+        # later manual Live 11 install silently misses vcrun2019/gdiplus.
+        hint_major="$(basename "$live_zip" | sed -nE 's/^[^0-9]*_([0-9]+)\.[0-9]+.*$/\1/p')"
+        if [ -n "$hint_major" ] && [ "$hint_major" != "$live_major" ]; then
+            echo "   note: this run prepared the prefix with the Live $live_major recipe; the opted-in rerun"
+            echo "   switches to the Live $hint_major verbs (or pin ABLETON_LIVE_VERSION=$hint_major yourself)"
+        fi
+    else
+        echo "   skipped — ABLETON_LIVE_AUTOINSTALL=1 (opt-in) installs your ableton_live*.zip from $installer_dir"
+    fi
+else
+    if [ -z "$live_zip" ]; then
+        if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
+            echo "   no Live $ABLETON_LIVE_VERSION installer (ableton_live*_${ABLETON_LIVE_VERSION}.*.zip) in $installer_dir — manual install steps are printed below"
+        else
+            echo "   no ableton_live*.zip in $installer_dir — manual install steps are printed below"
+        fi
+        echo "   (drop the official ableton.com zip there, or point ABLETON_INSTALLER_DIR at it)"
+    else
+        echo "   unpacking $(basename "$live_zip")"
+        unpack_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ableton-wine-setup/live-installer"
+        rm -rf "$unpack_dir"
+        mkdir -p "$unpack_dir"
+        unpack_ok=1
+        if command -v unzip >/dev/null; then
+            unzip -q "$live_zip" -d "$unpack_dir" || unpack_ok=0
+        elif command -v bsdtar >/dev/null; then
+            bsdtar -xf "$live_zip" -C "$unpack_dir" || unpack_ok=0
+        elif command -v python3 >/dev/null; then
+            python3 -m zipfile -e "$live_zip" "$unpack_dir" || unpack_ok=0
+        else
+            unpack_ok=0
+            echo "!! nothing available to unpack the zip (looked for unzip, bsdtar, python3)"
+        fi
+        live_exe=""
+        if [ "$unpack_ok" -eq 1 ]; then
+            live_exe="$(find "$unpack_dir" -iname '*.exe' -print -quit)"
+        fi
+        if [ "$unpack_ok" -eq 0 ]; then
+            echo "!! could not unpack $(basename "$live_zip") — manual install steps are printed below"
+        elif [ -z "$live_exe" ]; then
+            echo "!! no installer (.exe) inside that zip — is it the official ableton.com download?"
+        else
+            # Live's installer is Inno Setup (6.x, verified from the stub), so
+            # the engine's built-in silent flags always exist. Default: silent
+            # install, with an interactive-window fallback if no install lands.
+            # ABLETON_INSTALLER_UI=1 forces the window (shows Ableton's EULA
+            # page); a silent run defers EULA acceptance to first launch/auth.
+            run_installer() {   # extra installer arguments in "$@"
+                # Run from the installer's own directory so its relative
+                # payload lookups (Installer-N.bin) resolve.
+                (cd "$(dirname -- "$live_exe")" && wine "./$(basename -- "$live_exe")" "$@")
+            }
+            # Lingering session infra (services.exe, explorer.exe) can hold a
+            # finished session open for minutes; the prefix work is done once
+            # the installer returns, so end the session instead of waiting it
+            # out — same wineserver -k the launcher and nix build gate use.
+            end_session() {
+                "$WINESERVER" -k 2>/dev/null || true
+                settle
+            }
+            if [ "${ABLETON_INSTALLER_UI:-0}" = 1 ]; then
+                echo "   starting the Ableton installer — from here just click through its window"
+                run_installer || echo "!! the Ableton installer exited with an error — manual install steps are printed below"
+                end_session
+            else
+                echo "   installing Ableton Live silently — takes a few minutes (ABLETON_INSTALLER_UI=1 for the installer window)"
+                # Keep the display attached: Inno's engine needs a window
+                # connection even under /VERYSILENT — a headless run installs
+                # NOTHING (tested 2026-07-17); with the display it installs
+                # silently, verified end to end with Live 12 Suite 12.4.3.
+                run_installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- || true
+                end_session
+                if ! live_installed; then
+                    echo "!! the silent install produced no installation — starting the installer window"
+                    run_installer || echo "!! the Ableton installer exited with an error — manual install steps are printed below"
+                    end_session
+                fi
+            fi
+            if live_installed; then live_ready=1; fi
+        fi
+        rm -rf "$unpack_dir"
+    fi
+fi
 
 echo
 echo "OK: prefix ready at $WINEPREFIX"
+if [ "$live_ready" -eq 1 ]; then
+    step1="  1. Live is installed — nothing more to supply here."
+else
+    step1="  1. Install Live (any edition) through THIS wine (plain wine reads
+     WINEPREFIX, not the ABLETON_* launcher variables):
+       WINEPREFIX=$WINEPREFIX \\
+       $WINE_ROOT/bin/wine \"/path/to/Ableton Live NN Edition Installer.exe\"
+     Or: drop the official ableton_live*.zip into $installer_dir and rerun this script."
+fi
 cat <<EOF
 
 ────────────────────────────────────────────────────────────────────────
 Remaining steps (you supply Ableton + your own license):
 
-  1. Install Live (any edition) through THIS wine (plain wine reads
-     WINEPREFIX, not the ABLETON_* launcher variables):
-       WINEPREFIX=$WINEPREFIX \\
-       $WINE_ROOT/bin/wine "/path/to/Ableton Live NN Edition Installer.exe"
+$step1
 
   2. Launch:            ableton-live
   3. Authorize Live with your own account (binds to this prefix's MachineGuid).

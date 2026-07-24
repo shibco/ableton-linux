@@ -1,6 +1,6 @@
 # Sourceable display-scale detection. ableton_detect_scale prints the primary monitor's scale
 # ("1", "1.25", ...) or returns 1 when no probe answers (probes: GNOME, KDE, sway, Hyprland,
-# COSMIC, Xft.dpi). ableton_detect_scale_ex also prints which probe answered (the compositor
+# niri, COSMIC, Xft.dpi). ableton_detect_scale_ex also prints which probe answered (the compositor
 # family), and ableton_dpi_block_for_scale / ableton_dpi_block_values map a detected scale to
 # the calibrated DPI block for that family (see the mapping comment at the bottom).
 
@@ -63,6 +63,19 @@ _ads_hyprland() {
     printf '%s\n' "$s"
 }
 
+_ads_niri() {
+    command -v niri >/dev/null 2>&1 || return 1
+    [ -n "${NIRI_SOCKET:-}" ] || return 1
+    local s
+    # No "primary" concept in niri: use the focused output, fall back to the first.
+    s="$(timeout 5 niri msg focused-output 2>/dev/null \
+        | grep -oE 'Scale: [0-9.]+' | head -1 | grep -oE '[0-9.]+')"
+    [ -n "$s" ] || s="$(timeout 5 niri msg outputs 2>/dev/null \
+        | grep -oE 'Scale: [0-9.]+' | head -1 | grep -oE '[0-9.]+')"
+    [ -n "$s" ] || return 1
+    printf '%s\n' "$s"
+}
+
 _ads_cosmic() {
     command -v cosmic-randr >/dev/null 2>&1 || return 1
     [ "${XDG_CURRENT_DESKTOP:-}" = COSMIC ] || return 1
@@ -97,7 +110,7 @@ _ads_xft() {
 
 ableton_detect_scale() {
     local scale
-    for probe in _ads_gnome _ads_kde _ads_sway _ads_hyprland _ads_cosmic _ads_xft; do
+    for probe in _ads_gnome _ads_kde _ads_sway _ads_hyprland _ads_niri _ads_cosmic _ads_xft; do
         if scale="$($probe)"; then
             # normalize: 1.0 -> 1, 1.250 -> 1.25
             printf '%s\n' "$scale" | awk '{ printf "%g\n", $1 }'
@@ -108,10 +121,10 @@ ableton_detect_scale() {
 }
 
 # Like ableton_detect_scale, but prints "<scale> <family>": the family names the probe
-# that answered (gnome|kde|sway|hyprland|cosmic|xft) and picks the DPI policy below.
+# that answered (gnome|kde|sway|hyprland|niri|cosmic|xft) and picks the DPI policy below.
 ableton_detect_scale_ex() {
     local scale family
-    for family in gnome kde sway hyprland cosmic xft; do
+    for family in gnome kde sway hyprland niri cosmic xft; do
         if scale="$("_ads_$family")"; then
             awk -v s="$scale" -v f="$family" 'BEGIN { printf "%g %s\n", s, f }'
             return 0

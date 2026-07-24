@@ -49,6 +49,8 @@ repair_handler_entries() {
     local staged d repaired=0
     for d in wine-protocol-ableton wine-extension-auz; do
         staged="$HOME/.local/share/ableton-wine/$d.desktop"
+        # Packaged installs (nix) stage them under the runtime root instead of $HOME.
+        [ -f "$staged" ] || staged="$WINE_ROOT/share/ableton-wine/$d.desktop"
         [ -f "$staged" ] || continue
         if [ ! -f "$apps/$d.desktop" ] \
             || grep -qE '^Exec=env .*WINEPREFIX=.* wine start ' "$apps/$d.desktop"; then
@@ -199,6 +201,8 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
     dpi_mode="${ABLETON_DPI_MODE:-auto}"
     dpi_family=""; dpi_scale=""
     dpi_lib="$HOME/.local/share/ableton-wine/detect-scale.sh"
+    # Packaged installs (nix) ship the libs under the runtime root instead of $HOME.
+    [ -r "$dpi_lib" ] || dpi_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-scale.sh"
     [ -r "$dpi_lib" ] && . "$dpi_lib"
     if ! declare -F ableton_dpi_block_values >/dev/null 2>&1; then
         # no (or an older) detect-scale.sh: the two legacy blocks still resolve inline
@@ -413,6 +417,7 @@ theme_watch_prefs_cfg() {
 }
 theme_watch_loop() {
     local apply="$HOME/.local/share/ableton-wine/setsyscolors.exe"
+    [ -f "$apply" ] || apply="$WINE_ROOT/share/ableton-wine/scripts/setsyscolors.exe"
     local lock="$WINEPREFIX/.ableton-theme-watch.lock" cfg last="" cur bar_bg bar_fg
     [ -f "$apply" ] || return 0
     command -v flock >/dev/null 2>&1 || return 0
@@ -578,6 +583,7 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
     # Sourced outside the auto branch: the topbar color detection below wants the lib
     # even when ABLETON_THEME_MODE pins the scheme.
     theme_lib="$HOME/.local/share/ableton-wine/detect-theme.sh"
+    [ -r "$theme_lib" ] || theme_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-theme.sh"
     [ -r "$theme_lib" ] && . "$theme_lib"
     theme_mode="${ABLETON_THEME_MODE:-auto}"
     if [ "$theme_mode" = auto ]; then
@@ -631,7 +637,7 @@ fi
 require_live() {
     [ -n "$EXE" ] && return 0
     echo "ableton-live: no Ableton Live installation found in $WINEPREFIX" >&2
-    echo "ableton-live: rerun the ableton-wine-setup .run with your Ableton download (any edition) next to it, or install Live manually: see the README" >&2
+    echo "ableton-live: put your ableton_live*.zip (any edition) in ~/Proprietary and rerun the setup (the .run installer or setup-prefix.sh), or install Live manually: see the README" >&2
     exit 1
 }
 
@@ -674,6 +680,7 @@ fi
 # resize-deaf) and exits on its own after Live is gone. No-op when the helper
 # is not installed.
 learnheal="$HOME/.local/share/ableton-wine/learnheal.exe"
+[ -f "$learnheal" ] || learnheal="$WINE_ROOT/share/ableton-wine/learnheal.exe"
 if [ -n "$EXE" ] && [ -f "$learnheal" ]; then
     ( "$WINE_ROOT/bin/wine" "$learnheal" ) </dev/null >/dev/null 2>&1 &
     disown

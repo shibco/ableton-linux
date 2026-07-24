@@ -42,7 +42,7 @@ You need a 64-bit x86 machine, a 2022-or-newer distro (glibc 2.35+), and PipeWir
 
 1. Download Ableton Live from ableton.com (the `ableton_live*.zip` download, any edition).
 2. Download the latest installer: [install-ableton-latest.run](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run) (versioned builds are on the Releases tab).
-3. Put both files in the same directory, then run the installer and follow its instructions: double click `install-ableton-latest.run`, or run
+3. Put both files in the same directory (or keep the Ableton zip in `~/Proprietary`), then run the installer and follow its instructions: double click `install-ableton-latest.run`, or run
 
 ```
 sh ~/Downloads/install-ableton-latest.run
@@ -68,6 +68,65 @@ This updates the patched Wine, the launcher and the prefix policy. Ableton Live 
 
 Updating from 2026.07.18.1 also removes the `-DontCombineAPCs` line that release added to Live's Options.txt. The line causes stuttering, slowed-down audio during playback (issue #29). The update removes it even if you added it by hand.
 
+## Nix and NixOS
+
+The repo is also a Nix flake that builds the whole stack from source — the patched Wine, PipeASIO, and the launcher — as one package. The `.run` installer above remains the path for every other distro.
+
+Quick start (flakes enabled, x86_64-linux only):
+
+```bash
+# 1. put your ableton_live*.zip (any edition, from ableton.com) in ~/Proprietary
+# 2. build the runtime and create the prefix; ABLETON_LIVE_AUTOINSTALL=1 opts in
+#    to running that zip's installer (silent — Ableton's EULA then appears on
+#    Live's first launch; leave it unset to install Live yourself)
+ABLETON_LIVE_AUTOINSTALL=1 nix run github:shibco/ableton-linux#setup-prefix
+# 3. launch
+nix run github:shibco/ableton-linux
+```
+
+The first build compiles Wine from source (no binary cache) and takes a while; after that everything comes from your Nix store. The prefix step is per user and idempotent — rerunning it later heals the prefix without touching Live. The Live 12 support files (corefonts, vcrun2022, mfc42) install from the winetricks cache vendored in the package, so `setup-prefix` needs no network for them; the Live 11 recipe still downloads its extras (see [Live 11](#live-11)). Host requirements: a running PipeWire daemon and `/dev/ntsync` (kernel 6.14+ with the `ntsync` module; `scripts/check-ntsync.sh` verifies).
+
+For daily use prefer `nix profile install github:shibco/ableton-linux` (or the NixOS config below) over bare `nix run`: `nix run` leaves no GC root, so a `nix-collect-garbage` deletes the compiled Wine and the next run rebuilds it.
+
+Optional extras, mirroring the tarball flow: `nix run github:shibco/ableton-linux#setup-realtime` installs the host pro-audio profile (rtprio limits, swappiness, performance governor — after a re-login the launcher's realtime probe turns on), and `...#setup-link` prepares Ableton Link networking (multicast route, firewall, jack_link bridge). Both change host policy and use sudo. Live 11 works the same as the tarball flow: `ABLETON_LIVE_VERSION=11 nix run github:shibco/ableton-linux#setup-prefix` — see [Live 11](#live-11).
+
+### NixOS configuration
+
+```nix
+# flake.nix
+inputs.ableton-linux.url = "github:shibco/ableton-linux";
+# No nixpkgs.follows on purpose: the flake pins the nixpkgs its Wine was built
+# and tested against; following your system nixpkgs rebuilds Wine from source
+# on every channel bump.
+```
+
+```nix
+# configuration.nix
+{ inputs, ... }: {
+  environment.systemPackages = [
+    inputs.ableton-linux.packages.x86_64-linux.default
+    # or pin PipeASIO audio settings declaratively — the launcher exports each
+    # pin as the driver's own PIPEASIO_* override, which beats config.ini/panel
+    # edits without touching that file; unpinned keys keep following config.ini,
+    # and PIPEASIO_* variables you set yourself still win per launch:
+    # (inputs.ableton-linux.packages.x86_64-linux.default.override {
+    #   pipeasioSettings = {
+    #     buffer_size = 256;             # frames; match your PipeWire quantum
+    #     inputs = 2; outputs = 2;       # hardware channel counts
+    #     # output_device = "Scarlett 18i20"; sample_rate = 48000; ...
+    #   };
+    # })
+    # Display scale needs no pin: the launcher auto-detects it, and
+    # ABLETON_DPI_MODE overrides per launch — see below.
+  ];
+  services.pipewire.enable = true;
+}
+```
+
+This puts `ableton-live` on every user's PATH. Each user still runs the one-time `nix run github:shibco/ableton-linux#setup-prefix` — the prefix is per-user state in `~/.wine-ableton`, not something a system rebuild can produce. Desktop menu entries ship rendered in `share/applications/`, so a profile install or `environment.systemPackages` puts Ableton Live in the menu automatically; bare `nix run` registers nothing.
+
+Standalone Max 9 (installed into the same prefix with `msiexec`) launches with `max9` from the package. Its menu entries are not active by default — the store cannot see whether Max is installed; copy them from `share/ableton-wine/desktop/` into `~/.local/share/applications` if you use Max.
+
 ## Issues?
 
 File an issue on GitHub. There are diagnostic scripts in ./beta/scripts that will help pin down the problem.
@@ -87,16 +146,18 @@ Live 11 support is new and experimental. A Live 11 install differs in three ways
 
 1. Set `ABLETON_LIVE_VERSION=11` when you run the installer. Live 11 needs a different set of support files than Live 12, and this installs the right ones. They are downloaded during setup, so you need to be online:
 
-    ```
-    ABLETON_LIVE_VERSION=11 sh ~/Downloads/install-ableton-latest.run
-    ```
+   ```
+   ABLETON_LIVE_VERSION=11 sh ~/Downloads/install-ableton-latest.run
+   ```
 
 2. After your first Live 11 launch, run the Max for Live fixup once. Max 8 crashes on its second start over a preferences file its first start wrote. The fixup moves that file aside (nothing is deleted) and Max regenerates it:
 
-    ```
-    sh ~/Downloads/install-ableton-latest.run --extract /tmp/ableton-kit
-    bash /tmp/ableton-kit/scripts/setup-prefix.sh --post-first-run
-    ```
+   ```
+   sh ~/Downloads/install-ableton-latest.run --extract /tmp/ableton-kit
+   bash /tmp/ableton-kit/scripts/setup-prefix.sh --post-first-run
+   ```
+
+   On Nix: `nix run github:shibco/ableton-linux#setup-prefix -- --post-first-run`
 
 3. Known limitation: previewing or importing WMA or video files crashes Live 11. A fix is planned. Avoid those files in Live's browser for now; details in [notes/ABLETON-WINE-LIVE11-WMVCORE-STUB.md](notes/ABLETON-WINE-LIVE11-WMVCORE-STUB.md).
 
@@ -105,10 +166,12 @@ The launcher finds Live 11 by itself. With both 11 and 12 in the prefix the newe
 ## Installing plugins
 
 To run a plugin installer inside your Live environment:
+
 ```
 WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.11/bin/wine \
     "/path/to/PluginInstaller.exe"
 ```
+
 You can also manually install plugin .vst3 files inside the `~/.wine-ableton/drive_c/Program Files/Common Files/VST3/` directory.
 
 ### Linux-native plugins
@@ -117,9 +180,9 @@ Do you have a Linux-only plugin? Run them in Carla or Ildaeil alongside Live and
 
 ## Push 1 + 2 support
 
-This is built in. Use Preferences → Link, Tempo & MIDI → enable one `Push2` row, Live Port for both input and output, and enable the remote toggles. 
+This is built in. Use Preferences → Link, Tempo & MIDI → enable one `Push2` row, Live Port for both input and output, and enable the remote toggles.
 
-Like all other MIDI and Audio devices, Push will survive in-session disconnects. 
+Like all other MIDI and Audio devices, Push will survive in-session disconnects.
 
 ## Ableton Link
 
@@ -170,6 +233,7 @@ Some distributions grant realtime permission out of the box (CachyOS is one), so
 
 - [patches/](patches/): the Wine patch series + the pipeasio series
 - [scripts/](scripts/): install, prefix setup, launcher
+- [flake.nix](flake.nix) + [nix/](nix/): the Nix packaging (see "Nix and NixOS")
 - [vendor/](vendor/): pinned build inputs
 - [notes/](notes/): patch notes and investigations
 - [tools/](tools/): diagnostic tools
@@ -190,19 +254,29 @@ WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.11/bin/wine \
 ableton-live
 ```
 
+### Nix build
+
+`nix build` produces the same runtime as the container pipeline, from the same vendored sources and patch series, with build-time gates: the patch series must match `patches/SERIES.sha256`, ntsync must be compiled into wineserver and ntdll, and PipeASIO must register end to end in a throwaway prefix.
+
+```bash
+nix build .#wine-d2d1-nspa   # just the patched Wine
+nix build .#pipeasio         # just the ASIO driver
+nix build                    # full runtime: Wine + PipeASIO + launcher -> result/
+```
+
 ### Single-file installer
 
 `./scripts/make-installer.sh` compiles everything into `dist/ableton-wine-setup-<version>.run`.
 
-It verifies itself, installs the runtime, detects the display scale, creates the prefix, then runs the Ableton installer it finds next to itself (pauses so you can add one; prints the manual commands otherwise). 
+It verifies itself, installs the runtime, detects the display scale, creates the prefix, then runs the Ableton installer it finds next to itself (pauses so you can add one; prints the manual commands otherwise).
 
 #### Display scale
 
-`setup-prefix.sh` and the launcher auto-detect the display scale (GNOME, KDE, sway, Hyprland, X11 `Xft.dpi`); the launcher recalibrates the prefix DPI on every start. Scales from 100% to 250% are calibrated: on GNOME the prefix tracks mutter's upscaled framebuffer (`LogPixels = 96 × ceil(scale)` plus a per-monitor DPI flag), on other desktops plain `LogPixels = round(96 × scale)`. Unfortunately, switching monitors still needs a Live restart if those monitors have different DPIs. You can manually override the default scaling behaviours with `ABLETON_DPI_MODE`.
+`setup-prefix.sh` and the launcher auto-detect the display scale (GNOME, KDE, sway, Hyprland, niri, X11 `Xft.dpi`); the launcher recalibrates the prefix DPI on every start. Scales from 100% to 250% are calibrated: on GNOME the prefix tracks mutter's upscaled framebuffer (`LogPixels = 96 × ceil(scale)` plus a per-monitor DPI flag), on other desktops plain `LogPixels = round(96 × scale)`. Unfortunately, switching monitors still needs a Live restart if those monitors have different DPIs. You can manually override the default scaling behaviours with `ABLETON_DPI_MODE`.
 
 ### Other environment variables
 
-Mostly unnecessary. But in case you need them: 
+Mostly unnecessary. But in case you need them:
 
 - `ABLETON_WINE_ROOT` runtime path (default `~/.local/opt/wine-d2d1-nspa-11.11`)
 - `ABLETON_WINEPREFIX` prefix path (default `~/.wine-ableton`)
@@ -215,6 +289,9 @@ Mostly unnecessary. But in case you need them:
 - `ABLETON_DCOMP` `on` (default) | `off`: disables DirectComposition for that launch; an A/B check if the Learn View misrenders
 - `ABLETON_RT` `on` (default) | `off`: runs Live without realtime scheduling even when the system permits it (see [Lower latency](#lower-latency-optional))
 - `PIPEASIO_*` audio driver overrides, e.g. `PIPEASIO_PREFERRED_BUFFERSIZE=512` if you hear crackles; defaults live in `~/.config/pipeasio/config.ini`
+- `ABLETON_INSTALLER_DIR` where `setup-prefix.sh` looks for your `ableton_live*.zip` (default `~/Proprietary`)
+- `ABLETON_LIVE_AUTOINSTALL` set to `1` to let `setup-prefix.sh` run the Ableton installer it finds (opt-in; by default it only prints the manual install steps)
+- `ABLETON_INSTALLER_UI` set to `1` for the Ableton installer window instead of the default silent install
 - `ENGINE=docker` for `build.sh` / `make-installer.sh`
 
 ### Steam Deck

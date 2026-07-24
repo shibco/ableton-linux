@@ -3,6 +3,8 @@
 .env
 *.log
 *.tmp
+# Nix build output symlink
+/result
 !tools/*.log
 ableton-prefix-*/
 wine-d2d1-nspa-11.11/
