@@ -4,7 +4,9 @@
 # Repackaging only; Wine is not rebuilt.
 set -euo pipefail
 # ldd and sha256sum output is parsed below; localised output breaks the checks.
-export LC_ALL=C
+# C.UTF-8, never plain C: wine cannot create non-ASCII filenames under a
+# non-UTF-8 locale (issues #51, #55).
+export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 cd "$root"

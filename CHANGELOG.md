@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Closing a WebView2-based plugin editor no longer crashes Live (issue 52, Splice INSTRUMENT, Wine patch 0045; notes/ABLETON-WINE-WEBVIEW2-PLUGIN-CLOSE-CRASH.md). The WebView2 helper process registers a drag-and-drop handler on a child window it parents into Live's window tree; when the editor closes, Live's side revokes drag-and-drop on that window and Wine's ole32 released a pointer that is only valid in the helper process. RevokeDragDrop now rejects windows owned by other processes, the same rule RegisterDragDrop already applies. Fix by Giang Nguyen, ported from the wine base fork. Reproduced and verified without Splice using the new tools/webviewclose.c.
+
+- Fixed fresh Live installs failing on the non-ASCII filenames in Live's Max content (issues 51 and 55). The C locale forced in 2026.07.21.2 for issue 36 reached Wine, which cannot create names like bp.µSeq.maxpat under a non-UTF-8 locale: Live 11's MSI rolled back with error 0x80070643, Live 12's installer looped a "Try again" dialog on MoveFile code 2. The installer scripts now force C.UTF-8, keeping the issue 36 fix and the filenames. Only a fresh run of the Ableton installer was affected, not existing installs.
+- winetricks failures now say what failed (issue 28). The quiet flag prefix setup passed to winetricks also silences its fatal-error message, so a failed step exited with no output while the installer claimed the details were above. The flag is gone; a failure now names the failing command and its exit status.
+
 ## 2026.07.23.1
 
 - Ableton Link support is now built in (notes/ABLETON-WINE-LINK.md). The installer ships ableton-linkd, a small native daemon built from the vendored Ableton Link SDK (Link 4.0, GPLv2 or later; the tarball ships in the kit as the corresponding source). It joins the Link session on your machine, holds the shared tempo and timeline across Live restarts, relays Start Stop Sync, and lets native Linux apps join the same session. The daemon is strictly passive: it never sets Live's tempo, and Live joins the session as its own peer. It is also the probe this stack never had: `ableton-linkd --probe 10` prints the peer count and the session tempo, and exits 0 only when it sees a peer.

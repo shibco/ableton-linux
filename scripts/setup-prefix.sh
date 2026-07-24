@@ -289,7 +289,8 @@ else
     kit_root_or_die
     export W_CACHE_OVERRIDE=""            # unused
     export WINETRICKS_LATEST_VERSION_CHECK=disabled
-    export WINETRICKS_SUPER_QUIET=1
+    # Never set WINETRICKS_SUPER_QUIET: it silences w_die, so a fatal
+    # winetricks error exits with no message at all (issue #28).
     # Use the bundled payload cache if present (mfc42 downloads if not vendored).
     tmpc=""
     if [ -d "$root/vendor/winetricks-cache" ]; then
