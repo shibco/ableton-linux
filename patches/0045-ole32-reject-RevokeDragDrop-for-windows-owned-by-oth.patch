@@ -1,0 +1,64 @@
+From 841f721f6c2c0bbca759cf1f1a08d2a346517f41 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Fri, 24 Jul 2026 15:58:19 +0200
+Subject: [PATCH 45/45] ole32: reject RevokeDragDrop for windows owned by other
+ processes
+
+RegisterDragDrop stores the drop target in the OleDropTargetInterface
+window property as a raw pointer that is only valid in the registering
+process. Window properties are visible system-wide, so RevokeDragDrop
+from another process fetches the foreign pointer and releases it,
+crashing on the vtable dereference.
+
+Issue 52: closing the Splice INSTRUMENT VST3 editor crashes Live. The
+WebView2 helper process registers a drop target on its own
+Chrome_WidgetWin_1 child window inside Live's window tree. On close,
+the editor teardown in Live's process revokes drag and drop on every
+enumerated child window and hits the foreign pointer. Reproduced
+without Splice with tools/webviewclose.c variant e: the host-side
+RevokeDragDrop faults in ole32 reading the exact address the helper
+process registered.
+
+RegisterDragDrop already rejects windows owned by other processes;
+apply the same check in RevokeDragDrop. The revoke then returns
+DRAGDROP_E_INVALIDHWND and teardown completes. The helper process
+still revokes its own registration itself.
+
+Ported from giang17/wine commit fafb443f85e0 (Giang Nguyen,
+2026-07-23). Not in the d2d1-dcomp-11.11 base and not in upstream Wine
+as of 2026-07-24. Re-check on the issue 53 base bump.
+---
+ dlls/ole32/ole2.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/dlls/ole32/ole2.c b/dlls/ole32/ole2.c
+index 36838628..3b645868 100644
+--- a/dlls/ole32/ole2.c
++++ b/dlls/ole32/ole2.c
+@@ -627,6 +627,7 @@ HRESULT WINAPI RegisterDragDrop(HWND hwnd, LPDROPTARGET pDropTarget)
+  */
+ HRESULT WINAPI RevokeDragDrop(HWND hwnd)
+ {
++  DWORD pid = 0;
+   HANDLE map;
+   IStream *stream;
+   IDropTarget *drop_target;
+@@ -640,6 +641,15 @@ HRESULT WINAPI RevokeDragDrop(HWND hwnd)
+     return DRAGDROP_E_INVALIDHWND;
+   }
+ 
++  /* block revoke for other processes windows; the stored drop target
++   * pointer is only valid in the registering process */
++  GetWindowThreadProcessId(hwnd, &pid);
++  if (pid != GetCurrentProcessId())
++  {
++    FIXME("revoke for another process windows is disabled\n");
++    return DRAGDROP_E_INVALIDHWND;
++  }
++
+   /* no registration data */
+   if (!(map = get_droptarget_handle(hwnd)))
+     return DRAGDROP_E_NOTREGISTERED;
+-- 
+2.55.0
+

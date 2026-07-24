@@ -70,6 +70,7 @@ extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep
 # titles and notes/); a gap is fine if documented here, a dropped patch is not.
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
+    [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; entry harmless once 0044 lands"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -125,6 +126,7 @@ FINGERPRINTS='
 0039|ascii|lib/wine/x86_64-unix/winex11.so|is mapped, refusing to make it managed
 0043|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.portal.OpenURI
 0043|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_show_item
+0045|ascii|lib/wine/x86_64-windows/ole32.dll|revoke for another process windows is disabled
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
