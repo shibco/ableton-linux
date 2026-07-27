@@ -119,15 +119,26 @@ patch_one "$WINE_ROOT/lib/wine/x86_64-windows/powershell.exe" "wine-loader-64"
 patch_one "$WINEPREFIX/drive_c/windows/system32/WindowsPowerShell/v1.0/powershell.exe" "prefix-system32"
 patch_one "$WINEPREFIX/drive_c/windows/syswow64/WindowsPowerShell/v1.0/powershell.exe" "prefix-syswow64"
 
-# 3) Sanity check the loader stub. This is the one the installer actually
-#    hits via Wine's builtin dispatcher, so we verify it directly.
+# 3) Functional sanity check. The shim's matching logic returns 1 only when
+#    argv contains all three substrings: Get-CimInstance, Win32_Process,
+#    StartsWith. We feed it a script that contains those substrings (mimics
+#    the Native Access 2 preflight), so the shim should match and exit 1.
+#    If it exits 0 instead, the matching code path didn't fire — the patch
+#    did not apply, or a stale shim from a previous Wine tree is still in
+#    place. This catches both failure modes; an unrelated script (like
+#    'exit 7') would only test "the shim runs at all", not "the matching
+#    logic works", which is what we actually want to verify.
 echo
-echo "Sanity: $WINE_ROOT/bin/wine powershell.exe -C 'exit 7'"
-if WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wine" powershell.exe -C 'exit 7' >/dev/null 2>&1; then
-    echo "   WARNING: shim returned 0 for an unrelated script. Patch may not have applied."
+echo "Sanity: $WINE_ROOT/bin/wine powershell.exe -C '<Get-CimInstance ... StartsWith script>'"
+NA_SCRIPT='if ((Get-CimInstance Win32_Process | Where-Object { $_.Name -StartsWith Test }).Count -gt 0) { exit 0 } else { exit 1 }'
+if WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wine" powershell.exe -C "$NA_SCRIPT" >/dev/null 2>&1; then
+    echo "   WARNING: shim returned 0 for the NA-style check (expected 1)."
+    echo "            The matching code path did not fire. Patch may not have applied,"
+    echo "            or a stale shim from a previous Wine tree is still in place."
+    echo "            Re-run after: scripts/restore-powershell-shim.sh"
     exit 2
 fi
-echo "   OK: shim returned 1 (mimics the original stub's 'do nothing, fail' for any -C)."
+echo "   OK: shim returned 1 for the NA-style preflight (matching logic fired)."
 
 cat <<EOF
 
