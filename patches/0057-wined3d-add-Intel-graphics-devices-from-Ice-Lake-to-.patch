@@ -1,0 +1,174 @@
+Subject: wined3d: add Intel graphics devices from Ice Lake to Lunar
+ Lake
+
+The GPU description table ends at Coffee Lake (UHD Graphics 630), plus
+the single Battlemage entry from patch 0035. Every Intel GPU released
+since 2019 is missing: the processor graphics families from Ice Lake
+through Lunar Lake, and the Arc A-series cards. wined3d reports all of
+them through the generic Intel fallback, "Intel(R) HD Graphics 4000".
+Ableton Live 12 blacklists that description by name ("Unexplained slow
+UI at zoom-level 100% and/or crashes"), marks its GPU renderer as not
+available, and drops to the slow GDI renderer.
+
+Mesa reports the real PCI ID through its query-renderer extension, so
+one description entry per device ID is enough; the renderer-string
+guessing tables are not involved. Add the mainstream device IDs of
+each family, taken from the pci.ids database. A device that is not
+listed keeps the old fallback until an entry is added for it.
+
+Like the other post-HD4000 Intel entries the cards reuse
+DRIVER_INTEL_HD4000; this tree has no newer Intel driver class. The
+video-memory values only matter when the driver does not report the
+real amount, which Mesa does.
+
+Origin: local fix for issue #84 (Meteor Lake Arc graphics on a Core
+Ultra 7 155H misidentified as HD Graphics 4000, Live's GPU renderer
+unavailable). Should also be upstreamed to Wine.
+---
+ dlls/wined3d/directx.c         | 68 ++++++++++++++++++++++++++++++++++
+ dlls/wined3d/wined3d_private.h | 53 ++++++++++++++++++++++++++
+ 2 files changed, 121 insertions(+)
+
+diff --git a/dlls/wined3d/directx.c b/dlls/wined3d/directx.c
+index 3cc5e3f..0decb19 100644
+--- a/dlls/wined3d/directx.c
++++ b/dlls/wined3d/directx.c
+@@ -666,6 +666,74 @@ static const struct wined3d_gpu_description gpu_description_table[] =
+     {HW_VENDOR_INTEL,      CARD_INTEL_HD630_2,             "Intel(R) HD Graphics 630",                                  DRIVER_INTEL_HD4000,  3072},
+     {HW_VENDOR_INTEL,      CARD_INTEL_UHD630_1,            "Intel(R) UHD Graphics 630",                                 DRIVER_INTEL_HD4000,  3072},
+     {HW_VENDOR_INTEL,      CARD_INTEL_UHD630_2,            "Intel(R) UHD Graphics 630",                                 DRIVER_INTEL_HD4000,  3072},
++    /* Ice Lake and newer. Without an entry here wined3d reports these
++     * devices through the generic Intel fallback ("Intel(R) HD Graphics
++     * 4000"), which Ableton Live 12 blacklists by name, disabling its
++     * GPU renderer (issue 84). */
++    /* Ice Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_ICL_1,               "Intel(R) Iris(R) Plus Graphics (ICL)",                      DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ICL_2,               "Intel(R) Iris(R) Plus Graphics (ICL)",                      DRIVER_INTEL_HD4000,  2048},
++    /* Comet Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_CMLU,                "Intel(R) UHD Graphics (CML-U)",                             DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_CMLH,                "Intel(R) UHD Graphics (CML-H)",                             DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_CMLS_1,              "Intel(R) UHD Graphics 630 (CML-S)",                         DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_CMLS_2,              "Intel(R) UHD Graphics 630 (CML-S)",                         DRIVER_INTEL_HD4000,  3072},
++    /* Tiger Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_TGL_1,               "Intel(R) Iris(R) Xe Graphics (TGL)",                        DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_TGL_2,               "Intel(R) Iris(R) Xe Graphics (TGL)",                        DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_TGL_3,               "Intel(R) UHD Graphics (TGL-H)",                             DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_TGL_4,               "Intel(R) UHD Graphics (TGL-H)",                             DRIVER_INTEL_HD4000,  3072},
++    /* Rocket Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_RKLS_1,              "Intel(R) UHD Graphics 750 (RKL-S)",                         DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_RKLS_2,              "Intel(R) UHD Graphics 730 (RKL-S)",                         DRIVER_INTEL_HD4000,  3072},
++    /* DG1 */
++    {HW_VENDOR_INTEL,      CARD_INTEL_DG1_1,               "Intel(R) Iris(R) Xe MAX Graphics (DG1)",                    DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_DG1_2,               "Intel(R) Iris(R) Xe Graphics (DG1)",                        DRIVER_INTEL_HD4000,  4096},
++    /* Alder Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLS_1,              "Intel(R) UHD Graphics 770 (ADL-S)",                         DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLS_2,              "Intel(R) UHD Graphics 730 (ADL-S)",                         DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLHX,               "Intel(R) UHD Graphics 770 (ADL-HX)",                        DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLS_3,              "Intel(R) UHD Graphics 770 (ADL-S)",                         DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLS_4,              "Intel(R) UHD Graphics 730 (ADL-S)",                         DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLS_5,              "Intel(R) UHD Graphics 710 (ADL-S)",                         DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLP_1,              "Intel(R) Iris(R) Xe Graphics (ADL-P)",                      DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLP_2,              "Intel(R) Iris(R) Xe Graphics (ADL-P)",                      DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLP_3,              "Intel(R) Iris(R) Xe Graphics (ADL-P)",                      DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLN_1,              "Intel(R) UHD Graphics (ADL-N)",                             DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLN_2,              "Intel(R) UHD Graphics (ADL-N)",                             DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ADLN_3,              "Intel(R) UHD Graphics (ADL-N)",                             DRIVER_INTEL_HD4000,  2048},
++    /* Raptor Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_RPLP_1,              "Intel(R) UHD Graphics (RPL-P)",                             DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_RPLP_2,              "Intel(R) UHD Graphics (RPL-P)",                             DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_RPLS,                "Intel(R) UHD Graphics 770 (RPL-S)",                         DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_RPLP_3,              "Intel(R) Iris(R) Xe Graphics (RPL-P)",                      DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_RPLP_4,              "Intel(R) Iris(R) Xe Graphics (RPL-P)",                      DRIVER_INTEL_HD4000,  3072},
++    /* Arc A-series (Alchemist) */
++    {HW_VENDOR_INTEL,      CARD_INTEL_A770M,               "Intel(R) Arc(tm) A770M Graphics (DG2)",                     DRIVER_INTEL_HD4000,  16384},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A730M,               "Intel(R) Arc(tm) A730M Graphics (DG2)",                     DRIVER_INTEL_HD4000,  12288},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A550M,               "Intel(R) Arc(tm) A550M Graphics (DG2)",                     DRIVER_INTEL_HD4000,  8192},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A370M,               "Intel(R) Arc(tm) A370M Graphics (DG2)",                     DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A350M,               "Intel(R) Arc(tm) A350M Graphics (DG2)",                     DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A770,                "Intel(R) Arc(tm) A770 Graphics (DG2)",                      DRIVER_INTEL_HD4000,  16384},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A750,                "Intel(R) Arc(tm) A750 Graphics (DG2)",                      DRIVER_INTEL_HD4000,  8192},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A580,                "Intel(R) Arc(tm) A580 Graphics (DG2)",                      DRIVER_INTEL_HD4000,  8192},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A380,                "Intel(R) Arc(tm) A380 Graphics (DG2)",                      DRIVER_INTEL_HD4000,  6144},
++    {HW_VENDOR_INTEL,      CARD_INTEL_A310,                "Intel(R) Arc(tm) A310 Graphics (DG2)",                      DRIVER_INTEL_HD4000,  4096},
++    /* Meteor Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_MTL_1,               "Intel(R) Graphics (MTL)",                                   DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_MTL_2,               "Intel(R) Graphics (MTL)",                                   DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_MTL_ARC,             "Intel(R) Arc(tm) Graphics (MTL)",                           DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_MTL_3,               "Intel(R) Graphics (MTL)",                                   DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_MTL_4,               "Intel(R) Graphics (MTL)",                                   DRIVER_INTEL_HD4000,  4096},
++    /* Arrow Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_ARLU,                "Intel(R) Graphics (ARL-U)",                                 DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ARLP_ARC,            "Intel(R) Arc(tm) Graphics (ARL-P)",                         DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ARLS,                "Intel(R) Graphics (ARL-S)",                                 DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_ARLP,                "Intel(R) Graphics (ARL-P)",                                 DRIVER_INTEL_HD4000,  4096},
++    /* Lunar Lake */
++    {HW_VENDOR_INTEL,      CARD_INTEL_LNL_1,               "Intel(R) Graphics (LNL)",                                   DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_LNL_ARC,             "Intel(R) Arc(tm) Graphics 130V/140V (LNL)",                 DRIVER_INTEL_HD4000,  4096},
++    {HW_VENDOR_INTEL,      CARD_INTEL_LNL_2,               "Intel(R) Graphics (LNL)",                                   DRIVER_INTEL_HD4000,  4096},
+     /* Battlemage G21. Without this entry the card is reported through the
+      * generic Intel fallback ("Intel(R) HD Graphics 4000"), which Ableton
+      * Live 12 blacklists by name, disabling its GPU renderer. */
+diff --git a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
+index 6aa4ebb..21c4adc 100644
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -2451,6 +2451,59 @@ enum wined3d_pci_device
+     CARD_INTEL_HD630_2              = 0x591b,
+     CARD_INTEL_UHD630_1             = 0x3e9b,
+     CARD_INTEL_UHD630_2             = 0x3e91,
++    CARD_INTEL_ICL_1                = 0x8a51,
++    CARD_INTEL_ICL_2                = 0x8a52,
++    CARD_INTEL_CMLU                 = 0x9b41,
++    CARD_INTEL_CMLH                 = 0x9bc4,
++    CARD_INTEL_CMLS_1               = 0x9bc5,
++    CARD_INTEL_CMLS_2               = 0x9bc8,
++    CARD_INTEL_TGL_1                = 0x9a40,
++    CARD_INTEL_TGL_2                = 0x9a49,
++    CARD_INTEL_TGL_3                = 0x9a60,
++    CARD_INTEL_TGL_4                = 0x9a68,
++    CARD_INTEL_RKLS_1               = 0x4c8a,
++    CARD_INTEL_RKLS_2               = 0x4c8b,
++    CARD_INTEL_DG1_1                = 0x4905,
++    CARD_INTEL_DG1_2                = 0x4908,
++    CARD_INTEL_ADLS_1               = 0x4680,
++    CARD_INTEL_ADLS_2               = 0x4682,
++    CARD_INTEL_ADLHX                = 0x4688,
++    CARD_INTEL_ADLS_3               = 0x4690,
++    CARD_INTEL_ADLS_4               = 0x4692,
++    CARD_INTEL_ADLS_5               = 0x4693,
++    CARD_INTEL_ADLP_1               = 0x46a6,
++    CARD_INTEL_ADLP_2               = 0x46a8,
++    CARD_INTEL_ADLP_3               = 0x46aa,
++    CARD_INTEL_ADLN_1               = 0x46d0,
++    CARD_INTEL_ADLN_2               = 0x46d1,
++    CARD_INTEL_ADLN_3               = 0x46d2,
++    CARD_INTEL_RPLP_1               = 0xa720,
++    CARD_INTEL_RPLP_2               = 0xa721,
++    CARD_INTEL_RPLS                 = 0xa780,
++    CARD_INTEL_RPLP_3               = 0xa7a0,
++    CARD_INTEL_RPLP_4               = 0xa7a1,
++    CARD_INTEL_A770M                = 0x5690,
++    CARD_INTEL_A730M                = 0x5691,
++    CARD_INTEL_A550M                = 0x5692,
++    CARD_INTEL_A370M                = 0x5693,
++    CARD_INTEL_A350M                = 0x5694,
++    CARD_INTEL_A770                 = 0x56a0,
++    CARD_INTEL_A750                 = 0x56a1,
++    CARD_INTEL_A580                 = 0x56a2,
++    CARD_INTEL_A380                 = 0x56a5,
++    CARD_INTEL_A310                 = 0x56a6,
++    CARD_INTEL_MTL_1                = 0x7d40,
++    CARD_INTEL_MTL_2                = 0x7d45,
++    CARD_INTEL_MTL_ARC              = 0x7d55,
++    CARD_INTEL_MTL_3                = 0x7d60,
++    CARD_INTEL_MTL_4                = 0x7dd5,
++    CARD_INTEL_ARLU                 = 0x7d41,
++    CARD_INTEL_ARLP_ARC             = 0x7d51,
++    CARD_INTEL_ARLS                 = 0x7d67,
++    CARD_INTEL_ARLP                 = 0x7dd1,
++    CARD_INTEL_LNL_1                = 0x6420,
++    CARD_INTEL_LNL_ARC              = 0x64a0,
++    CARD_INTEL_LNL_2                = 0x64b0,
+     CARD_INTEL_BMG_G21              = 0xe20b,
+ };
+ 

@@ -11,8 +11,8 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 56 files, numbered 0001 through 0060.
-Patches 0027, 0044, 0054, and 0057 are intentionally absent.
+The current Wine series contains 57 files, numbered 0001 through 0060.
+Patches 0027, 0044, and 0054 are intentionally absent.
 
 ## Applying the series
 
@@ -92,8 +92,8 @@ Apply them in sequence with the rest of the series.
   portal. Wine Explorer remains the fallback when the portal or policy refuses
   the request. Mailbox commit: `996524ab`. See
   `notes/ABLETON-WINE-SHOW-IN-EXPLORER.md`.
-- `0044`: reserved for the issue 57 parked-pane reblit work. No patch file is
-  shipped.
+- `0044`: reserved for the issue 57 parked-pane reblit work, which shipped
+  as patch 0056 instead. No patch file is shipped under this number.
 - `0045`: reject `RevokeDragDrop` for a window owned by another process. This
   prevents a foreign-process drop-target pointer from crashing Live when a
   WebView2 plugin editor closes. Ported from `giang17/wine` commit
@@ -174,24 +174,11 @@ Apply them in sequence with the rest of the series.
 - `0056`: gate parked DirectComposition reblits on window visibility.
   A parked WebView2 composition target kept stamping its stale
   composite over live siblings (issue 57).
-- `0057`: reserved for the Intel GPU identification work on the
-  `fix/intel-gpu` branch. No patch file is shipped here yet.
+- `0057`: identify Intel GPUs from Ice Lake through Lunar Lake, plus the
+  Arc A-series cards. Without an entry wined3d reports each of them as
+  "Intel(R) HD Graphics 4000", which Live 12 rejects for D3D11.
 - `0058`: fall back to the GDI present path for any frame whose
   present-time client rect disagrees with the captured destination
-  rect. The direct GL path (0055) y-flips against a client rect
-  re-queried on wined3d's CS thread, while the destination rect was
-  captured in the window's DPI context on the presenting thread; a
-  disagreement (DPI-awareness mismatch between the threads, or a
-  resize in flight) lands the frame low with a black band on top
-  (issue 100 and the niri report on PR 98). See
-  `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  rect (issue 100).
 - `0059`: query the y-flip's client rect in the window's DPI context.
-  0023 bracketed the present-time queries but missed
-  `wined3d_texture_translate_drawable_coords`, the one on the CS
-  thread; under fractional scaling the two disagreed and 0058's gate
-  fired on every frame. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
-- `0060`: implement `IFileOperation::DeleteItem`. Live's shared
-  deletion path (browser deletion, pruning old project backups) uses
-  it; Wine's method was an E_NOTIMPL stub. Deletes queue in the
-  existing copy engine and run through `SHFileOperation`, with
-  FOFX_RECYCLEONDELETE translated to FOF_ALLOWUNDO (PR 108).
+- `0060`: implement `IFileOperation::DeleteItem`.

@@ -51,6 +51,7 @@ f278d870c0424748a9d7a7cd5a6e9feb0837900e6382f4ee9d7cfe214c0b9fd5  0052-win32u-hi
 d32ac8ca55853e5488292d015e35a31d23744150e04af476742e781b58abc186  0053-winex11-export-the-app-minimum-tracking-size-as-PMin.patch
 5c97ce27e69ea1caffef5197a8e0f19893829c1c868e06c89e660352ad2919a1  0055-dxgi-prefer-GL-present-for-top-level-swapchain-devic.patch
 11dbb4c36378fc274e8eaa281e9bfbe43835bd0fae2682924d19aee318b673bb  0056-dxgi-gate-parked-dcomp-reblits-on-window-visibility.patch
+cb9c7fbf965bdab40dfe304c32ae7d40918bdd7b60cd2ab4858e2540a574bbe6  0057-wined3d-add-Intel-graphics-devices-from-Ice-Lake-to-.patch
 d41fba04c9682abf22abfcc147dbc3e1ed0b931f688d2736c60eca83670895f8  0058-wined3d-use-GDI-present-when-the-present-time-client.patch
 eb85bc3dc958314b299ebe45dc690ed3e9958d7beea82647513964ca0531a1b6  0059-wined3d-query-the-flip-s-client-rect-in-the-window-s.patch
 291b923e70cdc27453b2d16979823ad5aba3476b4fb1590b18620a730d029ca6  0060-shell32-implement-IFileOperation-DeleteItem.patch

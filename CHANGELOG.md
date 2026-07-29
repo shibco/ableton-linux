@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Live's GPU renderer is available again on Intel graphics newer than 2019
+  (issue 84, Wine patch 0057). Wine reported every Intel GPU from Ice Lake
+  through Lunar Lake, and the Arc A-series cards, as "Intel(R) HD Graphics
+  4000", a 2012 device that Live refuses to use, so the Preferences dialog
+  greyed out "Enable GPU Renderer". Wine now reports the real device names.
+  Reported by stickyfran.
+
 ## 2026.07.29.1
 
 - Live now uses its GPU renderer. Prefix setup removes the legacy
