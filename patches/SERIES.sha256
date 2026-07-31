@@ -54,6 +54,5 @@ d32ac8ca55853e5488292d015e35a31d23744150e04af476742e781b58abc186  0053-winex11-e
 d41fba04c9682abf22abfcc147dbc3e1ed0b931f688d2736c60eca83670895f8  0058-wined3d-use-GDI-present-when-the-present-time-client.patch
 eb85bc3dc958314b299ebe45dc690ed3e9958d7beea82647513964ca0531a1b6  0059-wined3d-query-the-flip-s-client-rect-in-the-window-s.patch
 291b923e70cdc27453b2d16979823ad5aba3476b4fb1590b18620a730d029ca6  0060-shell32-implement-IFileOperation-DeleteItem.patch
-0eca3953ebcfaed1b3eb77a76e3548e41d7a40a1c7da3bb92feb14be27fc08b3  0061-wined3d-describe-unlisted-GPUs-from-the-driver-s-own.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

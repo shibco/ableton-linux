@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 57 files, numbered 0001 through 0061.
+The current Wine series contains 56 files, numbered 0001 through 0060.
 Patches 0027, 0044, 0054, and 0057 are intentionally absent.
 
 ## Applying the series
@@ -195,10 +195,3 @@ Apply them in sequence with the rest of the series.
   it; Wine's method was an E_NOTIMPL stub. Deletes queue in the
   existing copy engine and run through `SHFileOperation`, with
   FOFX_RECYCLEONDELETE translated to FOF_ALLOWUNDO (PR 108).
-- `0061`: describe a GPU that is not in wined3d's device table using the name
-  the driver reports for itself, rather than guessing a card from the feature
-  level. Without it an RX 7900 XT is reported as "ATI Radeon HD 5600 Series"
-  and every Intel GPU newer than the table as "Intel(R) HD Graphics 4000" —
-  the string Live rejects, which is what 0035 worked around one device at a
-  time. The Vulkan back end already behaves this way. See issue 84 and
-  `notes/ABLETON-WINE-GPU-RENDERER.md`.
