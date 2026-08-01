@@ -13,7 +13,7 @@ entry.
 | # | Item | Certainty | Invasiveness | Projected result | Chance | Status |
 |---|---|---|---|---|---|---|
 | P0 | Bench baselines + harness automation | certain | none | evidence floor for everything | high | in progress |
-| P1 | Host `/dev/ntsync` launch gate | high | minimal | recovers a silently lost ~1 core / 4-50x sync on affected hosts | very high | not started |
+| P1 | Host `/dev/ntsync` launch gate | high | minimal | recovers a silently lost ~1 core / 4-50x sync on affected hosts | very high | in progress |
 | P2 | Run the written scheduling A/B | n/a (measurement) | none | decides the RR default, quantifies the inversion | high | not started |
 | P3 | Audio hardening F0-F8 + PipeWire host arm | high | medium | fixes the audible defect classes (issue 49, crackle, recording offsets) | high | not started |
 | P4 | Thread-priority chain (avrt de-stub, server RT band, retire whole-process RR, RTKit) | high problem / medium gain | high | audio outranks UI per thread; biggest dropout-margin lever at 64-128 frames | medium-high | not started |
@@ -43,6 +43,11 @@ entry.
   the four remaining sets and their baselines, the reference-set
   steady-state rows, and the optional `bench-workload.sh` ready-signal
   integration.
+
+- Wine patches from moonshot items land in `patches/performance/`;
+  apply-order wiring in `container-build.sh` and build-audit fingerprint
+  entries land with the first such patch. P1 produced no patch (launcher,
+  setup, and docs only).
 
 ## Ordering constraints
 

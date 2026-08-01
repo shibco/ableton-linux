@@ -5,6 +5,7 @@
 #            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
 #            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
 #            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
+#            ABLETON_NTSYNC_WARN=off (silence the missing-/dev/ntsync warning),
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
 #            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix).
 set -u
@@ -25,6 +26,32 @@ export WINE_X11_FORCE_OFFSCREEN_CLASS="${WINE_X11_FORCE_OFFSCREEN_CLASS:-Ableton
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
+
+# Without /dev/ntsync every NT wait becomes a wineserver round trip: measured
+# at ~45% of a core and ~9k context switches/s with Live idle, 4-50x slower
+# sync probes (notes/ABLETON-WINE-NTSYNC-REGRESSION.md). The build gates
+# ntsync into the binaries; this is the matching host check. Warns without
+# blocking.
+warn_missing_ntsync() {
+    local rel major minor
+    rel="$(uname -r)"
+    major="${rel%%.*}"
+    minor="${rel#*.}"; minor="${minor%%[!0-9]*}"
+    echo "ableton-live: no /dev/ntsync: every Windows wait round-trips wineserver and Live runs much slower (see TROUBLESHOOTING.md)" >&2
+    case "$major" in ''|*[!0-9]*) return ;; esac
+    if [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "${minor:-0}" -ge 14 ]; }; then
+        if command -v modinfo >/dev/null 2>&1 && modinfo -n ntsync >/dev/null 2>&1; then
+            echo "ableton-live: kernel $rel has the ntsync module unloaded; load it now: sudo modprobe ntsync (persist across boots: rerun setup-realtime.sh)" >&2
+        else
+            echo "ableton-live: kernel $rel provides no ntsync module; a distribution kernel with CONFIG_NTSYNC restores full speed" >&2
+        fi
+    else
+        echo "ableton-live: kernel $rel predates ntsync (Linux 6.14); a newer kernel restores full speed" >&2
+    fi
+}
+if [ "${ABLETON_NTSYNC_WARN:-on}" != off ] && [ ! -c /dev/ntsync ]; then
+    warn_missing_ntsync
+fi
 
 # Keep Wine's Mono/.NET and HTML-help hooks out of Live: nothing in the
 # stack loads them. winemenubuilder.exe is deliberately absent here: setup-prefix.sh

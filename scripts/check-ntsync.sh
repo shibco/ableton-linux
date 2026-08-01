@@ -35,7 +35,7 @@ if [ "$srv" -eq 0 ]; then
     echo "!! FAIL: ntsync not compiled in (no linux/ntsync.h at build time); every wait is a wineserver round trip" >&2
     exit 1
 fi
-[ -c /dev/ntsync ] || echo "-- note: no /dev/ntsync (kernel < 6.14?); checking fallback semantics only"
+[ -c /dev/ntsync ] || echo "-- note: no /dev/ntsync (kernel < 6.14, or module unloaded; try sudo modprobe ntsync); checking fallback semantics only"
 
 mkdir -p "$WINEPREFIX"
 work="$(mktemp -d /tmp/check-ntsync.XXXXXX)"

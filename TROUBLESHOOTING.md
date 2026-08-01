@@ -101,6 +101,27 @@ Start Live and enable **Show Link Toggle** and Link again. See
 [Ableton Link diagnostics](notes/ABLETON-WINE-LINK.md) if peers still do not
 appear.
 
+## Live is slow and wineserver uses a full CPU core
+
+Without `/dev/ntsync`, every Windows synchronization wait becomes a
+wineserver round trip: measured at about 45 percent of one core and 9,000
+context switches per second with Live idle
+([details](notes/ABLETON-WINE-NTSYNC-REGRESSION.md)). The launcher warns at
+startup when the device is missing; `ls /dev/ntsync` checks by hand.
+
+`ntsync` ships in Linux 6.14 and newer. On a 6.14+ kernel, load the module
+and make the load permanent:
+
+```bash
+sudo modprobe ntsync
+echo ntsync | sudo tee /etc/modules-load.d/90-ableton-ntsync.conf
+```
+
+`setup-realtime.sh` installs the same drop-in. On kernels older than 6.14,
+or built without `CONFIG_NTSYNC`, move to a distribution kernel that
+provides the module. Relaunch Live to verify: the warning is gone. From a
+repository checkout, `./scripts/check-ntsync.sh` runs the full probe.
+
 ## Audio latency remains high
 
 PipeWire 1.6 or newer can match its graph quantum to PipeASIO's buffer. Check

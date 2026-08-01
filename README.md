@@ -36,6 +36,8 @@ You need an x86-64 Linux system that meets Ableton Live's hardware requirements.
 
 Additionally, you need:
 
+- Linux 6.14 or newer with the `ntsync` module; older kernels work with a
+  large performance loss (the launcher warns when `/dev/ntsync` is missing)
 - glibc 2.35 or newer
 - PipeWire 0.3.56 or newer (we recommend 1.6 or newer for audio performance)
 - GStreamer with its base and good plugin sets (for mp3 and video import)
