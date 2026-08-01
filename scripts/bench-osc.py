@@ -20,10 +20,14 @@ args..." rows, awk-friendly. Environment: ABL_BENCH_OSC_SEND (default
 19001), ABL_BENCH_OSC_RECV (default 19002).
 """
 import os
+import signal
 import socket
 import struct
 import sys
 import time
+
+# dump is routinely piped into head/grep; die quietly when the pipe closes.
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 SEND_PORT = int(os.environ.get("ABL_BENCH_OSC_SEND", 19001))
 RECV_PORT = int(os.environ.get("ABL_BENCH_OSC_RECV", 19002))

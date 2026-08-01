@@ -14,7 +14,7 @@ entry.
 |---|---|---|---|---|---|---|
 | P0 | Bench baselines + harness automation | certain | none | evidence floor for everything | high | in progress |
 | P1 | Host `/dev/ntsync` launch gate | high | minimal | recovers a silently lost ~1 core / 4-50x sync on affected hosts | very high | in progress |
-| P2 | Run the written scheduling A/B | n/a (measurement) | none | decides the RR default, quantifies the inversion | high | not started |
+| P2 | Run the written scheduling A/B | n/a (measurement) | none | decides the RR default, quantifies the inversion | high | in progress |
 | P3 | Audio hardening F0-F8 + PipeWire host arm | high | medium | fixes the audible defect classes (issue 49, crackle, recording offsets) | high | not started |
 | P4 | Thread-priority chain (avrt de-stub, server RT band, retire whole-process RR, RTKit) | high problem / medium gain | high | audio outranks UI per thread; biggest dropout-margin lever at 64-128 frames | medium-high | not started |
 | P5 | Idle-thread trace, then APC/alertable fast path | high cost / medium mechanism | high | 30-40% idle core to under 5%, server churn cut | medium | not started |
@@ -44,6 +44,14 @@ entry.
   steady-state rows, and the optional `bench-workload.sh` ready-signal
   integration.
 
+- P2 low-core arms ran 2026-08-02: on a 4-CPU cpuset, whole-process RR
+  produced zero xruns idle and playing where `ABLETON_RT=off` produced 242
+  and 228, so the launcher default stands; the same arm started Live about
+  six times slower there, which is the cost P4's narrowing targets. Full
+  rows: `notes/FINDINGS-RT-AB-2026-08-02.md`. Still open in P2: the
+  wineserver `chrt -f` boost arm (needs root), the narrowed arm (needs
+  P4), loaded-set re-runs (need the reference set), and a many-core
+  off-pair.
 - Wine patches from moonshot items land in `patches/performance/`;
   apply-order wiring in `container-build.sh` and build-audit fingerprint
   entries land with the first such patch. P1 produced no patch (launcher,
