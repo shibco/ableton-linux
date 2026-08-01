@@ -39,3 +39,15 @@ timestamp,tag,scenario,iteration,warm_start,metric,seconds,live_version,live_bui
 2026-08-01T21:21:09Z,baseline,00-empty.als,1,no,vst3_create:SpliceAbletonLive,0.007,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
 2026-08-01T21:21:09Z,baseline,00-empty.als,1,no,plugin_scan,7.530,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
 2026-08-01T21:21:09Z,baseline,00-empty.als,1,no,wall_to_quiet,20.0,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:15:59Z,p3-verify/f0,startup,1,no,startup_to_audio_open,4.995,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:15:59Z,p3-verify/f0,startup,1,no,startup_to_first_doc,5.035,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:15:59Z,p3-verify/f0,startup,1,no,max_boot,11.285,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:15:59Z,p3-verify/f0,startup,1,no,vst3_create:SpliceAbletonLive,0.005,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:15:59Z,p3-verify/f0,startup,1,no,plugin_scan,10.484,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:15:59Z,p3-verify/f0,startup,1,no,wall_to_quiet,18.0,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:16:56Z,p3-verify/f0-repo,startup,1,no,startup_to_audio_open,4.622,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:16:56Z,p3-verify/f0-repo,startup,1,no,startup_to_first_doc,4.660,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:16:56Z,p3-verify/f0-repo,startup,1,no,max_boot,10.915,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:16:56Z,p3-verify/f0-repo,startup,1,no,vst3_create:SpliceAbletonLive,0.004,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:16:56Z,p3-verify/f0-repo,startup,1,no,plugin_scan,10.065,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1
+2026-08-01T23:16:56Z,p3-verify/f0-repo,startup,1,no,wall_to_quiet,16.0,12.4.3,2026-07-07_e3d8be4d07,2026.08.01.1

@@ -101,6 +101,33 @@ Start Live and enable **Show Link Toggle** and Link again. See
 [Ableton Link diagnostics](notes/ABLETON-WINE-LINK.md) if peers still do not
 appear.
 
+## Audio plays at the wrong speed
+
+A forced PipeWire quantum (the graph's buffer size in frames) that
+disagrees with PipeASIO's buffer size makes Live play too fast or too slow
+with a stepping artifact. The quantum arbitration is last-change-wins: a
+global `clock.force-quantum`, or another client's `node.force-quantum`,
+outranks the driver's request, and
+`clock.min-quantum`/`clock.max-quantum` play no part. The launcher warns
+at startup when a global forced quantum disagrees with the configured
+buffer size.
+
+Check for a global forced quantum, then clear it:
+
+```bash
+pw-metadata -n settings 0 clock.force-quantum
+pw-metadata -n settings 0 clock.force-quantum 0
+```
+
+A forced quantum set by another application (pipewire-jack writes one when
+`jack.global-buffer-size` is set) persists until the PipeWire daemon
+restarts, so it survives suspend and disappears on reboot. As an interim
+workaround, `PIPEASIO_FOLLOW_DEVICE_CLOCK=on` makes the driver adopt the
+graph quantum. Do not set `PIPEASIO_PREFERRED_BUFFERSIZE` to a size that is
+not a power of two: the driver currently replaces such values with 1024 and
+makes the mismatch worse. From a repository checkout,
+`./scripts/audio-report.sh` collects the full picture for an issue report.
+
 ## Live is slow and wineserver uses a full CPU core
 
 Without `/dev/ntsync`, every Windows synchronization wait becomes a

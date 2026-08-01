@@ -14,8 +14,11 @@ unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
-# Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
-export WINEDEBUG="${WINEDEBUG:--all}"
+# Disable Wine debug logging (fixme spam from the D3D poll loop stalls Live's
+# UI thread), but keep PipeASIO's warnings and errors (channel asio): they
+# name audio faults such as a lost quantum negotiation, and the session log
+# below captures them.
+export WINEDEBUG="${WINEDEBUG:--all,warn+asio,err+asio}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
 # M4L child visibility otherwise makes winex11 detach and reattach Live's whole
@@ -26,6 +29,18 @@ export WINE_X11_FORCE_OFFSCREEN_CLASS="${WINE_X11_FORCE_OFFSCREEN_CLASS:-Ableton
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
+
+# Session log: capture launcher warnings and Wine/driver stderr (WINEDEBUG
+# above keeps that to warnings and errors) so audio faults stay inspectable
+# after the fact; scripts/audio-report.sh bundles the tail. Rotation keeps
+# the last three launches.
+ABLETON_SESSION_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/ableton-wine/session.log"
+if mkdir -p "$(dirname "$ABLETON_SESSION_LOG")" 2>/dev/null; then
+    [ -f "$ABLETON_SESSION_LOG.1" ] && mv -f "$ABLETON_SESSION_LOG.1" "$ABLETON_SESSION_LOG.2"
+    [ -f "$ABLETON_SESSION_LOG" ] && mv -f "$ABLETON_SESSION_LOG" "$ABLETON_SESSION_LOG.1"
+    echo "== ableton-live session $(date -u +%FT%TZ) runtime $(basename "$WINE_ROOT")" > "$ABLETON_SESSION_LOG"
+    exec 2> >(tee -a "$ABLETON_SESSION_LOG" >&2)
+fi
 
 # Without /dev/ntsync every NT wait becomes a wineserver round trip: measured
 # at ~45% of a core and ~9k context switches/s with Live idle, 4-50x slower
@@ -51,6 +66,22 @@ warn_missing_ntsync() {
 }
 if [ "${ABLETON_NTSYNC_WARN:-on}" != off ] && [ ! -c /dev/ntsync ]; then
     warn_missing_ntsync
+fi
+
+# Preflight for the issue #49 class: a global forced quantum in PipeWire's
+# settings metadata outranks every node request (arbitration is
+# last-change-wins), and a disagreement with the ASIO buffer size makes
+# playback run at the wrong speed. See TROUBLESHOOTING.md.
+if command -v pw-metadata >/dev/null 2>&1; then
+    pin="$(timeout 3 pw-metadata -n settings 0 clock.force-quantum 2>/dev/null \
+           | sed -n "s/.*value:'\([0-9][0-9]*\)'.*/\1/p" | head -n 1)"
+    if [ -n "${pin:-}" ] && [ "$pin" -gt 0 ] 2>/dev/null; then
+        buf="${PIPEASIO_PREFERRED_BUFFERSIZE:-$(sed -n 's/^ *buffer_size *= *\([0-9]*\).*$/\1/p' \
+              "${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini" 2>/dev/null | head -n 1)}"
+        if [ "$pin" != "${buf:-256}" ]; then
+            echo "ableton-live: PipeWire pins the graph quantum at $pin (clock.force-quantum) while the ASIO buffer is ${buf:-256}: audio can play at the wrong speed; clear it with: pw-metadata -n settings 0 clock.force-quantum 0 (see TROUBLESHOOTING.md)" >&2
+        fi
+    fi
 fi
 
 # Keep Wine's Mono/.NET and HTML-help hooks out of Live: nothing in the

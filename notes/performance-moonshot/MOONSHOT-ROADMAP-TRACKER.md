@@ -15,7 +15,7 @@ entry.
 | P0 | Bench baselines + harness automation | certain | none | evidence floor for everything | high | in progress |
 | P1 | Host `/dev/ntsync` launch gate | high | minimal | recovers a silently lost ~1 core / 4-50x sync on affected hosts | very high | in progress |
 | P2 | Run the written scheduling A/B | n/a (measurement) | none | decides the RR default, quantifies the inversion | high | in progress |
-| P3 | Audio hardening F0-F8 + PipeWire host arm | high | medium | fixes the audible defect classes (issue 49, crackle, recording offsets) | high | not started |
+| P3 | Audio hardening F0-F8 + PipeWire host arm | high | medium | fixes the audible defect classes (issue 49, crackle, recording offsets) | high | in progress |
 | P4 | Thread-priority chain (avrt de-stub, server RT band, retire whole-process RR, RTKit) | high problem / medium gain | high | audio outranks UI per thread; biggest dropout-margin lever at 64-128 frames | medium-high | not started |
 | P5 | Idle-thread trace, then APC/alertable fast path | high cost / medium mechanism | high | 30-40% idle core to under 5%, server churn cut | medium | not started |
 | P6 | Present path finishing (reblit timers, popup GL, flush throttle) | high waste | medium-high | idle pane damage near zero, popups off the copy path | medium-high | not started |
@@ -52,6 +52,14 @@ entry.
   wineserver `chrt -f` boost arm (needs root), the narrowed arm (needs
   P4), loaded-set re-runs (need the reference set), and a many-core
   off-pair.
+- P3 started 2026-08-02 with F0 from the plan of record
+  (`notes/ABLETON-WINE-PIPEASIO-CRACKLE.md`, ported from
+  `fixes/audio-hardening` with a status addendum): launcher session log,
+  driver warnings kept visible, startup pin warning,
+  `scripts/audio-report.sh`, and pipeasio patch 0003 correcting the
+  mismatch warning text. F6 was already closed by P1; F4 as written is
+  rejected by the P2 measurement and folds into P4. Next: F2 (patch 0004),
+  F1 (patch 0005), F8. Driver patches need a container build to ship.
 - Wine patches from moonshot items land in `patches/performance/`;
   apply-order wiring in `container-build.sh` and build-audit fingerprint
   entries land with the first such patch. P1 produced no patch (launcher,

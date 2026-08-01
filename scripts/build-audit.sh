@@ -141,6 +141,7 @@ FINGERPRINTS='
 0064|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_open_folder
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
+pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-quantum-arbitration
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
 STAMP_ONLY='
