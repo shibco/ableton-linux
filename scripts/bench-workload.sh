@@ -164,10 +164,20 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 quit_live() {
     "$WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 || true
     for _ in $(seq 1 15); do
-        pgrep -f "Ableton Liv[e].*\.exe" >/dev/null 2>&1 || return 0
+        pgrep -f "Ableton Liv[e].*\.exe" >/dev/null 2>&1 || break
         sleep 2
     done
-    warn "Live still running 30 s after wineserver -k"
+    if pgrep -f "Ableton Liv[e].*\.exe" >/dev/null 2>&1; then
+        warn "Live still running 30 s after wineserver -k"
+        return
+    fi
+    # Wait for the server itself to finish exiting: launching the next
+    # iteration against a dying wineserver kills Live before it logs.
+    for _ in $(seq 1 10); do
+        pgrep -f "$WINE_ROOT.*bin/wineserver" >/dev/null 2>&1 || return 0
+        sleep 1
+    done
+    warn "wineserver still up 10 s after Live exited"
 }
 
 for it in $(seq 1 "$iterations"); do
