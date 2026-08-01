@@ -1,9 +1,9 @@
 # Performance moonshot roadmap tracker
 
 Started 2026-08-01. This is the working tracker for the implementation list
-in [SYNTHESIS-2026-08-01.md](SYNTHESIS-2026-08-01.md), which holds the full
-entry for each item: scope, mechanism, evidence, first step, and
-verification. Update the Status column as work lands. A performance claim
+in `SYNTHESIS-2026-08-01.md`, kept alongside this tracker and not yet
+committed; that document holds the full entry for each item: scope,
+mechanism, evidence, first step, and verification. Update the Status column as work lands. A performance claim
 counts as done only with a committed before/after pair from
 `scripts/bench-run.sh`; every new patch needs its build-audit fingerprint
 entry.
@@ -36,11 +36,13 @@ entry.
   runs 2026-08-01. The abl-bench-m4l OSC device (`bench/m4l/`) is built
   and verified inside Live the same day: ready, playing, pong, transport
   control, and CPU telemetry in percent; `bench-run.sh` now fills
-  `dsp_load_pct` from it and records the running node quantum. Sets live
-  as Live project folders `bench/<name>/<name>.als`; `00-empty` is saved.
-  Still open: the four remaining sets, baseline rows under reference
-  conditions, rows committed, and the optional `bench-workload.sh`
-  ready-signal integration.
+  `dsp_load_pct` from it and records the running node quantum. Sets live as Live
+  project folders under `bench/`; `00-empty Project` is saved and its
+  baseline is committed at 2a4f4fc: workload medians for startup and set
+  load, plus a 300 s steady-state idle row with zero xruns. Still open:
+  the four remaining sets and their baselines, the reference-set
+  steady-state rows, and the optional `bench-workload.sh` ready-signal
+  integration.
 
 ## Ordering constraints
 

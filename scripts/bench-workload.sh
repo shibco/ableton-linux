@@ -4,7 +4,7 @@
 # microsecond timestamps.
 #
 # Usage: scripts/bench-workload.sh <change-tag> [options]
-#   e.g. scripts/bench-workload.sh before/apc-fastpath --set bench/sets/30-m4l.als -n 3
+#   e.g. scripts/bench-workload.sh before/apc-fastpath --set "bench/00-empty Project/00-empty.als" -n 3
 #
 # Options:
 #   --set FILE.als    open this set (scenario = file basename); default is a

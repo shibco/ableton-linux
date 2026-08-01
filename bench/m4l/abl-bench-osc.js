@@ -77,10 +77,10 @@ function applyCpuPeriod() {
     }
 }
 
-// Two entry paths for incoming OSC. With [udpreceive] wired straight in,
-// the OSC address arrives as the Max message selector and lands in
-// anything(). With [prepend osc] between them (the reliable wiring), the
-// message arrives as "osc <address> <args...>" and lands in osc().
+// Incoming OSC. The device wires [udpreceive] straight into this object,
+// so the OSC address arrives as the Max message selector and lands in
+// anything(). osc() is an alternate entry for a [prepend osc] wiring:
+// there the message arrives as "osc <address> <args...>".
 function anything() {
     dispatch(messagename, arrayfromargs(arguments));
 }

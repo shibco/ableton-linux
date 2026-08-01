@@ -8,8 +8,8 @@ state, and the CPU meter on UDP 19002, and takes transport commands on UDP
 
 Files here:
 
-- `abl-bench-m4l.amxd` — the device. Drag it onto a track in each set.
-- `abl-bench-osc.js` — the device's logic. The device loads it from this
+- `abl-bench-m4l.amxd`: the device. Drag it onto a track in each set.
+- `abl-bench-osc.js`: the device's logic. The device loads it from this
   folder at run time; the device is deliberately not frozen, so edits to
   the script reach every set on the next load.
 
@@ -67,7 +67,7 @@ Reports, device to harness, UDP 19002:
 
 | Address | Meaning |
 |---|---|
-| `/abl/bench/ready 0\|1` | Live API up; 1 means the CPU meter read at init |
+| `/abl/bench/ready 0\|1` | Live API up; 1 means the CPU meter was readable at init |
 | `/abl/bench/playing 0\|1` | transport state, on every change and once at init |
 | `/abl/bench/cpu AVG PEAK` | CPU meter values in percent; -1 -1 means not yet readable |
 | `/abl/bench/pong [args]` | ping echo |

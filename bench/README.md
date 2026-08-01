@@ -41,8 +41,9 @@ Each script header documents its full option list.
 
 - A pair is two rows tagged `before/<change>` and `after/<change>`,
   recorded on one machine under the same conditions.
-- Steady-state reference conditions: `bench/sets/reference.als` open,
-  48 kHz at 256 frames, the same window size and position for both rows.
+- Steady-state reference conditions: the reference set open
+  (`bench/reference Project/reference.als`, still to save), 48 kHz at
+  256 frames, the same window size and position for both rows.
 - Evidence rows use the default 300 s xrun window. `--quick` rows use a
   60 s window and are for iteration only.
 - Run workload scenarios with `-n 3` or more and compare medians. The
@@ -55,7 +56,7 @@ Each script header documents its full option list.
 ## Recording a release baseline
 
 Record these rows once per release, before any change. Steps 1 and 2 need
-the benchmark sets from the next section.
+the reference set from the next section.
 
 1. Open the reference set, stop the transport, and run
    `scripts/bench-run.sh baseline/idle`.
@@ -75,11 +76,11 @@ never edit it again: a changed workload is a new file.
 
 | Set | Exercises | State |
 |---|---|---|
-| `00-empty Project/` | bare startup and document exchange | saved 2026-08-01 |
-| `10-stock-synths/` | stock instruments and effects only | to save |
-| `20-vst/` | third-party VST3 instruments and effects | to save |
-| `30-m4l/` | Max for Live devices | to save |
-| `reference/` | the steady-state set for `results.csv` rows | to save |
+| `00-empty` | bare startup and document exchange | saved 2026-08-01 |
+| `10-stock-synths` | stock instruments and effects only | to save |
+| `20-vst` | third-party VST3 instruments and effects | to save |
+| `30-m4l` | Max for Live devices | to save |
+| `reference` | the steady-state set for `results.csv` rows | to save |
 
 Pick third-party plugins that most users have installed, and record their
 names and versions in this section when the set lands. To time one
@@ -88,8 +89,8 @@ its load time is then that set's `set_load` row.
 
 Every set also carries the `abl-bench-m4l` control device on a track: it
 reports readiness, transport state, and the CPU meter over OSC, and takes
-transport commands, so runs need no hands on Live. Files, protocol, and
-rebuild recipe: [m4l/README.md](m4l/README.md).
+transport commands, so runs need no operator input in Live. Files,
+protocol, and rebuild recipe: [m4l/README.md](m4l/README.md).
 
 ## Schemas
 

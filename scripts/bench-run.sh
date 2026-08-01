@@ -15,9 +15,9 @@
 #   --xruns N    operator-entered xrun count; skips the pw-top capture
 #   --dsp N      Live DSP load meter reading (same as the positional argument)
 #
-# Reference conditions (identical for both rows of a pair): the committed
-# reference set, 48 kHz / 256 frames, fixed window geometry, one machine per
-# comparison. The unit of evidence is the pair — two rows tagged before/<change>
+# Reference conditions (identical for both rows of a pair): the reference
+# set (bench/README.md), 48 kHz / 256 frames, fixed window geometry, one
+# machine per comparison. The unit of evidence is the pair — two rows tagged before/<change>
 # and after/<change>, committed with the change; no performance claim without one.
 #
 # Automated metrics: wined3d_cs %CPU, Live whole-process %CPU, and the busiest
