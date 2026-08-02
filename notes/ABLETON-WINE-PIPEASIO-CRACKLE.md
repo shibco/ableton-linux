@@ -348,5 +348,31 @@ it was written 2026-07-26. State of the plan as of this addendum:
   day: with `PIPEASIO_PREFERRED_BUFFERSIZE=192` the driver offers
   192/192/192, Live runs it, and the graph carries the node at quantum
   192. C2 is closed.
-- Next per the Order section: F1 (pipeasio patch 0005), then F8. G1
-  through G4 stay open.
+- F1 landed 2026-08-02 as pipeasio patch 0005, all four layers. Predict:
+  the audio side binds the settings metadata, tracks the global
+  clock.force-quantum, and GetBufferSize offers a non-zero value so the
+  host builds matching buffers from the start. Adopt: the config watcher
+  generalizes the follow-device block; after two consecutive polls at the
+  same foreign quantum it writes node.force-quantum to 0 once (never
+  re-asserts), stores the observed size, and requests kAsioResetRequest,
+  capped at 3 adoptions a minute. Fail safe: the data loop mutes published
+  output and zeroes the input while the sizes disagree, one warning per
+  episode; PIPEASIO_ALLOW_QUANTUM_MISMATCH=on restores the old behaviour
+  and disables adoption. Buffers: the port buffer parameter ranges up to
+  8192 frames (the default clock.quantum-limit) so a larger foreign
+  quantum has a buffer to land in. The reset path logs the
+  sendNotification returns, which answers G1 on first occurrence. C1 is
+  closed pending runtime verification.
+- F1 verified in production 2026-08-02, both scenarios. Global pin before
+  launch (clock.force-quantum 384): the driver offered 384/384/384, Live
+  built matching buffers, the node ran at 384, and no mismatch warning
+  fired. Pin changed mid-run to 768: one mute warning with the converge
+  marker, adoption, a host rebuild to 768/768/768, the node at 768, and
+  telemetry running throughout; clearing the pin left the graph stable at
+  the re-established node force. G1 is answered yes by the observed
+  rebuild: Live 12.4.3 services kAsioResetRequest while running. C1 is
+  closed. One instrumentation note: the driver's unix-side messages reach
+  the session log with their own `[pipeasio]` prefix, and its wine TRACE
+  class did not surface even with `trace+asio`, so the G1 log line is
+  invisible in the field; the behavioural answer stands.
+- Next per the Order section: F8. G2 through G4 stay open.

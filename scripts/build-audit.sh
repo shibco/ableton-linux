@@ -143,6 +143,7 @@ pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-quantum-arbitration
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-any-buffer-size
+pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-quantum-converge
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
 STAMP_ONLY='

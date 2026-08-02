@@ -61,8 +61,14 @@ entry.
   rejected by the P2 measurement and folds into P4. F2 landed 2026-08-02
   as pipeasio patch 0004: any buffer size in [16, 8192] is accepted, every
   adjustment is logged, nothing is substituted silently; verified end to
-  end at 192 the same day. Next: F1 (patch 0005), F8. Driver patches need
-  a container build to ship.
+  end at 192 the same day. F1 landed the same day as pipeasio patch 0005:
+  predict (offer a global forced quantum from GetBufferSize), adopt
+  (two-poll watcher convergence with a per-minute cap), mute-on-mismatch
+  with PIPEASIO_ALLOW_QUANTUM_MISMATCH=on as the escape hatch, and port
+  buffers sized to the quantum limit; verified in production the same day
+  (pre-launch pin 384 predicted cleanly, mid-run pin 768 converged with
+  one mute episode; G1 answered yes). Next: F8. Driver patches need a
+  container build to ship.
 - Wine patches from moonshot items land in `patches/performance/`;
   apply-order wiring in `container-build.sh` and build-audit fingerprint
   entries land with the first such patch. P1 produced no patch (launcher,
