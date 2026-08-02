@@ -339,5 +339,14 @@ it was written 2026-07-26. State of the plan as of this addendum:
   xruns idle and 228 playing with `ABLETON_RT=off` on a four-CPU cpuset,
   against zero with the RR default. F4 becomes: retire whole-process RR
   only when F3's per-thread realtime beats those rows (moonshot P4).
-- Next per the Order section: F2 (pipeasio patch 0004), then F1 (patch
-  0005), then F8. G1 through G4 stay open.
+- F2 landed 2026-08-02 as pipeasio patch 0004: both validation sites
+  (`src/config.c` validate, `src/asio.c` environment override) accept any
+  size inside [16, 8192]; out-of-range values clamp to the nearest bound
+  and unreadable values fall back to the default, each with a logged
+  message naming the original value. The power-of-two test is gone;
+  powers of two remain the seeded default. Verified end to end the same
+  day: with `PIPEASIO_PREFERRED_BUFFERSIZE=192` the driver offers
+  192/192/192, Live runs it, and the graph carries the node at quantum
+  192. C2 is closed.
+- Next per the Order section: F1 (pipeasio patch 0005), then F8. G1
+  through G4 stay open.

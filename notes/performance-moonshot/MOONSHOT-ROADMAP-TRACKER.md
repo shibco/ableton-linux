@@ -58,8 +58,11 @@ entry.
   driver warnings kept visible, startup pin warning,
   `scripts/audio-report.sh`, and pipeasio patch 0003 correcting the
   mismatch warning text. F6 was already closed by P1; F4 as written is
-  rejected by the P2 measurement and folds into P4. Next: F2 (patch 0004),
-  F1 (patch 0005), F8. Driver patches need a container build to ship.
+  rejected by the P2 measurement and folds into P4. F2 landed 2026-08-02
+  as pipeasio patch 0004: any buffer size in [16, 8192] is accepted, every
+  adjustment is logged, nothing is substituted silently; verified end to
+  end at 192 the same day. Next: F1 (patch 0005), F8. Driver patches need
+  a container build to ship.
 - Wine patches from moonshot items land in `patches/performance/`;
   apply-order wiring in `container-build.sh` and build-audit fingerprint
   entries land with the first such patch. P1 produced no patch (launcher,

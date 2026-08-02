@@ -63,3 +63,4 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
 0cb3ee8b263366cc6a352517ab228e1d3198a61f48fa906b19652cb4c2b9c97c  pipeasio/0003-audio-correct-the-quantum-mismatch-warning-text.patch
+1c29e4021184dff178914b74d07d28d4bffc2891ea8cba789f075ed9fb375af0  pipeasio/0004-accept-any-buffer-size-in-range-log-every-adjustment.patch
