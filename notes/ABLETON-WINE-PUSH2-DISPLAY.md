@@ -144,6 +144,9 @@ Do not leave the override enabled when using a Wine runtime without patch
   loop.
 - Disconnect and `NO_DEVICE` recovery inside the bridge remain untested.
 - `Push3.exe` uses a different libusb surface and is outside this patch.
+  [Patch 0065](../patches/0065-libusb-1.0-extend-the-host-bridge-for-Push-3.patch)
+  extends the bridge for it; see
+  [ABLETON-WINE-PUSH3-USB.md](ABLETON-WINE-PUSH3-USB.md).
 - A Live process that started without MIDI ports does not discover them later.
 - Raw traces can contain the controller serial number. Do not publish them.
 
