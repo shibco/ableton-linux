@@ -65,13 +65,13 @@ bridge_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/libusb-1.0.so"
 portal_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/comdlg32.so"
 i386_bridge_pe="$PREFIX_ROOT/lib/wine/i386-windows/libusb-1.0.dll"
 i386_bridge_unix="$PREFIX_ROOT/lib/wine/i386-unix/libusb-1.0.so"
-[ -f "$bridge_pe" ] || { echo "!! Push 2 bridge PE missing: $bridge_pe" >&2; exit 1; }
-[ -f "$bridge_unix" ] || { echo "!! Push 2 bridge Unix side missing: $bridge_unix" >&2; exit 1; }
+[ -f "$bridge_pe" ] || { echo "!! Push bridge PE missing: $bridge_pe" >&2; exit 1; }
+[ -f "$bridge_unix" ] || { echo "!! Push bridge Unix side missing: $bridge_unix" >&2; exit 1; }
 [ -f "$portal_unix" ] || { echo "!! comdlg32 (XDG portal) missing: $portal_unix" >&2; exit 1; }
-[ ! -e "$i386_bridge_pe" ] || { echo "!! Push 2 bridge unexpectedly built for i386: $i386_bridge_pe" >&2; exit 1; }
-[ ! -e "$i386_bridge_unix" ] || { echo "!! Push 2 bridge unexpectedly built for i386: $i386_bridge_unix" >&2; exit 1; }
+[ ! -e "$i386_bridge_pe" ] || { echo "!! Push bridge unexpectedly built for i386: $i386_bridge_pe" >&2; exit 1; }
+[ ! -e "$i386_bridge_unix" ] || { echo "!! Push bridge unexpectedly built for i386: $i386_bridge_unix" >&2; exit 1; }
 
-expected_exports=$'4 libusb_alloc_transfer\n10 libusb_cancel_transfer\n12 libusb_claim_interface\n16 libusb_close\n26 libusb_error_name\n32 libusb_exit\n40 libusb_free_device_list\n50 libusb_free_transfer\n72 libusb_get_device_descriptor\n74 libusb_get_device_list\n110 libusb_handle_events_timeout\n120 libusb_init\n132 libusb_open\n140 libusb_release_interface\n154 libusb_set_option\n161 libusb_submit_transfer'
+expected_exports=$'4 libusb_alloc_transfer\n8 libusb_bulk_transfer\n10 libusb_cancel_transfer\n12 libusb_claim_interface\n16 libusb_close\n26 libusb_error_name\n32 libusb_exit\n40 libusb_free_device_list\n50 libusb_free_transfer\n72 libusb_get_device_descriptor\n74 libusb_get_device_list\n110 libusb_handle_events_timeout\n116 libusb_hotplug_deregister_callback\n118 libusb_hotplug_register_callback\n120 libusb_init\n132 libusb_open\n140 libusb_release_interface\n154 libusb_set_option\n159 libusb_strerror\n161 libusb_submit_transfer'
 actual_exports="$(llvm-readobj --coff-exports "$bridge_pe" | awk '
     /^Export / { ordinal = ""; name = "" }
     /Ordinal:/ { ordinal = $2 }
@@ -79,7 +79,7 @@ actual_exports="$(llvm-readobj --coff-exports "$bridge_pe" | awk '
     /^}/ && name != "" { print ordinal, name }
 ')"
 if [ "$actual_exports" != "$expected_exports" ]; then
-    echo "!! Push 2 bridge export/ordinal mismatch" >&2
+    echo "!! Push bridge export/ordinal mismatch" >&2
     diff -u <(printf '%s\n' "$expected_exports") <(printf '%s\n' "$actual_exports") || true
     exit 1
 fi
