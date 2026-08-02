@@ -101,37 +101,24 @@ Start Live and enable **Show Link Toggle** and Link again. See
 [Ableton Link diagnostics](notes/ABLETON-WINE-LINK.md) if peers still do not
 appear.
 
-## Audio goes silent for a moment, or plays at the wrong speed
+## Audio cuts out for a few seconds, or plays at the wrong speed
 
-A forced PipeWire quantum (the graph's buffer size in frames) that
-disagrees with PipeASIO's buffer size mutes Live's audio, writes one
-warning to the session log, and the driver then adopts the foreign size
-and asks Live to rebuild its buffers; audio resumes within a few seconds
-at the new size. Releases before pipeasio patch 0005 play too fast or too
-slow with a stepping artifact instead, permanently. The quantum
-arbitration is last-change-wins: a global `clock.force-quantum`, or
-another client's `node.force-quantum`, outranks the driver's request, and
-`clock.min-quantum`/`clock.max-quantum` play no part. The launcher warns
-at startup when a global forced quantum disagrees with the configured
-buffer size, and a global force present at launch is adopted before Live
-builds its first buffers.
+Another audio application (usually a JACK one) told PipeWire to run at a
+different buffer size. Live mutes for a few seconds while the driver
+switches to that size, then audio comes back on its own. If it happens
+once, there is nothing to do.
 
-To check for a global forced quantum, then clear it:
+If it keeps happening, or audio plays too fast or too slow instead of
+coming back (releases up to 2026.08.01.1 do this), clear the stuck buffer
+size and restart Live:
 
 ```bash
-pw-metadata -n settings 0 clock.force-quantum
 pw-metadata -n settings 0 clock.force-quantum 0
 ```
 
-A forced quantum set by another application (pipewire-jack writes one when
-`jack.global-buffer-size` is set) persists until the PipeWire daemon
-restarts, so it survives suspend and disappears on reboot.
-`PIPEASIO_ALLOW_QUANTUM_MISMATCH=on` disables the muting and the adoption
-and keeps audio flowing at mismatched sizes, the old behaviour. Any buffer
-size from 16 to 8192 frames is accepted since pipeasio patch 0004; sizes
-outside that range clamp to the nearest bound with a logged message. From
-a repository checkout, `./scripts/audio-report.sh` collects the full
-picture for an issue report.
+If you still have problems, try rebooting. If they come back after that,
+run `./scripts/audio-report.sh` from a repository checkout and attach the
+output to an issue.
 
 ## Live is slow and wineserver uses a full CPU core
 
