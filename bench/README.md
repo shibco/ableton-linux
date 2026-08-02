@@ -16,7 +16,7 @@ For startup and load timings, close Live first; the workload tool launches
 and quits Live itself:
 
 ```
-scripts/bench-workload.sh before/<change> --set "bench/BenchmarkSets Project/LinuxDemoEmpty.als" -n 3
+scripts/bench-workload.sh before/<change> --set "bench/BenchmarkSets Project/Benchmark_Empty.als" -n 3
 ```
 
 Commit the appended rows together with the change they judge.
@@ -77,10 +77,11 @@ is a new file. The two plugin dependencies of the VSTs set are listed in
 
 | Set | Exercises | State |
 |---|---|---|
-| `LinuxDemoEmpty` | bare startup and document exchange | saved 2026-08-02 |
-| `LinuxDemoInbuilt` | stock instruments and effects only | saved 2026-08-02 |
-| `LinuxDemoVSTs` | third-party VST3 instruments | saved 2026-08-02 |
-| `LinuxDemoInbuiltMax4Live` | stock devices plus Max for Live | saved 2026-08-02 |
+| `Benchmark_Zero` | startup with no Max for Live device in the set | saved 2026-08-02 |
+| `Benchmark_Empty` | bare startup and document exchange | saved 2026-08-02 |
+| `Benchmark_Inbuilts` | stock instruments and effects only | saved 2026-08-02 |
+| `Benchmark_Max4Live` | stock devices plus Max for Live | saved 2026-08-02 |
+| `Benchmark_VSTs` | third-party VST3 instruments | saved 2026-08-02 |
 | `reference` | the steady-state set for `results.csv` rows | to save |
 
 Rows recorded before 2026-08-02 name the empty set `00-empty.als`; it is
@@ -88,11 +89,22 @@ the same set. To time one specific synth, plugin, or M4L patch, save it
 alone in its own small set; its load time is then that set's `set_load`
 row.
 
-Every set carries the `abl-bench-m4l` control device on a track: it
-reports readiness, transport state, and the CPU meter over OSC, and
-takes transport commands, so runs need no operator input in Live. The
-project readme shows the check that confirms the device is present.
-Files, protocol, and rebuild recipe: [m4l/README.md](m4l/README.md).
+Every set except `Benchmark_Zero` carries the `abl-bench-m4l` control
+device on a track: it reports readiness, transport state, and the CPU
+meter over OSC, and takes transport commands, so runs need no operator
+input in Live. The project readme shows the check that confirms the
+device is present. Files, protocol, and rebuild recipe:
+[m4l/README.md](m4l/README.md).
+
+`Benchmark_Zero` holds no Max for Live device at all, which is the point
+of it: it is the only set that measures Live without the Max runtime
+booting, so `Benchmark_Zero` against `Benchmark_Empty` is the cost of
+the control device itself. It costs the automation that device provides.
+On this set `bench-workload.sh` records no `max_boot` row, because Live
+never loads Max; every other metric it collects comes from Live's own log
+and is unaffected. `bench-run.sh` receives no CPU reports, so it warns
+and records `dsp_load_pct=NA` unless a reading is passed on the command
+line, and the transport has to be started by hand.
 
 ## Schemas
 
