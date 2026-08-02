@@ -1,0 +1,377 @@
+diff --git a/src/audio.c b/src/audio.c
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -70,7 +70,10 @@
+ #include <pipewire/extensions/metadata.h>
+ #include <spa/utils/json.h>
+ #include <spa/param/audio/format-utils.h>
++#include <spa/param/props.h>
+ #include <spa/pod/builder.h>
++#include <spa/pod/iter.h>
++#include <spa/pod/parser.h>
+ 
+ #include <errno.h>
+ #include <pthread.h>
+@@ -269,6 +272,19 @@
+ 
+ /* Opaque types backing audio.h. */
+ 
++/* One of the two devices we may be adjusting (see "Follower headroom"). */
++struct audio_hr_slot
++{
++    uint32_t         node; /* SPA_ID_INVALID = free */
++    struct pw_proxy *proxy;
++    struct spa_hook  listener;
++    char             clock_name[64];
++    int32_t          cur_headroom;
++    bool             probed;
++    bool             raised;
++    int32_t          prev;
++};
++
+ struct audio_client
+ {
+     char            *name;
+@@ -354,6 +370,20 @@
+      * puts the clock topology in the log for when it is not (C8). */
+     uint32_t chosen_node[2];
+     uint32_t warned_clock_pair[2];
++
++    /* Extra buffer room for two-device sessions.  When input and output
++     * are separate devices, one device sets the timing and PipeWire
++     * continuously adjusts the other to keep up.  That adjustment is
++     * silent while the adjusted device has spare buffer room, and
++     * crackles when it runs out (C8).  While such a session plays, we
++     * raise the spare room on the adjusted device; afterwards we put the
++     * old value back.  Sessions on one device are never touched. */
++    int32_t              hr_target; /* frames to guarantee; -1 disables */
++    struct spa_source   *hr_timer;
++    char                 hr_clock_rt[64]; /* timing clock name, audio-thread-written */
++    _Atomic uint32_t     hr_clock_gen;
++    uint64_t             hr_last_seen_nsec;
++    struct audio_hr_slot hr_slot[2];
+ };
+ 
+ struct audio_node_info
+@@ -407,6 +437,10 @@
+     .process = audio_on_process,
+ };
+ 
++/* Follower headroom (definitions after audio_report_clock_domains). */
++static void audio_hr_tick(void *data, uint64_t expirations);
++static void audio_hr_release(audio_client_t *c, int slot, bool restore);
++
+ /* Core and registry event forward declarations. */
+ 
+ static void audio_on_core_done(void *userdata, uint32_t id, int seq);
+@@ -454,6 +488,29 @@
+     c->our_node_id = SPA_ID_INVALID;
+     c->chosen_node[0] = c->chosen_node[1] = SPA_ID_INVALID;
+     c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
++    c->hr_slot[0].node = c->hr_slot[1].node = SPA_ID_INVALID;
++
++    /* How many frames of buffer room the second device of a two-device
++     * session is guaranteed.  Unset: 512.  "off" or "0": leave devices
++     * alone.  Other values are kept between 16 and 8192, with a message
++     * when the given value is outside that range. */
++    const char *hr_env = getenv("PIPEASIO_FOLLOWER_HEADROOM");
++    if (!hr_env)
++        c->hr_target = 512;
++    else if (!strcmp(hr_env, "off") || !strcmp(hr_env, "0"))
++        c->hr_target = -1;
++    else
++    {
++        long v = strtol(hr_env, NULL, 10);
++        if (v < 16)
++            v = 16;
++        if (v > 8192)
++            v = 8192;
++        if (v != atol(hr_env))
++            WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is outside 16..8192; using %ld\n", hr_env,
++                 v);
++        c->hr_target = (int32_t)v;
++    }
+ #ifndef PIPEASIO_AUDIO_UNIXLIB
+     atomic_init(&c->rt.ready, false);
+ #endif
+@@ -514,6 +571,19 @@
+     if (c->registry)
+         pw_registry_add_listener(c->registry, &c->registry_listener, &audio_registry_events, c);
+ 
++    /* Check every two seconds whether a two-device session needs its second
++     * device given more buffer room (and undo it when the session ends). */
++    if (c->hr_target > 0)
++    {
++        c->hr_timer = pw_loop_add_timer(pw_thread_loop_get_loop(c->loop), audio_hr_tick, c);
++        if (c->hr_timer)
++        {
++            struct timespec iv = {2, 0};
++            pw_loop_update_timer(pw_thread_loop_get_loop(c->loop), c->hr_timer, &iv, &iv,
++                                 false);
++        }
++    }
++
+     pw_thread_loop_unlock(c->loop);
+     audio_sync(c);
+     /* A second sync drains the "default" metadata's initial property burst:
+@@ -551,6 +621,19 @@
+     if (c->active)
+         audio_teardown_filter(c);
+ 
++    /* Put the raised buffer room back, and deliver that change while the
++     * connection is still open. */
++    if (c->loop && c->hr_timer)
++    {
++        pw_thread_loop_lock(c->loop);
++        audio_hr_release(c, 0, true);
++        audio_hr_release(c, 1, true);
++        pw_loop_destroy_source(pw_thread_loop_get_loop(c->loop), c->hr_timer);
++        c->hr_timer = NULL;
++        pw_thread_loop_unlock(c->loop);
++        audio_sync(c);
++    }
++
+     if (c->loop)
+     {
+         pw_thread_loop_lock(c->loop);
+@@ -1160,6 +1243,211 @@
+          cn ? cn->node_name : "?", pn ? pn->node_name : "?");
+ }
+ 
++/* ---- Follower headroom ---------------------------------------------------
++ * When Live's input and output are separate devices, each has its own
++ * sample clock.  PipeWire lets one device set the timing and continuously
++ * adjusts the other, called the follower, to keep it in step.  That
++ * adjustment is silent while the follower has spare buffer room to absorb
++ * timing wobble, and produces crackles when it runs out (C8 in the crackle
++ * note).  So: while a session plays across two devices, raise the
++ * follower's spare room (the ALSA property "api.alsa.headroom"), and put
++ * the old value back when the session ends or the devices change.  The
++ * property can be changed on a live node through its Props parameter;
++ * verified against PipeWire 1.6.8.  Sessions on one device are never
++ * touched.  PIPEASIO_FOLLOWER_HEADROOM picks the amount or turns this
++ * off. */
++
++/* Send a device node a new buffer-room value. */
++static void
++audio_hr_set(struct pw_proxy *proxy, int32_t frames)
++{
++    uint8_t                buf[256];
++    struct spa_pod_builder b;
++    struct spa_pod_frame   f_obj, f_struct;
++    spa_pod_builder_init(&b, buf, sizeof buf);
++    spa_pod_builder_push_object(&b, &f_obj, SPA_TYPE_OBJECT_Props, SPA_PARAM_Props);
++    spa_pod_builder_prop(&b, SPA_PROP_params, 0);
++    spa_pod_builder_push_struct(&b, &f_struct);
++    spa_pod_builder_string(&b, "api.alsa.headroom");
++    spa_pod_builder_int(&b, frames);
++    spa_pod_builder_pop(&b, &f_struct);
++    struct spa_pod *pod = spa_pod_builder_pop(&b, &f_obj);
++    if (pod)
++        pw_node_set_param((struct pw_node *)proxy, SPA_PARAM_Props, 0, pod);
++}
++
++/* Read a device's clock name and current buffer room out of its reply. */
++static void
++audio_hr_on_param(void *data, int seq, uint32_t id, uint32_t index, uint32_t next,
++                  const struct spa_pod *param)
++{
++    struct audio_hr_slot *s = data;
++    (void)seq;
++    (void)index;
++    (void)next;
++    if (id != SPA_PARAM_Props || !param)
++        return;
++    const struct spa_pod_prop *prop = spa_pod_find_prop(param, NULL, SPA_PROP_params);
++    if (!prop)
++        return; /* not an ALSA device: never marked probed, so never touched */
++    struct spa_pod_parser prs;
++    struct spa_pod_frame  f;
++    spa_pod_parser_pod(&prs, &prop->value);
++    if (spa_pod_parser_push_struct(&prs, &f) < 0)
++        return;
++    const char *key;
++    while (spa_pod_parser_get_string(&prs, &key) >= 0)
++    {
++        struct spa_pod *val;
++        if (spa_pod_parser_get_pod(&prs, &val) < 0)
++            break;
++        if (!strcmp(key, "clock.name") && spa_pod_is_string(val))
++        {
++            const char *cn = NULL;
++            if (spa_pod_get_string(val, &cn) >= 0 && cn)
++                snprintf(s->clock_name, sizeof s->clock_name, "%s", cn);
++        }
++        else if (!strcmp(key, "api.alsa.headroom") && spa_pod_is_int(val))
++            spa_pod_get_int(val, &s->cur_headroom);
++    }
++    s->probed = true;
++}
++
++static const struct pw_node_events audio_hr_node_events = {
++    PW_VERSION_NODE_EVENTS,
++    .param = audio_hr_on_param,
++};
++
++/* Stop tracking one device, optionally putting its old buffer room back. */
++static void
++audio_hr_release(audio_client_t *c, int i, bool restore)
++{
++    struct audio_hr_slot *s = &c->hr_slot[i];
++    if (s->node == SPA_ID_INVALID)
++        return;
++    if (s->proxy)
++    {
++        if (restore && s->raised)
++        {
++            struct audio_node_info *n = audio_find_node(c, s->node);
++            audio_hr_set(s->proxy, s->prev);
++            WARN("restored \"%s\" to %d frames of buffer room "
++                 "(pipeasio-follower-headroom)\n",
++                 n ? n->node_name : "?", s->prev);
++        }
++        spa_hook_remove(&s->listener);
++        pw_proxy_destroy(s->proxy);
++    }
++    memset(s, 0, sizeof *s);
++    s->node = SPA_ID_INVALID;
++}
++
++static void
++audio_hr_tick(void *data, uint64_t expirations)
++{
++    audio_client_t *c = data;
++    (void)expirations;
++
++    /* A stopped stream keeps its last clock timestamp; audio is only
++     * really running when the timestamp moved since the previous tick. */
++    uint64_t nsec    = c->last_clock_nsec;
++    bool     running = nsec != 0 && nsec != c->hr_last_seen_nsec;
++    c->hr_last_seen_nsec = nsec;
++
++    uint32_t                cap = c->chosen_node[0], pb = c->chosen_node[1];
++    struct audio_node_info *cn  = audio_find_node(c, cap);
++    struct audio_node_info *pn  = audio_find_node(c, pb);
++    bool                    two = cn && pn && cn->device_id != SPA_ID_INVALID
++               && pn->device_id != SPA_ID_INVALID && cn->device_id != pn->device_id;
++
++    uint32_t want[2] = {SPA_ID_INVALID, SPA_ID_INVALID};
++    if (two && running && c->hr_target > 0 && c->registry)
++    {
++        want[0] = cap;
++        want[1] = pb;
++    }
++
++    /* Let go of devices we no longer track (session ended, devices changed). */
++    for (int i = 0; i < 2; i++)
++    {
++        struct audio_hr_slot *s = &c->hr_slot[i];
++        if (s->node != SPA_ID_INVALID && s->node != want[0] && s->node != want[1])
++            audio_hr_release(c, i, true);
++    }
++    if (want[0] == SPA_ID_INVALID)
++        return;
++
++    /* Which clock is setting the timing right now (the audio thread wrote
++     * this; an odd or changed counter means the copy was half-finished). */
++    char     gclock[64];
++    uint32_t g1 = atomic_load(&c->hr_clock_gen);
++    memcpy(gclock, c->hr_clock_rt, sizeof gclock);
++    if ((g1 & 1) || g1 != atomic_load(&c->hr_clock_gen))
++        return; /* half-finished copy; try again next tick */
++    gclock[sizeof gclock - 1] = '\0';
++    if (!gclock[0])
++        return;
++
++    /* Start tracking both devices, and ask each once for its clock name
++     * and its current buffer room. */
++    for (int w = 0; w < 2; w++)
++    {
++        bool have = false;
++        for (int i = 0; i < 2; i++)
++            if (c->hr_slot[i].node == want[w])
++                have = true;
++        if (have)
++            continue;
++        for (int i = 0; i < 2; i++)
++        {
++            struct audio_hr_slot *s = &c->hr_slot[i];
++            if (s->node != SPA_ID_INVALID)
++                continue;
++            s->proxy = pw_registry_bind(c->registry, want[w], PW_TYPE_INTERFACE_Node,
++                                        PW_VERSION_NODE, 0);
++            if (!s->proxy)
++                break;
++            s->node = want[w];
++            pw_node_add_listener((struct pw_node *)s->proxy, &s->listener,
++                                 &audio_hr_node_events, s);
++            pw_node_enum_params((struct pw_node *)s->proxy, 0, SPA_PARAM_Props, 0, 1,
++                                NULL);
++            break;
++        }
++    }
++
++    /* Raise the device that is not setting the timing; undo the raise if
++     * that role later lands on a device we raised. */
++    for (int i = 0; i < 2; i++)
++    {
++        struct audio_hr_slot *s = &c->hr_slot[i];
++        if (s->node == SPA_ID_INVALID || !s->probed || !s->clock_name[0])
++            continue;
++        bool sets_timing = !strcmp(s->clock_name, gclock);
++        if (!sets_timing && !s->raised && s->cur_headroom < c->hr_target)
++        {
++            struct audio_node_info *n = audio_find_node(c, s->node);
++            s->prev                   = s->cur_headroom;
++            s->raised                 = true;
++            audio_hr_set(s->proxy, c->hr_target);
++            WARN("two audio devices are in use, and \"%s\" follows the other "
++                 "one's clock; it got %d frames of buffer room (was %d) so "
++                 "the adjustment stays silent (pipeasio-follower-headroom). "
++                 "PIPEASIO_FOLLOWER_HEADROOM changes or disables this.\n",
++                 n ? n->node_name : "?", c->hr_target, s->prev);
++        }
++        else if (sets_timing && s->raised)
++        {
++            struct audio_node_info *n = audio_find_node(c, s->node);
++            audio_hr_set(s->proxy, s->prev);
++            s->raised = false;
++            WARN("\"%s\" now sets the timing itself; its buffer room is back "
++                 "to %d frames (pipeasio-follower-headroom)\n",
++                 n ? n->node_name : "?", s->prev);
++        }
++    }
++}
++
+ const char **
+ audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *type_name_pattern,
+                 uint64_t flags)
+@@ -1569,6 +1857,18 @@
+     if (quantum)
+         atomic_store(&c->observed_quantum, quantum);
+ 
++    /* Remember the name of the clock that is setting the timing (the
++     * buffer-room timer reads it).  Copy only when it changes; the counter
++     * is bumped before and after the copy, so a reader that catches a
++     * half-finished copy can tell, and tries again later. */
++    if (position && position->clock.name[0]
++        && strncmp(c->hr_clock_rt, position->clock.name, sizeof c->hr_clock_rt))
++    {
++        atomic_fetch_add(&c->hr_clock_gen, 1);
++        memcpy(c->hr_clock_rt, position->clock.name, sizeof c->hr_clock_rt);
++        atomic_fetch_add(&c->hr_clock_gen, 1);
++    }
++
+     /* bufferSwitch and PipeWire must run at the same quantum.  While they
+      * disagree, mute: publish silence and zero the input, so the audible
+      * fault is silence plus one log line per episode instead of wrong-speed
+@@ -2062,6 +2362,9 @@
+                 c->chosen_node[0] = SPA_ID_INVALID;
+             if (c->chosen_node[1] == id)
+                 c->chosen_node[1] = SPA_ID_INVALID;
++            for (int j = 0; j < 2; j++)
++                if (c->hr_slot[j].node == id)
++                    audio_hr_release(c, j, false); /* device gone; nothing to restore */
+             return;
+         }
+     }

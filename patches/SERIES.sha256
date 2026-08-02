@@ -65,3 +65,5 @@ f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-
 0cb3ee8b263366cc6a352517ab228e1d3198a61f48fa906b19652cb4c2b9c97c  pipeasio/0003-audio-correct-the-quantum-mismatch-warning-text.patch
 1c29e4021184dff178914b74d07d28d4bffc2891ea8cba789f075ed9fb375af0  pipeasio/0004-accept-any-buffer-size-in-range-log-every-adjustment.patch
 f94c3410be18fb2677993081f47122ba06246ee768b5fcbe1993be0e9e12f44e  pipeasio/0005-converge-on-a-foreign-quantum-predict-adopt-mute.patch
+5edfaf6c143e206902ce31772912b2ebc2fff3b0ae8db9c1b60d6239abdd1ccc  pipeasio/0006-anchor-fallback-capture-report-clock-domains.patch
+6bca950dc7188358c09c89438417bebe2848fe74855326b2b9b8255b93ec56ea  pipeasio/0007-give-the-follower-device-buffer-room.patch
