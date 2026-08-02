@@ -16,7 +16,7 @@ For startup and load timings, close Live first; the workload tool launches
 and quits Live itself:
 
 ```
-scripts/bench-workload.sh before/<change> --set "bench/00-empty Project/00-empty.als" -n 3
+scripts/bench-workload.sh before/<change> --set "bench/BenchmarkSets Project/LinuxDemoEmpty.als" -n 3
 ```
 
 Commit the appended rows together with the change they judge.
@@ -42,7 +42,7 @@ Each script header documents its full option list.
 - A pair is two rows tagged `before/<change>` and `after/<change>`,
   recorded on one machine under the same conditions.
 - Steady-state reference conditions: the reference set open
-  (`bench/reference Project/reference.als`, still to save), 48 kHz at
+  (`bench/BenchmarkSets Project/reference.als`, still to save), 48 kHz at
   256 frames, the same window size and position for both rows.
 - Evidence rows use the default 300 s xrun window. `--quick` rows use a
   60 s window and are for iteration only.
@@ -63,34 +63,36 @@ the reference set from the next section.
 2. Play the same set from its start marker and run
    `scripts/bench-run.sh baseline/playback`.
 3. Close Live and run `scripts/bench-workload.sh baseline -n 3`, then
-   `scripts/bench-workload.sh baseline --set "bench/<set> Project/<set>.als" -n 3`
+   `scripts/bench-workload.sh baseline --set "bench/BenchmarkSets Project/<set>.als" -n 3`
    for each set.
 4. Commit the appended rows.
 
 ## Benchmark sets
 
-Each set is a Live project folder saved directly under `bench/`; with
-Live's default project naming the set path is
-`bench/<name> Project/<name>.als`. Save each set once, commit it, and
-never edit it again: a changed workload is a new file.
+All sets live in one Live project folder, `bench/BenchmarkSets Project/`, one
+`.als` file per set; a set's path is `bench/BenchmarkSets Project/<set>.als`.
+Save a set once, commit it, and never edit it again: a changed workload
+is a new file. The two plugin dependencies of the VSTs set are listed in
+[the project readme](BenchmarkSets%20Project/README.md).
 
 | Set | Exercises | State |
 |---|---|---|
-| `00-empty` | bare startup and document exchange | saved 2026-08-01 |
-| `10-stock-synths` | stock instruments and effects only | to save |
-| `20-vst` | third-party VST3 instruments and effects | to save |
-| `30-m4l` | Max for Live devices | to save |
+| `LinuxDemoEmpty` | bare startup and document exchange | saved 2026-08-02 |
+| `LinuxDemoInbuilt` | stock instruments and effects only | saved 2026-08-02 |
+| `LinuxDemoVSTs` | third-party VST3 instruments | saved 2026-08-02 |
+| `LinuxDemoInbuiltMax4Live` | stock devices plus Max for Live | saved 2026-08-02 |
 | `reference` | the steady-state set for `results.csv` rows | to save |
 
-Pick third-party plugins that most users have installed, and record their
-names and versions in this section when the set lands. To time one
-specific synth, plugin, or M4L patch, save it alone in its own small set;
-its load time is then that set's `set_load` row.
+Rows recorded before 2026-08-02 name the empty set `00-empty.als`; it is
+the same set. To time one specific synth, plugin, or M4L patch, save it
+alone in its own small set; its load time is then that set's `set_load`
+row.
 
-Every set also carries the `abl-bench-m4l` control device on a track: it
-reports readiness, transport state, and the CPU meter over OSC, and takes
-transport commands, so runs need no operator input in Live. Files,
-protocol, and rebuild recipe: [m4l/README.md](m4l/README.md).
+Every set carries the `abl-bench-m4l` control device on a track: it
+reports readiness, transport state, and the CPU meter over OSC, and
+takes transport commands, so runs need no operator input in Live. The
+project readme shows the check that confirms the device is present.
+Files, protocol, and rebuild recipe: [m4l/README.md](m4l/README.md).
 
 ## Schemas
 
