@@ -244,3 +244,11 @@ Apply them in sequence with the rest of the series.
   removing `_NET_WM_STATE_FULLSCREEN` on exit. The Live launcher selects
   `Ableton Live Window Class`; other classes and ordinary windowed geometry
   retain Wine's existing behavior. See `notes/ABLETON-WINE-FULLSCREEN.md`.
+- `0066`: release winex11's local cursor-clipping state (pointer grab,
+  clipping flags) whenever the process can observe that the X input focus
+  left it: the unfocused clip early-out, the clip-window FocusOut, and
+  FocusOut events showing another client holding the focus, ahead of the
+  reparenting/WM_STATE guards. Stops a cross-process embedded device host
+  (M4L) stranded mid-embed from synthesizing pointer input out of raw
+  XInput2 deltas over Live's cursor stream (issue 122).
+  See `notes/ABLETON-WINE-M4L-INPUT-INJECTION.md`.
