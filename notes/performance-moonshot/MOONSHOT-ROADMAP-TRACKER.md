@@ -24,6 +24,7 @@ entry.
 | P9 | nspa memory ports (mlockall, TEB), source availability first | medium | medium | deadline-tail insurance | medium | not started |
 | P10 | Timing fidelity (version check, then QPC/TSC, MIDI jitter) | low-medium | low | fidelity, not throughput | medium | not started |
 | P11 | One contained compiler-flag pair series | high (that gains are small) | low | closes the flags debate with pairs | uncertain by design | not started |
+| P12 | Device hotplug, MIDI and audio, any order, any time | high problem / medium mechanism | medium-high | any controller works whether it is plugged in before or after Live starts, and recovers on its own after any unplug | medium | not started |
 
 ## Scope notes
 
@@ -85,6 +86,29 @@ entry.
 - P1 shipped 2026-08-02 (commit 96b043f, in the production launcher): the
   warning branches are verified against faked kernels; a run on a host
   that really lacks `/dev/ntsync` is the one open check.
+- P12 added 2026-08-02 from issue 46 and the Discord thread behind it.
+  The goal is one sentence: any MIDI or audio device works whether it was
+  connected before Live started or after it started, and comes back on its
+  own after any unplug, without restarting Live. Patch 0028 covers one
+  quadrant of that today. A MIDI device Wine enumerated at startup is
+  re-subscribed when it returns, matched by display name on
+  `SND_SEQ_EVENT_PORT_START`. A device first connected after startup stays
+  invisible until Live restarts. Three layers hold that shut, all read in
+  the sources on 2026-08-02: `alsa_midi_init()` is one-shot behind
+  `init_done`, and `port_add()` reallocs the `srcs`/`dests` arrays, so
+  growing the table at runtime moves entries that other threads hold
+  pointers into; winmm fixes the device count in `llTypes[type].wMaxId`
+  during `MMDRV_InitPerType()` and never raises it, so `midiInGetNumDevs()`
+  stays stale even if the driver does grow; and nothing in the prefix
+  broadcasts `WM_DEVICECHANGE`, so Live is never told to re-enumerate. The
+  audio half is a different mechanism, not the same fix twice: PipeASIO
+  already watches the PipeWire registry
+  (`audio_on_registry_global`/`_global_remove`) and already owns a host
+  reset path (`kAsioResetRequest`), so what it needs is a stated policy for
+  a selected device that disappears and returns, not new plumbing. First
+  step is the four-quadrant behaviour matrix, MIDI and audio against
+  before-start and after-start, measured on real hardware; work happens in
+  the `moonshot-midi-hotplug` worktree. P12 owns no patch numbers yet.
 - Wine patches from moonshot items land in `patches/performance/`;
   apply-order wiring in `container-build.sh` and build-audit fingerprint
   entries land with the first such patch. P1 produced no patch (launcher,
@@ -97,6 +121,9 @@ entry.
 - The `WINEDEBUG=+server` trace gates any P5 patch work.
 - P3's capture tooling (F0) lands before any quantum behavior change.
 - P9 starts with verifying that wine-nspa 11.x sources are available.
+- P12's audio half sits behind P3 F8: patch 0006 defined how a device is
+  chosen and cached, and any reattach policy has to agree with it. P12's
+  MIDI half is independent and can start now.
 
 ## Parked tracks
 
