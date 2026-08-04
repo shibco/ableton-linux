@@ -193,7 +193,7 @@ Apply them in sequence with the rest of the series.
   takes precedence over 0061, and on the issue 84 machine it had to: a
   0061-only build stayed greyed out there (PR 105 comments,
   2026-07-31), consistent with that machine's driver reporting no video
-  memory, which makes 0061's synthesis decline. The "(MTL)" suffix was
+  memory, which skips 0061's synthesis. The "(MTL)" suffix was
   first blamed, but Live's check reads only PCI device IDs, never names
   (established by disassembly 2026-08-02; see 0066). See issue 84 and
   `notes/ABLETON-WINE-GPU-RENDERER.md`.
@@ -226,7 +226,7 @@ Apply them in sequence with the rest of the series.
   requires a non-zero video-memory report, and on the default EGL x11
   backend that figure comes only from `GL_NVX_gpu_memory_info`, which
   Mesa implements per driver — so on a driver without it the synthesis
-  does not fire (see 0066, 0067). See issue 84 and
+  does not run (see 0066, 0067). See issue 84 and
   `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0062`: let the launcher keep one exact top-level Windows class on
   winex11's offscreen-composited path. The Live launcher selects
@@ -255,21 +255,23 @@ Apply them in sequence with the rest of the series.
   pre-2014 PCI device IDs and reads no names (established by
   disassembly 2026-08-02), and a table miss fabricates denylisted
   device `0x0162`, so each missing entry disabled the GPU renderer.
-  0061 does not rescue a driver that reports no video memory, since the
-  synthesis declines there; a table entry bypasses that guard, being
-  consulted first. Field report: HP EliteDesk 800 G4 (i5-8500,
-  `0x3e92`) on 2026.08.01.1. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  0061 does not help a driver that reports no video memory, since the
+  synthesis is skipped there; the table is consulted before that guard,
+  so a card with a table entry is unaffected by it. Field report: HP
+  EliteDesk 800 G4 (i5-8500, `0x3e92`) on 2026.08.01.1. See
+  `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0067`: build the synthesised description (0061) even when the driver
   reports no video memory. The guard assumed a missing figure is worse
   than the feature-level fallback's approximation, but on the default
   EGL backend win32u fills it solely from `GL_NVX_gpu_memory_info`,
   which Mesa implements per driver. radeonsi on Mesa 26.1.6 does expose
-  it (an RX 7900 XT on EGL measured 20 GB), so the guard is no obstacle
-  there; a driver without it reports zero, takes the fallback, and for
-  Intel that means fabricated device `0x0162`, which Live refuses.
-  Which drivers land there is not established. A neutral video-memory
-  figure stands in when the driver supplies none; a machine that does
-  report one is unaffected. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  it (an RX 7900 XT on EGL measured 20 GB), so the guard passes there;
+  a driver without it reports zero, takes the fallback, and for Intel
+  that means fabricated device `0x0162`, which Live refuses. Which
+  drivers lack the extension is not established. 0067 reports a neutral
+  video-memory figure when the driver supplies none; a machine that
+  does report one is unaffected. See
+  `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0068`: add `WINE_D3D_FORCE_GPU_RENDERING=1`, which reports a
   baseline Intel device ID in place of the card's own so Live's GPU
   gate passes on hardware its denylist covers. The card's real name is

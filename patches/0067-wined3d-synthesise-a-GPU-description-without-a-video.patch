@@ -1,25 +1,24 @@
 Subject: wined3d: synthesise a GPU description without a
  video-memory report
 
-The synthesised description declines when the driver reports no video
-memory, on the reasoning that reporting zero bytes is worse than the
-feature-level fallback's table approximation. That trade only holds
+wined3d skips the synthesised description when the driver reports no
+video memory, on the reasoning that reporting zero bytes is worse than
+the feature-level fallback's table approximation. That trade only holds
 where a memory figure is available at all, and on the default EGL
 backend that depends entirely on the driver: win32u fills the figure
 solely from GL_NVX_gpu_memory_info (dlls/win32u/opengl.c), which Mesa
 implements per driver rather than universally. radeonsi on Mesa 26.1.6
 exposes it - an RX 7900 XT on EGL was measured reporting 20 GB - so the
-guard is no obstacle there. A driver that does not expose it reports
-zero.
+guard passes there. A driver that does not expose it reports zero.
 
 Such a machine takes the fallback, which names a card from roughly
 2010 - and for Intel that is device 0x0162, "Intel(R) HD Graphics
 4000". Ableton Live 12 refuses that PCI ID, so a correctly working
 modern GPU would lose Live's GPU renderer purely because the
-video-memory attribute was unavailable. Which drivers land there is not
-established, and no WINEDEBUG=+d3d trace from an affected machine has
-been captured; this removes the dependency rather than relying on the
-answer.
+video-memory attribute was unavailable. Which drivers lack the
+extension is not established, and no WINEDEBUG=+d3d trace from an
+affected machine has been captured; this patch removes the dependency
+rather than relying on the answer.
 
 Report the real device instead, and carry a neutral video-memory figure
 of the same order as the table's integrated-graphics entries when the

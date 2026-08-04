@@ -11,8 +11,8 @@ highest-volume desktop processors of 2018), the 9th-gen refresh
 Amber Lake ID. 24 devices in all; IDs and names from the pci.ids
 database.
 
-A miss in this table costs more than a wrong name. Ableton Live 12
-gates its GPU renderer on the reported PCI ID: it fetches
+A miss in this table does more than produce a wrong name. Ableton
+Live 12 gates its GPU renderer on the reported PCI ID: it fetches
 IDXGIAdapter1's DXGI_ADAPTER_DESC1 and, for VendorId 0x8086, refuses
 any DeviceId found on an internal list of 101 pre-2014 Intel devices
 (established by disassembling the check; the device name is used only
@@ -22,20 +22,20 @@ list. Every table miss therefore disables Live's GPU renderer, no
 matter how modern the real device is.
 
 The synthesised-description path (patch 0061) was meant to cover table
-misses, but it declines to run when the driver reports no video
-memory, and on the EGL x11 backend - the default - win32u fills video
-memory only from GL_NVX_gpu_memory_info (dlls/win32u/opengl.c). A
-driver that does not expose that extension reports zero and falls
-through to the fabricated 0x0162 anyway. A table entry is immune to
-that guard, being consulted first. Loosening the guard is a separate
-change.
+misses, but it does not run when the driver reports no video memory,
+and on the EGL x11 backend - the default - win32u fills video memory
+only from GL_NVX_gpu_memory_info (dlls/win32u/opengl.c). A driver that
+does not expose that extension reports zero and falls through to the
+fabricated 0x0162 anyway. The table is consulted before that guard, so
+a card with a table entry is unaffected by it. Loosening the guard is
+a separate change.
 
-How far that reaches is not established. Mesa implements the extension
-per driver: radeonsi on Mesa 26.1.6 does expose it, and an RX 7900 XT
-on the EGL backend was measured reporting 20 GB, so 0061 fires there.
-Whether iris exposes it on the reporting machine is unknown - no
-WINEDEBUG=+d3d trace from that machine has been captured. The table
-entry this patch adds does not depend on the answer.
+How many drivers this affects is not established. Mesa implements the
+extension per driver: radeonsi on Mesa 26.1.6 does expose it, and an
+RX 7900 XT on the EGL backend was measured reporting 20 GB, so 0061
+runs there. Whether iris exposes it on the reporting machine is
+unknown - no WINEDEBUG=+d3d trace from that machine has been captured.
+The table entry this patch adds does not depend on the answer.
 
 Verified by compiling the patched table: all 24 IDs resolve to their
 pci.ids names, the table holds no duplicate vendor+device pair, and no

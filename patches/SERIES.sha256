@@ -60,8 +60,8 @@ eb85bc3dc958314b299ebe45dc690ed3e9958d7beea82647513964ca0531a1b6  0059-wined3d-q
 a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-keep-a-selected-top-level-class-offscreen.patch
 0a7fb762e4bef288556f2118c318f6e99fe5532bb61058ccdb6d7732bf42ba27  0063-comdlg32-reveal-explorer-select-folder-targets-throu.patch
 81e02eeac88e6eda5da8044cd5bf74a197b2742f77c46da54e61dbf300031bd3  0064-shell32-route-explorer-folder-open-commands-to-the-h.patch
-d7301fb19b7b6a509ea4648234053127ba40ea2c2b0425887c9e215cc6832fdc  0066-wined3d-add-the-missing-Intel-devices-from-Skylake-t.patch
-d93dd82d0e6bf6e3c370dd7f4b8e46473fe55beb50be36b852c83243beecb873  0067-wined3d-synthesise-a-GPU-description-without-a-video.patch
+fd604cd284936df87e0b4ed93936104e99bfdc64dc9cf5f61c0324e6ceff7e31  0066-wined3d-add-the-missing-Intel-devices-from-Skylake-t.patch
+b65877e816921195b1b0f45b901dc512b0c1111b9ea3e034e73aaa57362596b2  0067-wined3d-synthesise-a-GPU-description-without-a-video.patch
 7374abf4910b3da7b6b8592efcd167bb2f8b8c6abdb9c84761147b54f3e4d5dd  0068-wined3d-add-WINE_D3D_FORCE_GPU_RENDERING-disclosed-i.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

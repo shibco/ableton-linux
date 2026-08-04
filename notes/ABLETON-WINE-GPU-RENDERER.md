@@ -235,27 +235,28 @@ UHD 630 in the i5-8400 through i7-8700, nor 23 other parts. Patch 0066
 adds them.
 
 Second, patch 0061 describes an unlisted card from its driver's own
-name, but stands down when the driver reports no video memory. Wine
-reaches the driver through EGL or GLX and picks EGL by default
+name, but skips the synthesis when the driver reports no video memory.
+Wine reaches the driver through EGL or GLX and picks EGL by default
 (`use_egl = TRUE`, `dlls/winex11.drv/x11drv_main.c`). On EGL it reads
 video memory only from `GL_NVX_gpu_memory_info`
 (`dlls/win32u/opengl.c`). A driver that does not expose that extension
-reports zero, 0061 stands down, and the invented `0x0162` goes through.
-A table entry is immune, being consulted first.
+reports zero, the synthesis is skipped, and wined3d reports the
+invented `0x0162` instead. The table is consulted before either, so a
+card with a table entry is unaffected.
 
 Mesa implements the extension per driver, not universally. Measured
 2026-08-03 on an RX 7900 XT, Mesa 26.1.6, fresh prefix with no `UseEGL`
 override and `trace:wgl:egl_init` in the log: radeonsi on EGL reported
-20 GB, so 0061 fires there and the card keeps its real identity. That
+20 GB, so 0061 runs there and the card keeps its real identity. That
 also rules out the earlier reading of the maintainer's machine as
 implying GLX — a machine can report its real card on EGL. Whether iris
 exposes the extension is untested; no `WINEDEBUG=+d3d` trace from an
-affected machine has been captured, so what the reporting EliteDesk
-actually did is still open.
+affected machine has been captured, so the reporting EliteDesk's own
+video-memory report is still unknown.
 
 Patch 0066 closes the first gap. The second needs its own change, so
-that an unidentified card never inherits a refused identity, with a
-launcher switch for anyone who needs the renderer off.
+that an unidentified card is never reported under a device ID Live
+refuses, with a launcher switch for anyone who needs the renderer off.
 
 Reported 2026-08-02: HP EliteDesk 800 G4 (i5-8500, UHD 630, `0x3e92`) on
 release 2026.08.01.1, "Enable GPU Renderer" greyed out naming the
@@ -265,12 +266,13 @@ invented HD 4000.
 
 Patch 0067 removes the video-memory precondition on 0061's synthesised
 description. The precondition assumed a missing figure was worse than
-the fallback's approximation; where the driver supplies none, that
-assumption costs an unlisted card its real identity for an attribute
-that has nothing to do with identifying it. A neutral figure stands in
-when the driver reports none, so the outcome no longer depends on which
-drivers implement `GL_NVX_gpu_memory_info`. Together with 0066 this ends
-the whack-a-mole for cards Wine can identify at all.
+the fallback's approximation; where the driver supplies none, the card
+is instead reported under the wrong device ID, over an attribute
+unrelated to identifying it. The patch reports a neutral figure when
+the driver supplies none, so the outcome no longer depends on which
+drivers implement `GL_NVX_gpu_memory_info`. Together with 0066 this
+covers every card Wine can identify, without adding a table entry per
+card.
 
 Patch 0068 covers the cards Live genuinely lists.
 `WINE_D3D_FORCE_GPU_RENDERING=1` reports baseline device
