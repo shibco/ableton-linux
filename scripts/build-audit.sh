@@ -72,6 +72,10 @@ declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
     [0057]="reserved 2026-07-30 for the Intel GPU identification fix on fix/intel-gpu"
+    [0066]="reserved 2026-08-03 for the issue 122 cursor-clip fix on fix/issue-122-m4l-focus"
+    [0067]="reserved 2026-08-02 for MIDI hotplug on moonshot-midi-hotplug"
+    [0068]="reserved 2026-08-02 for audio hotplug on moonshot-midi-hotplug"
+    [0069]="reserved 2026-08-04 for the PR 125 window-hints patch"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
