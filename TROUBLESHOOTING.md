@@ -98,8 +98,9 @@ ableton-live
 
 If the font is still missing with the list turned off, the list is not the
 cause. [Open an issue](https://github.com/shibco/ableton-linux/issues) and
-name the font and where you installed it from. Mechanism and measurements:
-[the M4L launch note](notes/FINDINGS-M4L-LAUNCH-2026-08-04.md).
+name the font and where you installed it from. How the saved list works,
+with measurements:
+[the Max for Live launch note](notes/FINDINGS-M4L-LAUNCH-2026-08-04.md).
 
 ## Live 11: media files can crash Live
 

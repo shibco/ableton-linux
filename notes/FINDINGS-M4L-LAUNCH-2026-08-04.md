@@ -222,94 +222,89 @@ moonshot branch) and the MaxPlug phase log.
 ### P-M1. Cache the host font list across processes and sessions (patch 0070, implemented)
 
 Implemented 2026-08-04 as
-`patches/0070-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch`
-(SERIES.sha256 refrozen; build-audit fingerprint
-`WINE_DISABLE_HOST_FONT_CACHE`). The proposal had two parts, skip the
-rescan inside a session and persist the list across sessions; one
-mechanism implements both.
+`patches/0070-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch`.
 
-What the patch does:
+The problem, plainly: every time any program starts under this project's
+Wine, Wine reads every font installed on the computer, one file at a
+time, to build its font list. This computer has 3,482 font files. The
+reading repeats for every program: Live itself, and each helper program
+Live starts. Nothing remembered the result between starts.
 
-- `save_host_font_cache()` writes every enumerated host face to
-  `c:\windows\wine-host-font.cache`, together with a stamp:
-  `fontconfig_host_fonts_stamp()` hashes the host font directory trees
-  (entry names, file sizes, mtimes).
-- `font_init()` recomputes the stamp at every process start. While the
-  stamp matches the file, `load_host_font_cache()` adds the faces from the
-  file and the process skips the host enumeration completely.
-- On a stamp mismatch or an unreadable or malformed file, `font_init()`
-  runs the full enumeration and rewrites the file. A face whose names do
-  not fit the file format stops the file from being written at all, and
-  every process then enumerates as before the patch.
-- Reads and writes hold the existing font mutex, so one process writes at
-  a time.
-- The prefix-local font directories (`c:\windows\Fonts`, the Wine data
-  dir) always rescan, so fonts that the launcher or setup-prefix.sh
-  install appear without touching the cache.
-- `WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off and restores the
-  old behaviour. The same switch served as the control arm in every
-  measurement below.
+What the patch does, plainly: Wine now saves the finished font list to
+one file, `c:\windows\wine-host-font.cache` (seen from Linux:
+`~/.wine-ableton/drive_c/windows/wine-host-font.cache`). At every program
+start Wine first checks whether the computer's fonts have changed, using
+a stamp: a short summary value computed from the font folders' names,
+file sizes, and dates, so any font change changes the stamp. While the
+stamp matches the saved file, Wine loads the list from the file and skips
+the reading. When the fonts change, or the file is damaged or cut short,
+Wine notices, reads everything once, and saves a fresh file. Setting
+`WINE_DISABLE_HOST_FONT_CACHE=1` turns the saved list off and restores
+the old behaviour; the same switch provided the "without" side of every
+measurement below.
 
-Every process reads the same file: the first process of a session, which
-is Live itself because the launcher kills the wineserver on every launch,
-and each helper process after it (AddOns.exe, Index.exe, the Max editor,
-setsyscolors.exe, learnheal.exe). Upstream 11.13 enumerates
-unconditionally in the same way, so the patch is a candidate for upstream
-submission.
+Fonts that belong to the Live installation itself (`c:\windows\Fonts` and
+Wine's own font folder) never come from the saved list; Wine always reads
+those directly, so fonts added by the installer or the launcher always
+appear.
 
-Verified on a local 64-bit build of the patched tree
-(`~/Projects/Code/ableton/wine-issue-122-src`, branch fontcache-0070,
-build in `build-fontcache/`) against a scratch prefix:
+For the reader following the code: the save is `save_host_font_cache()`,
+the load is `load_host_font_cache()`, the stamp is
+`fontconfig_host_fonts_stamp()`, and `font_init()` in
+`dlls/win32u/font.c` calls all three. Reading and writing happen under
+Wine's existing font lock, so only one program writes at a time. One
+save-side rule: a font whose name is too long for the file format stops
+the file from being written at all, and every program then reads fonts
+as before the patch, so the saved list can never silently miss a font.
+Plain Wine behaves the same way this project did before the patch, so
+the change is worth offering to the Wine project itself.
 
-- Correctness: enumerating with the cache and with the scan produces
-  byte-identical face lists (8,257 lines, fontdump probe, sorted diff).
-- A cache hit makes zero fontconfig_add_font calls and loads 3,053
-  records; `add_gdi_face()` regenerates the vertical DBCS twins from
-  them, giving 3,276 faces.
-- Invalidation: a changed host font set (XDG_DATA_HOME override), a
-  truncated file, and a garbage-overwritten file each fell back to the
-  full enumeration and rewrote the file, and the next session hit the new
-  cache.
-- Cold-session first process, 7 interleaved runs per arm: median 2748 ms
-  with the cache, 3551 ms without.
-- Warm-session process: 142 to 152 ms with the cache, 323 to 331 ms
-  without. Every helper process start saves about 180 ms.
+Checks on a locally built Wine with the patch, against a scratch copy of
+the environment (nothing production was touched):
 
-Production verification, 2026-08-05. The container build (`./build.sh`)
-passed the full pipeline including the relocation gate and the 93-check
-build audit, with the 0070 fingerprint confirmed in the shipped win32u.so.
-The artifact is installed as a parallel runtime at
-`~/.local/opt/wine-d2d1-nspa-11.13-fontcache-0070`; the shipped default
-runtime is untouched. Real-Live comparison through the production launcher
-(`ABLETON_WINE_ROOT` override), production prefix, 00-empty set, cache on
-against `WINE_DISABLE_HOST_FONT_CACHE=1`, medians of the settled
-repetitions (5 on, 3 off; the first repetition of each arm ran elevated
-and is excluded):
+- The font list programs see is exactly the same with and without the
+  saved list: 8,257 entries, compared line by line, no difference.
+- With a valid saved file, a starting program does no font reading at
+  all: zero calls into the system font reader.
+- Changing the computer's fonts, cutting the file short, and overwriting
+  the file with garbage were each noticed. Wine fell back to the full
+  read and saved a fresh file every time.
+- The first program of a fresh Wine session started in 2.7 s with the
+  saved list and 3.6 s without (middle value of 7 runs each).
+- Every further program started in about 0.15 s with the saved list and
+  about 0.33 s without.
 
-| interval | cache on | cache off | saving |
+Production result, 2026-08-05. The full release build (`./build.sh`)
+passed all 93 of its self-checks, including the check that confirms this
+patch is present in the built files. The build is installed side by side
+at `~/.local/opt/wine-d2d1-nspa-11.13-fontcache-0070`; the copy Live
+normally uses is unchanged. We then timed real Live starts on this
+machine, launched the normal way, with the saved list on and off. The
+table shows the middle value of the repeated runs (5 with, 3 without;
+the first run of each kind is left out because the computer was still
+reading program files from disk for the first time):
+
+| what is timed | with | without | saving |
 |---|---|---|---|
-| launch to "Started: Live" | 1.24 s | 3.08 s | 1.85 s |
-| launch to "Live App: End Init" | 5.10 s | 7.01 s | 1.91 s |
-| "Started" to "Max: Version" | 3.55 s | 3.52 s | none |
+| launch until Live's program is running ("Started: Live" in Live's log) | 1.24 s | 3.08 s | 1.85 s |
+| launch until Live is ready to use ("Live App: End Init") | 5.10 s | 7.01 s | 1.91 s |
+| the Max for Live loading step ("Started" to "Max: Version") | 3.55 s | 3.52 s | none |
 
-The saving lands entirely before "Started: Live" and reaches about 1.9 s
-per launch, six times the 300 ms the section 3.2 probe predicted. Two
-reasons: the probe's control arm (fontconfig emptied) still re-parsed the
-733 externally registered font files from the registry, work the cache
-also removes; and the launch pipeline contains several font-using wine
-processes beyond Live (wineboot and the launcher's helpers), each of which
-now skips its own scan. The unchanged "Started" to "Max: Version" interval
-confirms that the MaxPlug window itself is not font-list bound; reducing
-it is P-M3 and P-M4.
+Every Live start on this machine is about 1.9 seconds faster. That is
+about six times the 300 ms estimated in section 3.2, for two reasons.
+The estimate could only switch off one of the two ways Wine reads fonts,
+and the saved list removes both. And a Live start runs several helper
+programs besides Live itself; each of them now skips its own font
+reading too. The Max for Live loading step did not change; making that
+step faster is what proposals P-M3 and P-M4 are about.
 
-The first patched launch scans once and writes the cache
-(`~/.wine-ableton/drive_c/windows/wine-host-font.cache`, 973 KB in the
-production prefix); every following launch reads it.
+The first start with the patch reads everything once and writes the
+saved file (973 KB on this machine); every start after that reads it.
 
-Remaining before shipping: merge and release scheduling against the
-branches that reserve numbers 0066 to 0069, and normal-use soak on the
-maintainer's machine. The user-facing entry is in TROUBLESHOOTING.md ("A
-newly installed font does not show up inside Live").
+Before this ships: agree the merge order with the open branches that
+reserved patch numbers 0066 to 0069, release, and a few days of normal
+use on this machine first. The entry for users is in TROUBLESHOOTING.md
+("A newly installed font does not show up inside Live").
 
 ### P-M2. Reuse the wine session across launches (launcher change, no wine patch)
 
