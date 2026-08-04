@@ -1,264 +1,220 @@
-# Issue 87: Splice panel input-dead after collapse/reopen. Theory review, 2026-08-04
+# Issue 87: Splice panel ignores input after collapse and reopen
 
-Status 2026-08-05: fix attempt implemented on this branch, runtime verification
-pending. Three changes:
+This note records what we know about issue 87, what we changed on the
+fix/webview-splice branch, and what test decides the rest.
 
-1. tools/learnheal.c: the resident healer now only pokes webviews whose whole
-   ancestry is Live's own pane hosts (Ableton Live Window Class,
-   AbletonWebViewHelperWindow, Chrome_WidgetWin_0). Plugin webviews (CHOC,
-   JUCE) are never touched. Rebuilt learnheal.exe and posteresize.exe are
-   committed. Addresses T2 below.
-2. patches/0070: dxgi twins of the patch 0016 subclass guards (re-bind records
-   its own wndproc as original; popup-mode self-demotion on re-bind; Release
-   stranding an installed subclass without its forwarding prop, which is the
-   exact painted-but-input-dead shape). Addresses T3's fixable half. Applies
-   cleanly on the series; dxgi.dll and wineserver compiled warning-free in a
-   scratch tree; NOT run against Live yet.
-3. tools/issue87-routing-trace.patch: log-only wineserver trace for the T1
-   probe (not in the shipped series). One healthy-vs-broken hover capture
-   decides T1; usage in the patch header.
+Written 2026-08-04, revised 2026-08-05. Branch: fix/webview-splice
+(worktree webview-splice, started from origin/main bac1bb0).
 
-None of this is verified against the repro. If the reporters still reproduce
-with 1+2, the trace capture from 3 is the next step and pins T1.
+## Current state and what to do next
 
-Branch: fix/webview-splice (worktree webview-splice, off origin/main bac1bb0).
+Three changes sit on this branch. None is verified against the bug yet.
 
-## 1. The reported facts
+1. tools/learnheal.c. learnheal is a small helper that our launcher starts
+   with Live. It nudges Live's Learn View pane once so the pane draws
+   correctly. Before this change it also nudged webview windows that belong
+   to plugins, including the Splice panel, every time Splice rebuilt its
+   panel. Now it only touches windows whose parents are Live's own pane
+   windows. The rebuilt learnheal.exe is committed.
+2. patches/0070. Fixes three defects in our dxgi patch stack. dxgi is the
+   Wine library that manages swapchains, the buffers a program draws frames
+   into. Our stack attaches a helper to some plugin windows there, and that
+   helper could end up eating all input for a window while the window kept
+   drawing. The exact conditions are in the patch and in the "Theory 3"
+   section below. The patch compiles clean but has not run against Live.
+3. tools/issue87-routing-trace.patch. A logging patch for wineserver, the
+   Wine process that decides which window receives each mouse event. It is
+   not part of the shipped patch series. Build a test runtime with it, record
+   one hover over the panel while it works and one after it breaks, and the
+   log names the exact check that fails. Usage steps are in the patch header.
 
-From ClickSentinel's report (runtime label "2026.07.23.1", but the stated base is
-d2d1-dcomp-11.13 / 5c23dd1c with patches 0001-0053 plus 0054, which is later than
-our v2026.07.23.1 tag; go by the stated patch list, and ask for the exact commit):
+Next step: build a runtime from this branch and ask a reporter to repeat the
+collapse/reopen test. If the panel still breaks, run the trace and read the
+log. The reporters reproduce the bug reliably, so one session answers it.
 
-- Collapse and reopen the Splice panel. The panel keeps rendering and keeps
-  responding to resize, but no mouse or keyboard input reaches it, permanently.
-- The whole CHOC webview host is destroyed and recreated: new unique window class
-  (CHOCWebView117967303 to CHOCWebView118003504), new HWND. Only the WebView2
-  renderer process respawns; browser, GPU and utility processes survive.
-- During a 10 s in-panel hover, mouse messages observed from Live's process go
-  only to Live's main window in both states: 28730 healthy, 710 broken, 0 to the
-  child chain either way.
-- In the broken state: WindowFromPoint resolves 20/20 in-panel points to the
-  webview child; WM_NCHITTEST replies HTCLIENT; capture, focus, styles, tree all
-  measure identical to healthy; dcomp props balanced; patch 0016 instrumentation
-  never fires; reblit timer counters read 0.
-- Clicking Live's back/forward browser-navigation arrows restores input
-  (found by amenohi2 on issue 34, confirmed by ClickSentinel).
+## What the bug looks like
 
-## 2. The report's framing is wrong about the input path
+Reported by ClickSentinel. Their report labels the runtime "2026.07.23.1"
+but describes the 11.13 Wine base with patches 0001 through 0054. That
+combination is newer than our v2026.07.23.1 tag, so ask for the exact build
+commit. The facts from the report:
 
-The issue concludes the failure sits in WebView2/CHOC's composition-hosting input
-forwarding (SendMouseInput re-wiring), closed-source and unobservable. CHOC's
-source says otherwise (github.com/Tracktion/choc, choc/gui/choc_WebView.h):
+- Collapse the Splice panel in Live's browser, then reopen it. The panel
+  still draws and still resizes, but clicks, hover and keys stop reaching
+  it. It stays broken until the plugin reloads or Live restarts.
+- The rebuild is real: Splice destroys its webview window and creates a new
+  one with a new window class name and a new window handle. Of the WebView2
+  helper programs, only the renderer process restarts. The browser, GPU and
+  utility processes keep running.
+- During a 10 second hover inside the panel, a message monitor inside Live
+  counted mouse messages only at Live's main window: 28730 while healthy,
+  710 while broken, zero at the panel's windows in both states.
+- While broken, every standard check still passes: the window-under-point
+  query resolves the panel's window, the window answers messages, focus and
+  capture are clean, window styles and the window tree match the healthy
+  state, and our patch 0016 instrumentation never fires.
+- Clicking Live's back and forward browser arrows repairs the panel. Found
+  by amenohi2 in issue 34, confirmed by ClickSentinel.
 
-- CHOC creates a plain WS_POPUP window ("CHOCWebView" class plus unique suffix)
-  and calls CreateCoreWebView2Controller(hwnd, ...) on it: windowed hosting
-  (choc_WebView.h lines 1368, 1038, 1452). Its vendored WebView2 header contains
-  no ICoreWebView2CompositionController and no SendMouseInput at all.
-- CHOC's wndproc handles only WM_SIZE and WM_SHOWWINDOW; everything else goes to
-  DefWindowProcW (lines 1561-1572). CHOC forwards no input, ever.
-- WS_EX_NOREDIRECTIONBITMAP on Chrome_WidgetWin_1 does not imply composition
-  hosting: our own Learn View panes are windowed-hosted and carry the same
-  styles (tools/dpispy.txt, tools/swamprobe.txt).
+## What the report gets wrong
 
-Consequence, and this is the load-bearing deduction: since CHOC forwards nothing
-and windowed hosting has no host-side input API, the only way input can work at
-all is direct Win32 delivery to Chromium's own windows (Chrome_WidgetWin_1 /
-Chrome_RenderWidgetHostHWND), which are owned by the msedgewebview2 browser
-process, cross-process children inside Live's tree. Healthy input works, so that
-delivery works. The bug is therefore that this delivery stops for the recreated
-chain. That is a Wine-observable, Wine-instrumentable failure, not a
-closed-source one.
+The report concludes that the failure lives inside WebView2's closed-source
+input forwarding and cannot be observed from our side. The source code of
+CHOC, the library Splice uses to embed its webview, shows otherwise. CHOC is
+public at github.com/Tracktion/choc, file choc/gui/choc_WebView.h.
 
-Two measurement blind spots follow:
+- CHOC creates one plain window and hands it to WebView2 in windowed mode
+  (choc_WebView.h lines 1368, 1038, 1452). Windowed mode means WebView2
+  creates its own child windows inside that window and receives input
+  through them. The forwarding API the report describes belongs to a
+  different mode that CHOC does not use.
+- CHOC forwards no input itself. Its window procedure, the function that
+  receives a window's messages, handles only resize and show messages and
+  passes everything else to the default handler (lines 1561-1572).
 
-- "0 messages to the child chain" was measured from Live's process. Message
-  hooks are per-process; deliveries to the browser process's windows are
-  invisible from Live. The 0 proves nothing about the real input path.
-- The healthy 28730-vs-broken 710 rate at Live's main window (a 40x drop for the
-  same physical hover) is unexplained under the report's model. Under ours, a
-  plausible reading is that the healthy stream is reflected traffic from
-  Chromium's legacy-window forwarding (LegacyRenderWidgetHostHWND passes mouse
-  messages up the parent chain), which disappears exactly when direct delivery
-  stops, leaving only the raw ~70/s motion rate. Unproven; the wineserver trace
-  below decides it.
+This changes the whole picture. Nothing in the plugin forwards input, so
+while the panel works, mouse events must arrive directly at the child
+windows that WebView2 created. Those child windows belong to the
+msedgewebview2 browser process, a separate program. The bug is therefore
+that this direct delivery stops after the rebuild, and Wine makes that
+decision, so Wine can log it.
 
-The "reparented into a new host window, put_ParentWindow unsupported" reading is
-also unsupported: CHOC recreates the whole webview from scratch. The surviving
-browser/GPU processes are the shared Evergreen browser cluster for Splice's
-user-data folder, and a renderer respawn for a new CoreWebView2 in a shared
-cluster is the normal pattern, not evidence of reparenting.
+Two of the report's measurements do not show what they appear to show:
 
-## 3. How input actually routes, and why the reporter's checks do not cover it
+- "Zero messages at the panel's windows" came from a monitor inside Live's
+  process. A monitor in one process cannot see messages delivered to
+  another process's windows. The zero is expected in both states and rules
+  nothing out.
+- The drop from 28730 to 710 messages at Live's main window is a real
+  signal. A likely explanation: while the panel works, the browser process
+  reflects extra messages toward Live's window, and that reflection stops
+  when delivery stops. The trace patch settles this.
 
-In the 11.13 base, hardware mouse routing and WindowFromPoint are different code
-paths that consult the same server data differently:
+The report's "reparented into a new host window" reading also falls away.
+CHOC builds a complete new webview. The surviving browser and GPU processes
+are the shared WebView2 installation reusing one browser per profile, which
+is its normal behaviour.
 
-- Routing: winex11 in Live's process posts the event against Live's top-level;
-  the server picks the destination thread via window_thread_from_point
-  (server/window.c:1069), which maps raw to virtual coordinates, then descends
-  with child_window_from_point using is_point_in_window (server/window.c:933) at
-  each step: WS_VISIBLE, disabled-child skip, LAYERED+TRANSPARENT skip,
-  per-window DPI point mapping, visible_rect containment, win_region
-  containment. The deepest window's thread gets the message; the receiving
-  process then re-resolves the final HWND client-side (win32u/message.c:2625).
-- WindowFromPoint: a get_window_children_from_point server request with the
-  caller's thread DPI, then a client-side walk (win32u/window.c:2846) that stops
-  at the first cross-thread window without consulting its wndproc.
+## How Wine decides who gets a mouse event
 
-So a window chain can pass WindowFromPoint from a prober's context and still
-lose hardware routing. The state that can differ is exactly the state absent
-from the reporter's dumps: visible_rect (driver-adjusted at SetWindowPos time;
-the NSPA base patches 0002/0003 gate it), win_region, per-window DPI (Live
-creates VST3 editor windows under a DPI-UNAWARE thread context, see
-tools/webviewclose.c header; a re-attach that latches a different per-window DPI
-than the first attach shifts the descent's point mapping), sibling z-order, and
-the owning thread. Styles, rects and tree dumps show none of these.
+Two different code paths answer "which window is under the pointer", and
+they can disagree. That disagreement is why the report's checks passed while
+input stayed dead.
 
-Keyboard death needs no separate mechanism: windowed-hosting keyboard input
-follows focus, focus follows a successful click, so mouse death implies
-keyboard death.
+- Delivery. wineserver picks the receiving thread in
+  window_thread_from_point (server/window.c:1069). It walks down the window
+  tree and tests each window with is_point_in_window (server/window.c:933):
+  the window must be visible, not a disabled child, not marked transparent
+  to input, the point must fall inside the window's visible rectangle after
+  scaling it by the window's DPI (its display scale factor), and inside the
+  window's shape region if one is set.
+- Queries. The WindowFromPoint function that the report used runs a
+  different walk with the calling program's own scale factor
+  (win32u/window.c:2846).
 
-## 4. Theories, ranked
+A window chain can pass the query and still lose delivery. The state that
+decides delivery does not appear in any style or tree dump: the visible
+rectangle, the shape region, the per-window scale factor, the stacking
+order between siblings, and the owning thread. The report compared styles,
+rectangles and tree structure, which is exactly the state that both paths
+share.
 
-### T1. Server-side routing state on the recreated chain (primary frame)
+Keyboard input needs no separate explanation. In windowed mode the keyboard
+follows focus, and focus follows a successful click. Dead mouse means dead
+keyboard.
 
-The recreated Chromium windows fail some is_point_in_window check server-side,
-so window_thread_from_point resolves to Live's thread; Live's client-side
-re-resolution can only land on Live-owned windows; input pools at Live's main
-window and dies. Rendering is unaffected because presentation is the dcomp/GDI
-blit path, and resize is unaffected because it flows through COM (put_Bounds),
-neither touching input routing.
+## Theories, strongest first
 
-Why recreate differs from first create: at first launch the browser cluster
-takes seconds to spawn, so the controller attaches into a settled window tree.
-On reopen the cluster already runs and CreateCoreWebView2Controller completes in
-milliseconds, so Chromium's SetParent/SetWindowPos sequence lands mid-collapse
-layout (panel width animating, CHOC host possibly still an unmapped WS_POPUP).
-Windows tolerates that ordering; our stack has several places that latch
-attach-time state (NSPA visible-rect gates, layered-map delay noted in patch
-0041's message, per-window DPI at creation).
+### Theory 1: wineserver rejects the rebuilt windows during delivery
 
-Heal fit: back/forward navigation makes Chromium rebuild its
-RenderWidgetHostView and legacy HWND inside a settled tree, recreating the
-server-side state cleanly.
+The new child windows fail one of the delivery checks, so every mouse event
+lands in Live's own queue and stops at Live's main window. Drawing survives
+because our composition path copies frames into the window regardless, and
+resizing survives because it travels through COM calls, not through input.
 
-Deciding probe: a log-only wineserver patch in window_thread_from_point /
-is_point_in_window printing, for each descent step during a broken-state hover,
-which window was rejected by which check (visibility, transparency, DPI-mapped
-point vs visible_rect, region), plus a server-eye dump of visible_rect,
-win_region, per-window DPI and owning thread for the chain, healthy vs broken.
-Nobody has looked at this layer; all prior instrumentation was client-side or
-dcomp-side.
+Why only the rebuild breaks: at first launch the browser takes seconds to
+start, so WebView2 attaches its windows into a settled layout. On reopen
+the browser is already running, attachment completes in milliseconds, and
+the windows are created while the panel is still mid-collapse. Windows the
+operating system tolerates that order. Several of our patches record window
+state at creation time and could freeze the bad moment.
 
-### T2. learnheal.exe pokes the rebuilt webview at bind time
+Why the arrow buttons repair it: navigation makes the browser rebuild its
+input window inside a settled layout, which recreates the state cleanly.
 
-Present and active in the reporter's environment (launcher starts it
-unconditionally since 2026.07.21.2). Its matcher is any Chrome_WidgetWin_1,
-anywhere, with a non-empty title and rect at least 200x200 (tools/learnheal.c:99-112);
-WebView2 mirrors the page title onto Chrome_WidgetWin_1, so Splice's webview
-qualifies once its page loads. A recreated webview is a new HWND, so it gets a
-fresh tracked slot and a cross-process SetWindowPos nudge roughly 1-3 s after it
-appears, which on a reopen is exactly bind time. learnheal's own header records
-that bind-time nudges leave Chromium permanently degraded ("Nudging at bind
-time leaves Chromium unable to handle later resizes", tools/learnheal.c:5-7).
-The documented degradation is resize handling, not input, so the symptom match
-is imperfect; but this is a resident cross-process actor firing during the
-exact failure window, entirely under our control.
+Test: build with tools/issue87-routing-trace.patch, capture one healthy and
+one broken hover, and read which check rejects which window. This is the
+one measurement nobody has taken.
 
-Deciding probe: suppress learnheal, repeat the repro. Cheapest test available;
-zero build. If implicated, the low-risk fix is scoping its matcher (title or
-ancestor restricted to Live's own panes), not removing the heal.
+### Theory 2: learnheal nudged the rebuilt panel
 
-### T3. dxgi popup-mode misassignment via the process-global subclass count
+learnheal matched any large titled Chrome_WidgetWin_1 window on the
+desktop. WebView2 titles that window after the page, so Splice's panel
+matched, and every rebuild produced a fresh window that earned a new nudge
+a few seconds later. learnheal's own header records that a badly timed
+nudge leaves a webview permanently degraded.
 
-The base dxgi carries a deliberate process-global heuristic
-(dcomp_subclassed_target_count, factory.c:440,844-921): if any target is still
-subclassed when a new WM_WINE_DCOMP_SET_TARGET bind arrives, the new target is
-permanently classified as a popup. The count's increment is unconditional but
-its decrement is conditional (only on the window's own thread, only from paths
-that may not run in a Release-first teardown), so both a teardown overlap
-(Chromium's GPU thread releasing the old swapchain lazily while the new panel
-binds) and a genuine leak put the rebuilt Splice target into popup mode.
+Weaknesses: learnheal waits for the window's size to settle before it
+nudges, and its known damage is resizing, not input. The bug also
+reproduces too reliably for a one-second scanner to be the whole story.
 
-Popup mode installs a different wndproc with a different timer id and no
-frame-latency signalling. Two observations make this attractive:
+Test: the fix is committed. Reporters can also test the old runtime by
+killing learnheal.exe before the repro.
 
-- The reporter's "reblit counters read 0" was measured on the full-mode timer
-  path. A popup-mode target produces that reading by construction, so the
-  negative result is consistent with this theory rather than evidence against
-  dxgi involvement.
-- The base's own comment warns a misclassified main window "loses its present
-  timer".
+### Theory 3: our dxgi helper swallowed input after a rebind
 
-Points against: the frame-latency stall arm predicts degraded or frozen frame
-production, while the report describes correct rendering and live resize. It
-needs the probe to decide whether the panel's apparent liveness is real frames
-or GDI re-blits of the last comp buffer.
+Our dxgi patches attach a helper window procedure to some plugin windows.
+Patch 0016 fixed a family of bugs in the equivalent dcomp helper: rebinding
+the same window recorded our own helper as the "original" handler, and
+losing the recorded original turned the window into one that draws but
+ignores every message. The dxgi copy never received those guards, and its
+release path could remove the recorded original while the helper stayed
+installed. That produces exactly "draws, resizes, ignores input".
 
-Deciding probes: the base already logs the mode decision
-(FIXME "DComp popup-detect: target %p ... count=%ld", factory.c:865-867);
-capture it across the repro with WINEDEBUG active (mind the launcher's
-WINEDEBUG=-all default, issue 87's own gotcha). Also dump
-GetProp(desktop, "__wine_dcomp_active"), and which of DCOMP_REBLIT_TIMER_ID /
-DCOMP_POPUP_REBLIT_TIMER_ID is armed on the new target.
+Two details fit issue 87. The reporter's zero readings came from counters
+on our full-mode timer path, and a misassigned rebind runs on a different
+timer, so their zeros are consistent with this theory rather than evidence
+against it. One detail does not fit: the panel appears to draw fresh
+frames, and this failure should degrade drawing too.
 
-Related latent defect found during this review, independent of issue 87: the
-dxgi subclass never received patch 0016's re-entry guards. A second SET_TARGET
-on the same HWND records dxgi's own wndproc as "original"
-(factory.c:902-907), and a missing __wine_dcomp_orig_wndproc prop sends every
-message to DefWindowProcW (factory.c:748-749): the exact input-dead black hole
-0016 fixed in dcomp.dll, still open in dxgi. The usual target (Intermediate D3D
-Window) is input-transparent by design, so this is probably not issue 87, but
-it should be fixed on its own merits, with regression runs for the Learn View
-park/reopen cycle, M4L and JUCE/SWAM editors.
+Test: patch 0070 is committed. The mode decision already logs a FIXME line,
+now including a rebind flag; capture it during a repro.
 
-### T4. Patch 0045's return-code change steering host teardown
+### Theory 4: patch 0045 changed how the old panel tears down
 
-RevokeDragDrop on a foreign window now returns DRAGDROP_E_INVALIDHWND, a hard
-error, including for foreign windows that were never registered (previously
-DRAGDROP_E_NOTREGISTERED). If the JUCE-style teardown sweep in Live's process
-treats a hard error as fatal and aborts its per-window loop, the old editor's
-teardown completes only partially, which could feed the T3 overlap or leave
-other per-window teardown undone. Also the marshalled drop-target data in the
-helper process now leaks on every close. Directly relevant to issue 34
-(Splice drag-and-drop, closed but reportedly still broken, same commenter).
-Probe: log RevokeDragDrop calls and returns during a collapse.
+Patch 0045 makes RevokeDragDrop refuse windows of other processes and
+return a hard error. If the plugin's cleanup loop stops at the first hard
+error, part of the old panel's teardown never runs. That could feed
+theory 3's overlap or leave other state behind. This path also touches
+issue 34, the Splice drag-and-drop bug, reported by the same people.
 
-## 5. Environment factors specific to Splice
+Test: log RevokeDragDrop calls and returns during a collapse.
 
-- Our launcher's WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS (SwiftShader ANGLE,
-  --disable-gpu-compositing, --disable-direct-composition, --no-sandbox) are
-  overridden by Ableton's own flags for Live's panes, but a plugin-created
-  environment inherits them for real. Splice therefore runs a browser
-  configuration nothing else on this stack runs. Yet the reporter still
-  observes dcomp props and an Intermediate D3D Window on the Splice chain, so
-  the flag set deserves its own check (does --disable-direct-composition reach
-  Splice's cluster at all, and what does the stack look like with the flags
-  cleared).
-- WebView2 Evergreen 150 uses delegated compositing, a path this stack was
-  never tested against (notes/ABLETON-WINE-GPU-RENDERER-WEBVIEW2-DIAGNOSIS.md,
-  fork issue 8). Record the prefix's WebView2 version in any repro.
+## Environment facts specific to Splice
 
-## 6. Diagnostic plan, cheap first
+- Our launcher exports browser flags (software rendering, composition
+  disabled, sandbox off) for WebView2. Live's own panes override them with
+  Ableton's flags, but a plugin-created webview inherits ours. Splice
+  therefore runs a browser configuration nothing else on this stack runs.
+  The reporter still sees composition windows on the Splice chain, so check
+  whether the flags reach Splice's browser at all.
+- WebView2 version 150 composites pages through a path this stack never
+  tested (notes/ABLETON-WINE-GPU-RENDERER-WEBVIEW2-DIAGNOSIS.md, fork
+  issue 8). Record the prefix's WebView2 version in any repro.
 
-1. learnheal off, repro on. No build. (T2)
-2. Repro with WINEDEBUG explicitly set, capture the existing popup-detect FIXME
-   and RevokeDragDrop returns across a collapse/reopen. Validate the capture is
-   non-empty before trusting it. No build. (T3, T4)
-3. Prop/timer spy on the rebuilt chain: desktop __wine_dcomp_active, wndproc vs
-   __wine_dcomp_orig_wndproc, armed timer ids. Small tool, no runtime change. (T3)
-4. Log-only wineserver + win32u tracing of the routing descent during a broken
-   hover, plus server-eye state dump of the chain (visible_rect, win_region,
-   per-window DPI, owning thread, z-order) healthy vs broken. Scratch build,
-   no behavior change; note scratch builds lack PipeASIO for hand-over runs. (T1)
-5. Ask the reporter for the exact build commit, desktop scale factor, and a
-   z-order-preserving sibling dump of Live's main window children in both
-   states.
+## Rules for changes in this area
 
-No fix should land before one of these probes confirms a mechanism. Every
-candidate change (learnheal matcher scoping, dxgi 0016-parity guards, popup-mode
-re-evaluation, routing-state fix) touches machinery shared with the Learn View
-park/reopen path, M4L and JUCE editors, so each needs the regression set from
-notes/ABLETON-WINE-GPU-RENDERER-WEBVIEW2-DIAGNOSIS.md step 5 (Learn View open,
-scroll, close, reopen; both panes at once; Splice editor close) plus this
-issue's collapse/reopen cycle.
+Land no behaviour change here before a probe confirms its mechanism. Every
+candidate touches machinery shared with the Learn View pane, Max for Live
+and JUCE plugin editors. Each change needs the regression list from
+notes/ABLETON-WINE-GPU-RENDERER-WEBVIEW2-DIAGNOSIS.md step 5 (Learn View
+open, scroll, close, reopen; both panes at once; Splice editor close) plus
+this issue's collapse/reopen cycle. Scratch builds carry no PipeASIO, so a
+test runtime has no audio; that does not affect this repro.
+
+## Data to request from reporters
+
+- The exact commit their runtime was built from.
+- Their desktop scale factor.
+- A dump of Live's main window's child windows that preserves sibling
+  order, taken healthy and broken.
