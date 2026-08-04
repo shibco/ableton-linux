@@ -275,10 +275,41 @@ build in `build-fontcache/`) against a scratch prefix:
 - Warm-session process: 142 to 152 ms with the cache, 323 to 331 ms
   without. Every helper process start saves about 180 ms.
 
-Pending: the container build (`./build.sh`), and the Live-level max_boot
-comparison on the production runtime, where the pre-patch enumeration
-measured about 300 ms in Live's first process (section 3.2). The scratch
-build has no PipeASIO driver, so Live did not run on it.
+Production verification, 2026-08-05. The container build (`./build.sh`)
+passed the full pipeline including the relocation gate and the 93-check
+build audit, with the 0070 fingerprint confirmed in the shipped win32u.so.
+The artifact is installed as a parallel runtime at
+`~/.local/opt/wine-d2d1-nspa-11.13-fontcache-0070`; the shipped default
+runtime is untouched. Real-Live comparison through the production launcher
+(`ABLETON_WINE_ROOT` override), production prefix, 00-empty set, cache on
+against `WINE_DISABLE_HOST_FONT_CACHE=1`, medians of the settled
+repetitions (5 on, 3 off; the first repetition of each arm ran elevated
+and is excluded):
+
+| interval | cache on | cache off | saving |
+|---|---|---|---|
+| launch to "Started: Live" | 1.24 s | 3.08 s | 1.85 s |
+| launch to "Live App: End Init" | 5.10 s | 7.01 s | 1.91 s |
+| "Started" to "Max: Version" | 3.55 s | 3.52 s | none |
+
+The saving lands entirely before "Started: Live" and reaches about 1.9 s
+per launch, six times the 300 ms the section 3.2 probe predicted. Two
+reasons: the probe's control arm (fontconfig emptied) still re-parsed the
+733 externally registered font files from the registry, work the cache
+also removes; and the launch pipeline contains several font-using wine
+processes beyond Live (wineboot and the launcher's helpers), each of which
+now skips its own scan. The unchanged "Started" to "Max: Version" interval
+confirms that the MaxPlug window itself is not font-list bound; reducing
+it is P-M3 and P-M4.
+
+The first patched launch scans once and writes the cache
+(`~/.wine-ableton/drive_c/windows/wine-host-font.cache`, 973 KB in the
+production prefix); every following launch reads it.
+
+Remaining before shipping: merge and release scheduling against the
+branches that reserve numbers 0066 to 0069, and normal-use soak on the
+maintainer's machine. The user-facing entry is in TROUBLESHOOTING.md ("A
+newly installed font does not show up inside Live").
 
 ### P-M2. Reuse the wine session across launches (launcher change, no wine patch)
 
