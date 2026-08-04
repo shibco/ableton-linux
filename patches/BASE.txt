@@ -251,3 +251,11 @@ Apply them in sequence with the rest of the series.
   borderless fullscreen, unselected windows, and plugin windows retain Wine's
   existing behavior. `WINE_WIN32_RESIZABLE_CLASS=off` disables only this fix
   for comparison. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+- `0070`: dxgi twins of the patch 0016 dcomp subclass guards. A re-bind of a
+  window dxgi already subclasses (client recreated its swapchain for the same
+  window) no longer records dxgi's own wndproc as the original, no longer
+  double-counts the popup-mode heuristic or demotes the window to popup mode,
+  and `d3d11_swapchain_Release` no longer strands an installed subclass
+  without its forwarding prop (painted but ignored all input). Found during
+  the issue 87 review; not confirmed as its mechanism. See
+  `notes/FINDINGS-ISSUE-87-SPLICE-INPUT-2026-08-04.md`.
