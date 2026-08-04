@@ -1,28 +1,37 @@
-From ca9c708deb3dcefd82087c7a338a6784a6bda61e Mon Sep 17 00:00:00 2001
+From 187d8e17bf3d8302e70a2ea721ae52c5a64a8f00 Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
 Date: Tue, 4 Aug 2026 23:25:29 +0200
 Subject: [PATCH] win32u: cache the enumerated host font list in the prefix
 
 Enumerating the host fonts (a fontconfig walk plus one freetype parse per
-face) repeats in every font-using process and cannot be absorbed by the
-session font cache, which lives in a volatile registry key and dies with
-the wineserver session. On a host with 3482 font files the enumeration
-costs about 300 ms in the first process of every session, and the Ableton
-launcher starts a fresh session for every Live launch, so Live pays it
-every time.
+face) repeats in every font-using process. The session font cache does not
+prevent this: font_init() runs the enumeration before it consults the
+cache key, and the key is created with REG_OPTION_VOLATILE, so Wine
+deletes it with the wineserver session. On a host with 3482 font files
+the enumeration costs about 300 ms in the first process of every session.
+The Ableton launcher starts a fresh session for every Live launch, so
+Live repeats it on every start.
 
-Serialize the enumerated faces to c:\windows\wine-host-font.cache, stamped
-with a hash of the host font directories (entry names, file sizes and
-mtimes). While the stamp matches, font_init() loads the face list from the
-file instead of enumerating; a stamp mismatch, a short or corrupt file, or
-any face that does not fit the format falls back to the full enumeration,
-which rewrites the file. Reads and writes run under the existing font
-mutex. The prefix-local directories (c:\windows\Fonts, the Wine data dir)
-always rescan, so launcher-installed fonts keep appearing without a cache
-invalidation. WINE_DISABLE_HOST_FONT_CACHE=1 restores the previous
-behaviour.
+Write the enumerated faces to c:\windows\wine-host-font.cache together
+with a stamp, a hash of the host font directory trees (entry names, file
+sizes, mtimes). At process start, font_init() recomputes the stamp; while
+it matches the file, font_init() loads the face list from the file and
+skips the enumeration. On a stamp mismatch or an unreadable or malformed
+file, font_init() runs the full enumeration and rewrites the file. A face
+whose names do not fit the file format stops the file from being written,
+and every process then enumerates as before. Reads and writes hold the
+existing font mutex. The prefix-local directories (c:\windows\Fonts, the
+Wine data dir) always rescan, so fonts installed into the prefix appear
+without invalidating the cache. WINE_DISABLE_HOST_FONT_CACHE=1 turns the
+cache off.
 
-See notes/FINDINGS-M4L-LAUNCH-2026-08-04.md (proposal P-M1).
+Measured on a 64-bit build against a scratch prefix, 3482 host font
+files: the cached and the enumerated font lists are byte-identical (8257
+faces); the first process of a cold session drops from a median 3551 ms
+to 2748 ms; a later process in a warm session drops from about 326 ms to
+145 ms.
+
+See notes/FINDINGS-M4L-LAUNCH-2026-08-04.md, P-M1.
 ---
  dlls/win32u/font.c          | 295 +++++++++++++++++++++++++++++++++++-
  dlls/win32u/freetype.c      |  87 ++++++++++-

@@ -246,13 +246,13 @@ Apply them in sequence with the rest of the series.
   `Ableton Live Window Class`; other classes and ordinary windowed geometry
   retain Wine's existing behavior. See `notes/ABLETON-WINE-FULLSCREEN.md`.
 - `0070`: cache the enumerated host font list in
-  `c:\windows\wine-host-font.cache`, stamped with a hash of the host font
-  directories (entry names, file sizes, mtimes). `font_init()` loads the
-  face list from the file while the stamp matches and re-enumerates, then
-  rewrites the file, on any mismatch or read error. The enumeration
-  otherwise repeats in every font-using process and costs about 300 ms in
-  the first process of each wineserver session; the launcher's per-launch
-  `wineserver -k` makes every Live launch that first process. Prefix-local
-  font directories (`c:\windows\Fonts`, the Wine data dir) always rescan.
-  `WINE_DISABLE_HOST_FONT_CACHE=1` disables the cache. See
-  `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md` (proposal P-M1).
+  `c:\windows\wine-host-font.cache`. Wine otherwise re-enumerates the host
+  fonts (a fontconfig walk plus one freetype parse per face) in every
+  font-using process; the launcher kills the wineserver on every launch, so
+  Live repeats the enumeration on every start, about 300 ms on the measured
+  machine. The cache file carries a stamp, a hash of the host font
+  directory trees. `font_init()` loads the faces from the file while the
+  stamp matches, and re-enumerates and rewrites the file on any mismatch or
+  read error. Prefix-local font directories always rescan.
+  `WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off. See
+  `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md`, P-M1.

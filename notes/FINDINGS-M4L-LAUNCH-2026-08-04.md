@@ -219,61 +219,66 @@ exist and need no new tooling: `max_boot` (the interval from "Started" to
 "Max: Version" in Log.txt, parsed by scripts/bench-workload.sh on the
 moonshot branch) and the MaxPlug phase log.
 
-### P-M1. Cache the font list across processes and sessions (wine patch, upstream-relevant)
+### P-M1. Cache the host font list across processes and sessions (patch 0070, implemented)
 
-Two parts:
+Implemented 2026-08-04 as
+`patches/0070-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch`
+(SERIES.sha256 refrozen; build-audit fingerprint
+`WINE_DISABLE_HOST_FONT_CACHE`). The proposal had two parts, skip the
+rescan inside a session and persist the list across sessions; one
+mechanism implements both.
 
-a) Skip the per-process host-font scan when the session cache exists. Today
-   `font_funcs->load_fonts()` and `load_file_system_fonts()` run
-   unconditionally in every font-using process. When
-   `wine_fonts_cache_key` already exists, the process can load the font list
-   from the cache and skip the fontconfig walk, and rescan only when the
-   cache is missing. Upstream 11.13 contains the same unconditional code, so
-   the change is a candidate for upstream submission. This part removes the
-   scan from AddOns.exe, Index.exe, the Max editor, setsyscolors.exe,
-   learnheal.exe, and every other process in the session.
-b) Persist the cache across sessions: store it in a non-volatile key or a
-   file, keyed on the modification times of the font source directories and
-   the fontconfig cache stamp, so the first process of a session, which is
-   Live itself, also skips the scan. This part removes the measured ~300 ms
-   from every Live launch on this machine; machines with slower disks or
-   more fonts save more.
+What the patch does:
 
-Effort: moderate (win32u/font.c, freetype.c; cache invalidation is the main
-design decision). Risk: a stale cache after font changes; the
-modification-time keys cover this, and `WINE_DISABLE_HOST_FONT_CACHE=1`
-restores current behaviour. Measurement: the cold-session minifont
-difference drops to ~0, Live's "Started" timestamp moves ~300 ms earlier,
-and max_boot shrinks.
+- `save_host_font_cache()` writes every enumerated host face to
+  `c:\windows\wine-host-font.cache`, together with a stamp:
+  `fontconfig_host_fonts_stamp()` hashes the host font directory trees
+  (entry names, file sizes, mtimes).
+- `font_init()` recomputes the stamp at every process start. While the
+  stamp matches the file, `load_host_font_cache()` adds the faces from the
+  file and the process skips the host enumeration completely.
+- On a stamp mismatch or an unreadable or malformed file, `font_init()`
+  runs the full enumeration and rewrites the file. A face whose names do
+  not fit the file format stops the file from being written at all, and
+  every process then enumerates as before the patch.
+- Reads and writes hold the existing font mutex, so one process writes at
+  a time.
+- The prefix-local font directories (`c:\windows\Fonts`, the Wine data
+  dir) always rescan, so fonts that the launcher or setup-prefix.sh
+  install appear without touching the cache.
+- `WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off and restores the
+  old behaviour. The same switch served as the control arm in every
+  measurement below.
 
-Status 2026-08-04, later the same day: implemented as patch 0070
-(`patches/0070-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch`;
-SERIES.sha256 refrozen, build-audit fingerprint
-`WINE_DISABLE_HOST_FONT_CACHE` added). The implementation covers both parts
-with one mechanism: every process, first of a session or not, loads the face
-list from `c:\windows\wine-host-font.cache` while the stamp matches.
+Every process reads the same file: the first process of a session, which
+is Live itself because the launcher kills the wineserver on every launch,
+and each helper process after it (AddOns.exe, Index.exe, the Max editor,
+setsyscolors.exe, learnheal.exe). Upstream 11.13 enumerates
+unconditionally in the same way, so the patch is a candidate for upstream
+submission.
+
 Verified on a local 64-bit build of the patched tree
-(`~/Projects/Code/ableton/wine-issue-122-src`, branch fontcache-0070, build
-in `build-fontcache/`) against a scratch prefix:
+(`~/Projects/Code/ableton/wine-issue-122-src`, branch fontcache-0070,
+build in `build-fontcache/`) against a scratch prefix:
 
-- The cached and the enumerated font lists are identical: 8,257 enumerated
-  face lines, byte-identical diff (fontdump probe, both arms).
-- A cache-hit process makes zero fontconfig_add_font calls and loads 3,053
-  records, which become 3,276 faces after the vertical DBCS twins
-  regenerate.
-- Invalidation: an altered host font set (XDG_DATA_HOME override), a
-  truncated cache file, and a garbage-overwritten cache file each fall back
-  to the full enumeration and rewrite the file; the next session hits the
-  new cache.
-- Cold-session first process, 7 interleaved repetitions per arm: median
-  2748 ms with the cache, 3551 ms without, on this scratch build and
-  prefix.
+- Correctness: enumerating with the cache and with the scan produces
+  byte-identical face lists (8,257 lines, fontdump probe, sorted diff).
+- A cache hit makes zero fontconfig_add_font calls and loads 3,053
+  records; `add_gdi_face()` regenerates the vertical DBCS twins from
+  them, giving 3,276 faces.
+- Invalidation: a changed host font set (XDG_DATA_HOME override), a
+  truncated file, and a garbage-overwritten file each fell back to the
+  full enumeration and rewrote the file, and the next session hit the new
+  cache.
+- Cold-session first process, 7 interleaved runs per arm: median 2748 ms
+  with the cache, 3551 ms without.
 - Warm-session process: 142 to 152 ms with the cache, 323 to 331 ms
-  without, so every helper process start saves about 180 ms.
+  without. Every helper process start saves about 180 ms.
 
 Pending: the container build (`./build.sh`), and the Live-level max_boot
-comparison on the production runtime. The scratch build has no PipeASIO
-driver, so no Live verification ran on it.
+comparison on the production runtime, where the pre-patch enumeration
+measured about 300 ms in Live's first process (section 3.2). The scratch
+build has no PipeASIO driver, so Live did not run on it.
 
 ### P-M2. Reuse the wine session across launches (launcher change, no wine patch)
 
@@ -288,7 +293,8 @@ the measurements above supply its expected saving. Effort: low, launcher
 only. Risk: the current unconditional kill exists to prevent a stale server
 from an older runtime binding the prefix; the version comparison must cover
 that case before the kill is removed. Measurement: the interval from launch
-to "Started: Live", plus the minifont probe from P-M1 warm against cold.
+to "Started: Live", plus the minifont probe from section 3.2 warm against
+cold.
 
 ### P-M3. Attribute patcherview_initjuce, then reduce it (measurement first, then wine patch)
 
