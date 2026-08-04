@@ -61,5 +61,6 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 0a7fb762e4bef288556f2118c318f6e99fe5532bb61058ccdb6d7732bf42ba27  0063-comdlg32-reveal-explorer-select-folder-targets-throu.patch
 81e02eeac88e6eda5da8044cd5bf74a197b2742f77c46da54e61dbf300031bd3  0064-shell32-route-explorer-folder-open-commands-to-the-h.patch
 7931be1771a070325eb0b87f970e51f7089c216f1bad128fb5ecf504e100e005  0065-win32u-normalize-selected-fullscreen-window.patch
+08bb380bedb7893dee1f9bb2ac4c53efcda661441b28b2825ba966690049e5c3  0070-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

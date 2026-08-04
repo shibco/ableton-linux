@@ -11,8 +11,9 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 63 files, numbered 0001 through 0065.
-Patches 0027 and 0044 are intentionally absent.
+The current Wine series contains 64 files, numbered 0001 through 0070.
+Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0069
+are reserved by unmerged branches (issue 122, MIDI/audio hotplug, PR 125).
 
 ## Applying the series
 
@@ -244,3 +245,14 @@ Apply them in sequence with the rest of the series.
   removing `_NET_WM_STATE_FULLSCREEN` on exit. The Live launcher selects
   `Ableton Live Window Class`; other classes and ordinary windowed geometry
   retain Wine's existing behavior. See `notes/ABLETON-WINE-FULLSCREEN.md`.
+- `0070`: cache the enumerated host font list in
+  `c:\windows\wine-host-font.cache`, stamped with a hash of the host font
+  directories (entry names, file sizes, mtimes). `font_init()` loads the
+  face list from the file while the stamp matches and re-enumerates, then
+  rewrites the file, on any mismatch or read error. The enumeration
+  otherwise repeats in every font-using process and costs about 300 ms in
+  the first process of each wineserver session; the launcher's per-launch
+  `wineserver -k` makes every Live launch that first process. Prefix-local
+  font directories (`c:\windows\Fonts`, the Wine data dir) always rescan.
+  `WINE_DISABLE_HOST_FONT_CACHE=1` disables the cache. See
+  `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md` (proposal P-M1).

@@ -241,10 +241,39 @@ b) Persist the cache across sessions: store it in a non-volatile key or a
 
 Effort: moderate (win32u/font.c, freetype.c; cache invalidation is the main
 design decision). Risk: a stale cache after font changes; the
-modification-time keys cover this, and a `WINE_FONT_CACHE=off` variable that
-disables the cache restores current behaviour. Measurement: the cold-session
-minifont difference drops to ~0, Live's "Started" timestamp moves ~300 ms
-earlier, and max_boot shrinks.
+modification-time keys cover this, and `WINE_DISABLE_HOST_FONT_CACHE=1`
+restores current behaviour. Measurement: the cold-session minifont
+difference drops to ~0, Live's "Started" timestamp moves ~300 ms earlier,
+and max_boot shrinks.
+
+Status 2026-08-04, later the same day: implemented as patch 0070
+(`patches/0070-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch`;
+SERIES.sha256 refrozen, build-audit fingerprint
+`WINE_DISABLE_HOST_FONT_CACHE` added). The implementation covers both parts
+with one mechanism: every process, first of a session or not, loads the face
+list from `c:\windows\wine-host-font.cache` while the stamp matches.
+Verified on a local 64-bit build of the patched tree
+(`~/Projects/Code/ableton/wine-issue-122-src`, branch fontcache-0070, build
+in `build-fontcache/`) against a scratch prefix:
+
+- The cached and the enumerated font lists are identical: 8,257 enumerated
+  face lines, byte-identical diff (fontdump probe, both arms).
+- A cache-hit process makes zero fontconfig_add_font calls and loads 3,053
+  records, which become 3,276 faces after the vertical DBCS twins
+  regenerate.
+- Invalidation: an altered host font set (XDG_DATA_HOME override), a
+  truncated cache file, and a garbage-overwritten cache file each fall back
+  to the full enumeration and rewrite the file; the next session hits the
+  new cache.
+- Cold-session first process, 7 interleaved repetitions per arm: median
+  2748 ms with the cache, 3551 ms without, on this scratch build and
+  prefix.
+- Warm-session process: 142 to 152 ms with the cache, 323 to 331 ms
+  without, so every helper process start saves about 180 ms.
+
+Pending: the container build (`./build.sh`), and the Live-level max_boot
+comparison on the production runtime. The scratch build has no PipeASIO
+driver, so no Live verification ran on it.
 
 ### P-M2. Reuse the wine session across launches (launcher change, no wine patch)
 
