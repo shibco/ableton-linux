@@ -93,6 +93,24 @@ static void consider( HWND hwnd )
     }
 }
 
+/* Only Live's own panes (Learn View, doc sidebar): every ancestor below the
+ * desktop must be one of Live's pane hosts.  Plugin webviews (CHOC/Splice,
+ * JUCE) hang under their own host windows and must never be poked (issue 87). */
+static int live_pane_ancestry( HWND hwnd )
+{
+    char cls[128];
+    HWND desk = GetDesktopWindow(), p;
+
+    for (p = GetAncestor( hwnd, GA_PARENT ); p && p != desk; p = GetAncestor( p, GA_PARENT ))
+    {
+        if (!GetClassNameA( p, cls, sizeof(cls) )) return 0;
+        if (lstrcmpA( cls, "Ableton Live Window Class" )
+            && lstrcmpA( cls, "AbletonWebViewHelperWindow" )
+            && lstrcmpA( cls, "Chrome_WidgetWin_0" )) return 0;
+    }
+    return 1;
+}
+
 static void scan( HWND hwnd )
 {
     char cls[128], title[160];
@@ -103,7 +121,7 @@ static void scan( HWND hwnd )
         title[0] = 0;
         GetWindowTextA( hwnd, title, sizeof(title) );
         if (title[0] && find_sub( title, "Ableton Live" )) live_seen = 1;
-        if (!lstrcmpA( cls, "Chrome_WidgetWin_1" ) && title[0])
+        if (!lstrcmpA( cls, "Chrome_WidgetWin_1" ) && title[0] && live_pane_ancestry( hwnd ))
         {
             RECT r; GetWindowRect( hwnd, &r );
             /* skip tooltips/popups; the lesson pane and doc sidebar are big */
