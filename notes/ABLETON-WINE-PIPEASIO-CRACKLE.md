@@ -375,4 +375,34 @@ it was written 2026-07-26. State of the plan as of this addendum:
   the session log with their own `[pipeasio]` prefix, and its wine TRACE
   class did not surface even with `trace+asio`, so the G1 log line is
   invisible in the field; the behavioural answer stands.
-- Next per the Order section: F8. G2 through G4 stay open.
+- F8 landed 2026-08-02 as pipeasio patch 0006, in the conservative reading
+  the risk table asks for. The node cache carries `device.id`, so the
+  driver can tell when two nodes share a card. The preference change is
+  confined to the fallback tier: only when the capture direction has no
+  usable default does the driver prefer a source on the playback card over
+  the first-discovered one, logging the choice when it diverges. A default
+  the user set is never overridden, because recording from a device the
+  user did not pick is a worse failure than resampling; when the two
+  directions resolve to different devices, the driver logs the pair once,
+  naming both nodes and the `input_device`/`output_device` keys (marker
+  `pipeasio-clock-domains`). Runtime verification needs a container
+  build. The seeded input-count question (whether the seed keeps
+  `inputs = 2`) stays open, decided separately per the risk table.
+- C9 correction and fix, 2026-08-02: two devices only crackle when the
+  second device runs out of buffer room while PipeWire adjusts its pace
+  to match the first device's clock; with enough room the adjustment is
+  silent (C8). Pipeasio patch 0007 supplies the room. While Live runs on
+  two devices, the driver raises the second device's buffer room to 512
+  frames (the ALSA property `api.alsa.headroom`, applied live through
+  the node's Props parameter), logs the change, and puts the old value
+  back when the session ends, the devices change, or that device starts
+  setting the graph's timing itself. Single-device sessions are never
+  touched. `PIPEASIO_FOLLOWER_HEADROOM` sets a different frame count or
+  turns this off. The live property path is verified against PipeWire
+  1.6.8 on the build machine. Open: a listening run on a real rig (USB
+  microphone plus a separate USB interface, no crackle over a long
+  session), the oldest supported PipeWire (the driver does nothing when
+  the property is refused), and reporting the added room to Live as
+  latency, which recording alignment needs.
+- Next per the Order section: the reply to #49, then the
+  three-distribution verification matrix. G2 through G4 stay open.

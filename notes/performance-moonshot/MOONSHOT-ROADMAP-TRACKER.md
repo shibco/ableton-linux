@@ -13,7 +13,7 @@ entry.
 | # | Item | Certainty | Invasiveness | Projected result | Chance | Status |
 |---|---|---|---|---|---|---|
 | P0 | Bench baselines + harness automation | certain | none | evidence floor for everything | high | in progress |
-| P1 | Host `/dev/ntsync` launch gate | high | minimal | recovers a silently lost ~1 core / 4-50x sync on affected hosts | very high | in progress |
+| P1 | Host `/dev/ntsync` launch gate | high | minimal | recovers a silently lost ~1 core / 4-50x sync on affected hosts | very high | done |
 | P2 | Run the written scheduling A/B | n/a (measurement) | none | decides the RR default, quantifies the inversion | high | in progress |
 | P3 | Audio hardening F0-F8 + PipeWire host arm | high | medium | fixes the audible defect classes (issue 49, crackle, recording offsets) | high | in progress |
 | P4 | Thread-priority chain (avrt de-stub, server RT band, retire whole-process RR, RTKit) | high problem / medium gain | high | audio outranks UI per thread; biggest dropout-margin lever at 64-128 frames | medium-high | not started |
@@ -70,8 +70,24 @@ entry.
   with PIPEASIO_ALLOW_QUANTUM_MISMATCH=on as the escape hatch, and port
   buffers sized to the quantum limit; verified in production the same day
   (pre-launch pin 384 predicted cleanly, mid-run pin 768 converged with
-  one mute episode; G1 answered yes). Next: F8. Driver patches need a
-  container build to ship.
+  one mute episode; G1 answered yes). F8 landed 2026-08-02 as pipeasio
+  patches 0006 and 0007. 0006: device.id cache, fallback capture
+  anchored to the playback card, user choices never overridden, neutral
+  two-device log line. 0007: while Live runs on two devices, the driver
+  gives the device that is not setting the graph's timing 512 frames of
+  buffer room (`api.alsa.headroom`, applied live) so PipeWire's pace
+  matching stays silent, and restores the old value afterwards;
+  `PIPEASIO_FOLLOWER_HEADROOM` adjusts or disables it; single-device
+  sessions are untouched. Verified: the live property path on PipeWire
+  1.6.8. Open: the two-device listening run (USB microphone plus a
+  separate USB interface, no crackle over a long session), reporting
+  the added room to Live as latency, the container build that carries
+  the driver stack, and the seeded input-count question. Next: the
+  issue 49 reply, the latency reporting, then the three-distribution
+  verification matrix before any release carries these patches.
+- P1 shipped 2026-08-02 (commit 96b043f, in the production launcher): the
+  warning branches are verified against faked kernels; a run on a host
+  that really lacks `/dev/ntsync` is the one open check.
 - P12 added 2026-08-02 from issue 46 and the Discord thread behind it.
   The goal is one sentence: any MIDI or audio device works whether it was
   connected before Live started or after it started, and comes back on its
