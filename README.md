@@ -257,6 +257,7 @@ or a workaround for a particular environment, please tell us!
 Start with:
 
 - [Build from source](BUILDING.md)
+- [Benchmarking](bench/README.md)
 - [Implementation notes](notes/)
 
 Contributors must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
