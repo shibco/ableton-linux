@@ -3,13 +3,18 @@
 # ableton-live, so standalone Max, Max for Live editing and PipeASIO all
 # share one wineserver. Args: Max documents as unix paths, or c74max: URLs.
 # Overrides: ABLETON_WINE_ROOT, ABLETON_WINEPREFIX, ABLETON_RT=off,
-#            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor).
+#            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor),
+#            ABLETON_MAX_CEF=gpu (let Max's embedded browser composite on the
+#            GPU again; default forces the software path, see below).
 set -u
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
-export WINEDEBUG="${WINEDEBUG:--all}"
+# Keep PipeASIO's warnings and errors visible (channel asio), same as the
+# ableton-live launcher: they name audio faults such as a lost quantum
+# negotiation, and the session log below captures them.
+export WINEDEBUG="${WINEDEBUG:--all,warn+asio,err+asio}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
@@ -21,6 +26,54 @@ if [ ! -f "$MAX_UNIX" ]; then
     echo "max9: no Max 9 installation in $WINEPREFIX" >&2
     exit 1
 fi
+
+# Session log: capture launcher warnings and Wine/driver stderr so audio and
+# CEF faults stay inspectable after the fact. Rotation keeps the last three
+# launches. Same shape as the ableton-live launcher, separate file.
+MAX_SESSION_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/ableton-wine/max9-session.log"
+if mkdir -p "$(dirname "$MAX_SESSION_LOG")" 2>/dev/null; then
+    [ -f "$MAX_SESSION_LOG.1" ] && mv -f "$MAX_SESSION_LOG.1" "$MAX_SESSION_LOG.2"
+    [ -f "$MAX_SESSION_LOG" ] && mv -f "$MAX_SESSION_LOG" "$MAX_SESSION_LOG.1"
+    echo "== max9 session $(date -u +%FT%TZ) runtime $(basename "$WINE_ROOT")" > "$MAX_SESSION_LOG"
+    exec 2> >(tee -a "$MAX_SESSION_LOG" >&2)
+fi
+
+# Max embeds a Chromium browser (CEF) for the welcome window, the in-app
+# documentation, the package manager, sign-in and the jweb object. Under the
+# patched stack CEF's GPU compositor produces no picture: the browser
+# processes run but the composited page never reaches Max's window (verified
+# 2026-08-05, notes/performance-moonshot/MAX9-STABILITY-2026-08-05.md).
+# Max forwards Chromium-style switches from its own command line, so force
+# the software path the same way the ableton-live launcher does for the
+# Learn View's WebView2. ABLETON_MAX_CEF=gpu drops the switches for an A/B.
+cef_args=(--disable-gpu --disable-gpu-compositing)
+if [ "${ABLETON_MAX_CEF:-soft}" = "gpu" ]; then
+    cef_args=()
+fi
+
+# Wine's winemenubuilder is disabled in this prefix, but entries it created
+# before that (2026-07-16) survive in the desktop database. They open Max
+# file types, and the generic binary type, with stock wine against this
+# prefix: stock wine is a different build, and every such launch restamps
+# the prefix with foreign version data. Remove exactly those fossils: the
+# winemenubuilder Exec signature, targeting this prefix, for Max9 ProgIDs.
+# The canonical c74max URL handler (wine-protocol-c74max.desktop) points at
+# this launcher and stays.
+scrub_menubuilder_fossils() {
+    local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    local f removed=0
+    for f in "$apps"/wine-extension-*.desktop; do
+        [ -f "$f" ] || continue
+        if grep -qE "^Exec=env \"WINEPREFIX=$WINEPREFIX\" wine start /ProgIDOpen \"Max9\." "$f"; then
+            echo "max9: removing stale wine handler $(basename "$f") (opens this prefix with stock wine)" >&2
+            rm -f "$f"
+            removed=1
+        fi
+    done
+    [ "$removed" -eq 1 ] && update-desktop-database "$apps" 2>/dev/null
+    return 0
+}
+scrub_menubuilder_fossils
 
 run=(wine)
 # Same realtime probe as the ableton-live launcher.
@@ -47,4 +100,4 @@ if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
     "$LINKD" --daemon || echo "max9: ableton-linkd failed to start" >&2
 fi
 
-exec "${run[@]}" "$MAX_EXE" ${args[@]+"${args[@]}"}
+exec "${run[@]}" "$MAX_EXE" ${cef_args[@]+"${cef_args[@]}"} ${args[@]+"${args[@]}"}
