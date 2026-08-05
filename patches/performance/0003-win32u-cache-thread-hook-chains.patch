@@ -1,0 +1,609 @@
+From d64521eb960cfa421c3d20105c04b6a45f71274d Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Wed, 5 Aug 2026 20:41:51 +0200
+Subject: [PATCH 1/3] win32u: cache same-thread hook chains, invalidated by a
+ shared-memory serial
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Idle Live 12 keeps ~5,700 wineserver requests/sec alive on an empty
+set; ~2,424/sec of them are WH_GETMESSAGE hook bookkeeping. Live
+installs a thread-local same-process WH_GETMESSAGE hook, so every
+retrieved posted/hardware message runs call_hooks(WH_GETMESSAGE,...)
+(posted: dlls/win32u/message.c:3245, hardware: message.c:3176) ->
+call_message_hooks, which pays three server round trips per message:
+start_hook_chain, get_hook_info via NtUserCallNextHookEx, and
+finish_hook_chain. The zero-RT gate already existed: is_hooked()
+reads queue_shm->hooks_count[id] from shared memory via a seqlock
+(get_shared_queue, dlls/win32u/winstation.c).
+
+This patch turns the whole chain walk into a client-side snapshot.
+The server gains a hooks_serial in queue_shm_t (server/protocol.def;
+the struct grows from 96 to 100 bytes, far below the ~300-byte
+object_shm_t union members, so the union size does not move), bumped
+inside add_queue_hook_count (server/queue.c) — the single choke
+point reached by every hook mutation (add_hook, remove_hook,
+remove_thread_hooks and add_desktop_hook_count, server/hook.c).
+Client session shared memory views are MAP_SHARED read-write but
+server-written only (patches 0018/0019 rule), which this honors:
+only the server writes the serial. The regenerated
+include/wine/server_protocol.h rides along (tools/make_requests;
+nothing in the build regenerates it, and upstream commits the
+generated file together with protocol.def); the struct change bumps
+SERVER_PROTOCOL_VERSION.
+
+In win32u each thread keeps a per-hook-id snapshot — serial plus an
+ordered entry list (handle, proc, unicode flag, module string) — in
+its user_thread_info, lazily allocated and freed from thread_detach.
+call_message_hooks reads hooks_count and hooks_serial in one seqlock
+section: a zero count still skips the chain with no round trip, and
+a snapshot whose serial matches is walked by calling the first entry
+through the existing call_hook, so the thread_info->hook /
+hook_unicode bookkeeping (dlls/win32u/hook.c) is unchanged — zero
+round trips per message. NtUserCallNextHookEx finds the current hook
+in the snapshots valid at the current serial and calls the next
+entry the same way; when the hook is in no current snapshot (serial
+moved mid-chain, chain never cached) it falls back to the server
+get_hook_info call, which resolves the live chain exactly as today.
+A serial miss refills by performing exactly today's sequence —
+start_hook_chain + get_hook_info(get_next=1) until exhausted +
+finish_hook_chain, recording each reply — so a refill costs no extra
+requests; the snapshot is published only when the serial is
+unchanged across the walk, so a concurrent mutation can never
+validate an inconsistent chain.
+
+v1 restrictions, all falling back to today's full server path: only
+replies with pid == tid == 0 (run-in-current-thread) are recorded, so
+low-level hooks rerouted to their owner thread
+(run_hook_in_owner_thread, server/hook.c) are not cached, and a
+chain containing one is marked not cacheable at that serial.
+WH_WINEVENT chains are excluded entirely: their server-side walk
+posts win events as a side effect (get_first_valid_hook /
+get_next_hook, server/hook.c).
+
+Semantics preserved, point by point:
+
+- Walk order matches the server's: the snapshot records the replies
+  in the order start_hook_chain/get_hook_info return them (queue
+  chain most-recent-first, then the global/desktop chain).
+- The server's chain-in-use refcount (server/hook.c) is not taken on
+  the cached path: the snapshot only holds values, and any removal
+  bumps the serial before the next message. Residual delta, only
+  observable with >= 2 hooks in one chain: a hook that unhooks
+  itself mid-chain and then calls CallNextHookEx gets the
+  server-fallback error path (its handle is already freed, since the
+  cached walk never took the chain refcount) and the rest of the
+  chain is skipped, where the refcounted server walk would still
+  reach the later hooks.
+- The module string is cached per entry and passed through
+  unchanged, so the GetModuleHandleExW semantics of the user32
+  callback side (dlls/user32/hook.c) are identical.
+- The refill pairs start/finish_hook_chain exactly like today, so
+  the server's chain-in-use counts balance on refills and on every
+  fallback path.
+- WINE_MSG_FASTPATH (on by default; "0"/"off" disables,
+  case-insensitive) gates this and the following two patches; with
+  it off every path is byte-identical to today.
+
+Verification: full series (62 main + performance 0001/0002 + this)
+applies with git am --3way onto the pristine base; server/queue.o,
+dlls/win32u/{hook,sysparams}.o compile warning-free with Wine's
+warning set; tools/make_requests regenerates server_protocol.h with
+hooks_serial.
+---
+ dlls/win32u/hook.c             | 379 +++++++++++++++++++++++++++++++--
+ dlls/win32u/ntuser_private.h   |   1 +
+ dlls/win32u/sysparams.c        |   1 +
+ dlls/win32u/win32u_private.h   |   2 +
+ include/wine/server_protocol.h |   3 +-
+ server/protocol.def            |   1 +
+ server/queue.c                 |   3 +
+ 7 files changed, 374 insertions(+), 16 deletions(-)
+
+diff --git a/dlls/win32u/hook.c b/dlls/win32u/hook.c
+index b0f49e8..68da488 100644
+--- a/dlls/win32u/hook.c
++++ b/dlls/win32u/hook.c
+@@ -24,6 +24,7 @@
+ #endif
+ 
+ #include <assert.h>
++#include <strings.h>
+ #include "win32u_private.h"
+ #include "ntuser_private.h"
+ #include "wine/server.h"
+@@ -58,6 +59,271 @@ static const char *debugstr_hook_id( unsigned int id )
+     return hook_names[id - WH_MINHOOK];
+ }
+ 
++/***********************************************************************
++ *           msg_fastpath_enabled
++ *
++ * Single gate for the WINE_MSG_FASTPATH message-path fast paths that keep
++ * same-thread hook bookkeeping, redundant queue mask re-assertions and
++ * known-clean GetUpdateRect polls off the wineserver socket. Enabled by
++ * default; "0"/"off" (case-insensitive) disables it, and every path then
++ * behaves exactly as without the fast paths.
++ */
++int msg_fastpath_enabled(void)
++{
++    static int enabled = -1;
++
++    if (enabled == -1)
++    {
++        const char *env = getenv( "WINE_MSG_FASTPATH" );
++        enabled = !(env && (!strcasecmp( env, "0" ) || !strcasecmp( env, "off" )));
++    }
++    return enabled;
++}
++
++/* Per-thread snapshot of a server hook chain, for the WINE_MSG_FASTPATH hook
++ * fast path. The server bumps the queue_shm hooks_serial on every hook chain
++ * mutation (add_queue_hook_count, server/queue.c, reached from add_hook,
++ * remove_hook, remove_thread_hooks and add_desktop_hook_count), so a snapshot
++ * taken at the serial currently in shared memory is exact. Only hooks that
++ * run in the current thread (server reply pid == tid == 0) are recorded; a
++ * chain containing a hook rerouted to its owner thread (low-level hooks) is
++ * marked not cacheable and keeps the server path, as is every WH_WINEVENT
++ * chain (the server walk posts win events as a side effect). */
++
++struct cached_hook_entry
++{
++    HHOOK  handle;
++    void  *proc;
++    BOOL   unicode;             /* hook expects unicode params */
++    WCHAR  module[MAX_PATH];
++};
++
++struct cached_hook_chain
++{
++    unsigned int              serial;   /* queue hooks_serial the snapshot was taken at; 0 = invalid */
++    unsigned int              count;    /* recorded entries; 0 with a valid serial = not cacheable */
++    unsigned int              size;     /* allocated entries */
++    struct cached_hook_entry *entries;
++};
++
++struct hook_chain_cache
++{
++    struct cached_hook_chain chains[NB_HOOKS];
++};
++
++/***********************************************************************
++ *           get_hook_count_and_serial
++ *
++ * Read the active-hooks count of one hook id and the queue hook-chain
++ * serial in a single shared-memory seqlock section. Returns FALSE when the
++ * shared queue cannot be read; callers fall back to the server path, the
++ * same way is_hooked() falls back to TRUE.
++ */
++static BOOL get_hook_count_and_serial( INT id, unsigned int *serial, int *count )
++{
++    struct object_lock lock = OBJECT_LOCK_INIT;
++    const queue_shm_t *queue_shm;
++    UINT status;
++
++    while ((status = get_shared_queue( &lock, &queue_shm )) == STATUS_PENDING)
++    {
++        *count  = queue_shm->hooks_count[id - WH_MINHOOK];
++        *serial = queue_shm->hooks_serial;
++    }
++    return !status;
++}
++
++static BOOL get_hook_serial( unsigned int *serial )
++{
++    struct object_lock lock = OBJECT_LOCK_INIT;
++    const queue_shm_t *queue_shm;
++    UINT status;
++
++    while ((status = get_shared_queue( &lock, &queue_shm )) == STATUS_PENDING)
++        *serial = queue_shm->hooks_serial;
++    return !status;
++}
++
++static struct hook_chain_cache *alloc_hook_chain_cache( struct user_thread_info *thread_info )
++{
++    if (!thread_info->hook_chain_cache &&
++        !(thread_info->hook_chain_cache = calloc( 1, sizeof(struct hook_chain_cache) )))
++        WARN( "WINE_MSG_FASTPATH hook chain snapshot cache allocation failed\n" );
++    return thread_info->hook_chain_cache;
++}
++
++void free_hook_chain_cache(void)
++{
++    struct user_thread_info *thread_info = get_user_thread_info();
++    struct hook_chain_cache *cache = thread_info->hook_chain_cache;
++    int i;
++
++    if (!cache) return;
++    for (i = 0; i < NB_HOOKS; i++) free( cache->chains[i].entries );
++    free( cache );
++    thread_info->hook_chain_cache = NULL;
++}
++
++static BOOL record_hook_chain_entry( struct cached_hook_chain *chain, unsigned int n,
++                                     const struct win_hook_params *info, const WCHAR *module )
++{
++    if (n >= chain->size)
++    {
++        struct cached_hook_entry *entries;
++        unsigned int size = chain->size ? chain->size : 4;
++
++        while (size <= n) size *= 2;
++        if (!(entries = realloc( chain->entries, size * sizeof(*entries) )))
++        {
++            WARN( "WINE_MSG_FASTPATH hook chain snapshot entry allocation failed\n" );
++            return FALSE;
++        }
++        chain->entries = entries;
++        chain->size    = size;
++    }
++    chain->entries[n].handle  = info->handle;
++    chain->entries[n].proc    = info->proc;
++    chain->entries[n].unicode = info->next_unicode;
++    wcscpy( chain->entries[n].module, module );
++    return TRUE;
++}
++
++/***********************************************************************
++ *           refill_hook_chain_cache
++ *
++ * Refresh the per-thread snapshot of one hook chain, performing exactly the
++ * requests a plain call_message_hooks() would perform: start_hook_chain,
++ * then get_hook_info(get_next=1) until the chain is exhausted, then
++ * finish_hook_chain — no extra requests. Every reply that runs in the
++ * current thread (pid == tid == 0) is recorded in walk order; the first
++ * reply that does not (a low-level hook rerouted to its owner thread) stops
++ * the recording and marks the chain not cacheable at the current serial.
++ * The snapshot is published only when the queue serial is unchanged across
++ * the walk, so a concurrent hook change can never validate an inconsistent
++ * chain.
++ *
++ * On success info/module hold the chain head exactly as start_hook_chain
++ * replied it, so the caller can run it without repeating the request when
++ * the chain turns out not cacheable. Returns FALSE when the walk could not
++ * be performed at all; the caller then uses the plain server sequence.
++ */
++static BOOL refill_hook_chain_cache( INT id, struct cached_hook_chain *chain,
++                                     struct win_hook_params *info, WCHAR *module )
++{
++    struct win_hook_params next_info;
++    WCHAR next_module[MAX_PATH];
++    unsigned int serial = 0, recheck_serial = 0, n = 0;
++    int count = 0, recheck_count = 0;
++    BOOL exhausted = FALSE;
++
++    if (!get_hook_count_and_serial( id, &serial, &count )) return FALSE;
++
++    memset( info, 0, sizeof(*info) );
++    info->prev_unicode = TRUE;
++    info->id = id;
++    module[0] = 0;
++
++    SERVER_START_REQ( start_hook_chain )
++    {
++        req->id = info->id;
++        req->event = EVENT_MIN;
++        wine_server_set_reply( req, module, sizeof(module[0]) * (MAX_PATH - 1) );
++        if (!wine_server_call( req ))
++        {
++            module[wine_server_reply_size(req) / sizeof(WCHAR)] = 0;
++            info->handle       = wine_server_ptr_handle( reply->handle );
++            info->pid          = reply->pid;
++            info->tid          = reply->tid;
++            info->proc         = wine_server_get_ptr( reply->proc );
++            info->next_unicode = reply->unicode;
++        }
++    }
++    SERVER_END_REQ;
++    if (!info->tid && !info->proc) goto publish;  /* no hook set (chain empty) */
++
++    for (;;)
++    {
++        const struct win_hook_params *current_info = n ? &next_info : info;
++        const WCHAR *current_module = n ? next_module : module;
++
++        if (current_info->pid || current_info->tid) break;  /* rerouted to the owner thread */
++        if (!record_hook_chain_entry( chain, n, current_info, current_module )) break;
++        n++;
++
++        memset( &next_info, 0, sizeof(next_info) );
++        SERVER_START_REQ( get_hook_info )
++        {
++            req->handle = wine_server_user_handle( current_info->handle );
++            req->get_next = 1;
++            req->event = EVENT_MIN;
++            wine_server_set_reply( req, next_module, sizeof(next_module) - sizeof(WCHAR) );
++            if (!wine_server_call( req ))
++            {
++                next_module[wine_server_reply_size(req) / sizeof(WCHAR)] = 0;
++                next_info.handle       = wine_server_ptr_handle( reply->handle );
++                next_info.pid          = reply->pid;
++                next_info.tid          = reply->tid;
++                next_info.proc         = wine_server_get_ptr( reply->proc );
++                next_info.next_unicode = reply->unicode;
++            }
++        }
++        SERVER_END_REQ;
++        if (!next_info.tid && !next_info.proc)
++        {
++            exhausted = TRUE;
++            break;
++        }
++    }
++
++    SERVER_START_REQ( finish_hook_chain )
++    {
++        req->id = id;
++        wine_server_call( req );
++    }
++    SERVER_END_REQ;
++
++publish:
++    /* publish only if the serial did not move during the walk */
++    if (get_hook_count_and_serial( id, &recheck_serial, &recheck_count ) && recheck_serial == serial)
++    {
++        chain->count  = exhausted ? n : 0;
++        chain->serial = serial;
++    }
++    return TRUE;
++}
++
++/***********************************************************************
++ *           find_next_cached_hook
++ *
++ * Find the hook following `current` in the per-thread snapshots valid at
++ * `serial`. Returns 1 and the entry when found, 0 when `current` is the
++ * snapshot tail (the chain is over), -1 when `current` is not in any
++ * snapshot valid at this serial and the server must resolve the next hook.
++ */
++static int find_next_cached_hook( const struct hook_chain_cache *cache, HHOOK current,
++                                  unsigned int serial, INT *id, const struct cached_hook_entry **next )
++{
++    unsigned int j;
++    INT i;
++
++    for (i = 0; i < NB_HOOKS; i++)
++    {
++        const struct cached_hook_chain *chain = &cache->chains[i];
++
++        if (chain->serial != serial || !chain->count) continue;
++        for (j = 0; j < chain->count; j++)
++        {
++            if (chain->entries[j].handle != current) continue;
++            if (j + 1 == chain->count) return 0;
++            *id   = i + WH_MINHOOK;
++            *next = &chain->entries[j + 1];
++            return 1;
++        }
++    }
++    return -1;
++}
++
++
+ BOOL is_hooked( INT id )
+ {
+     struct object_lock lock = OBJECT_LOCK_INIT;
+@@ -367,24 +633,53 @@ LRESULT WINAPI NtUserCallNextHookEx( HHOOK hhook, INT code, WPARAM wparam, LPARA
+ 
+     memset( &info, 0, sizeof(info) );
+ 
+-    SERVER_START_REQ( get_hook_info )
++    /* Serve the next hook from the per-thread chain snapshot when the chain
++       that set thread_info->hook is still current; the get_hook_info round
++       trip is then unnecessary. */
++    if (msg_fastpath_enabled() && thread_info->hook && thread_info->hook_chain_cache)
+     {
+-        req->handle = wine_server_user_handle( thread_info->hook );
+-        req->get_next = 1;
+-        req->event = EVENT_MIN;
+-        wine_server_set_reply( req, module, sizeof(module) - sizeof(WCHAR) );
+-        if (!wine_server_call_err( req ))
++        const struct cached_hook_entry *next = NULL;
++        unsigned int serial = 0;
++        INT id = 0;
++        int res = -1;
++
++        if (get_hook_serial( &serial ))
++            res = find_next_cached_hook( thread_info->hook_chain_cache, thread_info->hook,
++                                         serial, &id, &next );
++        if (!res) return 0;  /* snapshot tail: the chain is over */
++        if (res > 0)
+         {
+-            module[wine_server_reply_size(req) / sizeof(WCHAR)] = 0;
+-            info.handle       = wine_server_ptr_handle( reply->handle );
+-            info.id           = reply->id;
+-            info.pid          = reply->pid;
+-            info.tid          = reply->tid;
+-            info.proc         = wine_server_get_ptr( reply->proc );
+-            info.next_unicode = reply->unicode;
++            info.handle       = next->handle;
++            info.id           = id;
++            info.proc         = next->proc;
++            info.next_unicode = next->unicode;
++            wcscpy( module, next->module );
+         }
++        /* res < 0: not in any current snapshot (the serial moved mid-chain,
++           or the chain was never cached) — the server resolves the next hook */
++    }
++
++    if (!info.proc)
++    {
++        SERVER_START_REQ( get_hook_info )
++        {
++            req->handle = wine_server_user_handle( thread_info->hook );
++            req->get_next = 1;
++            req->event = EVENT_MIN;
++            wine_server_set_reply( req, module, sizeof(module) - sizeof(WCHAR) );
++            if (!wine_server_call_err( req ))
++            {
++                module[wine_server_reply_size(req) / sizeof(WCHAR)] = 0;
++                info.handle       = wine_server_ptr_handle( reply->handle );
++                info.id           = reply->id;
++                info.pid          = reply->pid;
++                info.tid          = reply->tid;
++                info.proc         = wine_server_get_ptr( reply->proc );
++                info.next_unicode = reply->unicode;
++            }
++        }
++        SERVER_END_REQ;
+     }
+-    SERVER_END_REQ;
+ 
+     info.code   = code;
+     info.wparam = wparam;
+@@ -435,12 +730,66 @@ LRESULT call_message_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam, size
+ 
+     user_check_not_lock();
+ 
+-    if (!is_hooked( id ))
++    /* WINE_MSG_FASTPATH: when the shared queue says this chain has hooks,
++       serve it from the per-thread snapshot, refilling the snapshot with
++       exactly the plain server sequence when the serial moved. WH_WINEVENT
++       chains keep the server path: their server-side walk posts win events
++       as a side effect. */
++    if (msg_fastpath_enabled() && id != WH_WINEVENT)
++    {
++        struct user_thread_info *thread_info = get_user_thread_info();
++        struct cached_hook_chain *chain;
++        unsigned int serial = 0;
++        int count = 0;
++
++        if (!get_hook_count_and_serial( id, &serial, &count ))
++            goto server_sequence;  /* is_hooked() fails identically and answers TRUE */
++        if (!count)
++        {
++            TRACE( "skipping hook %s\n", hook_names[id - WH_MINHOOK] );
++            return 0;
++        }
++
++        if (alloc_hook_chain_cache( thread_info ))
++        {
++            chain = &thread_info->hook_chain_cache->chains[id - WH_MINHOOK];
++
++            if (chain->serial != serial)
++            {
++                if (!refill_hook_chain_cache( id, chain, &info, module ))
++                    goto server_sequence;
++                if (chain->serial == serial && chain->count) goto run_snapshot;
++                /* chain not cacheable (or the serial raced the refill): run the
++                   chain head the refill fetched, as the plain sequence would */
++                if (!info.tid && !info.proc) return 0;
++                info.code   = code;
++                info.wparam = wparam;
++                info.lparam = lparam;
++                return call_hook( &info, module, lparam_size, message_size, ansi );
++            }
++            if (!chain->count) goto server_sequence;  /* not cacheable at this serial */
++
++        run_snapshot:
++            memset( &info, 0, sizeof(info) );
++            info.prev_unicode = TRUE;
++            info.id           = id;
++            info.handle       = chain->entries[0].handle;
++            info.proc         = chain->entries[0].proc;
++            info.next_unicode = chain->entries[0].unicode;
++            info.code         = code;
++            info.wparam       = wparam;
++            info.lparam       = lparam;
++            return call_hook( &info, chain->entries[0].module, lparam_size, message_size, ansi );
++        }
++        /* cache allocation failed: plain sequence below, hook known present */
++    }
++    else if (!is_hooked( id ))
+     {
+         TRACE( "skipping hook %s\n", hook_names[id - WH_MINHOOK] );
+         return 0;
+     }
+ 
++server_sequence:
+     memset( &info, 0, sizeof(info) );
+     info.prev_unicode = TRUE;
+     info.id = id;
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 381e426..ccff337 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -113,6 +113,7 @@ struct user_thread_info
+     WORD                          hook_call_depth;        /* Number of recursively called hook procs */
+     WORD                          hook_unicode;           /* Is current hook unicode? */
+     HHOOK                         hook;                   /* Current hook */
++    struct hook_chain_cache      *hook_chain_cache;       /* WINE_MSG_FASTPATH hook chain snapshots */
+     struct received_message_info *receive_info;           /* Message being currently received */
+     UINT                          message_time;           /* value for GetMessageTime */
+     UINT                          message_pos;            /* value for GetMessagePos */
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 18cc50c..78e038b 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -7543,6 +7543,7 @@ static void thread_detach(void)
+ 
+     cleanup_imm_thread();
+     cleanup_opengl_thread();
++    free_hook_chain_cache();
+     NtClose( thread_info->server_queue );
+     if (thread_info->idle_event) NtClose( thread_info->idle_event );
+     free( thread_info->session_data );
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 15a460a..59388f9 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -82,6 +82,8 @@ extern LRESULT call_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam,
+ extern LRESULT call_message_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam,
+                                    size_t lparam_size, size_t message_size, BOOL ansi );
+ extern BOOL is_hooked( INT id );
++extern int msg_fastpath_enabled(void);
++extern void free_hook_chain_cache(void);
+ 
+ /* imm.c */
+ extern void cleanup_imm_thread(void);
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index efc1cbe..57d100a 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -1011,6 +1011,7 @@ typedef volatile struct
+     unsigned int         changed_bits;
+     unsigned int         internal_bits;
+     int                  hooks_count[NB_HOOKS];
++    unsigned int         hooks_serial;
+ } queue_shm_t;
+ 
+ typedef volatile struct
+@@ -7158,6 +7159,6 @@ union generic_reply
+     struct d3dkmt_mutex_release_reply d3dkmt_mutex_release_reply;
+ };
+ 
+-#define SERVER_PROTOCOL_VERSION 956
++#define SERVER_PROTOCOL_VERSION 957
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
+diff --git a/server/protocol.def b/server/protocol.def
+index 30235df..74fd473 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1027,6 +1027,7 @@ typedef volatile struct
+     unsigned int         changed_bits;     /* changed wakeup bits */
+     unsigned int         internal_bits;    /* internal queue bits */
+     int                  hooks_count[NB_HOOKS];  /* active hooks count */
++    unsigned int         hooks_serial;     /* bumped on every hook chain change */
+ } queue_shm_t;
+ 
+ typedef volatile struct
+diff --git a/server/queue.c b/server/queue.c
+index 437c4fa..818ef92 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -712,6 +712,9 @@ void add_queue_hook_count( struct thread *thread, unsigned int index, int count
+     SHARED_WRITE_BEGIN( thread->queue->shared, queue_shm_t )
+     {
+         shared->hooks_count[index] += count;
++        /* bump the chain serial: clients snapshot hook chains against it
++           (WINE_MSG_FASTPATH) and every mutation funnels through here */
++        shared->hooks_serial++;
+     }
+     SHARED_WRITE_END;
+ 
+-- 
+2.55.0
+

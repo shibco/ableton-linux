@@ -1,0 +1,123 @@
+From 55efbacfead89b34dc46cbf5a4c3c2c43d81c60d Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Wed, 5 Aug 2026 20:48:32 +0200
+Subject: [PATCH 3/3] win32u: answer GetUpdateRect from shared queue bits when
+ no paint is pending
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Idle Live 12 polls GetUpdateRect ~400 times/sec and each poll pays
+two wineserver round trips through NtUserGetUpdateRect
+(dlls/win32u/dce.c): send_ncpaint's get_update_region
+(flags=UPDATE_NOCHILDREN, plus UPDATE_NONCLIENT|UPDATE_ERASE when
+the caller asks for erase) and the UPDATE_PAINT|UPDATE_NOCHILDREN|
+UPDATE_NOREGION re-check via get_update_flags — and the answer is
+always "no update region".
+
+The server funnels every update-region and internal-paint transition
+through inc_window_paint_count -> inc_queue_paint_count
+(server/window.c, server/queue.c:2846-2858), which drives QS_PAINT
+in the queue wake_bits via set/clear_queue_bits: wake_bits QS_PAINT
+is set iff some window on the queue has an update region or a
+pending internal paint, and clears only when the paint count reaches
+zero. So when the shared queue shows wake_bits without QS_PAINT and
+the window belongs to the calling thread (is_current_thread_window,
+RT-free via the shared user handle table), the answer is known:
+GetUpdateRect returns FALSE with the rectangle untouched, with zero
+round trips.
+
+Semantics preserved, point by point:
+
+- wake_bits is tested, not changed_bits: the get_message handler
+  speculatively clears changed_bits QS_PAINT on peeks
+  (server/queue.c:3372-3382), while wake_bits QS_PAINT clears only
+  at paint count zero (server/queue.c:2857).
+- Erase semantics: with no update region the server reply never
+  carries UPDATE_ERASE/UPDATE_NONCLIENT (server/window.c:1752-1756),
+  so skipping send_erase is behavior-identical, and today the
+  rectangle is left untouched as well (NtGdiGetRgnBox returns
+  NULLREGION for the empty region).
+- Cross-thread windows, a queue shared-memory read failure, and any
+  other doubt fall through to today's exact two-request path.
+- An invalidation racing the shared-memory read is harmless: the
+  synthesized WM_PAINT arrives through the normal message loop on
+  the next iteration; Windows allows the same race.
+- WINE_MSG_FASTPATH (on by default; "0"/"off" disables,
+  case-insensitive) gates the fast path; with it off the function is
+  byte-identical to today.
+
+NtUserGetUpdateRgn keeps the server path in v1: the polls observed
+in the trace all go through NtUserGetUpdateRect.
+
+Verification: full series (62 main + performance 0001..0004 + this)
+applies with git am --3way onto the pristine base;
+dlls/win32u/dce.o compiles warning-free with Wine's warning set.
+---
+ dlls/win32u/dce.c | 43 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+
+diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+index 71db6ec..d4bc3b3 100644
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -1924,6 +1924,27 @@ INT WINAPI NtUserGetUpdateRgn( HWND hwnd, HRGN hrgn, BOOL erase )
+     return retval;
+ }
+ 
++/***********************************************************************
++ *           queue_paint_pending
++ *
++ * WINE_MSG_FASTPATH: read the calling thread's queue wake bits from shared
++ * memory and report whether QS_PAINT is set. Returns TRUE when the shared
++ * queue cannot be read; the caller then takes the server path.
++ */
++static BOOL queue_paint_pending(void)
++{
++    struct object_lock lock = OBJECT_LOCK_INIT;
++    const queue_shm_t *queue_shm;
++    BOOL pending = TRUE;
++    UINT status;
++
++    while ((status = get_shared_queue( &lock, &queue_shm )) == STATUS_PENDING)
++        pending = (queue_shm->wake_bits & QS_PAINT) != 0;
++
++    if (status) return TRUE;
++    return pending;
++}
++
+ /***********************************************************************
+  *           NtUserGetUpdateRect (win32u.@)
+  */
+@@ -1933,6 +1954,28 @@ BOOL WINAPI NtUserGetUpdateRect( HWND hwnd, RECT *rect, BOOL erase )
+     HRGN update_rgn;
+     BOOL need_erase;
+ 
++    /* WINE_MSG_FASTPATH: when no window on this thread's queue has an update
++       region or a pending internal paint, the queue's QS_PAINT wake bit is
++       clear — every such transition goes through inc_window_paint_count ->
++       inc_queue_paint_count (server/window.c, server/queue.c), which drives
++       QS_PAINT in wake_bits via set/clear_queue_bits. For a window owned by
++       the calling thread (RT-free via the shared user handle table) the
++       answer is then known without the two get_update_region round trips:
++       no update region, so GetUpdateRect returns FALSE with the rectangle
++       untouched. No erase flags either: the server only reports
++       UPDATE_ERASE/UPDATE_NONCLIENT alongside an update region
++       (server/window.c), so skipping send_erase is behavior-identical.
++       wake_bits is tested, not changed_bits: get_message speculatively
++       clears changed_bits QS_PAINT on peeks (server/queue.c), while
++       wake_bits QS_PAINT clears only when the paint count reaches zero. An
++       invalidation racing the read is harmless: the synthesized WM_PAINT
++       arrives through the normal loop, the same race Windows allows. */
++    if (msg_fastpath_enabled() && is_current_thread_window( hwnd ) && !queue_paint_pending())
++    {
++        TRACE( "WINE_MSG_FASTPATH known-clean GetUpdateRect for hwnd %p\n", hwnd );
++        return FALSE;
++    }
++
+     if (erase) flags |= UPDATE_NONCLIENT | UPDATE_ERASE;
+ 
+     if (!(update_rgn = send_ncpaint( hwnd, NULL, &flags ))) return FALSE;
+-- 
+2.55.0
+

@@ -17,12 +17,13 @@ CONFIGURE_PREFIX="${INSTALL_PREFIX:?build.sh must pass INSTALL_PREFIX}"
 DESTDIR="$WORK/stage"
 PREFIX_ROOT="$DESTDIR$CONFIGURE_PREFIX"
 npatch="$(ls "$SRC"/patches/00*.patch | wc -l)"
+nperf="$(ls "$SRC"/patches/performance/*.patch | wc -l)"
 
 echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.13 @ 5c23dd1c) =="
 mkdir -p "$WORK/wine-src"
 zstd -dc --long=27 "$SRC/vendor/wine-base-5c23dd1c.tar.zst" | tar -x -C "$WORK/wine-src"
 
-echo "== [2/8] git init + apply the $npatch-patch fix series =="
+echo "== [2/8] git init + apply the $npatch-patch fix series + $nperf performance patch(es) =="
 cd "$WORK/wine-src"
 # Rootless podman can bind-mount /work owned by a UID outside the container's
 # user namespace; git (>=2.35.2) refuses to operate on a tree it doesn't own.
@@ -34,7 +35,7 @@ git -c user.email=build@localhost -c user.name=dist commit -q -m "base 5c23dd1c"
 # The series ships without From:/Date: mail headers; git am refuses to commit
 # with an empty author, so supply a fixed neutral ident (fixed date keeps the
 # apply reproducible). Patches that still carry headers keep their own.
-for p in "$SRC"/patches/00*.patch; do
+for p in "$SRC"/patches/00*.patch "$SRC"/patches/performance/*.patch; do
     if head -8 "$p" | grep -q '^From: '; then
         git -c user.email=build@localhost -c user.name=dist am --3way "$p"
     else
@@ -206,7 +207,7 @@ echo "   PipeASIO: PE $pipeasio_pe_sha / Unix $pipeasio_unix_sha"
 echo "== [6/8] package =="
 # Stamp per-patch sha256s into the tree; build-audit.sh diffs this against patches/SERIES.sha256.
 stack_stamp="$PREFIX_ROOT/ABLETON-WINE-PATCH-STACK.txt"
-( cd "$SRC/patches" && sha256sum 00*.patch pipeasio/*.patch ) > "$stack_stamp"
+( cd "$SRC/patches" && sha256sum 00*.patch performance/*.patch pipeasio/*.patch ) > "$stack_stamp"
 stack_sha="$(sha256sum "$stack_stamp" | awk '{print $1}')"
 build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 {
@@ -214,8 +215,9 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "wine:         $("$PREFIX_ROOT/bin/wine" --version)"
     echo "base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c"
     echo "prefix:       $CONFIGURE_PREFIX (configure-time only; tarball is relocatable, see relocation gate)"
-    echo "patches:      $((npatch + nasio))"     # wine series + pipeasio series
+    echo "patches:      $((npatch + nperf + nasio))"     # wine series + performance series + pipeasio series
     echo "wine-patches: $npatch"
+    echo "performance-patches: $nperf"
     echo "pipeasio-patches: $nasio"
     echo "patch-head:   $patch_head"
     echo "patch-stack:  $stack_sha"
