@@ -270,7 +270,12 @@ case "$dpi_mode" in
 esac
 
 echo "== [1/5] initialise prefix at $WINEPREFIX =="
-wineboot -u
+# While updating the prefix, wineboot offers Wine's Mono and Gecko installers. This runtime
+# vendors neither, so on a machine with no cached package it opens a modal "Wine Mono
+# Installer" prompt; nothing answers it in an unattended run and the wineserver -w below then
+# never returns. Live needs neither - ableton-live and max9 already disable both on every
+# launch - so disable them here and wineboot stops asking.
+WINEDLLOVERRIDES="mscoree,mshtml=" wineboot -u
 "$WINESERVER" -w
 
 if [ "$refresh" -eq 1 ]; then
@@ -613,7 +618,11 @@ wine reg add "$push2_key" /v libusb-1.0 /t REG_SZ /d builtin /f
 wine reg query "$push2_key" /v libusb-1.0
 
 # Ableton's tlsetupfx.exe (kernel USB driver installer) faults under Wine and pops a winedbg
-# dialog mid-install; this runtime has no IFEO Debugger hook to neuter it, so nothing is set here.
+# dialog mid-install - twice, on every Live 11 install. The fault is harmless: the installer
+# records it (0x80070643), carries on, and Live installs fine (issue 111), but two unexplained
+# "Program Error" boxes make a working install look broken. Suppress the dialog only: winedbg
+# still runs and still writes the backtrace to stderr.
+wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f
 
 # winemenubuilder's entries assume `wine` on PATH (never true here) and are dead buttons: disable
 # it and delete entries it already wrote for this prefix (matched by WINEPREFIX=; install.sh's entries can't match).
@@ -648,9 +657,14 @@ cat <<EOF
 Remaining steps (you supply Ableton + your own license):
 
   1. Install Live (any edition) through THIS wine (plain wine reads
-     WINEPREFIX, not the ABLETON_* launcher variables):
+     WINEPREFIX, not the ABLETON_* launcher variables). For Live 12 the flags
+     let the installer run by itself and skip Ableton's Windows USB audio
+     driver, which does nothing on Linux:
        WINEPREFIX=$WINEPREFIX \\
-       $WINE_ROOT/bin/wine "/path/to/Ableton Live NN Edition Installer.exe"
+       $WINE_ROOT/bin/wine "/path/to/Ableton Live 12 Edition Installer.exe" \\
+       /SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver'
+     Live 11's installer is a different kind and ignores those flags; run it
+     without them and click through its window.
 
   2. Launch:            ableton-live
   3. Authorize Live with your own account (binds to this prefix's MachineGuid).

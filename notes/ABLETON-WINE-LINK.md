@@ -65,8 +65,9 @@ tempo or beat position after construction.
 
 Its modes are:
 
-- No arguments: run in the foreground and write status to stderr every ten
-  seconds. The systemd unit uses this mode.
+- No arguments: run in the foreground and write to stderr when the peer
+  count, tempo, or transport state changes. The systemd unit uses this mode.
+  A quiet session writes nothing.
 - `--daemon`: run in the background and write
   `~/.log/ableton-linkd/ableton-linkd.log`. The launchers use this mode.
 - `--probe [seconds]`: join, wait up to ten seconds by default, print
@@ -74,6 +75,10 @@ Its modes are:
   peer.
 - `--tempo BPM`: set only the construction tempo used when this process
   creates a new session.
+- `--verbose` (or `ABLETON_LINKD_VERBOSE=1`): also write a status line every
+  ten seconds. Before 2026.08 this was unconditional. Under the systemd unit
+  it wrote 8640 identical journal lines a day. That read as a stuck process
+  and invited force quits.
 
 The Live, Max, and beta launchers start `ableton-linkd --daemon` when the
 binary exists and no process with that name is running. `ABLETON_LINKD`

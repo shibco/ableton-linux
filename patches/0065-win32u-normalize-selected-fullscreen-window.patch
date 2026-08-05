@@ -1,0 +1,266 @@
+Subject: win32u, winex11: normalize a selected fullscreen window
+
+Some custom-chrome applications leave their native menu attached when they
+enter fullscreen. Wine then reserves and paints the menu, while the
+application compensates with an oversized, vertically shifted window. The
+Win32 client coordinates and compositor viewport consequently disagree.
+
+Allow a launcher to select one exact top-level Windows class. Mark its
+monitor-covering geometry before calculating the non-client area, exclude the
+attached menu from fullscreen layout and painting, and normalize only requests
+with a small edge overshoot to the exact monitor rectangle. Decorated
+non-fullscreen windows and every other class retain existing behavior.
+
+On fullscreen exit, retire a redundant compositor configure request when its
+geometry is already current. This lets Wine request fullscreen removal before
+queuing the restored window rectangle, avoiding a configure/state deadlock
+that otherwise clears only after an interactive move.
+
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+index e377e5f..62c6155 100644
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -68,7 +68,8 @@ static BOOL has_static_outer_frame( UINT ex_style )
+ 
+ static BOOL has_menu( HWND hwnd, UINT style )
+ {
+-    return (style & (WS_CHILD | WS_POPUP)) != WS_CHILD && get_menu( hwnd );
++    return (style & (WS_CHILD | WS_POPUP)) != WS_CHILD &&
++           !is_selected_fullscreen_window( hwnd, style ) && get_menu( hwnd );
+ }
+ 
+ void fill_rect( HDC dc, const RECT *rect, HBRUSH hbrush )
+@@ -1879,7 +1880,7 @@ static void handle_nc_calc_size( HWND hwnd, WPARAM wparam, RECT *win_rect )
+         win_rect->right  -= rect.right;
+         win_rect->bottom -= rect.bottom;
+ 
+-        if ((style & (WS_CHILD | WS_POPUP)) != WS_CHILD)
++        if (has_menu( hwnd, style ))
+         {
+             HMENU menu = get_menu( hwnd );
+ 
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 15a460a..80d6fdf 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -310,6 +310,7 @@ extern BOOL get_window_rect_rel( HWND hwnd, enum coords_relative rel, RECT *rect
+ extern BOOL get_client_rect_rel( HWND hwnd, enum coords_relative rel, RECT *rect, struct ratio dpi );
+ extern BOOL get_window_rects( HWND hwnd, enum coords_relative relative,
+                               struct window_rects *rects, struct ratio dpi );
++extern BOOL is_selected_fullscreen_window( HWND hwnd, UINT style );
+ extern HWND *list_window_children( HWND hwnd );
+ extern int map_window_points( HWND hwnd_from, HWND hwnd_to, POINT *points, UINT count,
+                               struct ratio dpi );
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 2c86974..6188247 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -24,6 +24,7 @@
+ #endif
+ 
+ #include <assert.h>
++#include <stdlib.h>
+ 
+ #include "ntstatus.h"
+ #include "ntgdi_private.h"
+@@ -41,6 +42,36 @@ static const struct ratio no_dpi;
+ 
+ static void *client_objects[MAX_USER_HANDLES];
+ 
++static const WCHAR selected_fullscreen_prop[] =
++    {'_','_','w','i','n','e','_','w','i','n','3','2','_','s','e','l','e','c','t','e','d','_',
++     'f','u','l','l','s','c','r','e','e','n',0};
++
++static BOOL is_selected_window_class( HWND hwnd )
++{
++    const char *selected_class = getenv( "WINE_WIN32_FULLSCREEN_CLASS" );
++    WCHAR class_buffer[128];
++    UNICODE_STRING class_name = {0, sizeof(class_buffer), class_buffer};
++    size_t selected_length;
++    unsigned int i;
++    INT class_length;
++
++    if (!selected_class || !selected_class[0]) return FALSE;
++    if (NtUserGetAncestor( hwnd, GA_PARENT ) != get_desktop_window()) return FALSE;
++    if ((selected_length = strlen( selected_class )) >= ARRAY_SIZE(class_buffer)) return FALSE;
++    if ((class_length = NtUserGetClassName( hwnd, FALSE, &class_name )) <= 0) return FALSE;
++    if ((unsigned int)class_length != selected_length) return FALSE;
++    for (i = 0; i < (unsigned int)class_length; ++i)
++        if ((unsigned char)selected_class[i] != class_buffer[i]) return FALSE;
++    return TRUE;
++}
++
++BOOL is_selected_fullscreen_window( HWND hwnd, UINT style )
++{
++    if (style & WS_CHILD) return FALSE;
++    if (!is_selected_window_class( hwnd )) return FALSE;
++    return (style & WS_CAPTION) != WS_CAPTION || NtUserGetProp( hwnd, selected_fullscreen_prop );
++}
++
+ #define SWP_AGG_NOGEOMETRYCHANGE \
+     (SWP_NOSIZE | SWP_NOCLIENTSIZE | SWP_NOZORDER)
+ #define SWP_AGG_NOPOSCHANGE \
+@@ -3853,6 +3884,7 @@ static UINT calc_ncsize( WINDOWPOS *winpos, const struct window_rects *old_rects
+          * temporarily reports a client rect covering the whole window. */
+         if (!(style & WS_CHILD) &&
+             !(winpos->flags & SWP_FRAMECHANGED) &&
++            !is_selected_fullscreen_window( winpos->hwnd, style ) &&
+             get_menu( winpos->hwnd ) &&
+             !EqualRect( &old_rects->client, &old_rects->window ) &&
+             EqualRect( &params.rgrc[0], &new_rects->window ))
+@@ -4151,6 +4183,18 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
+ 
+     calc_ncsize( winpos, &old_rects, &new_rects, valid_rects, parent_x, parent_y );
+ 
++    if (is_selected_fullscreen_window( winpos->hwnd,
++                                       get_window_long( winpos->hwnd, GWL_STYLE ) ))
++    {
++        /* Live can enter fullscreen through a no-size window-position pass,
++         * which skips WM_NCCALCSIZE and leaves the windowed menu/frame offset
++         * in the stored client rectangle. Enforce the selected fullscreen
++         * client after every calculation and preserve no stale windowed area. */
++        new_rects.client = new_rects.window;
++        SetRectEmpty( &valid_rects[0] );
++        SetRectEmpty( &valid_rects[1] );
++    }
++
+     surface = get_window_surface( winpos->hwnd, winpos->flags, FALSE, &new_rects, &surface_rect );
+     if (!apply_window_pos( winpos->hwnd, winpos->hwndInsertAfter, winpos->flags, surface,
+                            &new_rects, valid_rects ))
+@@ -4287,6 +4331,68 @@ BOOL WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT
+     winpos.cy = cy;
+     winpos.flags = flags;
+ 
++    /* Mark the selected application's fullscreen geometry before non-client
++     * calculation, so an attached menu does not shift its client area. Keep
++     * small monitor-edge overshoots inside the exact monitor rectangle. */
++    if (is_selected_window_class( winpos.hwnd ))
++    {
++        RECT current;
++        LONG req_x = winpos.x, req_y = winpos.y, req_width = winpos.cx, req_height = winpos.cy;
++        BOOL was_fullscreen = !!NtUserGetProp( winpos.hwnd, selected_fullscreen_prop );
++        BOOL have_effective_rect = TRUE;
++
++        if ((flags & (SWP_NOMOVE | SWP_NOSIZE)) &&
++            !get_window_rect( winpos.hwnd, &current, get_thread_dpi() ))
++            have_effective_rect = FALSE;
++        else if (flags & (SWP_NOMOVE | SWP_NOSIZE))
++        {
++            if (flags & SWP_NOMOVE)
++            {
++                req_x = current.left;
++                req_y = current.top;
++            }
++            if (flags & SWP_NOSIZE)
++            {
++                req_width = current.right - current.left;
++                req_height = current.bottom - current.top;
++            }
++        }
++
++        if (have_effective_rect && req_width > 0 && req_height > 0)
++        {
++            RECT requested = {req_x, req_y, req_x + req_width, req_y + req_height};
++            MONITORINFO mi = monitor_info_from_rect( requested, get_thread_dpi() );
++            LONG mon_width = mi.rcMonitor.right - mi.rcMonitor.left;
++            LONG mon_height = mi.rcMonitor.bottom - mi.rcMonitor.top;
++            BOOL covers_monitor =
++                mon_width > 0 && mon_height > 0 &&
++                req_x <= mi.rcMonitor.left && req_x >= mi.rcMonitor.left - 256 &&
++                req_y <= mi.rcMonitor.top && req_y >= mi.rcMonitor.top - 256 &&
++                req_x + req_width >= mi.rcMonitor.right &&
++                req_x + req_width <= mi.rcMonitor.right + 256 &&
++                req_y + req_height >= mi.rcMonitor.bottom &&
++                req_y + req_height <= mi.rcMonitor.bottom + 256;
++
++            if (covers_monitor &&
++                (get_window_long( winpos.hwnd, GWL_STYLE ) & WS_CAPTION) != WS_CAPTION)
++            {
++                NtUserSetProp( winpos.hwnd, selected_fullscreen_prop, UlongToHandle( 1 ) );
++                winpos.x = mi.rcMonitor.left;
++                winpos.y = mi.rcMonitor.top;
++                winpos.cx = mon_width;
++                winpos.cy = mon_height;
++                winpos.flags &= ~(SWP_NOMOVE | SWP_NOSIZE);
++            }
++            else
++            {
++                NtUserRemoveProp( winpos.hwnd, selected_fullscreen_prop );
++                /* The fullscreen client override survives a no-size exit
++                 * unless the ordinary non-client area is recalculated. */
++                if (was_fullscreen) winpos.flags |= SWP_FRAMECHANGED;
++            }
++        }
++    }
++
+     map_dpi_winpos( &winpos );
+ 
+     if (is_current_thread_window( hwnd ))
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 39aedc4..9208df5 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -118,6 +118,25 @@ static const WCHAR dcomp_active_propW[] =
+     {'_','_','w','i','n','e','_','d','c','o','m','p','_','a','c','t','i','v','e',0};
+ static const WCHAR *dcomp_active_prop = dcomp_active_propW;
+ 
++static BOOL selected_fullscreen_class( HWND hwnd )
++{
++    const char *selected_class = getenv( "WINE_WIN32_FULLSCREEN_CLASS" );
++    WCHAR class_buffer[128];
++    UNICODE_STRING class_name = {0, sizeof(class_buffer), class_buffer};
++    size_t selected_length;
++    unsigned int i;
++    INT class_length;
++
++    if (!selected_class || !selected_class[0]) return FALSE;
++    if (NtUserGetAncestor( hwnd, GA_PARENT ) != NtUserGetDesktopWindow()) return FALSE;
++    if ((selected_length = strlen( selected_class )) >= ARRAY_SIZE(class_buffer)) return FALSE;
++    if ((class_length = NtUserGetClassName( hwnd, FALSE, &class_name )) <= 0) return FALSE;
++    if ((unsigned int)class_length != selected_length) return FALSE;
++    for (i = 0; i < (unsigned int)class_length; ++i)
++        if ((unsigned char)selected_class[i] != class_buffer[i]) return FALSE;
++    return TRUE;
++}
++
+ static const char *debugstr_mwm_hints( const MwmHints *hints )
+ {
+     return wine_dbg_sprintf( "%lx,%lx", hints->functions, hints->decorations );
+@@ -3963,6 +3982,11 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     struct window_rects old_rects;
+     BOOL is_managed, was_fullscreen, activate = !(swp_flags & SWP_NOACTIVATE), fullscreen = !!(swp_flags & WINE_SWP_FULLSCREEN);
+ 
++    /* A selected captioned window may legitimately fill a tiled work area.
++     * Geometry alone must not turn that ordinary window into EWMH fullscreen. */
++    if (fullscreen && selected_fullscreen_class( hwnd ) &&
++        (new_style & WS_CAPTION) == WS_CAPTION) fullscreen = FALSE;
++
+     if ((is_managed = is_window_managed( hwnd, swp_flags, fullscreen ))) make_owner_managed( hwnd );
+ 
+     if (!(data = get_win_data( hwnd ))) return;
+@@ -3989,6 +4013,25 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     data->is_fullscreen = fullscreen;
+     data->is_resizable = !!(swp_flags & WINE_SWP_RESIZABLE);
+ 
++    /* A fullscreen ConfigureNotify may satisfy the requested rectangle with
++     * a serial older than our redundant configure request. If the selected
++     * app exits fullscreen before another notify arrives, waiting for that
++     * request blocks _NET_WM_STATE removal, while the WM waits for removal
++     * before granting the normal rectangle. Retire only a pending configure
++     * whose geometry is already current, then request fullscreen removal
++     * before sync_window_position queues the normal rectangle. */
++    if (was_fullscreen && !fullscreen && selected_fullscreen_class( hwnd ) &&
++        data->configure_serial && !data->pending_state.above &&
++        EqualRect( &data->pending_state.rect, &data->current_state.rect ))
++    {
++        TRACE( "window %p/%lx retiring redundant fullscreen config %s request %lu before exit\n",
++               data->hwnd, data->whole_window, wine_dbgstr_rect(&data->pending_state.rect),
++               data->configure_serial );
++        data->configure_serial = 0;
++        clear_config_rounding( data, "redundant fullscreen config retired before exit" );
++        update_net_wm_states( data );
++    }
++
+     TRACE( "win %p/%lx new_rects %s style %08x flags %08x\n", hwnd, data->whole_window,
+            debugstr_window_rects(new_rects), new_style, swp_flags );
+ 

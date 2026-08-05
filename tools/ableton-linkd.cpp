@@ -19,13 +19,20 @@
  * jack_link remains an option for JACK-only apps.
  *
  * Modes:
- *   (no args)     foreground: status line to stderr every 10 s plus
- *                 peer/tempo/start-stop change callbacks
+ *   (no args)     foreground: log on peer/tempo/start-stop changes only
  *   --daemon      fork to background, log to ~/.log/ableton-linkd/ableton-linkd.log
  *   --probe [s]   join, wait up to s seconds (default 10), print
  *                 "peers: N" and "tempo: T.T", exit 0 iff N >= 1
  *   --tempo BPM   initial tempo when founding a session (default 120.0)
+ *   --verbose     also log a status line every 10 s (the pre-2026.08 default;
+ *                 ABLETON_LINKD_VERBOSE=1 does the same)
  *   --help        usage
+ *
+ * Logging is event-driven by default. The change callbacks cover peers,
+ * tempo and transport, so a quiet session writes nothing. The periodic
+ * status line used to be unconditional. Under the systemd unit that was
+ * 8640 identical journal lines a day. It read as a stuck process and
+ * invited force quits, so it is now opt-in via --verbose.
  *
  * SIGTERM/SIGINT shut down cleanly: Link is disabled (a byebye goes out on
  * the wire) and the process exits 0.
@@ -207,7 +214,7 @@ int run_probe(double tempo, int secs)
 }
 
 /* Foreground and --daemon: anchor the session until signalled. */
-int run_anchor(double tempo, bool as_daemon)
+int run_anchor(double tempo, bool as_daemon, bool verbose)
 {
     if (as_daemon) {
         std::string log_dir;
@@ -229,7 +236,7 @@ int run_anchor(double tempo, bool as_daemon)
     while (!g_quit) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         const auto now = std::chrono::steady_clock::now();
-        if (now - last_status >= kStatusPeriod) {
+        if (verbose && now - last_status >= kStatusPeriod) {
             print_status(link);
             last_status = now;
         }
@@ -245,15 +252,18 @@ void print_usage(const char* argv0)
     std::printf(
         "ableton-linkd: native Ableton Link session anchor and probe\n"
         "\n"
-        "usage: %s [--tempo BPM] [--daemon | --probe [secs] | --help]\n"
+        "usage: %s [--tempo BPM] [--verbose] [--daemon | --probe [secs] | --help]\n"
         "\n"
-        "  (no options)   run in the foreground; status lines to stderr every 10 s\n"
+        "  (no options)   run in the foreground; log to stderr on peer, tempo and\n"
+        "                 start-stop changes\n"
         "  --daemon       fork to the background, log to\n"
         "                 ~/.log/ableton-linkd/ableton-linkd.log\n"
         "  --probe [s]    join, wait up to s seconds (default %d), print \"peers: N\"\n"
         "                 and \"tempo: T.T\"; exit 0 iff at least one peer was seen\n"
         "  --tempo BPM    initial tempo when founding a session (default 120.0,\n"
         "                 valid range %.0f-%.0f)\n"
+        "  --verbose      also log a status line every 10 s\n"
+        "                 (ABLETON_LINKD_VERBOSE=1 does the same)\n"
         "  --help         this text\n"
         "\n"
         "Strictly passive: after construction it never changes the session tempo\n"
@@ -281,6 +291,8 @@ int main(int argc, char** argv)
     bool as_daemon = false;
     bool probe = false;
     int probe_secs = kDefaultProbeSecs;
+    const char* verbose_env = std::getenv("ABLETON_LINKD_VERBOSE");
+    bool verbose = verbose_env && *verbose_env && std::strcmp(verbose_env, "0") != 0;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -289,6 +301,8 @@ int main(int argc, char** argv)
             return 0;
         } else if (arg == "--daemon") {
             as_daemon = true;
+        } else if (arg == "--verbose") {
+            verbose = true;
         } else if (arg == "--probe") {
             probe = true;
             /* optional value: --probe 15 */
@@ -323,5 +337,6 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    return probe ? run_probe(tempo, probe_secs) : run_anchor(tempo, as_daemon);
+    return probe ? run_probe(tempo, probe_secs)
+                 : run_anchor(tempo, as_daemon, verbose);
 }

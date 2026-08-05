@@ -264,8 +264,8 @@ Contributors must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Credits
 
-Maintained by [Cade "shibco" Diehm](https://shiba.computer/about) and
-[ClickSentinel](https://github.com/ClickSentinel), with help from
+Maintained by [Cade 'shibco' Diehm](https://shiba.computer/about) and
+[Lucas 'ClickSentinel' Gillingham](https://github.com/ClickSentinel), with help from
 [jackson-57](https://github.com/jackson-57),
 [jttdev](https://github.com/jttdev),
 [astrazds](https://github.com/astrazds),
@@ -278,7 +278,7 @@ This project is based off the `d2d1-dcomp` stack from
 from branch `d2d1-dcomp-11.13` and `5c23dd1c` to continue building our work 
 from these solid foundations. _Thank you! <3_ 
 
-ENCORE by [wowitsjack](https://github.com/wowitsjack) informed several early patches.
+ENCORE by [wowitsjack](https://github.com/wowitsjack) informed some early patches.
 
 Questions: [cade@parare.al](mailto:cade@parare.al)
 

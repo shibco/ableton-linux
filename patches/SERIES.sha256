@@ -60,6 +60,8 @@ eb85bc3dc958314b299ebe45dc690ed3e9958d7beea82647513964ca0531a1b6  0059-wined3d-q
 a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-keep-a-selected-top-level-class-offscreen.patch
 0a7fb762e4bef288556f2118c318f6e99fe5532bb61058ccdb6d7732bf42ba27  0063-comdlg32-reveal-explorer-select-folder-targets-throu.patch
 81e02eeac88e6eda5da8044cd5bf74a197b2742f77c46da54e61dbf300031bd3  0064-shell32-route-explorer-folder-open-commands-to-the-h.patch
+7931be1771a070325eb0b87f970e51f7089c216f1bad128fb5ecf504e100e005  0065-win32u-normalize-selected-fullscreen-window.patch
+92bb232a7058e4682fa828f8637c188fd240aa525631603fda60505c8d26f2e8  0070-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch
 c898412796bba3af5b5f63f7b7505af4c682951c95f353a799aec3c1c90446ec  performance/0001-ntdll-alertable-sleep-fast-path.patch
 ecc241769a2fb5980677bfe7dd3cc438ace77bc7385f517737c78bf130fde8a8  performance/0002-ntdll-same-process-user-apc-fast-path.patch
 a069547545f7713b86780c20498d80332e5a76a75ccf05deb6dc789dbd775466  performance/0003-win32u-cache-thread-hook-chains.patch

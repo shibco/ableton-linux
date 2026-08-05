@@ -7,7 +7,8 @@
 #            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
 #            ABLETON_NTSYNC_WARN=off (silence the missing-/dev/ntsync warning),
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
-#            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix).
+#            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
+#            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization).
 set -u
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
@@ -25,6 +26,10 @@ export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
 # client surface. Keep Live on the offscreen path; "off" is a non-matching class
 # value and therefore provides a one-launch A/B override.
 export WINE_X11_FORCE_OFFSCREEN_CLASS="${WINE_X11_FORCE_OFFSCREEN_CLASS:-Ableton Live Window Class}"
+# Live leaves its native menu attached in fullscreen, and a redundant X11
+# configure can otherwise delay fullscreen removal on exit. Select only Live's
+# exact top-level class; "off" is a non-matching one-launch A/B override.
+export WINE_WIN32_FULLSCREEN_CLASS="${WINE_WIN32_FULLSCREEN_CLASS:-Ableton Live Window Class}"
 # Report host mount points as plain dirs (patch 0033); Live's browser treats
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"

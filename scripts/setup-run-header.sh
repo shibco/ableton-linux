@@ -336,12 +336,27 @@ if [ "$manual_install" -eq 0 ]; then
         fi
     fi
     if [ -n "$live_exe" ]; then
-        say "-- starting the Ableton installer; from here just click through its window"
+        # Live 12 ships Inno Setup, Live 11 a WiX Burn bundle. Burn ignores /MERGETASKS and
+        # /SUPPRESSMSGBOXES, and reads /SILENT as /quiet - no window at all - so the Inno set
+        # on Live 11 installs the USB audio driver anyway and loses the wizard. /MERGETASKS
+        # drops that task: a Windows USB kernel driver Wine cannot load (audio is PipeASIO).
+        # Burn first - `.wixburn` is a PE section ~630 bytes in, so 4k settles it however big
+        # the installer is; the Inno marker is ~680 KB in. Process substitution, not a pipe:
+        # grep -q exits early, head takes SIGPIPE, and pipefail would report 141.
+        live_flags=()
+        if ! grep -qaF '.wixburn' <(head -c 4k -- "$live_exe") \
+             && grep -qa 'Inno Setup' <(head -c 4M -- "$live_exe"); then
+            live_flags=(/SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver')
+            say "-- installing Ableton Live; a progress window opens, no clicks needed"
+            say "   (Live is large, so this can take several minutes)"
+        else
+            say "-- starting the Ableton installer; from here just click through its window"
+        fi
         # run from the installer's own directory so its relative payload lookups resolve
         if ( cd "$(dirname -- "$live_exe")" && \
                  WINEPREFIX="$HOME/.wine-ableton" \
                  "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" \
-                 "./$(basename -- "$live_exe")" ); then
+                 "./$(basename -- "$live_exe")" "${live_flags[@]}" ); then
             live_installed=1
         else
             say "!! the Ableton installer exited with an error; instructions below"
@@ -364,7 +379,10 @@ else
     say "       (no unzip? try: bsdtar -xf FILE.zip -C ~/live-installer)"
     say "  2) run the installer through this Wine, from inside that directory:"
     say "       cd ~/live-installer && WINEPREFIX=~/.wine-ableton \\"
-    say "           ~/.local/opt/$RUNTIME_NAME/bin/wine ./*.exe"
+    say "           ~/.local/opt/$RUNTIME_NAME/bin/wine ./*.exe \\"
+    say "           /SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver'"
+    say "     (Live 12: the flags let it install by itself and skip a Windows-only driver;"
+    say "      Live 11: drop them and click through its installer window instead)"
 fi
 say "Launch Live:   ~/.local/bin/ableton-live"
 say "Then, inside Live:"

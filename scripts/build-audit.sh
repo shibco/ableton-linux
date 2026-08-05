@@ -72,6 +72,10 @@ declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
     [0057]="reserved 2026-07-30 for the Intel GPU identification fix on fix/intel-gpu"
+    [0066]="reserved 2026-08-03 for the issue 122 cursor-clip fix on fix/issue-122-m4l-focus"
+    [0067]="reserved 2026-08-02 for MIDI hotplug on moonshot-midi-hotplug"
+    [0068]="reserved 2026-08-02 for audio hotplug on moonshot-midi-hotplug"
+    [0069]="reserved 2026-08-04 for the PR 125 window-hints patch"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v -e '^pipeasio/' -e '^performance/' | sort); do
@@ -140,6 +144,9 @@ FINGERPRINTS='
 0063|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.FileManager1
 0064|ascii|lib/wine/x86_64-unix/comdlg32.so|ShowFolders
 0064|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_open_folder
+0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
+0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
+0070|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
 performance/0001|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_APC_FASTPATH
 performance/0002|ascii|lib/wine/x86_64-unix/ntdll.so|client APC event signaled with an empty queue
 performance/0003|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH hook chain snapshot cache allocation failed
