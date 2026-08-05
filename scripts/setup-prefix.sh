@@ -607,7 +607,7 @@ EOF
     echo "   seeded $pipeasio_cfg (2 in / 2 out, fixed 256-frame buffer)"
 fi
 
-echo "== [5/5] set portal policy and scope the Push USB bridge to its helpers =="
+echo "== [5/5] set portal policy and select the builtin USB bridge for Live and the Push helpers =="
 # Default only: a policy the user set with set-file-portal-policy survives re-runs.
 if ! wine reg query 'HKCU\Software\Wine\X11 Driver' /v FileDialogPortal >/dev/null 2>&1; then
   wine reg add 'HKCU\Software\Wine\X11 Driver' \
@@ -619,6 +619,17 @@ wine reg query "$push2_key" /v libusb-1.0
 push3_key='HKCU\Software\Wine\AppDefaults\Push3.exe\DllOverrides'
 wine reg add "$push3_key" /v libusb-1.0 /t REG_SZ /d builtin /f
 wine reg query "$push3_key" /v libusb-1.0
+# Live scans USB in its own process before it starts Push3.exe; the native libusb DLL
+# finds no devices under Wine. Requires the patch 0065 bridge: the 0032 bridge lacks
+# libusb_bulk_transfer and libusb_strerror, and Live fails to load. Live 11 imports are
+# unverified, so Live 11 executables keep the native DLL.
+for live_exe in 'Ableton Live 12 Suite.exe' 'Ableton Live 12 Standard.exe' \
+                'Ableton Live 12 Intro.exe' 'Ableton Live 12 Lite.exe' \
+                'Ableton Live 12 Trial.exe' 'Ableton Live 12 Beta.exe'; do
+    wine reg add "HKCU\\Software\\Wine\\AppDefaults\\${live_exe}\\DllOverrides" \
+        /v libusb-1.0 /t REG_SZ /d builtin /f
+done
+wine reg query 'HKCU\Software\Wine\AppDefaults\Ableton Live 12 Suite.exe\DllOverrides' /v libusb-1.0
 
 # Ableton's tlsetupfx.exe (kernel USB driver installer) faults under Wine and pops a winedbg
 # dialog mid-install - twice, on every Live 11 install. The fault is harmless: the installer

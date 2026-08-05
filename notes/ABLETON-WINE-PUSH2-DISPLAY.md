@@ -58,7 +58,9 @@ HKCU\Software\Wine\AppDefaults\Push2DisplayProcess.exe\DllOverrides
     libusb-1.0 = builtin
 ```
 
-Live keeps its application-local libusb DLL. No Ableton file is replaced.
+`setup-prefix.sh` also selects the builtin for the Live 12 executables
+([ABLETON-WINE-PUSH3-USB.md](ABLETON-WINE-PUSH3-USB.md)). No Ableton file
+is replaced.
 
 The bridge:
 
