@@ -103,36 +103,43 @@ through PipeWire.
 See [Linux-native plugin routing](notes/ABLETON-WINE-PLUGIN-BRIDGING.md) for
 the current test procedure and limitations.
 
+## A MIDI device lost its settings after an update
+
+MIDI devices show the same names as on Windows. Releases before 2026.08 showed
+Linux names. Live treats a renamed device as new hardware, so your saved
+settings point at the old name.
+
+Open **Settings/Preferences > Link, Tempo & MIDI**. Set the **Track**,
+**Sync**, and **Remote** switches for your devices again, and re-select the
+input and output in your control-surface rows. This is needed once.
+
 ## Push 2 does not connect
 
 Configure one `Push2` control-surface row. Select **Ableton Push 2** as the
-input and as the output. Delete the other `Push2` rows. Close Live in the normal
-way. Then connect Push 2 again and start Live.
+input and as the output. Delete any other `Push2` rows. Close Live in the
+normal way. Then connect Push 2 again and start Live.
 
-USB MIDI ports use the names that Windows gives them. The Live port is **Ableton
-Push 2**. The User port is **MIDIIN2 (Ableton Push 2)** and **MIDIOUT2 (Ableton
-Push 2)**. Releases before 2026.08 showed `Ableton Push 2 Live Port`. A row that
-you saved before shows a device that is no longer available. Select the input and
-the output again.
+If you updated from a release before 2026.08, your saved row points at the old
+port name. Select the input and the output again.
 
 For USB diagnostics, refer to the
 [Push 2 display bridge note](notes/ABLETON-WINE-PUSH2-DISPLAY.md).
 
 ## Push 3 does not start its display
 
-Push 3 does not need a control-surface row. Live finds the hardware on the USB
-bus and starts `Push3.exe`. If Live does not start the helper, make these checks:
+Push 3 does not use a control-surface row. Live detects the Push on its own
+and starts the program that runs the screen and pads. Make these checks if the
+screen stays off:
 
-- Make sure that your runtime includes Wine patch 0074. An older runtime cannot
-  tell Live which USB device a MIDI port belongs to.
-- Make sure that the host can use the Push. The Push 3 note gives a probe for
-  this test.
+1. Update this project first. Push 3 needs a release from 2026.08 on. Older
+   versions cannot detect a Push 3.
+2. Connect the Push, then close Live completely and start it again. Live only
+   looks for a Push while it starts.
+3. If the Push asks you to switch it off and on, it received a firmware
+   update. Switch it off and on once, then start Live again.
 
-The first start can install a firmware update in the Push. During the update,
-the helper starts again every few seconds. Switch the Push off and on to complete
-the update.
-
-For the detection path and more diagnostics, refer to the
+If the screen still stays off, [report the problem](#report-a-problem). For
+deeper checks, including a USB probe, refer to the
 [Push 3 note](notes/ABLETON-WINE-PUSH3-USB.md).
 
 ## Ableton Link does not find peers
