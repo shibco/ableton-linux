@@ -10,8 +10,15 @@ libusb implementation.
 Use exactly one control-surface row:
 
 - **Control Surface:** `Push2`
-- **Input:** `Ableton Push 2 Live Port`
-- **Output:** `Ableton Push 2 Live Port`
+- **Input:** `Ableton Push 2`
+- **Output:** `Ableton Push 2`
+
+[Patch 0066](../patches/0066-winealsa-report-a-device-interface-and-Windows-names.patch)
+gives USB MIDI ports the names that Windows uses. The Live port is
+`Ableton Push 2`. The User port is `MIDIIN2 (Ableton Push 2)` and
+`MIDIOUT2 (Ableton Push 2)`. Before patch 0066, the names were
+`Ableton Push 2 Live Port` and `Ableton Push 2 User Port`. Set a row that uses
+an old name again. We did not test these names on Push 2 hardware.
 
 The User Port may remain a normal MIDI device. Do not configure it as another
 `Push2` row. Two rows launch two display helpers, and only one can claim USB

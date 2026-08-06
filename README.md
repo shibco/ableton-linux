@@ -15,7 +15,7 @@ GmbH** and respects the Ableton terms of service.
 
 - Live 12 Intro, Standard, Suite, Lite, Trial, and beta support
 - Experimental Live 11, Max for Live, and Max 9 support
-- Push 1 and Push 2 support (Push 3 and Move support coming soon!)
+- Push 1 and Push 2 support, and Push 3 support in controller mode (Move support comes later)
 - Local-network Ableton Link support
 - Experimental support for Ableton's forthcoming Extensions SDK
 - Compatibility with Ableton's Splice integration
@@ -222,12 +222,38 @@ For Push 2, configure exactly one control-surface row under
 **Settings/Preferences > Link, Tempo & MIDI**:
 
 - **Control Surface:** Push2
-- **Input:** Ableton Push 2 Live Port
-- **Output:** Ableton Push 2 Live Port
+- **Input:** Ableton Push 2
+- **Output:** Ableton Push 2
 
 Enable the input and output **Remote** switches. See
 [Push troubleshooting](TROUBLESHOOTING.md#push-2-does-not-connect) if its
 display does not start.
+
+USB MIDI ports use the names that Windows gives them. A Push 2 has two port
+pairs. The Live port is **Ableton Push 2**. The User port is **MIDIIN2 (Ableton
+Push 2)** and **MIDIOUT2 (Ableton Push 2)**.
+
+Releases before 2026.08 showed the Linux names, for example `Ableton Push 2 Live
+Port`. If you saved a control-surface row with an old name, select the input and
+the output again.
+
+### Ableton Push 3 setup
+
+1. Connect Push 3 with its USB-C cable.
+2. Launch Ableton Live.
+
+Do not configure a control-surface row for Push 3. Live finds Push 3 on the USB
+bus and starts the `Push3.exe` helper. The helper controls the display and the
+pads.
+
+The first start can install a firmware update in the Push. During the update,
+the helper starts again every few seconds, and the Push asks you to switch it off
+and on. Switch the Push off and on again. The helper then starts one time, and
+the Push is ready.
+
+Push 3 support is new. We tested it on one unit in controller mode. We did not
+test standalone mode with the compute module. For more data, refer to the
+[Push 3 note](notes/ABLETON-WINE-PUSH3-USB.md).
 
 ## Ableton Link
 

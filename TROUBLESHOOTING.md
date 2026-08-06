@@ -105,12 +105,35 @@ the current test procedure and limitations.
 
 ## Push 2 does not connect
 
-Configure exactly one `Push2` control-surface row with **Ableton Push 2 Live
-Port** as both its input and output. Remove duplicate `Push2` rows, close Live
-normally, then reconnect Push 2 and start Live again.
+Configure one `Push2` control-surface row. Select **Ableton Push 2** as the
+input and as the output. Delete the other `Push2` rows. Close Live in the normal
+way. Then connect Push 2 again and start Live.
 
-See the [Push 2 display bridge note](notes/ABLETON-WINE-PUSH2-DISPLAY.md) for
-USB diagnostics.
+USB MIDI ports use the names that Windows gives them. The Live port is **Ableton
+Push 2**. The User port is **MIDIIN2 (Ableton Push 2)** and **MIDIOUT2 (Ableton
+Push 2)**. Releases before 2026.08 showed `Ableton Push 2 Live Port`. A row that
+you saved before shows a device that is no longer available. Select the input and
+the output again.
+
+For USB diagnostics, refer to the
+[Push 2 display bridge note](notes/ABLETON-WINE-PUSH2-DISPLAY.md).
+
+## Push 3 does not start its display
+
+Push 3 does not need a control-surface row. Live finds the hardware on the USB
+bus and starts `Push3.exe`. If Live does not start the helper, make these checks:
+
+- Make sure that your runtime includes Wine patch 0066. An older runtime cannot
+  tell Live which USB device a MIDI port belongs to.
+- Make sure that the host can use the Push. The Push 3 note gives a probe for
+  this test.
+
+The first start can install a firmware update in the Push. During the update,
+the helper starts again every few seconds. Switch the Push off and on to complete
+the update.
+
+For the detection path and more diagnostics, refer to the
+[Push 3 note](notes/ABLETON-WINE-PUSH3-USB.md).
 
 ## Ableton Link does not find peers
 
