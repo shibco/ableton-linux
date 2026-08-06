@@ -145,11 +145,15 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0065|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
+0066|ascii|lib/wine/x86_64-unix/winealsa.so|MIDIIN%d (%s)
+0066|ascii|lib/wine/x86_64-unix/winealsa.so|&mi_%02x#alsa&card%d&port%d
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
+# The winmm part of 0066 (the device-ID fallback in midiInMessage) adds no text. The
+# winealsa part has both texts above, so these two lines cover the patch.
 STAMP_ONLY='
 0002|logic-only (visible-rect gates; adds no string literal)
 0004|logic-only (reentrant wpchanged state)
