@@ -1,0 +1,373 @@
+Subject: winealsa: report a device interface and Windows names for USB MIDI ports
+
+Windows gives each USB MIDI port a name from its USB MIDI class driver. The
+first port of a device gets the device name. The other ports get the names
+"MIDIIN<n> (device)" and "MIDIOUT<n> (device)". Windows also answers
+midi{In,Out}Message(DRV_QUERYDEVICEINTERFACE) with the KS device interface
+path of the port. This path contains the USB ids of the device:
+
+  \\?\usb#vid_2982&pid_1969&mi_05#7&1e0d0a41&0&0005#{6994ad04-...}
+
+Applications use the names and the path to find their hardware. Ableton Live
+looks for vid_xxxx&pid_xxxx in the path of each MIDI device. Live starts its
+Push helper only if it finds these ids. The helper then compares the port
+names with one pattern for each Push generation.
+
+Wine answered this message with MMSYSERR_NOTSUPPORTED. The wave devices in
+winmm answer the message, but the MIDI drivers did not. Wine also made the
+port names from the ALSA client and port. Live therefore did not find a
+Push 3, and it did not start Push3.exe.
+
+winealsa now makes the path and the names from the USB device that is behind
+the sound card of the port. The device link of the card in sysfs points to
+the USB device. The USB device gives idVendor, idProduct and the number of
+the MIDI streaming interface. The seq port number gives the Windows port
+index. A port that has no USB card keeps the name "client - port" and reports
+no path, as before.
+
+midiInMessage must also accept a device ID for the physical-feature messages.
+midiOutMessage calls MMDRV_PhysicalFeatures if the handle is an ID, but the
+input function returned MMSYSERR_INVALHANDLE. Applications ask both
+directions for the path.
+---
+ dlls/winealsa.drv/alsamidi.c | 199 +++++++++++++++++++++++++++++++++++++++++--
+ dlls/winmm/winmm.c           |   7 +-
+ 2 files changed, 196 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/winealsa.drv/alsamidi.c b/dlls/winealsa.drv/alsamidi.c
+index 4b65307..42814c6 100644
+--- a/dlls/winealsa.drv/alsamidi.c
++++ b/dlls/winealsa.drv/alsamidi.c
+@@ -34,6 +34,8 @@
+ #include <unistd.h>
+ #include <pthread.h>
+ #include <time.h>
++#include <dirent.h>
++#include <stdlib.h>
+ #include <alsa/asoundlib.h>
+ 
+ #include "ntstatus.h"
+@@ -50,6 +52,9 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(midi);
+ 
++/* Maximum length of the device interface path. Refer to set_interface_name(). */
++#define MIDI_INTERFACE_LEN 128
++
+ struct midi_dest
+ {
+     BOOL                bEnabled;
+@@ -60,6 +65,7 @@ struct midi_dest
+     snd_seq_t          *seq;
+     snd_seq_addr_t      addr;
+     int                 port_out;
++    WCHAR               interface_name[MIDI_INTERFACE_LEN];
+ };
+ 
+ struct midi_src
+@@ -73,6 +79,7 @@ struct midi_src
+     snd_seq_t          *seq;
+     snd_seq_addr_t      addr;
+     int                 port_in;
++    WCHAR               interface_name[MIDI_INTERFACE_LEN];
+ };
+ 
+ static pthread_mutex_t seq_mutex = PTHREAD_MUTEX_INITIALIZER;
+@@ -288,13 +295,140 @@ static int alsa_to_win_device_type(unsigned int type)
+     return MOD_FMSYNTH;
+ }
+ 
+-/* Build the display name winmm exposes for a seq port: "client - port",
+- * falling back to the port name alone if that would overflow.  Must stay
+- * stable across replug so hotplug re-matching by name works. */
++/* Windows gives each USB MIDI port a name from its USB MIDI class driver. The
++ * first port of a device gets the device name. The other ports get the names
++ * "MIDIIN<n> (device)" and "MIDIOUT<n> (device)". Windows also gives each port
++ * a KS device interface path. This path contains the USB ids of the device:
++ *
++ *   \\?\usb#vid_2982&pid_1969&mi_05#7&1e0d0a41&0&0005#{6994ad04-...}
++ *
++ * Applications use the names and the path to find their hardware. Ableton Live
++ * looks for vid_xxxx&pid_xxxx in the path of each MIDI device. Live starts its
++ * Push helper only if it finds these ids. The helper then compares the port
++ * names with one pattern for each Push generation.
++ *
++ * ALSA gives no path and different names. Make both from the USB device that is
++ * behind the sound card of the port. A port that has no USB card keeps the name
++ * "client - port" and gets no path.
++ */
++static const char midi_ks_category[] = "{6994ad04-93ef-11d0-a3cc-00a0c9223196}";
++
++static BOOL sysfs_read_hex(const char *dir, const char *file, unsigned int *value)
++{
++    char path[512];
++    FILE *f;
++    int ret;
++
++    snprintf(path, sizeof(path), "%s/%s", dir, file);
++    if (!(f = fopen(path, "r"))) return FALSE;
++    ret = fscanf(f, "%x", value);
++    fclose(f);
++    return ret == 1;
++}
++
++/* Find the MIDI streaming interface of the USB device. Windows shows this
++ * interface number in the &mi_ field. Return -1 if there is no such interface. */
++static int usb_midi_interface(const char *device_dir)
++{
++    struct dirent *entry;
++    int number = -1;
++    DIR *dir;
++
++    if (!(dir = opendir(device_dir))) return -1;
++    while ((entry = readdir(dir)))
++    {
++        unsigned int iface_class, iface_subclass, iface_number;
++        char path[512];
++
++        /* interface directories are <bus>-<port>:<config>.<interface> */
++        if (!strchr(entry->d_name, ':')) continue;
++        snprintf(path, sizeof(path), "%s/%s", device_dir, entry->d_name);
++        if (!sysfs_read_hex(path, "bInterfaceClass", &iface_class) || iface_class != 0x01) continue;
++        if (!sysfs_read_hex(path, "bInterfaceSubClass", &iface_subclass) || iface_subclass != 0x03) continue;
++        if (!sysfs_read_hex(path, "bInterfaceNumber", &iface_number)) continue;
++        number = iface_number;
++        break;
++    }
++    closedir(dir);
++    return number;
++}
++
++/* Find the USB device of an ALSA card. The device link of the card points to one
++ * interface of the USB device. Go up in the tree until a directory has the ids. */
++static BOOL card_usb_ids(int card, unsigned int *vid, unsigned int *pid, int *midi_iface)
++{
++    char link[64], *dir;
++    BOOL found = FALSE;
++    int i;
++
++    if (card < 0) return FALSE;
++    snprintf(link, sizeof(link), "/sys/class/sound/card%d/device", card);
++    if (!(dir = realpath(link, NULL))) return FALSE;
++
++    for (i = 0; i < 4; i++)
++    {
++        char *slash;
++
++        if (sysfs_read_hex(dir, "idVendor", vid) && sysfs_read_hex(dir, "idProduct", pid))
++        {
++            if (midi_iface) *midi_iface = usb_midi_interface(dir);
++            found = TRUE;
++            break;
++        }
++        if (!(slash = strrchr(dir, '/')) || slash == dir) break;
++        *slash = 0;
++    }
++    free(dir);
++    return found;
++}
++
++/* Write the interface path of the port. Write nothing if the port has no USB
++ * card. Write nothing if the path is too long for the buffer, because a short
++ * path is not correct. */
++static void set_interface_name(WCHAR *dst, unsigned int dst_len, int card,
++                               snd_seq_port_info_t *pinfo)
++{
++    char path[MIDI_INTERFACE_LEN];
++    unsigned int vid, pid;
++    int midi_iface = -1, len;
++
++    if (!card_usb_ids(card, &vid, &pid, &midi_iface)) return;
++
++    if (midi_iface >= 0)
++        len = snprintf(path, sizeof(path),
++                       "\\\\?\\usb#vid_%04x&pid_%04x&mi_%02x#alsa&card%d&port%d#%s",
++                       vid, pid, midi_iface, card, snd_seq_port_info_get_port(pinfo),
++                       midi_ks_category);
++    else
++        len = snprintf(path, sizeof(path),
++                       "\\\\?\\usb#vid_%04x&pid_%04x#alsa&card%d&port%d#%s",
++                       vid, pid, card, snd_seq_port_info_get_port(pinfo), midi_ks_category);
++    if (len < 0 || len >= (int)sizeof(path)) return;
++
++    ntdll_umbstowcs(path, len + 1, dst, dst_len);
++    TRACE("%d:%d interface '%s'\n", snd_seq_port_info_get_client(pinfo),
++          snd_seq_port_info_get_port(pinfo), path);
++}
++
++/* Make the name that winmm shows for a seq port. A port on a USB card gets the
++ * Windows name. Each other port gets the name "client - port". If that name is
++ * too long, use the port name only. The name must not change after a replug,
++ * because the hotplug code finds the port again by name. */
+ static unsigned int port_display_name(snd_seq_client_info_t *cinfo, snd_seq_port_info_t *pinfo,
+-                                      char name[MAXPNAMELEN])
++                                      BOOL is_out, char name[MAXPNAMELEN])
+ {
+     unsigned int len = strlen(snd_seq_port_info_get_name(pinfo));
++    int port = snd_seq_port_info_get_port(pinfo);
++    unsigned int vid, pid;
++
++    if (card_usb_ids(snd_seq_client_info_get_card(cinfo), &vid, &pid, NULL)) {
++        if (!port)
++            snprintf(name, MAXPNAMELEN, "%s", snd_seq_client_info_get_name(cinfo));
++        else
++            snprintf(name, MAXPNAMELEN, is_out ? "MIDIOUT%d (%s)" : "MIDIIN%d (%s)",
++                     port + 1, snd_seq_client_info_get_name(cinfo));
++        return strlen(name);
++    }
+ 
+     if ((strlen(snd_seq_client_info_get_name(cinfo)) + len + 3) < MAXPNAMELEN) {
+         sprintf(name, "%s - %s", snd_seq_client_info_get_name(cinfo), snd_seq_port_info_get_name(pinfo));
+@@ -307,6 +441,30 @@ static unsigned int port_display_name(snd_seq_client_info_t *cinfo, snd_seq_port
+     return len;
+ }
+ 
++/* Answer DRV_QUERYDEVICEINTERFACE and DRV_QUERYDEVICEINTERFACESIZE for one
++ * port. The sizes are in bytes and include the terminator. The wave devices in
++ * winmm use the same counts. */
++static UINT get_device_interface(UINT msg, const WCHAR *name, void *param_1, UINT_PTR param_2)
++{
++    const WCHAR *end = name;
++    ULONG len_bytes;
++
++    if (!*name) return MMSYSERR_NOTSUPPORTED;
++    if (!param_1) return MMSYSERR_INVALPARAM;
++
++    while (*end) end++;
++    len_bytes = (end - name + 1) * sizeof(WCHAR);
++
++    if (msg == DRV_QUERYDEVICEINTERFACESIZE)
++    {
++        *(ULONG *)param_1 = len_bytes;
++        return MMSYSERR_NOERROR;
++    }
++    if (param_2 < len_bytes) return MMSYSERR_INVALPARAM;
++    memcpy(param_1, name, len_bytes);
++    return MMSYSERR_NOERROR;
++}
++
+ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, unsigned int cap, unsigned int type)
+ {
+     char name[MAXPNAMELEN];
+@@ -329,6 +487,8 @@ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, u
+         dest = dests + num_dests;
+         memset( dest, 0, sizeof(*dest) );
+         dest->addr = *snd_seq_port_info_get_addr(pinfo);
++        set_interface_name(dest->interface_name, ARRAY_SIZE(dest->interface_name),
++                           snd_seq_client_info_get_card(cinfo), pinfo);
+ 
+         /* Manufac ID. We do not have access to this with soundcard.h
+          * Does not seem to be a problem, because in mmsystem.h only
+@@ -347,7 +507,7 @@ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, u
+         /* Try to use both client and port names, if this is too long take the port name only.
+            In the second case the port name should be explicit enough due to its big size.
+         */
+-        len = port_display_name(cinfo, pinfo, name);
++        len = port_display_name(cinfo, pinfo, TRUE, name);
+         ntdll_umbstowcs( name, len + 1, dest->caps.szPname, ARRAY_SIZE(dest->caps.szPname));
+ 
+         dest->caps.wTechnology = alsa_to_win_device_type(type);
+@@ -396,6 +556,8 @@ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, u
+         src = srcs + num_srcs;
+         memset( src, 0, sizeof(*src) );
+         src->addr = *snd_seq_port_info_get_addr(pinfo);
++        set_interface_name(src->interface_name, ARRAY_SIZE(src->interface_name),
++                           snd_seq_client_info_get_card(cinfo), pinfo);
+ 
+         /* Manufac ID. We do not have access to this with soundcard.h
+          * Does not seem to be a problem, because in mmsystem.h only
+@@ -410,7 +572,7 @@ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, u
+         /* Try to use both client and port names, if this is too long take the port name only.
+            In the second case the port name should be explicit enough due to its big size.
+         */
+-        len = port_display_name(cinfo, pinfo, name);
++        len = port_display_name(cinfo, pinfo, FALSE, name);
+         ntdll_umbstowcs( name, len + 1, src->caps.szPname, ARRAY_SIZE(src->caps.szPname));
+         src->state = 0;
+ 
+@@ -1092,17 +1254,19 @@ static void handle_port_start(snd_seq_addr_t addr)
+     if (!type || (cap & SND_SEQ_PORT_CAP_NO_EXPORT))
+         goto done;
+ 
+-    len = port_display_name(cinfo, pinfo, name);
+-    ntdll_umbstowcs(name, len + 1, nameW, ARRAY_SIZE(nameW));
+-
+     if (cap & SND_SEQ_PORT_CAP_READ)
+     {
++        len = port_display_name(cinfo, pinfo, FALSE, name);
++        ntdll_umbstowcs(name, len + 1, nameW, ARRAY_SIZE(nameW));
++
+         for (src = srcs; src < srcs + num_srcs; src++)
+         {
+             if (wcscmp(src->caps.szPname, nameW)) continue;
+             TRACE("re-attaching MidiIn %u '%s' to %d:%d\n",
+                   (unsigned int)(src - srcs), name, addr.client, addr.port);
+             src->addr = addr;
++            set_interface_name(src->interface_name, ARRAY_SIZE(src->interface_name),
++                               snd_seq_client_info_get_card(cinfo), pinfo);
+             if (src->midiDesc.hMidi && src->seq)
+             {
+                 seq_lock();
+@@ -1117,12 +1281,17 @@ static void handle_port_start(snd_seq_addr_t addr)
+     }
+     if (cap & SND_SEQ_PORT_CAP_WRITE)
+     {
++        len = port_display_name(cinfo, pinfo, TRUE, name);
++        ntdll_umbstowcs(name, len + 1, nameW, ARRAY_SIZE(nameW));
++
+         for (dest = dests; dest < dests + num_dests; dest++)
+         {
+             if (wcscmp(dest->caps.szPname, nameW)) continue;
+             TRACE("re-attaching MidiOut %u '%s' to %d:%d\n",
+                   (unsigned int)(dest - dests), name, addr.client, addr.port);
+             dest->addr = addr;
++            set_interface_name(dest->interface_name, ARRAY_SIZE(dest->interface_name),
++                               snd_seq_client_info_get_card(cinfo), pinfo);
+             if (dest->midiDesc.hMidi && dest->seq && dest->port_out >= 0)
+             {
+                 seq_lock();
+@@ -1531,6 +1700,12 @@ NTSTATUS alsa_midi_out_message(void *args)
+     case MODM_RESET:
+         *params->err = midi_out_reset(params->dev_id);
+         break;
++    case DRV_QUERYDEVICEINTERFACESIZE:
++    case DRV_QUERYDEVICEINTERFACE:
++        if (params->dev_id >= num_dests) *params->err = MMSYSERR_BADDEVICEID;
++        else *params->err = get_device_interface(params->msg, dests[params->dev_id].interface_name,
++                                                (void *)params->param_1, params->param_2);
++        break;
+     default:
+         TRACE("Unsupported message\n");
+         *params->err = MMSYSERR_NOTSUPPORTED;
+@@ -1586,6 +1761,12 @@ NTSTATUS alsa_midi_in_message(void *args)
+     case MIDM_RESET:
+         *params->err = midi_in_reset(params->dev_id, params->notify);
+         break;
++    case DRV_QUERYDEVICEINTERFACESIZE:
++    case DRV_QUERYDEVICEINTERFACE:
++        if (params->dev_id >= num_srcs) *params->err = MMSYSERR_BADDEVICEID;
++        else *params->err = get_device_interface(params->msg, srcs[params->dev_id].interface_name,
++                                                (void *)params->param_1, params->param_2);
++        break;
+     default:
+         TRACE("Unsupported message\n");
+         *params->err = MMSYSERR_NOTSUPPORTED;
+diff --git a/dlls/winmm/winmm.c b/dlls/winmm/winmm.c
+index 73050e0..e59fb5b 100644
+--- a/dlls/winmm/winmm.c
++++ b/dlls/winmm/winmm.c
+@@ -881,8 +881,13 @@ UINT WINAPI midiInMessage(HMIDIIN hMidiIn, UINT uMessage,
+ 
+     TRACE("(%p, %04X, %08IX, %08IX)\n", hMidiIn, uMessage, dwParam1, dwParam2);
+ 
+-    if ((wmld = MMDRV_Get(hMidiIn, MMDRV_MIDIIN, FALSE)) == NULL)
++    if ((wmld = MMDRV_Get(hMidiIn, MMDRV_MIDIIN, FALSE)) == NULL) {
++	/* The physical-feature messages, for example DRV_QUERYDEVICEINTERFACE,
++	 * use a device ID and not an open handle. midiOutMessage does the same. */
++	if ((wmld = MMDRV_Get(hMidiIn, MMDRV_MIDIIN, TRUE)) != NULL)
++	    return MMDRV_PhysicalFeatures(wmld, uMessage, dwParam1, dwParam2);
+ 	return MMSYSERR_INVALHANDLE;
++    }
+ 
+     switch (uMessage) {
+     case MIDM_OPEN:

@@ -62,6 +62,7 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 81e02eeac88e6eda5da8044cd5bf74a197b2742f77c46da54e61dbf300031bd3  0064-shell32-route-explorer-folder-open-commands-to-the-h.patch
 61fa9b5531a69b84f556d4e99e506918d06365e1cbfce11f08df1c99d1fb09ff  0065-libusb-1.0-extend-the-host-bridge-for-Push-3.patch
 7931be1771a070325eb0b87f970e51f7089c216f1bad128fb5ecf504e100e005  0065-win32u-normalize-selected-fullscreen-window.patch
+cc14646917ffd46628c655345a1d0ee8bb07a2660c73952db467b4f47f51be5b  0066-winealsa-report-a-device-interface-and-Windows-names.patch
 4b4ca42a11539df9482e7160141be08c10e8f4b1d1c46e1ce3fa60caa0fb993a  0069-win32u-keep-selected-captioned-monitor-sized-window-resizable.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
