@@ -621,9 +621,9 @@ wine reg add "$push3_key" /v libusb-1.0 /t REG_SZ /d builtin /f
 wine reg query "$push3_key" /v libusb-1.0
 # Live imports libusb, but Live does not use libusb to find a Push 3. Live looks for
 # vid_2982&pid_1969 in the DRV_QUERYDEVICEINTERFACE text of each MIDI device, and patch
-# 0066 answers that message in winealsa.drv (notes/ABLETON-WINE-PUSH3-USB.md). This
+# 0074 answers that message in winealsa.drv (notes/ABLETON-WINE-PUSH3-USB.md). This
 # override only sends the libusb calls of Live to the bridge, and traces show that Live
-# makes no such call. The override needs the patch 0065 bridge: the 0032 bridge has no
+# makes no such call. The override needs the patch 0073 bridge: the 0032 bridge has no
 # libusb_bulk_transfer and no libusb_strerror, and Live does not start. The Live 11
 # imports are not verified, so the Live 11 executables keep the native DLL.
 for live_exe in 'Ableton Live 12 Suite.exe' 'Ableton Live 12 Standard.exe' \

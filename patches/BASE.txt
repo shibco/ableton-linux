@@ -11,9 +11,12 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 64 files, numbered 0001 through 0069.
+The current Wine series contains 66 files, numbered 0001 through 0074.
 Patches 0027 and 0044 are intentionally absent. Patches 0066 through 0068
 are reserved by PR 124 and will enter this branch when it rebases after merge.
+Patches 0070 through 0072 are reserved by in-flight branches; the SERIES_GAPS
+map in `scripts/build-audit.sh` records the claimant of each number. The
+Push 3 patches took 0073 and 0074 to stay clear of them.
 
 ## Applying the series
 
@@ -251,3 +254,14 @@ Apply them in sequence with the rest of the series.
   borderless fullscreen, unselected windows, and plugin windows retain Wine's
   existing behavior. `WINE_WIN32_RESIZABLE_CLASS=off` disables only this fix
   for comparison. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+- `0073`: extend the 0032 libusb host bridge for Push 3. Export
+  `libusb_bulk_transfer` (one blocking host call), `libusb_strerror`, and
+  hotplug registration stubs that report no hotplug support, matching
+  Ableton's own Windows libusb build; accept interface numbers 0 through
+  255 instead of interface 0 only. Push 2 behavior is unchanged. See
+  `notes/ABLETON-WINE-PUSH3-USB.md`.
+- `0074`: report a device interface path and the Windows names for USB MIDI
+  ports in winealsa, and let `midiInMessage` accept a device ID for the
+  physical-feature messages, as `midiOutMessage` already did. Live reads
+  the path to detect a Push. Ports that are not on a USB sound card keep
+  their names and report no path. See `notes/ABLETON-WINE-PUSH3-USB.md`.

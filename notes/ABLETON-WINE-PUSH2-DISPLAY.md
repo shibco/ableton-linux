@@ -13,10 +13,10 @@ Use exactly one control-surface row:
 - **Input:** `Ableton Push 2`
 - **Output:** `Ableton Push 2`
 
-[Patch 0066](../patches/0066-winealsa-report-a-device-interface-and-Windows-names.patch)
+[Patch 0074](../patches/0074-winealsa-report-a-device-interface-and-Windows-names.patch)
 gives USB MIDI ports the names that Windows uses. The Live port is
 `Ableton Push 2`. The User port is `MIDIIN2 (Ableton Push 2)` and
-`MIDIOUT2 (Ableton Push 2)`. Before patch 0066, the names were
+`MIDIOUT2 (Ableton Push 2)`. Before patch 0074, the names were
 `Ableton Push 2 Live Port` and `Ableton Push 2 User Port`. Set a row that uses
 an old name again. We did not test these names on Push 2 hardware.
 
@@ -153,7 +153,7 @@ Do not leave the override enabled when using a Wine runtime without patch
   loop.
 - Disconnect and `NO_DEVICE` recovery inside the bridge remain untested.
 - `Push3.exe` uses a different libusb surface and is outside this patch.
-  [Patch 0065](../patches/0065-libusb-1.0-extend-the-host-bridge-for-Push-3.patch)
+  [Patch 0073](../patches/0073-libusb-1.0-extend-the-host-bridge-for-Push-3.patch)
   extends the bridge for it; see
   [ABLETON-WINE-PUSH3-USB.md](ABLETON-WINE-PUSH3-USB.md).
 - A Live process that started without MIDI ports does not discover them later.

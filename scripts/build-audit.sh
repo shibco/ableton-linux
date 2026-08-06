@@ -75,6 +75,9 @@ declare -A SERIES_GAPS=(
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
+    [0070]="reserved 2026-08-06 for the M4L font-list cache (performance-moonshot-m4l); also claimed by webview-splice and shortcut-parity drafts"
+    [0071]="reserved 2026-08-06 for present-size fallback telemetry (fix/0058-fallback-telemetry)"
+    [0072]="reserved 2026-08-06 for per-monitor menu DPI scaling (fix/win-dynamic-dpi)"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -144,15 +147,15 @@ FINGERPRINTS='
 0064|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_open_folder
 0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
-0065|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
-0066|ascii|lib/wine/x86_64-unix/winealsa.so|MIDIIN%d (%s)
-0066|ascii|lib/wine/x86_64-unix/winealsa.so|&mi_%02x#alsa&card%d&port%d
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
+0073|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
+0074|ascii|lib/wine/x86_64-unix/winealsa.so|MIDIIN%d (%s)
+0074|ascii|lib/wine/x86_64-unix/winealsa.so|&mi_%02x#alsa&card%d&port%d
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
-# The winmm part of 0066 (the device-ID fallback in midiInMessage) adds no text. The
+# The winmm part of 0074 (the device-ID fallback in midiInMessage) adds no text. The
 # winealsa part has both texts above, so these two lines cover the patch.
 STAMP_ONLY='
 0002|logic-only (visible-rect gates; adds no string literal)

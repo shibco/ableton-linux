@@ -1,6 +1,6 @@
 # Push 3 USB bridge
 
-[Patch 0065](../patches/0065-libusb-1.0-extend-the-host-bridge-for-Push-3.patch)
+[Patch 0073](../patches/0073-libusb-1.0-extend-the-host-bridge-for-Push-3.patch)
 extends the [patch 0032](../patches/0032-libusb-1.0-add-host-USB-bridge-for-Push-2.patch)
 libusb bridge so `Push3.exe` can reach Push 3's vendor USB interfaces through
 host libusb. The extension follows the same design as the Push 2 bridge,
@@ -9,8 +9,8 @@ described in [ABLETON-WINE-PUSH2-DISPLAY.md](ABLETON-WINE-PUSH2-DISPLAY.md).
 Status: Live starts `Push3.exe`. The helper connects to its MIDI ports, opens
 the display through the host bridge, and reports "Push is go". The surface then
 works on the hardware. This needs
-[patch 0066](../patches/0066-winealsa-report-a-device-interface-and-Windows-names.patch)
-together with patch 0065. Patch 0066 gives each MIDI port a device interface
+[patch 0074](../patches/0074-winealsa-report-a-device-interface-and-Windows-names.patch)
+together with patch 0073. Patch 0074 gives each MIDI port a device interface
 path and the Windows port names.
 
 The first run also installed a firmware update in the device. The Push then
@@ -69,7 +69,7 @@ branch wrote `Unsupported message` and returned `MMSYSERR_NOTSUPPORTED`. The
 wave devices answer the message in `dlls/winmm/waveform.c`, but the MIDI devices
 did not. Live read an empty text for each device, and no device agreed with the
 two texts. Live did not use its `push-app-launching` code, and `Push3.exe` did
-not start. This is the trace with `WINEDEBUG=+winmm,+midi` before patch 0066. It
+not start. This is the trace with `WINEDEBUG=+winmm,+midi` before patch 0074. It
 repeats for all six out devices and all six in devices:
 
 ```text
@@ -82,7 +82,7 @@ trace:winmm:MMDRV_Message => MMSYSERR_NOTSUPPORTED
 
 `midiInMessage` did not send the message to the driver at all. It returned
 `MMSYSERR_INVALHANDLE` for a device ID, but `midiOutMessage` calls
-`MMDRV_PhysicalFeatures` in this condition. Patch 0066 corrects both parts. It
+`MMDRV_PhysicalFeatures` in this condition. Patch 0074 corrects both parts. It
 adds the same fallback in `winmm`, and it answers the message in
 `winealsa.drv`. The driver makes the path from the USB device that is behind the
 sound card of the port:
@@ -116,14 +116,14 @@ Live 12.4.5b7: the same list without libusb_bulk_transfer
 `setup-prefix.sh` keeps the override for the Live 12 executables, so the libusb
 calls go to the bridge if Live makes them. Each import in the list is a bridge
 export: nine come from patch 0032, and `libusb_bulk_transfer` and
-`libusb_strerror` come from patch 0065. Do not set the Live override on a
-runtime without patch 0065. The loader cannot find `libusb_bulk_transfer` and
+`libusb_strerror` come from patch 0073. Do not set the Live override on a
+runtime without patch 0073. The loader cannot find `libusb_bulk_transfer` and
 `libusb_strerror` in the 0032 bridge, and Live does not start. No released
-runtime contains patch 0065.
+runtime contains patch 0073.
 
 ## Push3.exe MIDI port names
 
-Before patch 0066, `Push3.exe` stopped before its USB work. This occurred on
+Before patch 0074, `Push3.exe` stopped before its USB work. This occurred on
 2026-08-02, and again on 2026-08-05 at 19:16 with the same prefix:
 
 ```text
@@ -154,7 +154,7 @@ Windows, the first port has the name "Ableton Push 3". RtMidi then gives
 "Ableton Push 3 <index>", and the `\d*` part of the pattern matches. For this
 reason, the fault occurs only on Wine.
 
-Patch 0066 gives a port on a USB card the Windows name and the interface path.
+Patch 0074 gives a port on a USB card the Windows name and the interface path.
 The first seq port of the device gets the device name. The other ports get the
 names `MIDIIN<n> (device)` and `MIDIOUT<n> (device)`, and n comes from the seq
 port number. RtMidi then gives "Ableton Push 3 <index>", and the pattern
@@ -170,7 +170,7 @@ examples of such a port.
 
 ## Bridge changes
 
-Patch 0065 changes the builtin `libusb-1.0.dll`:
+Patch 0073 changes the builtin `libusb-1.0.dll`:
 
 - exports `libusb_bulk_transfer` and forwards it to the host as one blocking
   call on the calling thread
@@ -197,7 +197,7 @@ executables.
 
 ## MIDI driver changes
 
-Patch 0066 changes `dlls/winealsa.drv/alsamidi.c` and `dlls/winmm/winmm.c`:
+Patch 0074 changes `dlls/winealsa.drv/alsamidi.c` and `dlls/winmm/winmm.c`:
 
 - The driver answers `DRV_QUERYDEVICEINTERFACE` and
   `DRV_QUERYDEVICEINTERFACESIZE` for MIDI in devices and MIDI out devices. The
@@ -233,7 +233,7 @@ device, not a fault. Expect `Push3.exe` to consume this stream continuously;
 if the bridge's event handling stalls anywhere, this endpoint will show it
 first.
 
-The runtime with patches 0065 and 0066 gave a complete session on 2026-08-05.
+The runtime with patches 0073 and 0074 gave a complete session on 2026-08-05.
 The setup was Live 12.4.3, a Push 3 controller, engineering run ER3b, and no
 compute module:
 
@@ -276,7 +276,7 @@ WINEPREFIX="$HOME/.wine-ableton" \
 
 Repeat the second command for each installed Live 12 edition. Do not
 leave the overrides enabled when using a Wine runtime without patch
-0065.
+0073.
 
 ## Limits
 
@@ -292,7 +292,7 @@ leave the overrides enabled when using a Wine runtime without patch
   more.
 - Live 11 executables are not covered: their libusb imports are unverified.
 - Move is a different device and is not covered.
-- The interface path from patch 0066 is not a Windows path. Only the vendor id,
+- The interface path from patch 0074 is not a Windows path. Only the vendor id,
   the product id, and the MIDI interface number are real. The instance field is
   `alsa&card<n>&port<n>`, and it changes if the card number changes.
 - Only a port on a USB sound card gets a path and the Windows names. A PCI card

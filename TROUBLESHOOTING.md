@@ -123,7 +123,7 @@ For USB diagnostics, refer to the
 Push 3 does not need a control-surface row. Live finds the hardware on the USB
 bus and starts `Push3.exe`. If Live does not start the helper, make these checks:
 
-- Make sure that your runtime includes Wine patch 0066. An older runtime cannot
+- Make sure that your runtime includes Wine patch 0074. An older runtime cannot
   tell Live which USB device a MIDI port belongs to.
 - Make sure that the host can use the Push. The Push 3 note gives a probe for
   this test.
