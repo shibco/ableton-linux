@@ -29,6 +29,38 @@ This workaround is only needed for affected plugins. See the
 [Pianoteq investigation](notes/ABLETON-WINE-PIANOTEQ-DPI-GHOST-BUG.md) for the
 confirmed failure mode.
 
+## Live's "Enable GPU Renderer" setting is greyed out
+
+If you're experiencing performance issues or high CPU usage when idle, Live
+may not be using your GPU. By default, Live will always offload the UI to
+your GPU for maximum performance, but will only do so when it recognises
+the name of your GPU. On Linux, GPUs will 'tell' Live their name without
+any external interference, and because Live is anticipating that interference,
+it may not recognise the GPU's name and refuse to use the GPU.
+
+To confirm this problem, open **Settings > Display & Input**. 
+If **Enable GPU Renderer** is greyed out, and the note under it names a 
+graphics card that is not the one in your computer, then you're seeing this
+exact problem. 
+
+To solve it: **update this project**.
+
+Download [the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
+and run the update. It keeps your Live installation, your license, and
+your projects:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run --update
+```
+
+Start Live, open **Settings > Display & Input**, and turn on **Enable GPU
+Renderer**. Live now names your real graphics card, and the setting stays
+on.
+
+If the setting is still greyed out on 2026.08.01.1 or newer,
+[open an issue](https://github.com/shibco/ableton-linux/issues) and
+include your graphics card model.
+
 ## Live 11: Max for Live fails after the first launch
 
 After running Live 11 once, close Live and run:
@@ -109,7 +141,7 @@ switches to that size, then audio comes back on its own. If it happens
 once, there is nothing to do.
 
 If it keeps happening, or audio plays too fast or too slow instead of
-coming back (releases up to 2026.08.01.1 do this), clear the stuck buffer
+coming back (releases up to 2026.08.04.1 do this), clear the stuck buffer
 size and restart Live:
 
 ```bash
@@ -120,26 +152,24 @@ If you still have problems, try rebooting. If they come back after that,
 run `./scripts/audio-report.sh` from a repository checkout and attach the
 output to an issue.
 
-## Live is slow and wineserver uses a full CPU core
+## Live is slow and CPU use stays high
 
-Without `/dev/ntsync`, every Windows synchronization wait becomes a
-wineserver round trip: measured at about 45 percent of one core and 9,000
-context switches per second with Live idle
-([details](notes/ABLETON-WINE-NTSYNC-REGRESSION.md)). The launcher warns at
-startup when the device is missing; `ls /dev/ntsync` checks by hand.
+Live runs much slower without a Linux feature called ntsync. The launcher
+warns at each startup while it is missing.
 
-`ntsync` ships in Linux 6.14 and newer. On a 6.14+ kernel, load the module
-and make the load permanent:
+`./scripts/setup-realtime.sh` already does both steps below. If you ran it,
+restart Live and the warning should be gone. Otherwise turn ntsync on now and
+at every boot:
 
 ```bash
 sudo modprobe ntsync
 echo ntsync | sudo tee /etc/modules-load.d/90-ableton-ntsync.conf
 ```
 
-`setup-realtime.sh` installs the same drop-in. On kernels older than 6.14,
-or built without `CONFIG_NTSYNC`, move to a distribution kernel that
-provides the module. Relaunch Live to verify: the warning is gone. From a
-repository checkout, `./scripts/check-ntsync.sh` runs the full probe.
+Restart Live. The startup warning no longer appears.
+
+If the first command reports that the module does not exist, move to a kernel
+that provides ntsync (Linux 6.14 or newer) and run the commands again.
 
 ## Live uses much CPU when it is idle
 
@@ -175,15 +205,62 @@ For advanced host tuning from a repository checkout, run:
 ./scripts/setup-realtime.sh
 ```
 
-The script requests `sudo` before changing realtime permissions, swappiness,
-or CPU-governor settings. Log out and back in after it completes. Run
-`ABLETON_RT=off ableton-live` to compare normal scheduling.
+The script asks for `sudo`, gives your user account permission to run audio
+at realtime priority, and tells the system to avoid moving Live's memory to
+swap. Log out and back in after it completes. Run
+`env ABLETON_RT=off ableton-live` to compare normal scheduling.
+
+While Live runs, the launcher also holds the computer in its fastest power
+mode, and releases it when Live exits, so battery use stays normal while
+Live is closed. This uses the `power-profiles-daemon` service, which GNOME
+and KDE ship by default. Run `env ABLETON_POWER=off ableton-live` to
+compare a launch without it.
+
+On Pop!_OS and other System76 computers, do not install the
+`power-profiles-daemon` package. The package manager removes the System76
+power management tools to make room for it. Use the power settings in your
+desktop instead.
+
+Earlier releases kept the CPU at full speed from every boot instead.
+Remove that old boot setting with:
+
+```bash
+sudo systemctl disable ableton-cpufreq-performance.service
+sudo rm /etc/systemd/system/ableton-cpufreq-performance.service
+sudo systemctl daemon-reload
+```
+
+From a repository checkout, run `./scripts/setup-realtime.sh` to remove it
+instead.
 
 ## Display scaling is wrong
 
 Restart Live after moving it between monitors with different scale factors.
 Override automatic detection for one launch with `ABLETON_DPI_MODE`; available
 values are listed in [the build and configuration reference](BUILDING.md#environment-variables).
+
+## Full Screen shows shifted content or does not fully exit
+
+Update to a release newer than 2026.08.01.1. On 2026.08.01.1 and older,
+**View > Full Screen** and F11 show Live's content shifted, clicks land away
+from their targets, and leaving fullscreen keeps the fullscreen image on
+screen until the window is moved.
+
+Download [the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
+and run the update. It keeps your Live installation, your license, and
+your projects:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run --update
+```
+
+Until you can update, drag Live's window once after leaving fullscreen to
+clear the stuck image.
+
+If fullscreen is still wrong after the update, launch once with
+`WINE_WIN32_FULLSCREEN_CLASS=off ableton-live`, then
+[open an issue](https://github.com/shibco/ableton-linux/issues) and include
+your desktop environment and whether that launch behaved differently.
 
 ## Report a problem
 

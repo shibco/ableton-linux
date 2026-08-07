@@ -32,7 +32,28 @@ diff --git a/src/config.c b/src/config.c
 diff --git a/src/asio.c b/src/asio.c
 --- a/src/asio.c
 +++ b/src/asio.c
-@@ -1977,13 +1977,27 @@
+@@ -1289,12 +1289,16 @@
+         TRACE("Buffersize fixed at %d\n", (int)This->host_current_buffersize);
+     }
+     else
+-    { /* fail if not a power of two and if out of range */
+-        if (!(bufferSize > 0 && !(bufferSize & (bufferSize - 1))
+-              && bufferSize >= PIPEASIO_MINIMUM_BUFFERSIZE
++    { /* fail only if out of range: any size in [min, max] is accepted, the
++       * same rule config.c and the environment path already follow.
++       * Rejecting a non-power-of-two here refused a size GetBufferSize had
++       * just offered (issue #49: quantum 192 gave CreateBuffers=-997). */
++        if (!(bufferSize >= PIPEASIO_MINIMUM_BUFFERSIZE
+               && bufferSize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
+         {
+-            WARN("Invalid buffersize %d requested\n", (int)bufferSize);
++            WARN("Invalid buffersize %d requested; outside [%d, %d]\n",
++                 (int)bufferSize, PIPEASIO_MINIMUM_BUFFERSIZE,
++                 PIPEASIO_MAXIMUM_BUFFERSIZE);
+             return -997;
+         }
+         else
+@@ -1977,13 +1981,27 @@
      if (n > 0 && n < sizeof name_env)
          lstrcpynA(This->client_name, name_env, PIPEASIO_MAX_NAME_LENGTH);
  

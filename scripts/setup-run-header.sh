@@ -199,8 +199,19 @@ configure_link() {
         # The decline is sticky, even over an earlier configured state: later
         # updates stay quiet until --link opts back in, which re-runs the
         # idempotent setup in full, so nothing is lost by recording it.
+        # Record the configured baseline, not this kit's required version:
+        # setup-link.sh reads the marker as prior_version and keys its
+        # one-time migrations off it, so a version whose migration never ran
+        # must not be written here.
+        # Keep an already-recorded numeric baseline even when the marker is
+        # already declined. Otherwise repeated --no-link updates turn
+        # configured 5 -> declined 5 -> declined 0 and a later --link can
+        # mistake a deliberate post-v5 enablement for a legacy one.
+        local baseline
+        baseline="$(sed -n 2p "$marker" 2>/dev/null || true)"
+        case "$baseline" in ''|*[!0-9]*) baseline=0 ;; esac
         mkdir -p "$(dirname "$marker")" 2>/dev/null || true
-        printf 'declined\n%s\n' "$required_version" > "$marker" 2>/dev/null || true
+        printf 'declined\n%s\n' "$baseline" > "$marker" 2>/dev/null || true
         warn_stale_link_hook
         return 0
     fi
@@ -336,12 +347,27 @@ if [ "$manual_install" -eq 0 ]; then
         fi
     fi
     if [ -n "$live_exe" ]; then
-        say "-- starting the Ableton installer; from here just click through its window"
+        # Live 12 ships Inno Setup, Live 11 a WiX Burn bundle. Burn ignores /MERGETASKS and
+        # /SUPPRESSMSGBOXES, and reads /SILENT as /quiet - no window at all - so the Inno set
+        # on Live 11 installs the USB audio driver anyway and loses the wizard. /MERGETASKS
+        # drops that task: a Windows USB kernel driver Wine cannot load (audio is PipeASIO).
+        # Burn first - `.wixburn` is a PE section ~630 bytes in, so 4k settles it however big
+        # the installer is; the Inno marker is ~680 KB in. Process substitution, not a pipe:
+        # grep -q exits early, head takes SIGPIPE, and pipefail would report 141.
+        live_flags=()
+        if ! grep -qaF '.wixburn' <(head -c 4k -- "$live_exe") \
+             && grep -qa 'Inno Setup' <(head -c 4M -- "$live_exe"); then
+            live_flags=(/SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver')
+            say "-- installing Ableton Live; a progress window opens, no clicks needed"
+            say "   (Live is large, so this can take several minutes)"
+        else
+            say "-- starting the Ableton installer; from here just click through its window"
+        fi
         # run from the installer's own directory so its relative payload lookups resolve
         if ( cd "$(dirname -- "$live_exe")" && \
                  WINEPREFIX="$HOME/.wine-ableton" \
                  "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" \
-                 "./$(basename -- "$live_exe")" ); then
+                 "./$(basename -- "$live_exe")" "${live_flags[@]}" ); then
             live_installed=1
         else
             say "!! the Ableton installer exited with an error; instructions below"
@@ -364,7 +390,10 @@ else
     say "       (no unzip? try: bsdtar -xf FILE.zip -C ~/live-installer)"
     say "  2) run the installer through this Wine, from inside that directory:"
     say "       cd ~/live-installer && WINEPREFIX=~/.wine-ableton \\"
-    say "           ~/.local/opt/$RUNTIME_NAME/bin/wine ./*.exe"
+    say "           ~/.local/opt/$RUNTIME_NAME/bin/wine ./*.exe \\"
+    say "           /SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver'"
+    say "     (Live 12: the flags let it install by itself and skip a Windows-only driver;"
+    say "      Live 11: drop them and click through its installer window instead)"
 fi
 say "Launch Live:   ~/.local/bin/ableton-live"
 say "Then, inside Live:"

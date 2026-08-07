@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Link setup records its version marker only when the service step
+  completed, so a host where that step failed retries it on the next
+  update instead of counting itself configured. The version moves to 5.
+- The session power-profile hold now covers launches through ableton://
+  URLs and .auz files. Live is started with `start /w`, so the launcher
+  waits on Live itself and the hold no longer ends right after the
+  handoff.
+- The launchers bound the power-profile probe with a 10-second timeout,
+  so an unresponsive power daemon no longer stalls Live's launch.
+- The uninstaller now names the boot-time CPU speed setting that earlier
+  releases installed, and prints the commands to remove it.
+- The realtime setup script and the troubleshooting guide now warn
+  Pop!_OS and other System76 users off power-profiles-daemon: the
+  package manager removes the System76 power tools to install it.
+- ableton-linkd rejects fractional `--linger` values instead of
+  truncating them toward the never-exit setting.
+
 ## 2026.08.05.1
 
 - Live uses less CPU when nothing plays. Live's audio engine and its
@@ -21,6 +40,38 @@
   Debian 13 kernel is older than 6.14. These kernels do not have the ntsync
   feature that Wine needs. See TROUBLESHOOTING.md, "Live is slow and
   wineserver uses a full CPU core".
+
+## 2026.08.04.1
+
+- Full Screen works (issue 42). Entering it no longer shifts Live's
+  content or makes clicks land away from their targets, and leaving it no
+  longer keeps the fullscreen image on screen until the window is moved.
+  Contributed by trendwhore.
+- The Live 12 installer now runs by itself during setup: no clicking
+  through its window, and it skips Ableton's Windows-only USB audio
+  driver. Live 11 ships a different installer that ignores the same
+  instructions, so it still opens its window; click through it as before.
+  Telling the two installers apart is by Lucas Gillingham.
+- Setup no longer stops at a "Wine Mono Installer" window. Live does not
+  use Mono, so setup turns it off and Wine stops asking; unattended
+  installs no longer hang there. Fix by Lucas Gillingham.
+- Installing Live 11 no longer shows two "Program Error" windows (issue
+  111). A helper of Ableton's installer fails in a way that changes
+  nothing, and the install was always fine; the alarming windows are gone.
+  Fix by Lucas Gillingham.
+- Updating while Live is running now works. The updater used to refuse
+  and ask you to close Live and rerun; it now closes everything the old
+  version left running, and asks first when Live itself is open, since
+  closing Live discards unsaved work. Pressing Ctrl-C during an update
+  now puts the previous version back, or reports that nothing was
+  changed. Confirmation and safeguards by Lucas Gillingham.
+- Updates to ableton-linkd apply immediately. The updater now restarts
+  it, so the old copy no longer keeps running until the computer
+  restarts.
+- ableton-linkd now writes a log line only when something changes: an
+  app joining or leaving the Link session, a tempo change, or play and
+  stop. The status line it repeated every 10 seconds filled the system
+  log and made a healthy process look stuck; `--verbose` brings it back.
 
 ## 2026.08.01.1
 

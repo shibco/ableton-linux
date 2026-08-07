@@ -1,0 +1,207 @@
+diff --git a/src/audio.c b/src/audio.c
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -346,11 +346,20 @@
+     audio_port_t **discovered;
+     uint32_t       n_discovered;
+     uint32_t       cap_discovered;
++
++    /* Hardware node each direction last resolved to ([0] capture,
++     * [1] playback) and the pair already reported, for the clock-domain
++     * report.  Two devices in one graph mean PipeWire resamples one to
++     * match clocks; that is normal and should be inaudible, and the report
++     * puts the clock topology in the log for when it is not (C8). */
++    uint32_t chosen_node[2];
++    uint32_t warned_clock_pair[2];
+ };
+ 
+ struct audio_node_info
+ {
+     uint32_t id;
++    uint32_t device_id; /* PW_KEY_DEVICE_ID owner card, SPA_ID_INVALID when none */
+     char    *node_name;
+     char    *display_name;
+     char    *media_class;
+@@ -443,6 +452,8 @@
+     c->sample_rate = AUDIO_DEFAULT_SAMPLE_RATE;
+     c->buffer_size = AUDIO_DEFAULT_BUFFER_SIZE;
+     c->our_node_id = SPA_ID_INVALID;
++    c->chosen_node[0] = c->chosen_node[1] = SPA_ID_INVALID;
++    c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
+ #ifndef PIPEASIO_AUDIO_UNIXLIB
+     atomic_init(&c->rt.ready, false);
+ #endif
+@@ -1049,6 +1060,16 @@
+     return NULL;
+ }
+ 
++static struct audio_node_info *audio_find_node(audio_client_t *c, uint32_t id);
++
++/* The device (card) a node belongs to, or SPA_ID_INVALID when unknown. */
++static uint32_t
++audio_node_device(audio_client_t *c, uint32_t node_id)
++{
++    struct audio_node_info *n = audio_find_node(c, node_id);
++    return n ? n->device_id : SPA_ID_INVALID;
++}
++
+ /* Resolve the PipeWire default node only when it has a matching port. */
+ static uint32_t
+ audio_preferred_default_node(audio_client_t *c, uint64_t flags)
+@@ -1082,6 +1103,63 @@
+     return SPA_ID_INVALID;
+ }
+ 
++/* What audio_get_ports resolves for FLAGS with no explicit device: the
++ * default node when it has matching ports, else the first discovered match.
++ * Kept in step with the selection loop in audio_get_ports. */
++static uint32_t
++audio_resolve_target_node(audio_client_t *c, uint64_t flags)
++{
++    uint32_t id = audio_preferred_default_node(c, flags);
++    if (id != SPA_ID_INVALID)
++        return id;
++    for (uint32_t i = 0; i < c->n_discovered; i++)
++    {
++        audio_port_t *p = c->discovered[i];
++        if ((p->flags & flags) == flags)
++            return p->pw_node_id;
++    }
++    return SPA_ID_INVALID;
++}
++
++/* Record the hardware node a direction resolved to and report, once per
++ * pair, when capture and playback sit on different devices.  PipeWire
++ * matches the two clocks by resampling, which is normal and meant to be
++ * inaudible; a follower without enough headroom resyncs audibly (C8), and
++ * this line puts the clock topology in the log for that investigation. */
++static void
++audio_report_clock_domains(audio_client_t *c, uint64_t flags, uint32_t node_id)
++{
++    int dir = (flags & AUDIO_PORT_IS_OUTPUT) ? 0 : 1;
++
++    c->chosen_node[dir] = node_id;
++
++    uint32_t cap = c->chosen_node[0], pb = c->chosen_node[1];
++    if (cap == SPA_ID_INVALID || pb == SPA_ID_INVALID)
++        return;
++    uint32_t cap_dev = audio_node_device(c, cap);
++    uint32_t pb_dev  = audio_node_device(c, pb);
++    if (cap_dev == SPA_ID_INVALID || pb_dev == SPA_ID_INVALID)
++        return; /* virtual node, or gone from the registry: cannot tell */
++    if (cap_dev == pb_dev)
++    {
++        c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
++        return;
++    }
++    if (c->warned_clock_pair[0] == cap && c->warned_clock_pair[1] == pb)
++        return; /* this pair is already reported */
++    c->warned_clock_pair[0] = cap;
++    c->warned_clock_pair[1] = pb;
++
++    struct audio_node_info *cn = audio_find_node(c, cap);
++    struct audio_node_info *pn = audio_find_node(c, pb);
++    WARN("capture \"%s\" and playback \"%s\" are different devices; PipeWire "
++         "matches their clocks by resampling (pipeasio-clock-domains). "
++         "input_device and output_device in config.ini (or "
++         "PIPEASIO_INPUT_DEVICE / PIPEASIO_OUTPUT_DEVICE) choose the "
++         "devices.\n",
++         cn ? cn->node_name : "?", pn ? pn->node_name : "?");
++}
++
+ const char **
+ audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *type_name_pattern,
+                 uint64_t flags)
+@@ -1100,6 +1178,47 @@
+ 
+     /* Use one hardware node per direction to avoid async links across devices. */
+     uint32_t target_node = audio_preferred_default_node(c, flags);
++
++    /* No usable capture default: prefer a source on the playback card over
++     * the first-discovered one, so the driver's own tie-breaking never puts
++     * a second hardware clock in the graph.  A default the user set is
++     * honored above; when it is other hardware, that is reported instead of
++     * overridden (recording from a device the user did not pick is worse
++     * than resampling). */
++    if (target_node == SPA_ID_INVALID && (flags & AUDIO_PORT_IS_OUTPUT))
++    {
++        uint64_t pb_flags = (flags & ~(uint64_t)AUDIO_PORT_IS_OUTPUT)
++                            | AUDIO_PORT_IS_INPUT | AUDIO_PORT_IS_PHYSICAL;
++        uint32_t pb_dev = audio_node_device(c, audio_resolve_target_node(c, pb_flags));
++        uint32_t first  = SPA_ID_INVALID;
++        if (pb_dev != SPA_ID_INVALID)
++        {
++            uint64_t want = flags | AUDIO_PORT_IS_PHYSICAL;
++            for (uint32_t i = 0; i < c->n_discovered; i++)
++            {
++                audio_port_t *p = c->discovered[i];
++                if ((p->flags & want) != want)
++                    continue;
++                if (first == SPA_ID_INVALID)
++                    first = p->pw_node_id;
++                if (audio_node_device(c, p->pw_node_id) == pb_dev)
++                {
++                    target_node = p->pw_node_id;
++                    break;
++                }
++            }
++        }
++        if (target_node != SPA_ID_INVALID && first != SPA_ID_INVALID && target_node != first)
++        {
++            struct audio_node_info *tn = audio_find_node(c, target_node);
++            struct audio_node_info *fn = audio_find_node(c, first);
++            WARN("no capture default: using \"%s\" on the playback card "
++                 "(pipeasio-clock-domains); first discovered was \"%s\". Set "
++                 "input_device in config.ini to override.\n",
++                 tn ? tn->node_name : "?", fn ? fn->node_name : "?");
++        }
++    }
++
+     for (uint32_t i = 0; i < c->n_discovered; i++)
+     {
+         audio_port_t *p = c->discovered[i];
+@@ -1125,6 +1244,8 @@
+         match_idx[n_match++] = i;
+     }
+ 
++    audio_report_clock_domains(c, flags, target_node);
++
+     /* Allocate the NULL-terminated array.  We strdup each name so the caller
+      * does not hold pointers into the discovered cache (the registry
+      * callbacks free/realloc it on hotplug); free with audio_free_ports. */
+@@ -1179,6 +1300,8 @@
+         return audio_get_ports(c, NULL, NULL, flags);
+     }
+ 
++    audio_report_clock_domains(c, flags, target);
++
+     uint32_t *idx = NULL, n = 0, cap = 0;
+     for (uint32_t i = 0; i < c->n_discovered; i++)
+     {
+@@ -1636,6 +1759,7 @@
+     const char *media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+     const char *description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
+     const char *nick        = spa_dict_lookup(props, PW_KEY_NODE_NICK);
++    const char *device_id_s = spa_dict_lookup(props, PW_KEY_DEVICE_ID);
+     if (!node_name)
+         return;
+ 
+@@ -1661,6 +1785,7 @@
+     if (!n)
+         return;
+     n->id           = id;
++    n->device_id    = device_id_s ? (uint32_t)strtoul(device_id_s, NULL, 10) : SPA_ID_INVALID;
+     n->node_name    = strdup(node_name);
+     n->media_class  = audio_dup_or_null(media_class);
+     n->display_name = strdup(description ? description : (nick ? nick : node_name));
+@@ -1933,6 +2058,10 @@
+             free(n);
+             memmove(&c->nodes[i], &c->nodes[i + 1], (c->n_nodes - i - 1) * sizeof(*c->nodes));
+             c->n_nodes--;
++            if (c->chosen_node[0] == id)
++                c->chosen_node[0] = SPA_ID_INVALID;
++            if (c->chosen_node[1] == id)
++                c->chosen_node[1] = SPA_ID_INVALID;
+             return;
+         }
+     }

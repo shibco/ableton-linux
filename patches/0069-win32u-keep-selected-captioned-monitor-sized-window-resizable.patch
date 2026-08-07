@@ -1,0 +1,61 @@
+From 2035532f6596406c37c8f2b8c486b0c44a69a659 Mon Sep 17 00:00:00 2001
+From: trendwhore <66324858+trendwhore@users.noreply.github.com>
+Date: Sun, 2 Aug 2026 15:24:31 -0400
+Subject: [PATCH] win32u: keep selected captioned monitor-sized window
+ resizable
+
+A captioned Live window can legitimately cover its monitor at startup or
+after restoring saved geometry. Wine currently treats the matching window
+rectangle as sufficient reason to clear WINE_SWP_RESIZABLE, so winex11
+publishes a fixed-size hint even though the application retained WS_CAPTION
+and WS_THICKFRAME.
+
+Parameterize the exact-class matcher added by the fullscreen patch, then use
+WINE_WIN32_RESIZABLE_CLASS to keep the resizable flag while both caption and
+thick frame remain present. WINE_WIN32_FULLSCREEN_CLASS continues to control
+only fullscreen normalization. Borderless fullscreen, unselected windows,
+and other classes keep the existing geometry-based behavior.
+---
+ dlls/win32u/window.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 6188247..e07a3b5 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -46,9 +46,9 @@ static const WCHAR selected_fullscreen_prop[] =
+     {'_','_','w','i','n','e','_','w','i','n','3','2','_','s','e','l','e','c','t','e','d','_',
+      'f','u','l','l','s','c','r','e','e','n',0};
+ 
+-static BOOL is_selected_window_class( HWND hwnd )
++static BOOL is_selected_window_class_for_env( HWND hwnd, const char *env_name )
+ {
+-    const char *selected_class = getenv( "WINE_WIN32_FULLSCREEN_CLASS" );
++    const char *selected_class = getenv( env_name );
+     WCHAR class_buffer[128];
+     UNICODE_STRING class_name = {0, sizeof(class_buffer), class_buffer};
+     size_t selected_length;
+@@ -65,6 +65,11 @@ static BOOL is_selected_window_class( HWND hwnd )
+     return TRUE;
+ }
+ 
++static BOOL is_selected_window_class( HWND hwnd )
++{
++    return is_selected_window_class_for_env( hwnd, "WINE_WIN32_FULLSCREEN_CLASS" );
++}
++
+ BOOL is_selected_fullscreen_window( HWND hwnd, UINT style )
+ {
+     if (style & WS_CHILD) return FALSE;
+@@ -2417,7 +2422,10 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
+         {
+             MONITORINFO monitor_info = monitor_info_from_rect( new_rects->window, dpi );
+             if (is_fullscreen( &monitor_info, &new_rects->visible )) swp_flags |= WINE_SWP_FULLSCREEN;
+-            if (is_fullscreen( &monitor_info, &new_rects->window )) swp_flags &= ~WINE_SWP_RESIZABLE;
++            if (is_fullscreen( &monitor_info, &new_rects->window ) &&
++                (!is_selected_window_class_for_env( hwnd, "WINE_WIN32_RESIZABLE_CLASS" ) ||
++                 (win->dwStyle & (WS_CAPTION | WS_THICKFRAME)) != (WS_CAPTION | WS_THICKFRAME)))
++                swp_flags &= ~WINE_SWP_RESIZABLE;
+             monitor_rects = map_window_rects_virt_to_raw( *new_rects, dpi );
+         }
+     }

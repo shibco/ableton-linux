@@ -71,7 +71,9 @@ extras="$(cd "$root/patches" && ls 00*.patch performance/*.patch pipeasio/*.patc
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
-    [0057]="reserved 2026-07-30 for the Intel GPU identification fix on fix/intel-gpu"
+    [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
+    [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
+    [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v -e '^pipeasio/' -e '^performance/' | sort); do
@@ -85,10 +87,45 @@ for f in $(awk '{print $2}' "$SERIES" | grep -v -e '^pipeasio/' -e '^performance
     [ "$num" = "$want" ] || bad "series numbering" "expected $want, found $num"
     seq_expect=$((seq_expect+1))
 done
+# The performance and pipeasio series are numbered independently of the Wine
+# one, and the loop above skips both. Check each the same way, or a dropped or
+# misnumbered patch passes with only its checksum looked at.
+declare -A PERFORMANCE_GAPS=(
+    [0000]="no retired performance numbers yet; entries take the same form as SERIES_GAPS"
+)
+perf_expect=1
+for f in $(awk '{print $2}' "$SERIES" | grep '^performance/' | sort); do
+    base="${f#performance/}"
+    num="${base%%-*}"
+    printf -v want '%04d' "$perf_expect"
+    while [ "$num" != "$want" ] && [ -n "${PERFORMANCE_GAPS[$want]:-}" ]; do
+        ok "performance numbering" "$want gap documented (${PERFORMANCE_GAPS[$want]})"
+        perf_expect=$((perf_expect+1))
+        printf -v want '%04d' "$perf_expect"
+    done
+    [ "$num" = "$want" ] || bad "performance numbering" "expected $want, found $num"
+    perf_expect=$((perf_expect+1))
+done
+declare -A PIPEASIO_GAPS=(
+    [0000]="no retired pipeasio numbers yet; entries take the same form as SERIES_GAPS"
+)
+asio_expect=1
+for f in $(awk '{print $2}' "$SERIES" | grep '^pipeasio/' | sort); do
+    base="${f#pipeasio/}"
+    num="${base%%-*}"
+    printf -v want '%04d' "$asio_expect"
+    while [ "$num" != "$want" ] && [ -n "${PIPEASIO_GAPS[$want]:-}" ]; do
+        ok "pipeasio numbering" "$want gap documented (${PIPEASIO_GAPS[$want]})"
+        asio_expect=$((asio_expect+1))
+        printf -v want '%04d' "$asio_expect"
+    done
+    [ "$num" = "$want" ] || bad "pipeasio numbering" "expected $want, found $num"
+    asio_expect=$((asio_expect+1))
+done
 n_wine="$(awk '{print $2}' "$SERIES" | grep -vc -e '^pipeasio/' -e '^performance/' || true)"
 n_perf="$(awk '{print $2}' "$SERIES" | grep -c '^performance/' || true)"
 n_asio="$(awk '{print $2}' "$SERIES" | grep -c '^pipeasio/' || true)"
-say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_perf performance patch(es) + $n_asio pipeasio patch(es)"
+say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_perf performance patches (0001..$(printf '%04d' "$((perf_expect-1))")) + $n_asio pipeasio patches (0001..$(printf '%04d' "$((asio_expect-1))"))"
 
 # --- [2/4] artifact provenance stamp ------------------------------------------
 say "== [2/4] artifact provenance (patch stack stamped at build time) =="
@@ -140,18 +177,25 @@ FINGERPRINTS='
 0063|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.FileManager1
 0064|ascii|lib/wine/x86_64-unix/comdlg32.so|ShowFolders
 0064|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_open_folder
+0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
+0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
+0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 performance/0001|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_APC_FASTPATH
 performance/0002|ascii|lib/wine/x86_64-unix/ntdll.so|client APC event signaled with an empty queue
 performance/0003|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH hook chain snapshot cache allocation failed
 performance/0004|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH queue mask memo diverged from the server masks
 performance/0005|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH known-clean GetUpdateRect
-pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
-pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
-pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-quantum-arbitration
-pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-any-buffer-size
-pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-quantum-converge
+pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
+pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
+pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
+pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
+pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-converge
+pipeasio/0006|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clock-domains
+pipeasio/0007|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-follower-headroom
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
+# Wine loads the unix half under the spec-file name pipeasio.dll.so, so the
+# fingerprints (and the readelf checks below) aim at that file.
 STAMP_ONLY='
 0002|logic-only (visible-rect gates; adds no string literal)
 0004|logic-only (reentrant wpchanged state)
@@ -265,14 +309,14 @@ if command -v readelf >/dev/null; then
         | grep -qF 'Shared library: [libusb-1.0.so.0]' \
         && ok "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0" \
         || bad "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0 not linked"
-    readelf -d "$tree/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null \
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
-        && ok "pipeasio64.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
-        || bad "pipeasio64.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
-    if readelf -d "$tree/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
-        bad "pipeasio64.dll.so rpath" "carries a build-container rpath"
+        && ok "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
+        || bad "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
+    if readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
+        bad "pipeasio.dll.so rpath" "carries a build-container rpath"
     else
-        ok "pipeasio64.dll.so rpath" "none (resolves via host loader)"
+        ok "pipeasio.dll.so rpath" "none (resolves via host loader)"
     fi
     readelf -d "$tree/lib/wine/x86_64-unix/winegstreamer.so" 2>/dev/null \
         | grep -qF 'Shared library: [libgstreamer-1.0.so.0]' \
