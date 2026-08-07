@@ -123,8 +123,11 @@ output to an issue.
 ## Live is slow and CPU use stays high
 
 Live runs much slower without a Linux feature called ntsync. The launcher
-warns at each startup while it is missing. Turn it on now and at every
-boot:
+warns at each startup while it is missing.
+
+`./scripts/setup-realtime.sh` already does both steps below. If you ran it,
+restart Live and the warning should be gone. Otherwise turn ntsync on now and
+at every boot:
 
 ```bash
 sudo modprobe ntsync

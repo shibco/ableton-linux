@@ -71,7 +71,6 @@ extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
-    [0057]="reserved 2026-07-30 for the Intel GPU identification fix on fix/intel-gpu"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -85,9 +84,28 @@ for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
     [ "$num" = "$want" ] || bad "series numbering" "expected $want, found $num"
     seq_expect=$((seq_expect+1))
 done
+# The pipeasio series is numbered independently of the Wine one, and the loop
+# above skips it. Check it the same way, or a dropped or misnumbered pipeasio
+# patch passes with only its checksum looked at.
+declare -A PIPEASIO_GAPS=(
+    [0000]="no retired pipeasio numbers yet; entries take the same form as SERIES_GAPS"
+)
+asio_expect=1
+for f in $(awk '{print $2}' "$SERIES" | grep '^pipeasio/' | sort); do
+    base="${f#pipeasio/}"
+    num="${base%%-*}"
+    printf -v want '%04d' "$asio_expect"
+    while [ "$num" != "$want" ] && [ -n "${PIPEASIO_GAPS[$want]:-}" ]; do
+        ok "pipeasio numbering" "$want gap documented (${PIPEASIO_GAPS[$want]})"
+        asio_expect=$((asio_expect+1))
+        printf -v want '%04d' "$asio_expect"
+    done
+    [ "$num" = "$want" ] || bad "pipeasio numbering" "expected $want, found $num"
+    asio_expect=$((asio_expect+1))
+done
 n_wine="$(awk '{print $2}' "$SERIES" | grep -vc '^pipeasio/' || true)"
 n_asio="$(awk '{print $2}' "$SERIES" | grep -c '^pipeasio/' || true)"
-say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_asio pipeasio patch(es)"
+say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_asio pipeasio patches (0001..$(printf '%04d' "$((asio_expect-1))"))"
 
 # --- [2/4] artifact provenance stamp ------------------------------------------
 say "== [2/4] artifact provenance (patch stack stamped at build time) =="

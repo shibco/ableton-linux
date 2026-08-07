@@ -35,19 +35,22 @@ diff --git a/src/audio.c b/src/audio.c
          if (c->registry)
          {
              spa_hook_remove(&c->registry_listener);
-@@ -643,6 +654,11 @@
+@@ -643,6 +654,14 @@
      const size_t bsize_samples = c->buffer_size;
      const size_t bsize_bytes   = bsize_samples * sizeof(audio_sample_t);
  
 +    /* Escape hatch for the quantum-mismatch fail-safe (issue #49): "on"
 +     * keeps audio flowing at mismatched sizes, the pre-1.2.2+0005 behaviour. */
 +    const char *allow_mm     = getenv("PIPEASIO_ALLOW_QUANTUM_MISMATCH");
-+    c->allow_quantum_mismatch = allow_mm && !strcmp(allow_mm, "on");
++    /* asio.c parses this with lstrcmpiA; match that, or "ON" would disable
++     * adoption there while leaving muting on here - silence with nothing
++     * left to converge it. */
++    c->allow_quantum_mismatch = allow_mm && !strcasecmp(allow_mm, "on");
 +
      /* FORCE_QUANTUM is skipped only when following the device clock. */
      struct pw_properties *filter_props = pw_properties_new(
              PW_KEY_NODE_NAME, c->name, PW_KEY_NODE_DESCRIPTION, c->name, PW_KEY_MEDIA_TYPE, "Audio",
-@@ -676,8 +692,10 @@
+@@ -676,8 +695,10 @@
      }
  
      /* Add every registered port to the filter.  The FORMAT_DSP property locks
@@ -60,7 +63,7 @@ diff --git a/src/audio.c b/src/audio.c
       * daemon's shared buffer memory into datas[0].data, so the ASIO host
       * reads/writes the live buffer directly (see audio_on_process). */
      for (uint32_t i = 0; i < c->n_ports; i++)
-@@ -699,7 +717,10 @@
+@@ -699,7 +720,10 @@
          const struct spa_pod  *params[] = {
              spa_pod_builder_add_object(
                      &b, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers, SPA_PARAM_BUFFERS_buffers,
@@ -72,7 +75,7 @@ diff --git a/src/audio.c b/src/audio.c
                      SPA_PARAM_BUFFERS_stride, SPA_POD_Int(sizeof(audio_sample_t)),
                      SPA_PARAM_BUFFERS_align, SPA_POD_Int((int)bsize_bytes),
                      SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(1 << SPA_DATA_MemFd)),
-@@ -877,6 +898,25 @@
+@@ -877,6 +901,25 @@
      return c ? atomic_load(&c->observed_quantum) : 0;
  }
  
@@ -98,7 +101,7 @@ diff --git a/src/audio.c b/src/audio.c
  uint64_t
  audio_get_time_nsec(audio_client_t *c)
  {
-@@ -1400,29 +1440,61 @@
+@@ -1400,29 +1443,61 @@
  
      const uint32_t quantum = position ? (uint32_t)position->clock.duration : 0;
  
@@ -178,7 +181,7 @@ diff --git a/src/audio.c b/src/audio.c
  
      if (pipeasio_log_on())
      {
-@@ -1456,6 +1528,8 @@
+@@ -1456,6 +1531,8 @@
              uint32_t out_bytes = (uint32_t)c->buffer_size * (uint32_t)sizeof(audio_sample_t);
              if (out_bytes > d->maxsize)
                  out_bytes = d->maxsize;
@@ -187,7 +190,7 @@ diff --git a/src/audio.c b/src/audio.c
              d->chunk->offset = 0;
              d->chunk->size   = out_bytes;
              d->chunk->stride = sizeof(audio_sample_t);
-@@ -1738,11 +1812,57 @@
+@@ -1738,11 +1815,57 @@
      .property = audio_on_metadata_property,
  };
  

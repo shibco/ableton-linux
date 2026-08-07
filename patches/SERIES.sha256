@@ -63,7 +63,7 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
 0cb3ee8b263366cc6a352517ab228e1d3198a61f48fa906b19652cb4c2b9c97c  pipeasio/0003-audio-correct-the-quantum-mismatch-warning-text.patch
-1c29e4021184dff178914b74d07d28d4bffc2891ea8cba789f075ed9fb375af0  pipeasio/0004-accept-any-buffer-size-in-range-log-every-adjustment.patch
-f94c3410be18fb2677993081f47122ba06246ee768b5fcbe1993be0e9e12f44e  pipeasio/0005-converge-on-a-foreign-quantum-predict-adopt-mute.patch
+e0de7b9d5752d14afb5349859c67c54a72175582a18d1302356ed1d7d1f58cef  pipeasio/0004-accept-any-buffer-size-in-range-log-every-adjustment.patch
+b6e1bdf420afac7da5cbae0f2b0bf68251024289d1bbce8f22bfd8d3969c9fe9  pipeasio/0005-converge-on-a-foreign-quantum-predict-adopt-mute.patch
 5edfaf6c143e206902ce31772912b2ebc2fff3b0ae8db9c1b60d6239abdd1ccc  pipeasio/0006-anchor-fallback-capture-report-clock-domains.patch
-f8ddae79ec61912ae92af14598f39cce66a69c666bc39f4b3ea23aa865742861  pipeasio/0007-give-the-follower-device-buffer-room.patch
+7d50c06984511e008209e9aba07324407ae662ac6525779afdc412e1fde3fa9a  pipeasio/0007-give-the-follower-device-buffer-room.patch

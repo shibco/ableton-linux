@@ -23,7 +23,7 @@ diff --git a/src/audio.c b/src/audio.c
  #include <sys/mman.h>
  #include <sys/resource.h>
  #include <unistd.h>
-@@ -269,6 +274,19 @@
+@@ -269,6 +274,20 @@
  
  /* Opaque types backing audio.h. */
  
@@ -37,13 +37,14 @@ diff --git a/src/audio.c b/src/audio.c
 +    int32_t          cur_headroom;
 +    bool             probed;
 +    bool             raised;
++    bool             warned_unprobed; /* one-shot: clock name never arrived */
 +    int32_t          prev;
 +};
 +
  struct audio_client
  {
      char            *name;
-@@ -354,6 +372,20 @@
+@@ -354,6 +373,20 @@
       * puts the clock topology in the log for when it is not (C8). */
      uint32_t chosen_node[2];
      uint32_t warned_clock_pair[2];
@@ -64,7 +65,7 @@ diff --git a/src/audio.c b/src/audio.c
  };
  
  struct audio_node_info
-@@ -407,6 +439,10 @@
+@@ -407,6 +440,10 @@
      .process = audio_on_process,
  };
  
@@ -75,7 +76,7 @@ diff --git a/src/audio.c b/src/audio.c
  /* Core and registry event forward declarations. */
  
  static void audio_on_core_done(void *userdata, uint32_t id, int seq);
-@@ -454,6 +490,68 @@
+@@ -454,6 +491,68 @@
      c->our_node_id = SPA_ID_INVALID;
      c->chosen_node[0] = c->chosen_node[1] = SPA_ID_INVALID;
      c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
@@ -144,7 +145,7 @@ diff --git a/src/audio.c b/src/audio.c
  #ifndef PIPEASIO_AUDIO_UNIXLIB
      atomic_init(&c->rt.ready, false);
  #endif
-@@ -514,6 +612,19 @@
+@@ -514,6 +613,19 @@
      if (c->registry)
          pw_registry_add_listener(c->registry, &c->registry_listener, &audio_registry_events, c);
  
@@ -164,7 +165,7 @@ diff --git a/src/audio.c b/src/audio.c
      pw_thread_loop_unlock(c->loop);
      audio_sync(c);
      /* A second sync drains the "default" metadata's initial property burst:
-@@ -551,6 +662,19 @@
+@@ -551,6 +663,19 @@
      if (c->active)
          audio_teardown_filter(c);
  
@@ -184,7 +185,7 @@ diff --git a/src/audio.c b/src/audio.c
      if (c->loop)
      {
          pw_thread_loop_lock(c->loop);
-@@ -1160,6 +1284,240 @@
+@@ -1160,6 +1285,255 @@
           cn ? cn->node_name : "?", pn ? pn->node_name : "?");
  }
  
@@ -375,8 +376,23 @@ diff --git a/src/audio.c b/src/audio.c
 +    for (int i = 0; i < 2; i++)
 +    {
 +        struct audio_hr_slot *s = &c->hr_slot[i];
++        /* Skip a device whose Props carried no clock name rather than
++         * returning: one device that cannot be probed would otherwise stop
++         * the genuine follower from ever being raised, and silently. The
++         * raise loop below already skips the same slots. */
 +        if (s->node == SPA_ID_INVALID || !s->probed || !s->clock_name[0])
-+            return;
++        {
++            if (s->node != SPA_ID_INVALID && !s->warned_unprobed)
++            {
++                struct audio_node_info *n = audio_find_node(c, s->node);
++                s->warned_unprobed        = true;
++                WARN("could not read a clock name for \"%s\"; it keeps its "
++                     "current buffer room and the other device is considered "
++                     "on its own (pipeasio-follower-headroom)\n",
++                     n ? n->node_name : "?");
++            }
++            continue;
++        }
 +        if (!strcmp(s->clock_name, gclock))
 +            any_sets_timing = true;
 +    }
@@ -425,7 +441,7 @@ diff --git a/src/audio.c b/src/audio.c
  const char **
  audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *type_name_pattern,
                  uint64_t flags)
-@@ -1569,6 +1899,18 @@
+@@ -1569,6 +1943,18 @@
      if (quantum)
          atomic_store(&c->observed_quantum, quantum);
  
@@ -444,7 +460,7 @@ diff --git a/src/audio.c b/src/audio.c
      /* bufferSwitch and PipeWire must run at the same quantum.  While they
       * disagree, mute: publish silence and zero the input, so the audible
       * fault is silence plus one log line per episode instead of wrong-speed
-@@ -2062,6 +2404,9 @@
+@@ -2062,6 +2448,9 @@
                  c->chosen_node[0] = SPA_ID_INVALID;
              if (c->chosen_node[1] == id)
                  c->chosen_node[1] = SPA_ID_INVALID;
