@@ -6,14 +6,14 @@ patches:      72
 wine-patches: 62
 performance-patches: 5
 pipeasio-patches: 5
-patch-head:   c449be41917cc57d5c1507b3ee66ee7dd29eadad
-patch-stack:  95f52ceca771c5114db63f41940a05a25ab15a92003b0d336551658afd93055e
+patch-head:   5ac9faab3c09f036cae24b50368b0eff685221ab
+patch-stack:  508333f209ea34c840ddd16e431096fc0775f4b1e95c49650b6cb094f79d77b6
 pipeasio:     1.2.2
 pipewire-floor: 0.3.56 (pw_context_get_data_loop, pw_data_loop_set_thread_utils)
 ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
-libusb-pe:    b2977707ca6bd346f13039d3e4eeae78fe1900d9cc7ee9bf80643c6df40a218b
+libusb-pe:    e030865faec0b330ec0c3c3b8b1ff6048e60bb490dfc93484229cb23f64036d7
 libusb-unix:  5c18dc48b25ce6dc14b38c40eec3e640378bd80490a8ec63ac0aaf6f227b842e
 portal-unix:  3374e60192b6a2af0d2b0120a716fbfdd6beb3ef71fcb5037515440e41eb10b0
 pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
-pipeasio-unix: c99446179c25adfe4444553cc02a5db85c2b39bd4fbdf28f4382a483caab3927
+pipeasio-unix: a6e259e40e742a9ae4849addfcc31153d652f2224c60ec4496deec4c814483bd
 built-on:     Ubuntu 22.04 (glibc 2.35)

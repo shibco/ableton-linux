@@ -18,8 +18,8 @@ entry.
 | P3 | Audio hardening F0-F8 + PipeWire host arm | high | medium | fixes the audible defect classes (issue 49, crackle, recording offsets) | high | in progress |
 | P4 | Thread-priority chain (avrt de-stub, server RT band, retire whole-process RR, RTKit) | high problem / medium gain | high | audio outranks UI per thread; biggest dropout-margin lever at 64-128 frames | medium-high | not started |
 | P5 | Idle-thread trace, then APC/alertable fast path | high cost / medium mechanism | high | 30-40% idle core to under 5%, server churn cut | medium | trace done; patches landed; verdict redirected to P13 |
-| P5a | (from P5 trace) APC/alertable fast paths 0001/0002 | high cost / high mechanism | high | per-APC and alertable-sleep round trips removed; ~2% of idle traffic | high | implemented, probe-verified |
-| P13 | Message-path fast paths (hook-chain cache, queue-mask memo, known-clean GetUpdateRect) | high (traced) | medium-high | ~63% of idle server traffic removed; main GUI thread is the hottest thread | high | implemented 2026-08-05, verification in progress |
+| P5a | (from P5 trace) APC/alertable fast paths 0001/0002 | high cost / high mechanism | high | per-APC and alertable-sleep round trips removed; ~2% of idle traffic | high | implemented, probe-verified; review fixes 2026-08-07 (handle-close invalidation, signal-safe apc_mutex) |
+| P13 | Message-path fast paths (hook-chain cache, queue-mask memo, known-clean GetUpdateRect) | high (traced) | medium-high | ~63% of idle server traffic removed; main GUI thread is the hottest thread | high | implemented 2026-08-05; review fix 2026-08-07 (0005 empties the rectangle); verification in progress |
 | P6 | Present path finishing (reblit timers, popup GL, flush throttle) | high waste | medium-high | idle pane damage near zero, popups off the copy path | medium-high | not started |
 | P7 | fsync fallback tier, issue 109, ntsync off-switch | high | medium | pre-6.14 hosts recover most of the sync win | medium-high | not started |
 | P8 | Topology consumer port-or-delete, hybrid placement (no 8-cap default) | high inertness / medium gain | medium | P/E-core placement; scsynth precedent is a 40-50% swing | medium-high | not started |
@@ -112,6 +112,13 @@ entry.
   by apcprobe: cross-queue FIFO between client-routed and server-routed
   APCs is relaxed (client queue drains first); per-queue FIFO is preserved.
   Gates: `WINE_APC_FASTPATH=off` / `WINE_MSG_FASTPATH=off`.
+  Review round 2026-08-07 (ClickSentinel, PR 145) found three defects the
+  trace could not see: the 0002 handle cache did not forget a handle at
+  close (a recycled handle delivered to the old thread), apc_mutex was
+  taken with signals unblocked (a SIGUSR1 in that window self-deadlocked),
+  and the 0005 known-clean path left the caller's rectangle untouched
+  instead of emptying it. All three fixed in the patches; apcprobe case7
+  and case8 plus updateprobe pin the regressions.
 - Wine patches from moonshot items land in `patches/performance/`;
   apply-order wiring in `container-build.sh` and build-audit fingerprint
   entries land with the first such patch. P1 produced no patch (launcher,

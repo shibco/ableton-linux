@@ -12,7 +12,7 @@
 - The new code is on by default. The old code stays available for a test:
 
   ```bash
-  WINE_APC_FASTPATH=off WINE_MSG_FASTPATH=off ableton-live
+  env WINE_APC_FASTPATH=off WINE_MSG_FASTPATH=off ableton-live
   ```
 
   If Live behaves differently with the new code, open an issue and include

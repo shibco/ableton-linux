@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Build the APC-semantics probe (apcprobe.exe) as a real PE (no mingw, no
+# Build the GetUpdateRect probe (updateprobe.exe) as a real PE (no mingw, no
 # msvcrt) the same way the patched Wine builds its own PE modules:
 # clang -target x86_64-windows + Wine's headers and x86_64-windows import
-# libs. Runs under the new-WoW64 patched Wine. Mirrors build_swamprobe.sh;
-# apcprobe needs kernel32 (waits/APCs/pipes), user32 (wsprintfA), and ntdll
-# (NtTestAlert, NtQueueApcThreadEx2). Run it with: run_in_prefix.sh apcprobe.exe
+# libs. Mirrors build_apcprobe.sh; updateprobe also needs user32 (window,
+# GetUpdateRect). Run it with: run_in_prefix.sh updateprobe.exe
 set -e
 cd "$(dirname "$0")"
 SRC="${ABLETON_WINE_SOURCE:-}"
@@ -22,7 +21,7 @@ clang -target x86_64-windows-gnu -fuse-ld=lld --no-default-config \
   -isystem "$RES/include" -I "$INC" -I "$INC/msvcrt" \
   -D__WINESRC__ \
   -Wl,--subsystem,console -Wl,-e,mainCRTStartup \
-  -o apcprobe.exe apcprobe.c \
+  -o updateprobe.exe updateprobe.c \
   -L "$K" -L "$U" -L "$N" \
   -lkernel32 -luser32 -lntdll
-echo "built apcprobe.exe"
+echo "built updateprobe.exe"

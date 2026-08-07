@@ -12,7 +12,7 @@ two wineserver round trips through NtUserGetUpdateRect
 (dlls/win32u/dce.c): send_ncpaint's get_update_region
 (flags=UPDATE_NOCHILDREN, plus UPDATE_NONCLIENT|UPDATE_ERASE when
 the caller asks for erase) and the UPDATE_PAINT|UPDATE_NOCHILDREN|
-UPDATE_NOREGION re-check via get_update_flags — and the answer is
+UPDATE_NOREGION re-check via get_update_flags, and the answer is
 always "no update region".
 
 The server funnels every update-region and internal-paint transition
@@ -24,7 +24,7 @@ pending internal paint, and clears only when the paint count reaches
 zero. So when the shared queue shows wake_bits without QS_PAINT and
 the window belongs to the calling thread (is_current_thread_window,
 RT-free via the shared user handle table), the answer is known:
-GetUpdateRect returns FALSE with the rectangle untouched, with zero
+GetUpdateRect returns FALSE with the rectangle emptied, with zero
 round trips.
 
 Semantics preserved, point by point:
@@ -35,9 +35,10 @@ Semantics preserved, point by point:
   at paint count zero (server/queue.c:2857).
 - Erase semantics: with no update region the server reply never
   carries UPDATE_ERASE/UPDATE_NONCLIENT (server/window.c:1752-1756),
-  so skipping send_erase is behavior-identical, and today the
-  rectangle is left untouched as well (NtGdiGetRgnBox returns
-  NULLREGION for the empty region).
+  so skipping send_erase is behavior-identical. The rectangle is
+  emptied, not left untouched: today NtGdiGetRgnBox writes the empty
+  extents {0,0,0,0} into rect before returning NULLREGION, and Windows
+  documents the same for GetUpdateRect with no update region.
 - Cross-thread windows, a queue shared-memory read failure, and any
   other doubt fall through to today's exact two-request path.
 - An invalidation racing the shared-memory read is harmless: the
@@ -54,8 +55,8 @@ Verification: full series (62 main + performance 0001..0004 + this)
 applies with git am --3way onto the pristine base;
 dlls/win32u/dce.o compiles warning-free with Wine's warning set.
 ---
- dlls/win32u/dce.c | 43 +++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 43 insertions(+)
+ dlls/win32u/dce.c | 48 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 48 insertions(+)
 
 diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
 index 71db6ec..d4bc3b3 100644
@@ -89,19 +90,21 @@ index 71db6ec..d4bc3b3 100644
  /***********************************************************************
   *           NtUserGetUpdateRect (win32u.@)
   */
-@@ -1933,6 +1954,28 @@ BOOL WINAPI NtUserGetUpdateRect( HWND hwnd, RECT *rect, BOOL erase )
+@@ -1933,6 +1954,33 @@ BOOL WINAPI NtUserGetUpdateRect( HWND hwnd, RECT *rect, BOOL erase )
      HRGN update_rgn;
      BOOL need_erase;
  
 +    /* WINE_MSG_FASTPATH: when no window on this thread's queue has an update
 +       region or a pending internal paint, the queue's QS_PAINT wake bit is
-+       clear — every such transition goes through inc_window_paint_count ->
++       clear: every such transition goes through inc_window_paint_count ->
 +       inc_queue_paint_count (server/window.c, server/queue.c), which drives
 +       QS_PAINT in wake_bits via set/clear_queue_bits. For a window owned by
 +       the calling thread (RT-free via the shared user handle table) the
 +       answer is then known without the two get_update_region round trips:
 +       no update region, so GetUpdateRect returns FALSE with the rectangle
-+       untouched. No erase flags either: the server only reports
++       emptied: the server path zeroes it (NtGdiGetRgnBox writes the empty
++       extents before returning NULLREGION), and Windows documents the
++       same. No erase flags either: the server only reports
 +       UPDATE_ERASE/UPDATE_NONCLIENT alongside an update region
 +       (server/window.c), so skipping send_erase is behavior-identical.
 +       wake_bits is tested, not changed_bits: get_message speculatively
@@ -111,6 +114,9 @@ index 71db6ec..d4bc3b3 100644
 +       arrives through the normal loop, the same race Windows allows. */
 +    if (msg_fastpath_enabled() && is_current_thread_window( hwnd ) && !queue_paint_pending())
 +    {
++        /* match the server path and documented Windows behavior: with no
++           update region the rectangle is emptied, not left untouched */
++        if (rect) SetRectEmpty( rect );
 +        TRACE( "WINE_MSG_FASTPATH known-clean GetUpdateRect for hwnd %p\n", hwnd );
 +        return FALSE;
 +    }

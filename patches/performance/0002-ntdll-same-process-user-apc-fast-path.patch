@@ -33,7 +33,7 @@ threads (no TEB) are not registered: the server rejects APCs to them
 with STATUS_ACCESS_DENIED, and unregistered targets keep that path.
 
 NtQueueApcThreadEx2 takes the fast path only for plain user APCs
-(flags == QUEUE_USER_APC_FLAGS_NONE, no reserve handle — special APCs
+(flags == QUEUE_USER_APC_FLAGS_NONE, no reserve handle; special APCs
 and reserves keep their server semantics). The target handle is resolved
 through a generation-validated cache: on a miss, one
 NtQueryInformationThread(ThreadBasicInformation) learns the pid/tid;
@@ -43,10 +43,29 @@ on every use; the generation is bumped per registration, and
 deregistration poisons cache entries for the exiting tid, so a recycled
 ptid (alloc_ptid reuses freed slots promptly) can never validate a stale
 entry. On a validation failure the mapping is refreshed through a new
-query. If the target left the registry, is a system thread, or is
-blocked where a poke cannot reach it (server_select, WaitAll and full
-64-handle waits, signal-and-wait — tracked by an unarmed_wait_depth
-counter), the APC falls back to today's server queue_apc.
+query. Handle recycling is covered separately: wineserver hands a freed
+handle slot straight back (server/handle.c: alloc_entry starts at
+table->free, close_handle lowers it), so NtClose and NtDuplicateObject's
+DUPLICATE_CLOSE_SOURCE branch call apc_fastpath_forget_handle to drop
+the cache entry for the closed handle before the slot can be
+reallocated, following the fd cache's remove-before-close discipline
+("always remove the cached fd; if the server request fails we'll just
+retrieve it again"). Without this a recycled handle would validate
+against the old thread and deliver its APCs there. If the target left
+the registry, is a system thread, or is blocked where a poke cannot
+reach it (server_select, WaitAll and full 64-handle waits,
+signal-and-wait, tracked by an unarmed_wait_depth counter), the APC
+falls back to today's server queue_apc.
+
+Signal safety. Every apc_mutex section runs under
+server_enter_uninterrupted_section, the way virtual.c guards
+virtual_mutex: SIGUSR1 (suspend, or a system APC queued to a thread not
+already in an APC wait, server/thread.c:1473-1477) re-enters the fast
+path through usr1_handler -> wait_suspend -> server_select ->
+apc_fastpath_enter_unarmed_wait, and the queue and fetch sides hold the
+mutex across ntsync ioctls, so a signal delivered inside an unprotected
+section would self-deadlock the thread with apc_mutex held for the life
+of the process.
 
 Wake protocol. The poke event mirrors the client queue state, following
 the server's own alert_sync protocol (server/thread.c:1483-1488,
@@ -56,22 +75,22 @@ event on the non-empty-to-empty transition, both under apc_mutex, and
 waiters always poll the client queue before sleeping. A poke can never
 be lost between the queue-empty poll and the in-kernel wait that follows
 it, and the event is never left signaled behind an empty queue (which
-would otherwise turn every later wait into an instant-return loop — the
+would otherwise turn every later wait into an instant-return loop, the
 issue-109 livelock class). Self-queued APCs skip the poke entirely: the
 owner cannot be blocked while running, and its next poll finds the APC.
-The server's alert event stays strictly server-owned — the client never
-sets or resets it — so it keeps tracking the server-side queue
+The server's alert event stays strictly server-owned (the client never
+sets or resets it), so it keeps tracking the server-side queue
 (cross-process and special APCs) and remains a reliable "server queue
 non-empty" predicate for the drain side. (An earlier draft of this work
 poked the server's alert fd directly; that leaves the manual-reset event
 signaled forever once a peer APC lands, since the server only resets it
-on server-queue transitions — degrading every later in-kernel wait to an
+on server-queue transitions, degrading every later in-kernel wait to an
 instant wake. The dedicated poke event avoids that outright.)
 
 Drain side. Every alertable entry point polls the client queue first and
 dispatches through the existing invoke_user_apc (server.c:385), so
-KiUserApcDispatcher semantics — one APC armed per call, the rest chained
-through the dispatcher's KCONTINUE_FLAG_TEST_ALERT continue — are
+KiUserApcDispatcher semantics (one APC armed per call, the rest chained
+through the dispatcher's KCONTINUE_FLAG_TEST_ALERT continue) are
 unchanged:
 
 - server_select (server.c:718-789) raises unarmed_wait_depth for its
@@ -80,8 +99,8 @@ unchanged:
   context, so NtTestAlert and NtContinueEx get client APCs with zero
   changes). Alertable zero-handle zero-timeout polls (NtTestAlert,
   NtContinueEx's TEST_ALERT, alert drains) skip the server request
-  entirely when NTSYNC_IOC_EVENT_READ shows the alert event unsignaled —
-  the server-side queue is then provably empty — returning the same
+  entirely when NTSYNC_IOC_EVENT_READ shows the alert event unsignaled (the
+  server-side queue is then provably empty), returning the same
   STATUS_TIMEOUT the select would have returned. Thread termination does
   not depend on these round trips (kill_thread signals SIGQUIT,
   server/thread.c:1635), and system APCs arrive through SIGUSR1 signal
@@ -114,14 +133,19 @@ onto the pristine base; dlls/ntdll/unix/{sync,server,thread,virtual}.o
 compile warning-free with HAVE_LINUX_NTSYNC_H; ntsync count=0/count=1
 alert-wait semantics, the poke event create/set/reset ioctls, and
 EVENT_READ queue-state polling were exercised against /dev/ntsync on the
-build host with a standalone test.
+build host with a standalone test. The handle-reuse and suspend-stress
+regressions found in review are pinned by apcprobe case7 (a closed
+thread handle recycled by CreateThread must not deliver to the old
+thread) and case8 (a SuspendThread/ResumeThread hammer against a queuer
+and an alertable waiter, with bounded joins), which fail on the pre-fix
+revision and pass here, with the gate on and off.
 ---
- dlls/ntdll/unix/server.c       |  54 +++++
+ dlls/ntdll/unix/server.c       |  60 ++++++
  dlls/ntdll/unix/sync.c         | 187 ++++++++++++++--
- dlls/ntdll/unix/thread.c       | 378 +++++++++++++++++++++++++++++++++
- dlls/ntdll/unix/unix_private.h |  14 ++
+ dlls/ntdll/unix/thread.c       | 413 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h |  15 ++
  dlls/ntdll/unix/virtual.c      |   2 +
- 5 files changed, 616 insertions(+), 19 deletions(-)
+ 5 files changed, 658 insertions(+), 19 deletions(-)
 
 diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
 index 730a0cd..5eb0ac5 100644
@@ -223,6 +247,18 @@ index 730a0cd..5eb0ac5 100644
          init_teb_data( data );
          signal_start_thread( data->start, data->param, data->teb );
      }
+@@ -1888,3 +1942,4 @@
+         fd = remove_fd_from_cache( source );
+         close_inproc_sync( source );
++        apc_fastpath_forget_handle( source );
+     }
+@@ -1955,1 +2010,6 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
++    /* a closed handle's slot can be reallocated right away (server/handle.c
++       alloc_entry starts at table->free), so the apc handle cache must forget
++       it before that happens */
++    apc_fastpath_forget_handle( handle );
++
+     /* hold fd_cache_mutex to prevent the fd from being added again between the
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
 index 2c58962..5343cf5 100644
 --- a/dlls/ntdll/unix/sync.c
@@ -507,7 +543,7 @@ index 546963a..4bbb774 100644
      close( data->alert_fd );
      close( data->wait_fd[0] );
      close( data->wait_fd[1] );
-@@ -1790,6 +1794,368 @@ NTSTATUS WINAPI PsTerminateSystemThread( NTSTATUS exit_code )
+@@ -1790,6 +1794,403 @@ NTSTATUS WINAPI PsTerminateSystemThread( NTSTATUS exit_code )
  }
  
  
@@ -564,6 +600,9 @@ index 546963a..4bbb774 100644
 +static struct list apc_handle_cache = LIST_INIT( apc_handle_cache );
 +static unsigned int apc_handle_cache_count;
 +static unsigned int apc_generation;
++/* All apc_mutex sections run under server_enter_uninterrupted_section:
++   SIGUSR1 (suspend, system APC wakeup) must never re-enter this mutex from
++   a signal frame while the thread already holds it. */
 +static pthread_mutex_t apc_mutex = PTHREAD_MUTEX_INITIALIZER;
 +
 +/* apc_mutex must be held */
@@ -597,6 +636,7 @@ index 546963a..4bbb774 100644
 +void apc_fastpath_register_thread( struct thread_data *data )
 +{
 +    struct apc_target *target;
++    sigset_t sigset;
 +
 +    if (!apc_fastpath_enabled()) return;
 +
@@ -614,11 +654,11 @@ index 546963a..4bbb774 100644
 +    target->unarmed_wait_depth = 0;
 +    list_init( &target->client_apcs );
 +
-+    mutex_lock( &apc_mutex );
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +    target->generation = ++apc_generation;
 +    list_add_tail( &apc_targets, &target->entry );
 +    data->apc_target = target;
-+    mutex_unlock( &apc_mutex );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +}
 +
 +/***********************************************************************
@@ -635,10 +675,11 @@ index 546963a..4bbb774 100644
 +    struct apc_handle_entry *hentry, *hnext;
 +    struct apc_target *target = data->apc_target;
 +    struct client_apc *apc, *anext;
++    sigset_t sigset;
 +
 +    if (!target) return;
 +
-+    mutex_lock( &apc_mutex );
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +    data->apc_target = NULL;
 +    list_remove( &target->entry );
 +    LIST_FOR_EACH_ENTRY_SAFE( apc, anext, &target->client_apcs, struct client_apc, entry )
@@ -653,7 +694,7 @@ index 546963a..4bbb774 100644
 +        free( hentry );
 +        apc_handle_cache_count--;
 +    }
-+    mutex_unlock( &apc_mutex );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +    free( target );
 +}
 +
@@ -678,21 +719,23 @@ index 546963a..4bbb774 100644
 +void apc_fastpath_enter_unarmed_wait(void)
 +{
 +    struct apc_target *target = get_thread_data()->apc_target;
++    sigset_t sigset;
 +
 +    if (!target) return;
-+    mutex_lock( &apc_mutex );
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +    target->unarmed_wait_depth++;
-+    mutex_unlock( &apc_mutex );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +}
 +
 +void apc_fastpath_leave_unarmed_wait(void)
 +{
 +    struct apc_target *target = get_thread_data()->apc_target;
++    sigset_t sigset;
 +
 +    if (!target) return;
-+    mutex_lock( &apc_mutex );
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +    if (target->unarmed_wait_depth > 0) target->unarmed_wait_depth--;
-+    mutex_unlock( &apc_mutex );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +}
 +
 +/***********************************************************************
@@ -707,20 +750,21 @@ index 546963a..4bbb774 100644
 +{
 +    struct apc_target *target = get_thread_data()->apc_target;
 +    struct client_apc *head;
++    sigset_t sigset;
 +
 +    if (!target) return FALSE;
 +
-+    mutex_lock( &apc_mutex );
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +    if (list_empty( &target->client_apcs ))
 +    {
-+        mutex_unlock( &apc_mutex );
++        server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +        return FALSE;
 +    }
 +    head = LIST_ENTRY( list_head( &target->client_apcs ), struct client_apc, entry );
 +    list_remove( &head->entry );
 +    if (list_empty( &target->client_apcs ))
 +        apc_fastpath_reset_event( target->client_event_fd );
-+    mutex_unlock( &apc_mutex );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +
 +    apc->type    = APC_USER;
 +    apc->flags   = 0;
@@ -749,6 +793,7 @@ index 546963a..4bbb774 100644
 +    THREAD_BASIC_INFORMATION tbi;
 +    unsigned int ret;
 +    DWORD tid;
++    sigset_t sigset;
 +
 +    if (handle == GetCurrentThread())  /* pseudo-handle: self */
 +    {
@@ -756,18 +801,18 @@ index 546963a..4bbb774 100644
 +        return STATUS_SUCCESS;
 +    }
 +
-+    mutex_lock( &apc_mutex );
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +    if ((hentry = find_apc_handle_entry( handle )))
 +    {
 +        if (!hentry->generation)  /* cross-process verdict */
 +        {
-+            mutex_unlock( &apc_mutex );
++            server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +            return STATUS_NOT_IMPLEMENTED;
 +        }
 +        if ((target = find_apc_target( hentry->tid )) && target->generation == hentry->generation)
 +        {
 +            *tid_ret = hentry->tid;
-+            mutex_unlock( &apc_mutex );
++            server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +            return STATUS_SUCCESS;
 +        }
 +        /* stale entry (the tid was recycled): drop it and refresh below */
@@ -775,13 +820,13 @@ index 546963a..4bbb774 100644
 +        free( hentry );
 +        apc_handle_cache_count--;
 +    }
-+    mutex_unlock( &apc_mutex );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +
 +    if ((ret = NtQueryInformationThread( handle, ThreadBasicInformation,
 +                                         &tbi, sizeof(tbi), NULL )))
 +        return ret;
 +
-+    mutex_lock( &apc_mutex );
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +    if (apc_handle_cache_count < MAX_APC_HANDLE_CACHE_ENTRIES &&
 +        !find_apc_handle_entry( handle ) && (hentry = malloc( sizeof(*hentry) )))
 +    {
@@ -795,7 +840,7 @@ index 546963a..4bbb774 100644
 +
 +    if (HandleToULong( tbi.ClientId.UniqueProcess ) != pid)
 +    {
-+        mutex_unlock( &apc_mutex );
++        server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +        return STATUS_NOT_IMPLEMENTED;  /* cross-process APCs belong to the server */
 +    }
 +    tid = HandleToULong( tbi.ClientId.UniqueThread );
@@ -804,7 +849,7 @@ index 546963a..4bbb774 100644
 +        hentry->tid = tid;
 +        hentry->generation = target->generation;
 +    }
-+    mutex_unlock( &apc_mutex );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +
 +    if (!target)
 +    {
@@ -812,16 +857,41 @@ index 546963a..4bbb774 100644
 +           path provides the matching error and semantics */
 +        if (hentry)
 +        {
-+            mutex_lock( &apc_mutex );
++            server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +            list_remove( &hentry->entry );
 +            free( hentry );
 +            apc_handle_cache_count--;
-+            mutex_unlock( &apc_mutex );
++            server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +        }
 +        return STATUS_NOT_IMPLEMENTED;
 +    }
 +    *tid_ret = tid;
 +    return STATUS_SUCCESS;
++}
++
++/***********************************************************************
++ *           apc_fastpath_forget_handle
++ *
++ * Drop a handle cache entry when its handle is closed. wineserver hands a
++ * freed handle slot straight back (server/handle.c: alloc_entry starts at
++ * table->free and close_handle lowers it), so a handle -> tid mapping must
++ * not outlive the handle it was learned from: a recycled handle would
++ * otherwise validate against the old thread and deliver its APCs there.
++ */
++void apc_fastpath_forget_handle( HANDLE handle )
++{
++    struct apc_handle_entry *hentry;
++    sigset_t sigset;
++
++    if (!apc_handle_cache_count) return;
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    if ((hentry = find_apc_handle_entry( handle )))
++    {
++        list_remove( &hentry->entry );
++        free( hentry );
++        apc_handle_cache_count--;
++    }
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +}
 +
 +/***********************************************************************
@@ -837,6 +907,7 @@ index 546963a..4bbb774 100644
 +    struct client_apc *apc;
 +    unsigned int ret;
 +    DWORD tid;
++    sigset_t sigset;
 +
 +    if ((ret = resolve_client_apc_tid( handle, &tid ))) return ret;
 +
@@ -846,13 +917,13 @@ index 546963a..4bbb774 100644
 +    apc->args[1] = arg2;
 +    apc->args[2] = arg3;
 +
-+    mutex_lock( &apc_mutex );
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
 +    if (!(target = find_apc_target( tid )) || target->unarmed_wait_depth ||
 +        target->client_event_fd < 0)
 +    {
 +        /* The target left the registry (exited) or is blocked somewhere a
 +           poke cannot reach: queue this APC through the server instead. */
-+        mutex_unlock( &apc_mutex );
++        server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +        free( apc );
 +        return STATUS_NOT_IMPLEMENTED;
 +    }
@@ -868,7 +939,7 @@ index 546963a..4bbb774 100644
 +            apc_fastpath_set_event( target->client_event_fd );
 +    }
 +    else list_add_tail( &target->client_apcs, &apc->entry );
-+    mutex_unlock( &apc_mutex );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
 +    return STATUS_SUCCESS;
 +}
 +
@@ -876,7 +947,7 @@ index 546963a..4bbb774 100644
  /******************************************************************************
   *              NtQueueApcThreadEx2  (NTDLL.@)
   */
-@@ -1801,6 +2167,18 @@ NTSTATUS WINAPI NtQueueApcThreadEx2( HANDLE handle, HANDLE reserve_handle, ULONG
+@@ -1801,6 +2197,18 @@ NTSTATUS WINAPI NtQueueApcThreadEx2( HANDLE handle, HANDLE reserve_handle, ULONG
  
      TRACE( "%p %p %#x %p %p %p %p.\n", handle, reserve_handle, flags, func, (void *)arg1, (void *)arg2, (void *)arg3 );
  
@@ -908,7 +979,7 @@ index 3e3864c..34b5459 100644
      DWORD        tid;               /* thread id */
      BOOL         allow_writes;      /* ThreadAllowWrites flags */
      BOOL         suspend;           /* suspend on startup */
-@@ -251,6 +253,18 @@ extern unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const
+@@ -251,6 +253,19 @@ extern unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const
  extern unsigned int server_queue_process_apc( HANDLE process, const union apc_call *call,
                                                union apc_result *result );
  extern int apc_fastpath_enabled(void);
@@ -924,6 +995,7 @@ index 3e3864c..34b5459 100644
 +extern void apc_fastpath_leave_unarmed_wait(void);
 +extern BOOL apc_fastpath_fetch_client_apc( struct user_apc *apc );
 +extern BOOL apc_fastpath_deliver_client_apc( CONTEXT *context );
++extern void apc_fastpath_forget_handle( HANDLE handle );
  extern int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
                                 int *needs_close, enum server_fd_type *type, unsigned int *options );
  extern int wine_server_receive_fd( obj_handle_t *handle );
@@ -942,4 +1014,3 @@ index 3005aea..26982b0 100644
  #endif
 -- 
 2.55.0
-

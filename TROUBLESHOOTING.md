@@ -157,15 +157,12 @@ If Live still uses much CPU when it is idle:
 2. Turn the new code off for one test, and compare the readings:
 
    ```bash
-   WINE_APC_FASTPATH=off WINE_MSG_FASTPATH=off ableton-live
+   env WINE_APC_FASTPATH=off WINE_MSG_FASTPATH=off ableton-live
    ```
 
    If the CPU use changes, [open an issue](https://github.com/shibco/ableton-linux/issues) and include both readings.
 3. Programs that attach tools to Live's windows (screen readers, macro
    tools, overlays) add more messages. Close them and measure again.
-
-The measurements are in [the findings record](notes/FINDINGS-P5-TRACE-2026-08-05.md).
-
 
 ## Audio latency remains high
 

@@ -1,6 +1,6 @@
 /dist/*
 !/dist/BUILD-INFO*.txt
-/.ccache/
+/.ccache
 .env
 *.log
 *.tmp

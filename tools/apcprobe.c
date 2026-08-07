@@ -1,4 +1,4 @@
-/* apcprobe.c — pin down the Windows-compatible user APC semantics that the
+/* apcprobe.c: pin down the Windows-compatible user APC semantics that the
  * moonshot P5 idle-CPU APC fast path must preserve (PE, CRT-free).
  *
  * Baseline for the same-process APC fast path in
@@ -6,13 +6,13 @@
  * costs two wineserver round trips (queue + drain) and every alertable sleep
  * or NtTestAlert costs another; the patch moves same-process user APCs onto
  * the per-thread ntsync alert event. This probe MUST PASS on the unpatched
- * build — it records the observable semantics — and must then pass
+ * build (it records the observable semantics) and must then pass
  * identically on the patched build (no-regression proof).
  *
  * What it pins down:
  *   case1  FIFO delivery of 8 user APCs into another thread's alertable wait
  *   case2  per-producer FIFO with two racing producer threads (cross-producer
- *          interleave intentionally NOT asserted — racy by design)
+ *          interleave intentionally NOT asserted, racy by design)
  *   case3  NtTestAlert drains all self-queued APCs (via the dispatcher's
  *          NtContinueEx TEST_ALERT chain) and leaves the queue empty
  *   case4  alertability discipline: a non-alertable wait must not deliver,
@@ -23,6 +23,16 @@
  *   case6  NtQueueApcThreadEx2 QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC is
  *          delivered at alertable points and keeps its FIFO position against
  *          normal APCs (Wine behaviour: one shared FIFO user queue)
+ *   case7  a closed thread handle recycled by CreateThread for a different
+ *          thread must resolve to the NEW thread (wineserver hands a freed
+ *          handle slot straight back; the fast path's handle cache forgets a
+ *          handle at close)
+ *   case8  a SuspendThread/ResumeThread hammer against an alertable waiter
+ *          and its queuer must not wedge either side (SIGUSR1 re-enters the
+ *          fast path; apc_mutex sections run with signals blocked)
+ *
+ * For the GetUpdateRect empty-rectangle regression from the same review
+ * round, see updateprobe.c (this dir).
  *
  * Two FIFO regimes: with no arguments the probe pins the UNPATCHED strict
  * global FIFO across QueueUserAPC, I/O completion routines and special APCs.
@@ -341,7 +351,7 @@ static void case4_alertable_discipline( void )
 /* ---- case 5: I/O completion routines share the user-APC FIFO -------------
  * The Sleep(100) barriers after each I/O only order the *queueing* of the
  * completion APCs (the write completes as soon as the bytes hit the pipe
- * buffer; the read then completes at once) — the assertion itself is the
+ * buffer; the read then completes at once). The assertion itself is the
  * drained order, not any timing. */
 static DWORD g_io_err[2];
 static DWORD g_io_len[2];
@@ -480,6 +490,223 @@ static void case6_special_apc( void )
         CHECK( order_is( exp, 3 ), "case6-special-fifo-position" );
 }
 
+/* ---- case 7: a recycled thread handle must resolve to the new thread ------
+ * wineserver hands a freed handle slot straight back (server/handle.c:
+ * alloc_entry starts at table->free), so CloseHandle + CreateThread commonly
+ * reuses the same handle value for a different thread. The fast path's
+ * handle cache must forget a handle at close: queueing through the recycled
+ * handle must reach the NEW thread, never the old one. */
+static HANDLE g_c7_ready;
+static HANDLE g_c7_done;
+static HANDLE g_c7_exit_a, g_c7_exit_b;
+static volatile LONG g_c7_tag;
+static volatile LONG g_c7_tid;
+
+static void CALLBACK apc_record_tid( ULONG_PTR data )
+{
+    InterlockedExchange( &g_c7_tag, (LONG)data );
+    InterlockedExchange( &g_c7_tid, (LONG)GetCurrentThreadId() );
+    if (data == 0x77) SetEvent( g_c7_done );
+}
+
+static DWORD WINAPI c7_idle_thread( LPVOID arg )
+{
+    DWORD ret;
+
+    SetEvent( g_c7_ready );
+    /* An APC makes an alertable wait return WAIT_IO_COMPLETION. Keep the
+       original thread alive until its exit event is signalled; otherwise the
+       priming APC would terminate it and deregistration would erase the stale
+       cache entry that this case is meant to expose. */
+    do ret = WaitForSingleObjectEx( (HANDLE)arg, INFINITE, TRUE );
+    while (ret == WAIT_IO_COMPLETION);
+    return 0;
+}
+
+static void case7_recycled_handle( void )
+{
+    HANDLE hA, hB = NULL, spare[32];
+    DWORD tidA, tidB = 0;
+    int i, nspare = 0, reused = -1;
+
+    g_c7_ready = CreateEventA( NULL, TRUE, FALSE, NULL );
+    g_c7_done = CreateEventA( NULL, FALSE, FALSE, NULL );
+    g_c7_exit_a = CreateEventA( NULL, TRUE, FALSE, NULL );
+    g_c7_exit_b = CreateEventA( NULL, TRUE, FALSE, NULL );
+    hA = g_c7_ready && g_c7_done && g_c7_exit_a && g_c7_exit_b
+         ? CreateThread( NULL, 0, c7_idle_thread, g_c7_exit_a, 0, &tidA ) : NULL;
+    if (!hA)
+    {
+        g_fail++;
+        P( "FAIL case7-recycled-handle: setup failed (lasterr %u)\n", (UINT)GetLastError() );
+        goto out;
+    }
+    if (WaitForSingleObject( g_c7_ready, 5000 ) != WAIT_OBJECT_0)
+    {
+        g_fail++;
+        P( "FAIL case7-recycled-handle: thread A never signalled ready\n" );
+        CloseHandle( hA );
+        goto out;
+    }
+
+    /* Prime any client-side handle cache with hA -> tidA, then close hA.
+       Thread A stays alive in its alertable-wait loop after running this APC,
+       so the pre-fix cache entry remains valid by tid/generation and can be
+       caught when the handle value is recycled for B. */
+    if (!QueueUserAPC( apc_record_tid, hA, 0x70 ))
+        P( "info case7 priming QueueUserAPC failed (lasterr %u)\n", (UINT)GetLastError() );
+    Sleep( 200 );  /* let the priming APC run on A */
+    CloseHandle( hA );
+
+    /* the first CreateThread after the close reuses the freed slot; retry a
+       few times in case something else grabs it first */
+    for (i = 0; i < 32; i++)
+    {
+        HANDLE h = CreateThread( NULL, 0, c7_idle_thread, g_c7_exit_b, CREATE_SUSPENDED, &tidB );
+        if (!h) break;
+        if (h == hA) { hB = h; reused = i; break; }
+        spare[nspare++] = h;  /* still suspended; mass-resumed below */
+    }
+    if (!hB)
+    {
+        SKIP( "case7-recycled-handle", "handle value was not recycled" );
+        goto resume_spares;
+    }
+
+    ResetEvent( g_c7_ready );
+    ResumeThread( hB );
+    if (WaitForSingleObject( g_c7_ready, 5000 ) != WAIT_OBJECT_0)
+    {
+        g_fail++;
+        P( "FAIL case7-recycled-handle: thread B never signalled ready\n" );
+        goto resume_spares;
+    }
+    Sleep( 100 );  /* bias: B blocked in its alertable wait */
+
+    InterlockedExchange( &g_c7_tag, 0 );
+    InterlockedExchange( &g_c7_tid, 0 );
+    if (!QueueUserAPC( apc_record_tid, hB, 0x77 ))
+    {
+        g_fail++;
+        P( "FAIL case7-recycled-handle: QueueUserAPC failed (lasterr %u)\n", (UINT)GetLastError() );
+        goto resume_spares;
+    }
+    CHECK( WaitForSingleObject( g_c7_done, 5000 ) == WAIT_OBJECT_0,
+           "case7-recycled-handle-delivers" );
+    P( "info case7 handle recycled on attempt %d, tidA=%lu tidB=%lu delivered-to=%ld\n",
+       reused, tidA, tidB, g_c7_tid );
+    CHECK( g_c7_tid == (LONG)tidB, "case7-recycled-handle-hits-new-thread" );
+    CHECK( g_c7_tid != (LONG)tidA, "case7-recycled-handle-misses-old-thread" );
+
+resume_spares:
+    for (i = 0; i < nspare; i++) ResumeThread( spare[i] );
+    SetEvent( g_c7_exit_a );
+    SetEvent( g_c7_exit_b );
+    if (hB) { WaitForSingleObject( hB, 5000 ); CloseHandle( hB ); }
+    for (i = 0; i < nspare; i++) { WaitForSingleObject( spare[i], 5000 ); CloseHandle( spare[i] ); }
+out:
+    if (g_c7_ready) CloseHandle( g_c7_ready );
+    if (g_c7_done) CloseHandle( g_c7_done );
+    if (g_c7_exit_a) CloseHandle( g_c7_exit_a );
+    if (g_c7_exit_b) CloseHandle( g_c7_exit_b );
+}
+
+/* ---- case 8: suspend/resume hammer must not wedge the APC machinery -------
+ * SIGUSR1 (SuspendThread, or a system APC queued to a thread not already in
+ * an APC wait) interrupts the target at any point and re-enters the fast
+ * path through usr1_handler -> wait_suspend -> server_select. The fast path
+ * takes apc_mutex only under server_enter_uninterrupted_section, so a signal
+ * frame can never find the mutex held by the interrupted thread; a pre-fix
+ * build self-deadlocks here, with queuer and waiter frozen for the life of
+ * the process. */
+static volatile LONG g_c8_stop;
+static volatile LONG g_c8_waits;
+static volatile LONG g_c8_queued;
+static volatile LONG g_c8_deliv;
+
+static void CALLBACK apc_c8_noop( ULONG_PTR data )
+{
+    (void)data;
+    InterlockedIncrement( &g_c8_deliv );
+}
+
+static DWORD WINAPI c8_worker( LPVOID arg )
+{
+    (void)arg;
+    while (!g_c8_stop)
+    {
+        SleepEx( 1, TRUE );
+        InterlockedIncrement( &g_c8_waits );
+    }
+    return 0;
+}
+
+static DWORD WINAPI c8_queuer( LPVOID arg )
+{
+    HANDLE target = (HANDLE)arg;
+    while (!g_c8_stop)
+    {
+        if (QueueUserAPC( apc_c8_noop, target, 0 ))
+            InterlockedIncrement( &g_c8_queued );
+        if (g_c8_queued - g_c8_deliv > 4096) Sleep( 1 );  /* bound the backlog */
+    }
+    return 0;
+}
+
+static DWORD WINAPI c8_hammer( LPVOID arg )
+{
+    HANDLE target = (HANDLE)arg;
+    while (!g_c8_stop)
+    {
+        if (SuspendThread( target ) != (DWORD)-1) ResumeThread( target );
+        Sleep( 0 );
+    }
+    return 0;
+}
+
+static void case8_suspend_hammer( void )
+{
+    HANDLE w, q, s;
+    LONG delivered0, queued0;
+
+    g_c8_stop = 0;
+    w = CreateThread( NULL, 0, c8_worker, NULL, 0, NULL );
+    if (!w)
+    {
+        g_fail++;
+        P( "FAIL case8-suspend-hammer: worker setup failed (lasterr %u)\n", (UINT)GetLastError() );
+        return;
+    }
+    q = CreateThread( NULL, 0, c8_queuer, w, 0, NULL );
+    s = CreateThread( NULL, 0, c8_hammer, w, 0, NULL );
+    if (!q || !s)
+    {
+        g_fail++;
+        P( "FAIL case8-suspend-hammer: setup failed (lasterr %u)\n", (UINT)GetLastError() );
+    }
+    else
+    {
+        Sleep( 500 );  /* warm up */
+        delivered0 = g_c8_deliv;
+        queued0 = g_c8_queued;
+        Sleep( 3000 );  /* hammer window */
+        /* A continuously non-empty APC queue may keep one SleepEx call
+           dispatching callbacks for the whole window, so completed callbacks
+           are the reliable proof that the waiter itself is still running. */
+        CHECK( g_c8_deliv > delivered0, "case8-waiter-progresses" );
+        CHECK( g_c8_queued > queued0, "case8-queuer-progresses" );
+    }
+    InterlockedExchange( &g_c8_stop, 1 );
+    if (q) CHECK( WaitForSingleObject( q, 10000 ) == WAIT_OBJECT_0, "case8-queuer-joins" );
+    if (s) CHECK( WaitForSingleObject( s, 10000 ) == WAIT_OBJECT_0, "case8-hammer-joins" );
+    CHECK( WaitForSingleObject( w, 10000 ) == WAIT_OBJECT_0, "case8-worker-joins" );
+    P( "info case8 waits=%ld queued=%ld delivered=%ld\n",
+       g_c8_waits, g_c8_queued, g_c8_deliv );
+    if (q) CloseHandle( q );
+    if (s) CloseHandle( s );
+    CloseHandle( w );
+}
+
 void mainCRTStartup( void )
 {
     g_out = CreateFileA( "apcprobe.txt", GENERIC_WRITE, FILE_SHARE_READ, NULL,
@@ -506,6 +733,8 @@ void mainCRTStartup( void )
         case4_alertable_discipline();
         case5_io_completion_order();
         case6_special_apc();
+        case7_recycled_handle();
+        case8_suspend_hammer();
         CloseHandle( g_self );
     }
 
