@@ -75,7 +75,7 @@ diff --git a/src/audio.c b/src/audio.c
  /* Core and registry event forward declarations. */
  
  static void audio_on_core_done(void *userdata, uint32_t id, int seq);
-@@ -454,6 +490,63 @@
+@@ -454,6 +490,68 @@
      c->our_node_id = SPA_ID_INVALID;
      c->chosen_node[0] = c->chosen_node[1] = SPA_ID_INVALID;
      c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
@@ -117,7 +117,12 @@ diff --git a/src/audio.c b/src/audio.c
 +                c->hr_target = -1;
 +            }
 +            else if (v <= 0)
++            {
++                if (v < 0)
++                    WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is not a frame count; turned off\n",
++                         hr_env);
 +                c->hr_target = -1;
++            }
 +            else
 +            {
 +                if (v < 16)
@@ -139,7 +144,7 @@ diff --git a/src/audio.c b/src/audio.c
  #ifndef PIPEASIO_AUDIO_UNIXLIB
      atomic_init(&c->rt.ready, false);
  #endif
-@@ -514,6 +607,19 @@
+@@ -514,6 +612,19 @@
      if (c->registry)
          pw_registry_add_listener(c->registry, &c->registry_listener, &audio_registry_events, c);
  
@@ -159,7 +164,7 @@ diff --git a/src/audio.c b/src/audio.c
      pw_thread_loop_unlock(c->loop);
      audio_sync(c);
      /* A second sync drains the "default" metadata's initial property burst:
-@@ -551,6 +657,19 @@
+@@ -551,6 +662,19 @@
      if (c->active)
          audio_teardown_filter(c);
  
@@ -179,7 +184,7 @@ diff --git a/src/audio.c b/src/audio.c
      if (c->loop)
      {
          pw_thread_loop_lock(c->loop);
-@@ -1160,6 +1279,239 @@
+@@ -1160,6 +1284,240 @@
           cn ? cn->node_name : "?", pn ? pn->node_name : "?");
  }
  
@@ -370,8 +375,9 @@ diff --git a/src/audio.c b/src/audio.c
 +    for (int i = 0; i < 2; i++)
 +    {
 +        struct audio_hr_slot *s = &c->hr_slot[i];
-+        if (s->node != SPA_ID_INVALID && s->probed && s->clock_name[0]
-+            && !strcmp(s->clock_name, gclock))
++        if (s->node == SPA_ID_INVALID || !s->probed || !s->clock_name[0])
++            return;
++        if (!strcmp(s->clock_name, gclock))
 +            any_sets_timing = true;
 +    }
 +
@@ -419,7 +425,7 @@ diff --git a/src/audio.c b/src/audio.c
  const char **
  audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *type_name_pattern,
                  uint64_t flags)
-@@ -1569,6 +1893,18 @@
+@@ -1569,6 +1899,18 @@
      if (quantum)
          atomic_store(&c->observed_quantum, quantum);
  
@@ -438,7 +444,7 @@ diff --git a/src/audio.c b/src/audio.c
      /* bufferSwitch and PipeWire must run at the same quantum.  While they
       * disagree, mute: publish silence and zero the input, so the audible
       * fault is silence plus one log line per episode instead of wrong-speed
-@@ -2062,6 +2398,9 @@
+@@ -2062,6 +2404,9 @@
                  c->chosen_node[0] = SPA_ID_INVALID;
              if (c->chosen_node[1] == id)
                  c->chosen_node[1] = SPA_ID_INVALID;

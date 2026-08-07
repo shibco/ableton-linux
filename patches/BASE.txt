@@ -20,6 +20,9 @@ Run `./build.sh`. Inside the Podman image, `scripts/container-build.sh`
 unpacks `vendor/wine-base-5c23dd1c.tar.zst`, creates a Git repository, and
 applies `patches/00*.patch` in lexical order with `git am --3way`.
 
+It separately unpacks `vendor/pipeasio-1.2.2.tar.gz` and applies
+`patches/pipeasio/*.patch` in lexical order with `patch -p1`.
+
 Some early patch files have no `From` or `Date` header. The build script adds a
 fixed identity and date before passing those files to `git am`. A bare
 `git am patches/00*.patch` command does not reproduce this step.

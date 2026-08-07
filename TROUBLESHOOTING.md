@@ -133,9 +133,8 @@ echo ntsync | sudo tee /etc/modules-load.d/90-ableton-ntsync.conf
 
 Restart Live. The startup warning no longer appears.
 
-If the first command reports that the module does not exist, your kernel is
-too old. Install your distribution's newest kernel (6.14 or newer) and run
-the commands again.
+If the first command reports that the module does not exist, move to a kernel
+that provides ntsync (Linux 6.14 or newer) and run the commands again.
 
 ## Audio latency remains high
 
