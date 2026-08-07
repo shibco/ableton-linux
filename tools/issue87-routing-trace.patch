@@ -1,0 +1,106 @@
+Diagnostic patch for issue 87 (Splice panel input-dead after collapse/reopen).
+Log-only wineserver trace of hardware mouse routing. NOT part of the shipped
+series; apply on top of patches/ for a scratch diagnosis build.
+
+What it logs, gated by WINE_I87_TRACE=1 in the wineserver's environment:
+- every hardware-input routing decision (window_thread_from_point): the scope
+  window, raw and client coordinates, the final window and owning thread id
+- every child considered during the descent: hit/skip, style, ex-style,
+  visible_rect, window-region presence, owning thread id
+
+WindowFromPoint requests stay silent, so the capture contains only the real
+routing path the issue's client-side probes could not see.
+
+Usage:
+  wineserver -k
+  WINE_I87_TRACE=1 WINEPREFIX=... wineserver -f -p 2>i87.log &
+  <launcher> ; hover the Splice panel ~5 s healthy, break it, hover ~5 s again
+  grep i87: i87.log
+A skip line naming a Chrome/CHOC window during the broken hover, or a route
+result landing on Live's main window while the healthy capture landed on a
+webview thread, pins the failing check. Validate the capture is non-empty
+before trusting a negative (the launcher defaults WINEDEBUG=-all; this trace
+does not use WINEDEBUG, but an empty log still means the env var did not
+reach wineserver).
+
+Scratch builds lack PipeASIO; audio is absent in a diagnosis runtime. That
+does not affect this repro.
+---
+diff --git a/server/window.c b/server/window.c
+index 73bad90..3e2f79a 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -22,6 +22,8 @@
+ 
+ #include <assert.h>
+ #include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ #include "ntstatus.h"
+ #include "windef.h"
+@@ -997,6 +999,22 @@ static void get_window_list( struct desktop *desktop, struct window *win, struct
+     }
+ }
+ 
++/* issue 87 diagnostic: log-only trace of hardware input routing, gated by
++ * WINE_I87_TRACE in the wineserver's environment.  Active only inside
++ * window_thread_from_point so WindowFromPoint requests stay silent. */
++static int issue87_trace_active;
++
++static int issue87_trace_enabled(void)
++{
++    static int on = -1;
++    if (on < 0)
++    {
++        const char *e = getenv( "WINE_I87_TRACE" );
++        on = e && *e && *e != '0';
++    }
++    return on;
++}
++
+ /* find child of 'parent' that contains the given point (in parent-relative coords) */
+ static struct window *child_window_from_point( struct window *parent, int x, int y )
+ {
+@@ -1005,8 +1023,15 @@ static struct window *child_window_from_point( struct window *parent, int x, int
+     LIST_FOR_EACH_ENTRY( ptr, &parent->children, struct window, entry )
+     {
+         int x_child = x, y_child = y;
++        int hit = is_point_in_window( ptr, &x_child, &y_child, get_window_dpi( parent ) );
+ 
+-        if (!is_point_in_window( ptr, &x_child, &y_child, get_window_dpi( parent ) )) continue;  /* skip it */
++        if (issue87_trace_active)
++            fprintf( stderr, "i87: %s win=%08x style=%08x ex=%08x vis=(%d,%d)-(%d,%d) rgn=%d tid=%04x parent_pt=(%d,%d)\n",
++                     hit ? "hit " : "skip", ptr->handle, ptr->style, ptr->ex_style,
++                     ptr->visible_rect.left, ptr->visible_rect.top,
++                     ptr->visible_rect.right, ptr->visible_rect.bottom,
++                     !!ptr->win_region, ptr->thread ? ptr->thread->id : 0, x, y );
++        if (!hit) continue;  /* skip it */
+ 
+         /* if window is minimized or disabled, return at once */
+         if (ptr->style & (WS_MINIMIZE|WS_DISABLED)) return ptr;
+@@ -1069,13 +1094,24 @@ user_handle_t shallow_window_from_point( struct desktop *desktop, int x, int y )
+ struct thread *window_thread_from_point( user_handle_t scope, int x, int y )
+ {
+     struct window *win = get_user_object( scope, NTUSER_OBJ_WINDOW );
++    int raw_x = x, raw_y = y;
+ 
+     if (!win) return NULL;
+ 
+     map_point_raw_to_virt( win->desktop, &x, &y );
+ 
+     screen_to_client( win, &x, &y, no_dpi );
++    issue87_trace_active = issue87_trace_enabled();
++    if (issue87_trace_active)
++        fprintf( stderr, "i87: route scope=%08x raw=(%d,%d) client=(%d,%d)\n",
++                 scope, raw_x, raw_y, x, y );
+     win = child_window_from_point( win, x, y );
++    if (issue87_trace_active)
++    {
++        fprintf( stderr, "i87: route result win=%08x tid=%04x\n",
++                 win->handle, win->thread ? win->thread->id : 0 );
++        issue87_trace_active = 0;
++    }
+     if (!win->thread) return NULL;
+     return (struct thread *)grab_object( win->thread );
+ }

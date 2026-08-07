@@ -1,0 +1,232 @@
+Subject: dxgi: keep the true original wndproc across dcomp target re-binds
+
+Found while reviewing issue 87 (Splice panel input-dead after pane
+collapse/reopen). These are the dxgi twins of the defects patch 0016
+fixed in dcomp.dll's target subclass; the dxgi copy in factory.c and
+swapchain.c never received the same guards. Not confirmed as the issue
+87 mechanism; the failure modes are real on their own.
+
+1. A WM_WINE_DCOMP_SET_TARGET re-bind for a window we already subclass
+   (a client recreating its swapchain for the same window: JUCE 8 device
+   recreation, WebView2 rebuilds) recorded our own subclass as the
+   "original" wndproc. First message after that recurses through
+   CallWindowProcW into itself. The re-bind also double-incremented
+   dcomp_subclassed_target_count and double-pushed the popup stack.
+   The install path now detects the re-bind, keeps the recorded
+   original, re-arms only the mode's timer, and skips count and stack.
+
+2. The popup-mode heuristic counted the window's own live subclass, so
+   any same-window re-bind saw count > 0 and was demoted to popup mode,
+   permanently losing the full-mode present timer and the frame-latency
+   signal that patch 0022 documents as input-critical. The re-bound
+   window's own subclass is now excluded from the count comparison.
+
+3. d3d11_swapchain_Release removed __wine_dcomp_orig_wndproc even when
+   it could not restore the wndproc (foreign subclass on top, or the
+   prop already gone). An installed subclass without that prop sends
+   every message to DefWindowProcW while WM_PAINT still blits the comp
+   buffer: the window paints and resizes but ignores all input, the
+   exact failure 0016 describes. Release now restores, removes the prop
+   and decrements the count only when the current wndproc is verifiably
+   ours (new dcomp_is_subclass_wndproc helper); otherwise the subclass
+   keeps forwarding through the prop and WM_NCDESTROY finishes the
+   cleanup, including the decrement, so the count is never taken twice.
+
+The popup-detect FIXME now also logs the re-bind flag, so a capture of
+a WebView2 rebuild shows which mode the new bind took.
+---
+ dlls/dxgi/dxgi_private.h |    4 ++
+ dlls/dxgi/factory.c      |  101 ++++++++++++++++++++++++++++++++++------------
+ dlls/dxgi/swapchain.c    |   18 +++++++-
+ 3 files changed, 94 insertions(+), 29 deletions(-)
+
+diff --git a/dlls/dxgi/dxgi_private.h b/dlls/dxgi/dxgi_private.h
+--- a/dlls/dxgi/dxgi_private.h
++++ b/dlls/dxgi/dxgi_private.h
+@@ -180,6 +180,10 @@
+  * un-subclasses a target on its own UI thread. */
+ extern LONG dcomp_subclassed_target_count;
+ 
++/* TRUE when proc is one of factory.c's target subclass wndprocs; lets
++ * swapchain.c verify the subclass is still in place before restoring. */
++BOOL dcomp_is_subclass_wndproc(WNDPROC proc);
++
+ /* IDXGISwapChain */
+ struct d3d11_swapchain
+ {
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -991,6 +991,11 @@
+                 : DefWindowProcW(hwnd, msg, wparam, lparam);
+ }
+ 
++BOOL dcomp_is_subclass_wndproc(WNDPROC proc)
++{
++    return proc == dcomp_target_wndproc || proc == dcomp_popup_wndproc;
++}
++
+ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+ {
+     switch (msg)
+@@ -1156,34 +1161,63 @@
+                     /* Transient anchor for a new popup = the previously-opened
+                      * target (top of the popup stack). */
+                     HWND popup_parent = dcomp_popup_stack_top();
++                    /* Re-bind: this window is already subclassed by us because a
++                     * client recreated its swapchain for the same window (JUCE 8
++                     * device recreation, WebView2 rebuilds).  The true original
++                     * wndproc is already in __wine_dcomp_orig_wndproc: never
++                     * record our own subclass as "original" (that turned the
++                     * dcomp-side subclass into a permanent DefWindowProc black
++                     * hole, painted but ignored all input — patch 0016), never
++                     * count or stack-push the window twice, and exclude its own
++                     * subclass from the popup-mode count so a re-bound main
++                     * window cannot demote itself to a popup. */
++                    WNDPROC cur = (WNDPROC)GetWindowLongPtrW(target_hwnd, GWLP_WNDPROC);
++                    BOOL rebind = (cur == dcomp_target_wndproc || cur == dcomp_popup_wndproc);
+ 
+-                    FIXME("DComp popup-detect: target %p style=0x%08lx parent=%p count=%ld.\n",
++                    FIXME("DComp popup-detect: target %p style=0x%08lx parent=%p count=%ld rebind=%d.\n",
+                             target_hwnd, (unsigned long)target_style, target_parent,
+-                            dcomp_subclassed_target_count);
++                            dcomp_subclassed_target_count, rebind);
+ 
+-                    if (dcomp_subclassed_target_count > 0)
++                    if (dcomp_subclassed_target_count > (rebind ? 1 : 0))
+                         is_popup_mode = TRUE;
+ 
+                     if (is_popup_mode)
+                     {
+                         /* Lightweight popup mode: subclass with minimal wndproc
+                          * (WM_ERASEBKGND + WM_PAINT only), no timer. */
+-                        WNDPROC orig = (WNDPROC)SetWindowLongPtrW(target_hwnd, GWLP_WNDPROC,
+-                                (LONG_PTR)dcomp_popup_wndproc);
+-                        if (orig)
++                        WNDPROC orig;
++                        if (rebind)
++                        {
++                            orig = (WNDPROC)GetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc");
++                            SetWindowLongPtrW(target_hwnd, GWLP_WNDPROC,
++                                    (LONG_PTR)dcomp_popup_wndproc);
++                            KillTimer(target_hwnd, DCOMP_REBLIT_TIMER_ID);
++                        }
++                        else
++                        {
++                            orig = (WNDPROC)SetWindowLongPtrW(target_hwnd, GWLP_WNDPROC,
++                                    (LONG_PTR)dcomp_popup_wndproc);
++                            if (orig)
++                                SetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc", (HANDLE)orig);
++                        }
++                        if (orig || rebind)
+                         {
+-                            SetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc", (HANDLE)orig);
+                             SetPropW(target_hwnd, L"__wine_dcomp_swapchain", (HANDLE)iface);
+-                            /* Anchor transient_for at the previously-opened target
+-                             * (read by winex11 set_style_hints) instead of
+-                             * get_active_window → nested hierarchy, no main-window pull. */
+-                            SetPropW(target_hwnd, L"__wine_dcomp_popup_parent", (HANDLE)popup_parent);
+                             SetTimer(target_hwnd, DCOMP_POPUP_REBLIT_TIMER_ID, 200, NULL);
+-                            InterlockedIncrement(&dcomp_subclassed_target_count);
+-                            dcomp_update_active_prop();
+-                            dcomp_popup_stack_push(target_hwnd);
+-                            FIXME("DComp POPUP mode: target %p, orig wndproc %p, sc=%p, transient->%p (reblit timer 200ms).\n",
+-                                    target_hwnd, orig, iface, popup_parent);
++                            if (!rebind)
++                            {
++                                /* Anchor transient_for at the previously-opened target
++                                 * (read by winex11 set_style_hints) instead of
++                                 * get_active_window → nested hierarchy, no main-window pull.
++                                 * On a re-bind the recorded anchor stays valid; the stack
++                                 * top may be the window itself by now. */
++                                SetPropW(target_hwnd, L"__wine_dcomp_popup_parent", (HANDLE)popup_parent);
++                                InterlockedIncrement(&dcomp_subclassed_target_count);
++                                dcomp_update_active_prop();
++                                dcomp_popup_stack_push(target_hwnd);
++                            }
++                            FIXME("DComp POPUP mode: target %p (rebind=%d), orig wndproc %p, sc=%p, transient->%p (reblit timer 200ms).\n",
++                                    target_hwnd, rebind, orig, iface, popup_parent);
+                         }
+                         else
+                         {
+@@ -1194,19 +1228,34 @@
+                     else
+                     {
+                         /* Full mode: subclass + timer + periodic Present for main window */
+-                        WNDPROC orig = (WNDPROC)SetWindowLongPtrW(target_hwnd, GWLP_WNDPROC,
+-                                (LONG_PTR)dcomp_target_wndproc);
+-                        if (orig)
++                        WNDPROC orig;
++                        if (rebind)
++                        {
++                            orig = (WNDPROC)GetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc");
++                            SetWindowLongPtrW(target_hwnd, GWLP_WNDPROC,
++                                    (LONG_PTR)dcomp_target_wndproc);
++                            KillTimer(target_hwnd, DCOMP_POPUP_REBLIT_TIMER_ID);
++                        }
++                        else
++                        {
++                            orig = (WNDPROC)SetWindowLongPtrW(target_hwnd, GWLP_WNDPROC,
++                                    (LONG_PTR)dcomp_target_wndproc);
++                            if (orig)
++                                SetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc", (HANDLE)orig);
++                        }
++                        if (orig || rebind)
+                         {
+-                            SetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc", (HANDLE)orig);
+                             SetPropW(target_hwnd, L"__wine_dcomp_swapchain", (HANDLE)iface);
+                             SetTimer(target_hwnd, DCOMP_REBLIT_TIMER_ID, 200, NULL);
+-                            InterlockedIncrement(&dcomp_subclassed_target_count);
+-                            dcomp_update_active_prop();
+-                            /* Main window: stack base for the first popup's transient anchor. */
+-                            dcomp_popup_stack_push(target_hwnd);
+-                            FIXME("DComp: subclassed target %p, orig wndproc %p, timer started, sc=%p.\n",
+-                                    target_hwnd, orig, iface);
++                            if (!rebind)
++                            {
++                                InterlockedIncrement(&dcomp_subclassed_target_count);
++                                dcomp_update_active_prop();
++                                /* Main window: stack base for the first popup's transient anchor. */
++                                dcomp_popup_stack_push(target_hwnd);
++                            }
++                            FIXME("DComp: subclassed target %p (rebind=%d), orig wndproc %p, timer started, sc=%p.\n",
++                                    target_hwnd, rebind, orig, iface);
+                         }
+                         else
+                         {
+diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -315,17 +315,29 @@
+             if (IsWindow(t) && GetWindowThreadProcessId(t, NULL) == GetCurrentThreadId())
+             {
+                 WNDPROC orig = (WNDPROC)GetPropW(t, L"__wine_dcomp_orig_wndproc");
++                WNDPROC cur = (WNDPROC)GetWindowLongPtrW(t, GWLP_WNDPROC);
+ 
+                 KillTimer(t, DCOMP_REBLIT_TIMER_ID);
+                 KillTimer(t, DCOMP_POPUP_REBLIT_TIMER_ID);
+                 KillTimer(t, DCOMP_RESIZE_REBLIT_TIMER_ID);
+-                if (orig)
++                /* Restore only while the subclass is verifiably still ours and
++                 * the original is known.  Removing the prop while our subclass
++                 * stays installed (someone subclassed on top, or the prop was
++                 * lost) turns the wndproc tail into an unconditional
++                 * DefWindowProc: the window keeps painting from the comp buffer
++                 * but ignores all input (the dcomp-side patch 0016 failure
++                 * mode).  When the restore is skipped, the subclass keeps
++                 * forwarding through the prop and WM_NCDESTROY finishes the
++                 * cleanup, including the count decrement. */
++                if (orig && dcomp_is_subclass_wndproc(cur))
++                {
+                     SetWindowLongPtrW(t, GWLP_WNDPROC, (LONG_PTR)orig);
+-                RemovePropW(t, L"__wine_dcomp_orig_wndproc");
++                    RemovePropW(t, L"__wine_dcomp_orig_wndproc");
++                    InterlockedDecrement(&dcomp_subclassed_target_count);
++                }
+                 RemovePropW(t, L"__wine_dcomp_comp_dc");
+                 RemovePropW(t, L"__wine_dcomp_comp_size");
+                 RemovePropW(t, L"__wine_dcomp_comp_bits");
+-                InterlockedDecrement(&dcomp_subclassed_target_count);
+             }
+             swapchain->target_hwnd = NULL;
+         }
