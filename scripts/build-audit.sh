@@ -71,6 +71,9 @@ extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
+    [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
+    [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
+    [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -157,6 +160,9 @@ FINGERPRINTS='
 0063|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.FileManager1
 0064|ascii|lib/wine/x86_64-unix/comdlg32.so|ShowFolders
 0064|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_open_folder
+0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
+0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
+0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration

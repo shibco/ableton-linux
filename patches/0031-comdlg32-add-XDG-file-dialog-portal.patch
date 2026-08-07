@@ -2569,8 +2569,8 @@ index 00000000..e14a5a41
 +
 +    TRACE("portal_call_and_wait: response_received=%d response_code=%u\n",
 +          ctx->response_received, ctx->response_code);
-+	status = (ctx->response_code == 0) ? STATUS_SUCCESS :
-+             (ctx->response_code == 1) ? STATUS_CANCELLED : STATUS_INTERNAL_ERROR;
++	/* A response signal means a dialog was shown: dismissal (Esc, titlebar X) is a cancel. */
++	status = (ctx->response_code == 0) ? STATUS_SUCCESS : STATUS_CANCELLED;
 +    return status;
 +}
 +

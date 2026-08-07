@@ -6,8 +6,11 @@
 #            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
 #            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
 #            ABLETON_NTSYNC_WARN=off (silence the missing-/dev/ntsync warning),
+#            ABLETON_POWER=off (skip the session performance power-profile hold),
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
-#            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix).
+#            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
+#            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
+#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix).
 set -u
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
@@ -25,6 +28,14 @@ export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
 # client surface. Keep Live on the offscreen path; "off" is a non-matching class
 # value and therefore provides a one-launch A/B override.
 export WINE_X11_FORCE_OFFSCREEN_CLASS="${WINE_X11_FORCE_OFFSCREEN_CLASS:-Ableton Live Window Class}"
+# Live leaves its native menu attached in fullscreen, and a redundant X11
+# configure can otherwise delay fullscreen removal on exit. Select only Live's
+# exact top-level class; "off" is a non-matching one-launch A/B override.
+export WINE_WIN32_FULLSCREEN_CLASS="${WINE_WIN32_FULLSCREEN_CLASS:-Ableton Live Window Class}"
+# A captioned Live window may legitimately cover its monitor. Keep that window
+# resizable independently of the fullscreen normalization selector above;
+# "off" is a non-matching one-launch A/B override.
+export WINE_WIN32_RESIZABLE_CLASS="${WINE_WIN32_RESIZABLE_CLASS:-Ableton Live Window Class}"
 # Report host mount points as plain dirs (patch 0033); Live's browser treats
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
@@ -840,11 +851,33 @@ if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
     run=(chrt -r 10 wine)
 fi
 
+# CPU speed for the session: hold the "performance" power profile while Live
+# runs, through power-profiles-daemon (tuned-ppd answers the same CLI). The
+# hold needs no root, shows up in the desktop's power menu, and is released
+# when Live exits or crashes. This replaces the boot-time governor unit that
+# setup-realtime.sh installed before 2026-08; ABLETON_POWER=off skips it for
+# one launch. The probe runs the exact call with `true`, so a missing daemon,
+# a host without a performance profile, or an old powerprofilesctl all fall
+# back to launching without the hold. The timeout bounds a wedged daemon:
+# powerprofilesctl waits on GLib's 25 s D-Bus default per call, and the hold
+# call would wait a second time. The start.exe paths below pass /w so
+# start.exe waits on the process it spawns; without it start.exe exits right
+# after the handoff and the hold dies with it, leaving cold starts through
+# ableton:// URLs and .auz files uncovered. The chrt wrapper is unaffected
+# either way: scheduling policy is inherited across fork/exec. One side
+# effect: with /w the spawned process sits in a kill-on-close job object, so
+# killing the launcher chain now takes Live down with it.
+if [ "${ABLETON_POWER:-on}" != off ] && command -v powerprofilesctl >/dev/null 2>&1 \
+    && timeout 10 powerprofilesctl launch -p performance -r "Ableton Live session" -i ableton-live -- true >/dev/null 2>&1; then
+    run=(powerprofilesctl launch -p performance -r "Ableton Live session" -i ableton-live -- "${run[@]}")
+fi
+
 # Ableton Link session anchor (optional): if ableton-linkd is installed but
-# not running (e.g. the ableton-linkd.service user unit is disabled), start it
-# so the Link session is anchored before Live launches; daemon mode logs to
-# ~/.log/ableton-linkd/. ABLETON_LINKD overrides the binary path. See
-# notes/ABLETON-WINE-LINK.md.
+# not running, start it so the Link session is anchored before Live launches.
+# The daemon is session-scoped: it exits on its own after 15 minutes with no
+# peers (ABLETON_LINKD_LINGER overrides; the user unit runs --linger 0 for an
+# always-on anchor). Daemon mode logs to ~/.log/ableton-linkd/.
+# ABLETON_LINKD overrides the binary path. See notes/ABLETON-WINE-LINK.md.
 LINKD="${ABLETON_LINKD:-$HOME/.local/share/ableton-wine/ableton-linkd}"
 if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
     "$LINKD" --daemon || echo "ableton-live: ableton-linkd failed to start" >&2
@@ -890,9 +923,9 @@ elif [ "$#" -gt 0 ]; then
                 fi
                 ;;
         esac
-        case "$1" in /*) exec "${run[@]}" start /unix "$1" ;; esac
+        case "$1" in /*) exec "${run[@]}" start /w /unix "$1" ;; esac
     fi
-    exec "${run[@]}" start "$@"
+    exec "${run[@]}" start /w "$@"
 else
     require_live
     exec "${run[@]}" "$EXE"

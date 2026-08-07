@@ -116,6 +116,18 @@ failed removal is retried on the next update. Installs that declined with
 `--no-link` never run the setup; the installer prints the hook path and the
 removal command on each run until the hook is removed.
 
+Setup version 5 (2026-08-07, unreleased) scoped the anchor to sessions. The
+daemon gained `--linger`: with no peer for that many seconds (default 900,
+whole seconds only) it exits 0, and `--linger 0` keeps the always-on
+behaviour. Live counts as a peer while Link is enabled in its preferences,
+so the timer spans Live restarts but not an idle machine. The launchers
+still start the daemon per session; the setup script registers the user
+unit without enabling it, disables the enablement that versions 1 to 3
+made (once, at migration), and stops a daemon started before the
+migration. The unit runs `--linger 0` and remains the explicit opt-in for
+an always-on anchor. An enablement made after the version 5 migration is
+treated as that opt-in and left alone on re-runs.
+
 The Live, Max, and beta launchers start `ableton-linkd --daemon` when the
 binary is installed and no process with that name is running.
 `ABLETON_LINKD` overrides the binary path.
@@ -155,6 +167,11 @@ was corrected during probe development.
 - Measure beat and phase alignment under audio load.
 - Verify Start Stop Sync from Live and another peer.
 - Confirm session continuity across a full Live restart.
+- Confirm the idle exit: with Live closed and no other peer, a running
+  `ableton-linkd` exits 0 within `--linger` seconds and logs the reason.
+- Confirm the version 5 migration on a host upgraded from an enabled unit:
+  the unit ends up disabled, no daemon remains, and the next Live launch
+  starts a session-scoped one.
 - Run the assembled `.run` installer and its integrated Link setup on a fresh
   machine.
 

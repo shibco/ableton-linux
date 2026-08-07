@@ -15,6 +15,14 @@ Wine patch 0053 accompanies the change: winex11 exports the app's
 `WM_GETMINMAXINFO` minimum tracking size as the X11 `PMinSize` hint, so
 the window manager clamps interactive resizes at Live's minimum.
 
+Patch 0069 corrects the selected Live window's resizability classification.
+If captioned startup or restored geometry covers the monitor, Wine keeps the
+window resizable while `WS_CAPTION` and `WS_THICKFRAME` remain set. The window
+therefore stays on patch 0053's existing resizable size-hint path, publishing
+Live's DPI-dependent `PMinSize` without a `PMaxSize`; borderless fullscreen
+remains fixed-size. `WINE_WIN32_RESIZABLE_CLASS=off` disables only patch 0069
+for a one-launch A/B comparison.
+
 ## What it fixes
 
 - The WebView2 pane flicker (Learn View, Splice view): with the GDI
@@ -51,7 +59,7 @@ superseded by this note.
 2. Open the Learn View and the Splice view. Both render their content
    and stay stable.
 3. `xprop -id <live-x-window> WM_NORMAL_HINTS` shows
-   `program specified minimum size`.
+   `program specified minimum size` and no `program specified maximum size`.
 4. Drag a window edge below Live's minimum. The drag stops at the
    minimum and the window does not fight the drag.
 

@@ -3,6 +3,7 @@
 # ableton-live, so standalone Max, Max for Live editing and PipeASIO all
 # share one wineserver. Args: Max documents as unix paths, or c74max: URLs.
 # Overrides: ABLETON_WINE_ROOT, ABLETON_WINEPREFIX, ABLETON_RT=off,
+#            ABLETON_POWER=off (skip the session performance power-profile hold),
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor).
 set -u
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
@@ -27,6 +28,15 @@ run=(wine)
 if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
     && chrt -r 10 true >/dev/null 2>&1; then
     run=(chrt -r 10 wine)
+fi
+
+# Same session-scoped performance power-profile hold as the ableton-live
+# launcher; released when Max exits. The timeout bounds a wedged daemon:
+# powerprofilesctl waits on GLib's 25 s D-Bus default per call, and the hold
+# call would wait a second time.
+if [ "${ABLETON_POWER:-on}" != off ] && command -v powerprofilesctl >/dev/null 2>&1 \
+    && timeout 10 powerprofilesctl launch -p performance -r "Max session" -i max9 -- true >/dev/null 2>&1; then
+    run=(powerprofilesctl launch -p performance -r "Max session" -i max9 -- "${run[@]}")
 fi
 
 # Unix file paths become Windows paths; URLs and anything else pass through.

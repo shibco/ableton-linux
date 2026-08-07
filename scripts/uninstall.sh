@@ -57,6 +57,16 @@ if [ -e "$hook" ]; then
     echo "An earlier Ableton Link setup left a NetworkManager hook behind:"
     echo "  sudo rm $hook"
 fi
+# Realtime setup before 2026.08 installed this boot-time CPU speed setting
+# as root, so this script cannot remove it.
+govunit=/etc/systemd/system/ableton-cpufreq-performance.service
+if [ -e "$govunit" ]; then
+    echo ""
+    echo "An earlier release set the CPU to full speed from every boot. Remove that old setting with:"
+    echo "  sudo systemctl disable ableton-cpufreq-performance.service"
+    echo "  sudo rm $govunit"
+    echo "  sudo systemctl daemon-reload"
+fi
 # The port allowance persists even while the firewall is disabled, so key
 # this on the tool being installed, not on it being active right now. Both
 # tools can coexist and setup may have used either; mention each.

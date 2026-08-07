@@ -50,7 +50,7 @@ dist/cabextract-static --version >/dev/null 2>&1 || \
     { echo "!! dist/cabextract-static does not run on this host" >&2; exit 1; }
 echo "   cabextract-static: $(dist/cabextract-static --version 2>&1 | head -1)"
 
-echo "== [2/5] ableton-linkd (persistent Ableton Link peer, from the vendored SDK) =="
+echo "== [2/5] ableton-linkd (Ableton Link session anchor, from the vendored SDK) =="
 if [ ! -x dist/ableton-linkd ]; then
     ENGINE="$ENGINE" IMAGE="$IMAGE" ./scripts/build-ableton-linkd.sh
 fi
