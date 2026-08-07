@@ -31,7 +31,7 @@ synchronization throughput 4 to 50 times
 (notes/ABLETON-WINE-NTSYNC-REGRESSION.md:10-14).
 
 ntsync removes *handle waits* from wineserver, but not everything:
-alertable sleeps and APC (asynchronous procedure call — a callback Windows
+alertable sleeps and APC (asynchronous procedure call: a callback Windows
 queues onto a specific thread) delivery still go through the server
 (notes/ABLETON-WINE-APC-COALESCING.md:14-18). Live's APC coalescing thread
 idles at 30 to 40% of one core, and the single-threaded wineserver
@@ -126,7 +126,7 @@ waits in-process through the device instead of calling wineserver.
 | Container build injects header | Containerfile:94-98 |
 | Build fails if configure misses it | scripts/container-build.sh:104-125 (`HAVE_LINUX_NTSYNC_H`, both runtime halves) |
 | Installed-runtime verification | scripts/check-ntsync.sh:31-38 (static gate), :68-71 (server must open `/dev/ntsync` when it exists) |
-| Semantics + throughput probe | beta/tester-kit/probes/src/ntsyncprobe.c:1-10; runs A–D table in notes/ABLETON-WINE-NTSYNC-REGRESSION.md:38-43 |
+| Semantics + throughput probe | beta/tester-kit/probes/src/ntsyncprobe.c:1-10; runs A-D table in notes/ABLETON-WINE-NTSYNC-REGRESSION.md:38-43 |
 | Regression history | builds 2026-07-12/14 silently lost ntsync; fixed 2026.07.17.1 (notes/ABLETON-WINE-NTSYNC-REGRESSION.md:1-6) |
 
 One host-side gap remains: the driver needs `/dev/ntsync` to exist, which
@@ -140,7 +140,7 @@ has the module unloaded.
 list, and it is already in. Live runs many worker threads with many short
 waits at audio-period rates (a 256-frame buffer at 48 kHz is a 5.3 ms
 cycle). The repo's probe measured event ping-pong rising from ~75k to
-327–392k round trips/s and semaphore churn from ~64k to 3.3–3.6M pairs/s
+327-392k round trips/s and semaphore churn from ~64k to 3.3-3.6M pairs/s
 with ntsync active (notes/ABLETON-WINE-NTSYNC-REGRESSION.md:38-43). Lower
 per-wait latency and lower wineserver load directly protect audio
 deadlines. Remaining limit: alertable sleeps/APC delivery still use
@@ -150,7 +150,7 @@ wineserver (notes/ABLETON-WINE-APC-COALESCING.md:14-18).
 
 *What it does:* `WINE_CPU_TOPOLOGY=N:cpu,cpu,...` is a Proton-side Wine
 patch that caps and remaps the logical processors reported to the Windows
-app — used to fix games that break on high core counts and to pin games
+app: used to fix games that break on high core counts and to pin games
 onto specific cores (e.g. the V-Cache CCD on Ryzen X3D parts)
 (https://github.com/ValveSoftware/Proton/issues/7719,
 https://github.com/CachyOS/proton-cachyos/issues/178). Proton ships
@@ -160,8 +160,8 @@ Feral GameMode parking non-cache cores on hybrid CPUs so the game stays on
 the fast ones (https://github.com/ValveSoftware/Proton/issues/8075;
 GameMode project: https://github.com/FeralInteractive/gamemode).
 
-*In this repo:* groundwork only. The launcher computes a sensible value —
-cap 8 CPUs, honor `taskset`/cgroup restrictions, user override wins — and
+*In this repo:* groundwork only. The launcher computes a sensible value
+(cap 8 CPUs, honor `taskset`/cgroup restrictions, user override wins) and
 exports it (scripts/ableton-live:75-108), but the code is explicit: "Inert
 on this runtime until the patched ntdll/wineserver consumer lands; exported
 as groundwork only" (scripts/ableton-live:78-79). The consumer patch is
@@ -189,7 +189,7 @@ under `SCHED_RR` priority 10 when `chrt -r 10 true` succeeds
 (scripts/setup-realtime.sh:74); PipeASIO separately requests SCHED_FIFO 15
 for its data loop (notes/ABLETON-WINE-RT-SCHEDULING.md:1-7). Boosting
 wineserver itself with `chrt -f -p 95` was considered and deliberately left
-out — it needs root per launch, and raising a single-threaded server above
+out: it needs root per launch, and raising a single-threaded server above
 its callers can invert the contention it means to fix
 (scripts/setup-realtime.sh:23-25). The known open risk: Live's realtime
 threads make synchronous calls into a `SCHED_OTHER` wineserver, a classic
@@ -238,8 +238,8 @@ remaining wineserver traffic cheaper or rarer" is.
 
 Games and DAWs differ in one way that matters: a game can drop a frame; a
 DAW cannot miss a buffer. The sync techniques transfer directly because
-Live's thread pattern — many workers, many short waits, hard periodic
-deadlines — is the pattern ntsync was benchmarked on, and this repo already
+Live's thread pattern (many workers, many short waits, hard periodic
+deadlines) is the pattern ntsync was benchmarked on, and this repo already
 has the wins and the guards. The remaining moonshot surface is the traffic
 ntsync does not cover (alertable waits, APC delivery), the priority
 relationship between Live's RT threads and wineserver, and CPU-count/affinity
@@ -248,40 +248,40 @@ there is worth resurrecting.
 
 ## Key opportunities
 
-1. **Close the `/dev/ntsync` host gap** — detect a kernel ≥ 6.14 with the
+1. **Close the `/dev/ntsync` host gap**: detect a kernel ≥ 6.14 with the
    ntsync module unloaded and tell the user exactly how to load it (or ship
    a `modprobe.d`/udev drop-in via setup scripts). Impact: high (users on
-   qualifying kernels silently lose 4–50x sync throughput otherwise).
+   qualifying kernels silently lose 4-50x sync throughput otherwise).
    Effort: low. Evidence: scripts/check-ntsync.sh:38,68-71 checks but does
    not remediate; notes/ABLETON-WINE-NTSYNC-REGRESSION.md:38-43 quantifies
    the loss.
-2. **Port Proton's `WINE_CPU_TOPOLOGY` consumer patch into the runtime** —
+2. **Port Proton's `WINE_CPU_TOPOLOGY` consumer patch into the runtime**:
    the launcher already computes and exports the value; the ntdll/wineserver
    consumer is the missing half. Impact: medium (fixes worker-pool
    oversizing on >8-core hosts; enables V-Cache/P-core pinning). Effort:
    medium. Evidence: scripts/ableton-live:75-108, explicit "Inert …
    groundwork only" at scripts/ableton-live:78-79.
-3. **Run the deferred wineserver priority/affinity A/B** — test
+3. **Run the deferred wineserver priority/affinity A/B**: test
    `chrt -f` boost and/or CPU affinity for wineserver under playback load
    using the existing `bench-run.sh` harness; the boost is documented as
    deliberately excluded pending measurement, not as rejected. Impact:
    medium (targets the Live-RT-thread vs SCHED_OTHER-wineserver inversion).
    Effort: low. Evidence: scripts/setup-realtime.sh:23-25,
    notes/ABLETON-WINE-RT-SCHEDULING.md:39-41,43-81.
-4. **Attack the alertable-wait/APC wineserver path** — ntsync does not
+4. **Attack the alertable-wait/APC wineserver path**: ntsync does not
    cover alertable sleeps or APC delivery; Live's APC coalescing thread
-   burns 30–40% of a core idle, and per-APC wineserver serialization is the
+   burns 30-40% of a core idle, and per-APC wineserver serialization is the
    current fault hypothesis under load. Impact: high. Effort: high.
    Evidence: notes/ABLETON-WINE-APC-COALESCING.md:1-6,14-28.
 5. **Verify the upstream non-ntsync in-process fallback and, if real,
-   enable it in builds** — Unverified: community sources say upstream
+   enable it in builds**. Unverified: community sources say upstream
    Wine ≥ 10.15 has an eventfd in-process fallback when `/dev/ntsync` is
    absent; this repo's header-less fallback builds paid full wineserver
    round trips. If the fallback is compile-gated on the same header, no
    action; if not, users on kernels < 6.14 get a free win. Impact: medium.
    Effort: low. Evidence: https://github.com/AdelKS/LinuxGamingGuide vs
    notes/ABLETON-WINE-NTSYNC-REGRESSION.md:38-46.
-6. **Publish hybrid-CPU affinity guidance** — document `taskset` /
+6. **Publish hybrid-CPU affinity guidance**: document `taskset` /
    GameMode-style core selection for Intel P/E and Ryzen X3D hosts running
    Live, matching what Proton users already do per game. Impact: low to
    medium. Effort: low. Evidence:

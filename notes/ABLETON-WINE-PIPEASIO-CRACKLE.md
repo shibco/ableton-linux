@@ -146,6 +146,11 @@ across every stream in the graph, which no buffer size corrects. The
 `spa.alsa: hw:M2p: follower ... resync` line in #49 is that event. C8 governs
 whether the follower copes.
 
+*Corrected 2026-08-02: two devices in one graph are a supported
+configuration and the resampling is silent when the follower has enough
+buffer room. The crackle is C8's headroom shortfall, not the two-device
+graph itself. See the status addendum below.*
+
 ### Working baseline
 
 Taken on the build machine on 2026-07-26 with Live open:
@@ -158,7 +163,7 @@ pw-top:   R 74  256 48000  alsa_input...analog-stereo   (driver)
           R 106 256 48000   = Ableton Live 12 Suite   BUSY 270us  B/Q 0.05
 ```
 
-Note two things even here. The capture device drives the graph, which is C9
+Even this baseline shows two things. The capture device drives the graph, which is C9
 in its harmless form because both devices are the same card. And
 `clock.quantum` reads 512 while the graph runs at 256, so the settings
 metadata reports the configured default rather than the running quantum.
@@ -371,7 +376,7 @@ it was written 2026-07-26. State of the plan as of this addendum:
   telemetry running throughout; clearing the pin left the graph stable at
   the re-established node force. G1 is answered yes by the observed
   rebuild: Live 12.4.3 services kAsioResetRequest while running. C1 is
-  closed. One instrumentation note: the driver's unix-side messages reach
+  closed. Instrumentation: the driver's unix-side messages reach
   the session log with their own `[pipeasio]` prefix, and its wine TRACE
   class did not surface even with `trace+asio`, so the G1 log line is
   invisible in the field; the behavioural answer stands.
@@ -397,8 +402,20 @@ it was written 2026-07-26. State of the plan as of this addendum:
   the node's Props parameter), logs the change, and puts the old value
   back when the session ends, the devices change, or that device starts
   setting the graph's timing itself. Single-device sessions are never
-  touched. `PIPEASIO_FOLLOWER_HEADROOM` sets a different frame count or
-  turns this off. The live property path is verified against PipeWire
+  touched. One limit is inherent to the approach. The restore runs only
+  on the driver's normal paths, so if the process dies without a clean
+  exit (a crash or a kill), the added room stays on the device node
+  until PipeWire recreates it, and every client of that device keeps
+  the added latency meanwhile. A later session does not undo it
+  either: the driver probes the raised value, sees nothing to raise,
+  and never records the original. On PipeWire 1.5.85 the Props
+  enumeration yields multiple objects behind the audio adapter, and
+  all of them must be enumerated, otherwise `clock.name` stays empty
+  and the feature never engages. `PIPEASIO_FOLLOWER_HEADROOM` accepts
+  a frame count from 16 to 8192; smaller positive values rise to 16 and
+  larger values come down to 8192. `off`, `0`, a value below 1, or text
+  that is not a number turns this off. The live property path is verified
+  against PipeWire
   1.6.8 on the build machine. Open: a listening run on a real rig (USB
   microphone plus a separate USB interface, no crackle over a long
   session), the oldest supported PipeWire (the driver does nothing when

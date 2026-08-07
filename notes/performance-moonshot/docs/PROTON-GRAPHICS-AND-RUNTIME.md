@@ -55,7 +55,7 @@ Facts about the current stack, from this repository:
   was an X11 depth mismatch, not a translation-layer problem
   (`notes/ABLETON-WINE-GL-PLUGIN-EDITOR-CRASH-BUG.md:21-36`).
 - WebView2 plugin editors (Splice INSTRUMENT) crash on an OLE drag-drop
-  pointer, fixed in ole32 by patch 0045 — again not a graphics problem
+  pointer, fixed in ole32 by patch 0045, again not a graphics problem
   (`notes/ABLETON-WINE-WEBVIEW2-PLUGIN-CLOSE-CRASH.md:10-24`).
 - The audio engine does not touch Wine's audio drivers: it runs ASIO through
   PipeASIO into PipeWire (`scripts/ableton-live:760-762`,
@@ -79,8 +79,8 @@ principle replace the wined3d-GL translation. wined3d serializes rendering
 on one command-stream thread (the "CS thread" of
 `notes/ABLETON-WINE-GPU-RENDERER.md:108-116`); DXVK's submission model is
 more parallel, and its per-frame CPU cost is lower for heavy D3D11
-workloads. Live's UI is not a heavy D3D11 workload — it is a 2D desktop UI
-— so the expected gain is smaller than in games and may be near zero.
+workloads. Live's UI is not a heavy D3D11 workload (it is a 2D desktop
+UI), so the expected gain is smaller than in games and may be near zero.
 
 Risks are concrete, not theoretical:
 
@@ -100,8 +100,8 @@ Risks are concrete, not theoretical:
 Cheaper experiment first: wined3d has its own Vulkan backend, selectable
 without swapping DLLs. Unverified: whether that backend works with Live's
 D2D usage and with the dcomp patches (0041). Either way, the test is a
-prefix-level A/B — the vendored winetricks already carries dxvk verbs
-(`vendor/winetricks:6887-6900`) — and does not require a rebuild.
+prefix-level A/B (the vendored winetricks already carries dxvk verbs,
+`vendor/winetricks:6887-6900`) and does not require a rebuild.
 
 ## vkd3d-proton
 
@@ -120,7 +120,7 @@ editor uses D3D12. Unverified: whether any future plugin editor (game-engine
 
 DXVK-NVAPI implements NVIDIA's NVAPI (driver feature library: GPU queries,
 Reflex latency reduction, DLSS hooks) on top of DXVK/Vulkan. It is actively
-maintained — 0.9.1 shipped 2026-01 and 0.9.2 followed in 2026-05 with
+maintained: 0.9.1 shipped 2026-01 and 0.9.2 followed in 2026-05 with
 experimental D3D12 shader extensions
 ([Phoronix Linux gaming archive](https://www.phoronix.com/linux/Linux+Gaming),
 [dxvk-nvapi releases](https://github.com/jp7677/dxvk-nvapi/releases)).
@@ -225,10 +225,10 @@ GE-Proton adds, on top of Valve's Proton
 
 | Addition | Purpose | Applies to a DAW? |
 |---|---|---|
-| Media Foundation patches | game video cutscenes | Only marginally — Live's media import already works through winegstreamer (`scripts/container-build.sh:96-102`) |
+| Media Foundation patches | game video cutscenes | Only marginally. Live's media import already works through winegstreamer (`scripts/container-build.sh:96-102`) |
 | `WINE_FULLSCREEN_FSR` upscaling | game rendering | No |
 | NVIDIA CUDA / PhysX / NVAPI | game physics, DLSS | No |
-| Raw input patches | game mouse input | No — MIDI and mouse already work; see `notes/ABLETON-WINE-INPUT-BUG.md` for the actual input work |
+| Raw input patches | game mouse input | No. MIDI and mouse already work; see `notes/ABLETON-WINE-INPUT-BUG.md` for the actual input work |
 | protonfixes per-game fixes | game-specific hacks | The pattern applies (this repo's patch series is the same idea), the content does not |
 | wine-staging backports | assorted | Case by case; this repo already curates its own series |
 | NTSync enablement | synchronization | Already done here (`notes/ABLETON-WINE-NTSYNC-REGRESSION.md:50-56`) |
@@ -242,7 +242,7 @@ umu with the full container environment (same README).
 pressure-vessel is the container launcher that runs Proton against Steam
 Linux Runtime, a fixed library set, so games see identical libraries on
 every distribution ([Valve's steam-runtime known-issues doc](https://github.com/ValveSoftware/steam-runtime/blob/master/doc/steamlinuxruntime-known-issues.md)).
-It is actively developed — Steam Linux Runtime 3.0 (sniper) was updated in
+It is actively developed: Steam Linux Runtime 3.0 (sniper) was updated in
 2026-06 including arm64 pressure-vessel builds
 ([SteamDB patch notes, 2026-06-03](https://steamdb.info/patchnotes/23181402/)).
 
@@ -268,8 +268,8 @@ timing lets an app schedule exactly when a frame lands.
 
 For a DAW, the latency that matters is the audio callback deadline, which
 none of this touches. UI frame latency affects feel, not correctness. This
-project's own present-path work — the direct GL present of patch 0055 with
-the 0058/0059 gates — is the equivalent optimization, already done and
+project's own present-path work (the direct GL present of patch 0055 with
+the 0058/0059 gates) is the equivalent optimization, already done and
 measured (`notes/ABLETON-WINE-GPU-RENDERER.md:158-171`). Present timing
 only exists for Vulkan, so it becomes relevant only if the DXVK experiment
 lands. Gamescope does not apply: Live is a multi-window desktop app with

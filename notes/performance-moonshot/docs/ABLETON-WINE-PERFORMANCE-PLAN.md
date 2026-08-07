@@ -292,7 +292,7 @@ Pass gates:
 ### 2. Shorten queued audio wake-ups without changing their order
 
 The local test that disabled batching for Windows queued asynchronous procedure
-calls (`-DontCombineAPCs`) removed a 30–40% idle thread but made playback slow
+calls (`-DontCombineAPCs`) removed a 30-40% idle thread but made playback slow
 and broken. The recorded analysis concludes that uncombined queued work likely
 increased traffic through the single-threaded wineserver and delayed PipeASIO.
 The option was correctly removed. See
@@ -326,7 +326,7 @@ performance-core-only is faster for every set. It can reduce parallel capacity.
 ### 4. Remove recurring graphics repair work
 
 The current graphics work already produced the largest measured local gain:
-enabling Live's D3D11 renderer reduced idle CPU from about 59% to 1–2%, and
+enabling Live's D3D11 renderer reduced idle CPU from about 59% to 1-2%, and
 direct OpenGL presentation removed about 650 MB/s of full-window display
 traffic. These results are recorded in
 [`notes/ABLETON-WINE-GPU-RENDERER.md`](ABLETON-WINE-GPU-RENDERER.md).
@@ -459,7 +459,7 @@ total audio-engine load, when judging these builds.
   path and retain a correct fallback.
 - Do not use allocator replacements, huge pages, `-O3`, or native CPU tuning
   without a measured Wine hot path and a stability result.
-- Do not set 0.2–0.4 ms audio periods as a default. They reduce the time
+- Do not set 0.2-0.4 ms audio periods as a default. They reduce the time
   available to recover from ordinary scheduling delay.
 - Do not disable runtime checks for speed. A media path can depend on those
   checks for correct fault handling.

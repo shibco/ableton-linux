@@ -1,7 +1,7 @@
 diff --git a/src/audio.c b/src/audio.c
 --- a/src/audio.c
 +++ b/src/audio.c
-@@ -70,7 +70,10 @@
+@@ -70,16 +70,21 @@
  #include <pipewire/extensions/metadata.h>
  #include <spa/utils/json.h>
  #include <spa/param/audio/format-utils.h>
@@ -10,9 +10,20 @@ diff --git a/src/audio.c b/src/audio.c
 +#include <spa/pod/iter.h>
 +#include <spa/pod/parser.h>
  
++#include <ctype.h>
  #include <errno.h>
  #include <pthread.h>
-@@ -269,6 +272,19 @@
+ #include <sched.h>
+ #include <stdatomic.h>
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <strings.h>
+ #include <sys/mman.h>
+ #include <sys/resource.h>
+ #include <unistd.h>
+@@ -269,6 +274,19 @@
  
  /* Opaque types backing audio.h. */
  
@@ -32,7 +43,7 @@ diff --git a/src/audio.c b/src/audio.c
  struct audio_client
  {
      char            *name;
-@@ -354,6 +370,20 @@
+@@ -354,6 +372,20 @@
       * puts the clock topology in the log for when it is not (C8). */
      uint32_t chosen_node[2];
      uint32_t warned_clock_pair[2];
@@ -53,7 +64,7 @@ diff --git a/src/audio.c b/src/audio.c
  };
  
  struct audio_node_info
-@@ -407,6 +437,10 @@
+@@ -407,6 +439,10 @@
      .process = audio_on_process,
  };
  
@@ -64,37 +75,71 @@ diff --git a/src/audio.c b/src/audio.c
  /* Core and registry event forward declarations. */
  
  static void audio_on_core_done(void *userdata, uint32_t id, int seq);
-@@ -454,6 +488,29 @@
+@@ -454,6 +490,63 @@
      c->our_node_id = SPA_ID_INVALID;
      c->chosen_node[0] = c->chosen_node[1] = SPA_ID_INVALID;
      c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
 +    c->hr_slot[0].node = c->hr_slot[1].node = SPA_ID_INVALID;
 +
 +    /* How many frames of buffer room the second device of a two-device
-+     * session is guaranteed.  Unset: 512.  "off" or "0": leave devices
-+     * alone.  Other values are kept between 16 and 8192, with a message
-+     * when the given value is outside that range. */
++     * session is guaranteed.  Unset: 512.  "off", "0", values below 1,
++     * and text that is not a number: leave devices alone.  Positive values
++     * outside 16..8192 are clamped to that range, with a message. */
 +    const char *hr_env = getenv("PIPEASIO_FOLLOWER_HEADROOM");
 +    if (!hr_env)
++    {
 +        c->hr_target = 512;
-+    else if (!strcmp(hr_env, "off") || !strcmp(hr_env, "0"))
-+        c->hr_target = -1;
++    }
 +    else
 +    {
-+        long v = strtol(hr_env, NULL, 10);
-+        if (v < 16)
-+            v = 16;
-+        if (v > 8192)
-+            v = 8192;
-+        if (v != atol(hr_env))
-+            WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is outside 16..8192; using %ld\n", hr_env,
-+                 v);
-+        c->hr_target = (int32_t)v;
++        /* Trim by span instead of copying into a fixed buffer: truncating an
++         * invalid long value could otherwise turn it into a valid prefix. */
++        const char *beg = hr_env;
++        while (isspace((unsigned char)*beg))
++            beg++;
++        const char *end = beg + strlen(beg);
++        while (end > beg && isspace((unsigned char)end[-1]))
++            end--;
++
++        if (end == beg || (end - beg == 3 && !strncasecmp(beg, "off", 3)))
++            c->hr_target = -1;
++        else
++        {
++            char *num_end;
++            errno = 0;
++            long  v = strtol(beg, &num_end, 10);
++            while (num_end < end && isspace((unsigned char)*num_end))
++                num_end++;
++            if (num_end != end)
++            {
++                WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is not a frame count; turned off\n",
++                     hr_env);
++                c->hr_target = -1;
++            }
++            else if (v <= 0)
++                c->hr_target = -1;
++            else
++            {
++                if (v < 16)
++                {
++                    WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is below 16; using 16\n",
++                         hr_env);
++                    v = 16;
++                }
++                else if (errno == ERANGE || v > 8192)
++                {
++                    WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is above 8192; using 8192\n",
++                         hr_env);
++                    v = 8192;
++                }
++                c->hr_target = (int32_t)v;
++            }
++        }
 +    }
  #ifndef PIPEASIO_AUDIO_UNIXLIB
      atomic_init(&c->rt.ready, false);
  #endif
-@@ -514,6 +571,19 @@
+@@ -514,6 +607,19 @@
      if (c->registry)
          pw_registry_add_listener(c->registry, &c->registry_listener, &audio_registry_events, c);
  
@@ -114,7 +159,7 @@ diff --git a/src/audio.c b/src/audio.c
      pw_thread_loop_unlock(c->loop);
      audio_sync(c);
      /* A second sync drains the "default" metadata's initial property burst:
-@@ -551,6 +621,19 @@
+@@ -551,6 +657,19 @@
      if (c->active)
          audio_teardown_filter(c);
  
@@ -134,7 +179,7 @@ diff --git a/src/audio.c b/src/audio.c
      if (c->loop)
      {
          pw_thread_loop_lock(c->loop);
-@@ -1160,6 +1243,211 @@
+@@ -1160,6 +1279,239 @@
           cn ? cn->node_name : "?", pn ? pn->node_name : "?");
  }
  
@@ -148,9 +193,11 @@ diff --git a/src/audio.c b/src/audio.c
 + * follower's spare room (the ALSA property "api.alsa.headroom"), and put
 + * the old value back when the session ends or the devices change.  The
 + * property can be changed on a live node through its Props parameter;
-+ * verified against PipeWire 1.6.8.  Sessions on one device are never
-+ * touched.  PIPEASIO_FOLLOWER_HEADROOM picks the amount or turns this
-+ * off. */
++ * verified against PipeWire 1.6.8.  The one-reply cap this used to put
++ * on the Props enumeration hid the ALSA device's reply on PipeWire
++ * 1.5.85 (stock Pop!_OS 24.04), which is why the enumeration below
++ * asks for 16.  Sessions on one device are never touched.
++ * PIPEASIO_FOLLOWER_HEADROOM picks the amount or turns this off. */
 +
 +/* Send a device node a new buffer-room value. */
 +static void
@@ -305,10 +352,27 @@ diff --git a/src/audio.c b/src/audio.c
 +            s->node = want[w];
 +            pw_node_add_listener((struct pw_node *)s->proxy, &s->listener,
 +                                 &audio_hr_node_events, s);
-+            pw_node_enum_params((struct pw_node *)s->proxy, 0, SPA_PARAM_Props, 0, 1,
++            /* Ask for up to 16 replies, not one: behind WirePlumber's
++             * audio adapter the adapter's own Props object arrives first,
++             * and the ALSA device's object (with clock.name and
++             * api.alsa.headroom) comes after it; the param handler above
++             * accumulates across these events. */
++            pw_node_enum_params((struct pw_node *)s->proxy, 0, SPA_PARAM_Props, 0, 16,
 +                                NULL);
 +            break;
 +        }
++    }
++
++    /* When neither device sets the timing (the graph clock is a dummy
++     * driver), both look like followers; the message below then names the
++     * real clock instead of claiming each device follows the other. */
++    bool any_sets_timing = false;
++    for (int i = 0; i < 2; i++)
++    {
++        struct audio_hr_slot *s = &c->hr_slot[i];
++        if (s->node != SPA_ID_INVALID && s->probed && s->clock_name[0]
++            && !strcmp(s->clock_name, gclock))
++            any_sets_timing = true;
 +    }
 +
 +    /* Raise the device that is not setting the timing; undo the raise if
@@ -325,11 +389,20 @@ diff --git a/src/audio.c b/src/audio.c
 +            s->prev                   = s->cur_headroom;
 +            s->raised                 = true;
 +            audio_hr_set(s->proxy, c->hr_target);
-+            WARN("two audio devices are in use, and \"%s\" follows the other "
-+                 "one's clock; it got %d frames of buffer room (was %d) so "
-+                 "the adjustment stays silent (pipeasio-follower-headroom). "
-+                 "PIPEASIO_FOLLOWER_HEADROOM changes or disables this.\n",
-+                 n ? n->node_name : "?", c->hr_target, s->prev);
++            if (any_sets_timing)
++                WARN("two audio devices are in use, and \"%s\" follows the "
++                     "other one's clock; it got %d frames of buffer room "
++                     "(was %d) so the adjustment stays silent "
++                     "(pipeasio-follower-headroom). PIPEASIO_FOLLOWER_HEADROOM "
++                     "changes or disables this.\n",
++                     n ? n->node_name : "?", c->hr_target, s->prev);
++            else
++                WARN("two audio devices are in use, and \"%s\" follows the "
++                     "graph clock \"%s\", not the other device; it got %d "
++                     "frames of buffer room (was %d) so the adjustment stays "
++                     "silent (pipeasio-follower-headroom). "
++                     "PIPEASIO_FOLLOWER_HEADROOM changes or disables this.\n",
++                     n ? n->node_name : "?", gclock, c->hr_target, s->prev);
 +        }
 +        else if (sets_timing && s->raised)
 +        {
@@ -346,7 +419,7 @@ diff --git a/src/audio.c b/src/audio.c
  const char **
  audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *type_name_pattern,
                  uint64_t flags)
-@@ -1569,6 +1857,18 @@
+@@ -1569,6 +1893,18 @@
      if (quantum)
          atomic_store(&c->observed_quantum, quantum);
  
@@ -365,7 +438,7 @@ diff --git a/src/audio.c b/src/audio.c
      /* bufferSwitch and PipeWire must run at the same quantum.  While they
       * disagree, mute: publish silence and zero the input, so the audible
       * fault is silence plus one log line per episode instead of wrong-speed
-@@ -2062,6 +2362,9 @@
+@@ -2062,6 +2398,9 @@
                  c->chosen_node[0] = SPA_ID_INVALID;
              if (c->chosen_node[1] == id)
                  c->chosen_node[1] = SPA_ID_INVALID;

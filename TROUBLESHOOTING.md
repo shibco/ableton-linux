@@ -109,7 +109,7 @@ switches to that size, then audio comes back on its own. If it happens
 once, there is nothing to do.
 
 If it keeps happening, or audio plays too fast or too slow instead of
-coming back (releases up to 2026.08.01.1 do this), clear the stuck buffer
+coming back (releases up to 2026.08.04.1 do this), clear the stuck buffer
 size and restart Live:
 
 ```bash
@@ -120,26 +120,22 @@ If you still have problems, try rebooting. If they come back after that,
 run `./scripts/audio-report.sh` from a repository checkout and attach the
 output to an issue.
 
-## Live is slow and wineserver uses a full CPU core
+## Live is slow and CPU use stays high
 
-Without `/dev/ntsync`, every Windows synchronization wait becomes a
-wineserver round trip: measured at about 45 percent of one core and 9,000
-context switches per second with Live idle
-([details](notes/ABLETON-WINE-NTSYNC-REGRESSION.md)). The launcher warns at
-startup when the device is missing; `ls /dev/ntsync` checks by hand.
-
-`ntsync` ships in Linux 6.14 and newer. On a 6.14+ kernel, load the module
-and make the load permanent:
+Live runs much slower without a Linux feature called ntsync. The launcher
+warns at each startup while it is missing. Turn it on now and at every
+boot:
 
 ```bash
 sudo modprobe ntsync
 echo ntsync | sudo tee /etc/modules-load.d/90-ableton-ntsync.conf
 ```
 
-`setup-realtime.sh` installs the same drop-in. On kernels older than 6.14,
-or built without `CONFIG_NTSYNC`, move to a distribution kernel that
-provides the module. Relaunch Live to verify: the warning is gone. From a
-repository checkout, `./scripts/check-ntsync.sh` runs the full probe.
+Restart Live. The startup warning no longer appears.
+
+If the first command reports that the module does not exist, your kernel is
+too old. Install your distribution's newest kernel (6.14 or newer) and run
+the commands again.
 
 ## Audio latency remains high
 

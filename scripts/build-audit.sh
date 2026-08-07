@@ -139,15 +139,17 @@ FINGERPRINTS='
 0063|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.FileManager1
 0064|ascii|lib/wine/x86_64-unix/comdlg32.so|ShowFolders
 0064|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_open_folder
-pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
-pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
-pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-quantum-arbitration
-pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-any-buffer-size
-pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-quantum-converge
-pipeasio/0006|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clock-domains
-pipeasio/0007|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-follower-headroom
+pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
+pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
+pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
+pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
+pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-converge
+pipeasio/0006|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clock-domains
+pipeasio/0007|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-follower-headroom
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
+# Wine loads the unix half under the spec-file name pipeasio.dll.so, so the
+# fingerprints (and the readelf checks below) aim at that file.
 STAMP_ONLY='
 0002|logic-only (visible-rect gates; adds no string literal)
 0004|logic-only (reentrant wpchanged state)
@@ -261,14 +263,14 @@ if command -v readelf >/dev/null; then
         | grep -qF 'Shared library: [libusb-1.0.so.0]' \
         && ok "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0" \
         || bad "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0 not linked"
-    readelf -d "$tree/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null \
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
-        && ok "pipeasio64.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
-        || bad "pipeasio64.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
-    if readelf -d "$tree/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
-        bad "pipeasio64.dll.so rpath" "carries a build-container rpath"
+        && ok "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
+        || bad "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
+    if readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
+        bad "pipeasio.dll.so rpath" "carries a build-container rpath"
     else
-        ok "pipeasio64.dll.so rpath" "none (resolves via host loader)"
+        ok "pipeasio.dll.so rpath" "none (resolves via host loader)"
     fi
     readelf -d "$tree/lib/wine/x86_64-unix/winegstreamer.so" 2>/dev/null \
         | grep -qF 'Shared library: [libgstreamer-1.0.so.0]' \

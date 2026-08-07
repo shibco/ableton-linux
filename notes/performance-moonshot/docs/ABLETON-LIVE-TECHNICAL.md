@@ -50,7 +50,7 @@ Implication for Wine:
 - The audio thread's deadline is a few milliseconds (256 frames at 48 kHz is about 5.3 ms). Every synchronous wineserver call on an audio-pool thread is a deadline risk; ntsync coverage and any remaining server round trips in the APC path are the highest-leverage audio-stability targets (`notes/ABLETON-WINE-APC-COALESCING.md:31-47`).
 - Unverified: whether Wine maps Live's Windows thread-priority requests to Linux scheduling at all, and how that interacts with the launcher's blanket `SCHED_RR`. The scheduling note lists untested hypotheses: Linux's 950 ms/s realtime throttle, all inherited threads sharing RR 10, and Live's realtime threads outranking the `SCHED_OTHER` wineserver they make synchronous calls to (`notes/ABLETON-WINE-RT-SCHEDULING.md:30-42`).
 - Buffer size is the user's latency knob end to end: Live buffer, PipeASIO `PIPEASIO_PREFERRED_BUFFERSIZE`, PipeWire quantum. The chain already works (force-quantum follows the ASIO buffer), so Wine work here is validation, not plumbing (`notes/ABLETON-WINE-PIPEASIO.md:87-96`).
-- Export timing (tempo ramps) is clock-independent — export reads no audio device clock — so any remaining render difference points at math or engine evaluation order, not at scheduling (`notes/FINDINGS-TEMPO-RAMP-2026-07-31.md:36-41`).
+- Export timing (tempo ramps) is clock-independent (export reads no audio device clock), so any remaining render difference points at math or engine evaluation order, not at scheduling (`notes/FINDINGS-TEMPO-RAMP-2026-07-31.md:36-41`).
 
 ## Plugin hosting
 
@@ -95,7 +95,7 @@ How Live draws:
 
 Implication for Wine:
 
-- UI rendering is GPU-bound work travelling over Wine's d2d1/wined3d/dcomp stack — the reason this fork's base is giang17's d2d1-dcomp branch (`patches/BASE.txt:3-6`). The remaining known costs are the copy path for `WS_POPUP` and `WS_CHILD` windows and any frame that fails the 0058 agreement gate (`notes/ABLETON-WINE-GPU-RENDERER.md:78-86`, `notes/ABLETON-WINE-GPU-RENDERER.md:161-165`).
+- UI rendering is GPU-bound work travelling over Wine's d2d1/wined3d/dcomp stack, the reason this fork's base is giang17's d2d1-dcomp branch (`patches/BASE.txt:3-6`). The remaining known costs are the copy path for `WS_POPUP` and `WS_CHILD` windows and any frame that fails the 0058 agreement gate (`notes/ABLETON-WINE-GPU-RENDERER.md:78-86`, `notes/ABLETON-WINE-GPU-RENDERER.md:161-165`).
 - WebView2 is a second compositor inside the process, in software mode, versioned outside this project's control. An Evergreen update can regress the Learn and Splice views without any change in Wine or Live; the launcher records the WebView2 version for this reason (`notes/ABLETON-WINE-GPU-RENDERER-WEBVIEW2-DIAGNOSIS.md:186-189`).
 - DPI agreement between threads is a recurring root cause (resize loop, present-path black band). Patches 0023 and 0059 bracket rect queries in the target window's DPI context; any new present or resize code needs the same discipline (`notes/ABLETON-WINE-GPU-RENDERER.md:133-156`, `notes/ABLETON-WINE-PIANOTEQ-DPI-GHOST-BUG.md:31-37`).
 
@@ -110,13 +110,13 @@ How Max for Live works here:
 - M4L device windows come and go as Live children when tracks are selected. That visibility change flipped Wine's whole client surface between attached and offscreen-composited paths, flashing the window black; patch 0062 keeps the Live class on the offscreen path (`notes/ABLETON-WINE-M4L-SELECTION-FLICKER.md:11-22`, `notes/ABLETON-WINE-M4L-SELECTION-FLICKER.md:41-58`).
 - An open M4L editor window adds audio latency; Ableton recommends closing editors (https://help.ableton.com/hc/en-us/articles/209072289-How-to-reduce-latency).
 - Standalone Max 9 also runs under this Wine. The project ships a `max9` desktop entry and registers the `c74max:` URL scheme and the `.amxd` MIME type (`desktop/max9.desktop.in:1-11`, `desktop/wine-protocol-c74max.desktop.in:1-8`).
-- Threading trivia with operational impact: Live names 46 threads `MainThread`; identifying threads by name misled an earlier investigation (`notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md:225-228`).
+- Threading facts with operational impact: Live names 46 threads `MainThread`; identifying threads by name misled an earlier investigation (`notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md:225-228`).
 
 Implication for Wine:
 
-- Max inherits every Wine graphics and font defect Live hits, plus its own. The font deadlock shows a class of bug where Wine's honesty (reporting font failure that Windows hides) turns a Windows-latent defect into a Live hang. Similar Windows-lax behaviours elsewhere (font substitution, GDI mapper, EnumFontFamilies output) are worth auditing before chasing M4L reports (`notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md:182-197`).
+- Max inherits every Wine graphics and font defect Live hits, plus its own. The font deadlock shows a class of bug where Wine reports a font failure that Windows hides, turning a Windows-latent defect into a Live hang. Audit the similar Windows-lax behaviours elsewhere (font substitution, GDI mapper, EnumFontFamilies output) before chasing M4L reports (`notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md:182-197`).
 - The `WaitForVBlank` semi-stub means M4L devices with continuous redraw (meters, jsui) are paced by `Sleep(16)`, not by real vblank. Unverified: whether this costs UI smoothness or CPU in normal use; it is the known pacing point for all Max rendering (`notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md:86-88`).
-- Known upstream failure mode to keep in mind: Live freezing at "Starting Max..." is reported on other Wine builds (https://github.com/Frogging-Family/wine-tkg-git/issues/1226); this fork's font fix addresses one specific trigger, not the general class.
+- Known upstream failure mode: Live freezing at "Starting Max..." is reported on other Wine builds (https://github.com/Frogging-Family/wine-tkg-git/issues/1226); this fork's font fix addresses one specific trigger, not the general class.
 
 ## Link
 
@@ -196,7 +196,7 @@ Classes observed on this stack, with root cause and status. Signatures make them
 
 Reported upstream and elsewhere, for pattern matching:
 
-- wineserver using a full CPU core with Live 10, fixed by a patch (Wine bug 47281, https://bugs.winehq.org/show_bug.cgi?id=47281 — page content not re-verified; Bugzilla currently sits behind an anti-bot wall, summary per search index).
+- wineserver using a full CPU core with Live 10, fixed by a patch (Wine bug 47281, https://bugs.winehq.org/show_bug.cgi?id=47281; page content not re-verified; Bugzilla currently sits behind an anti-bot wall, summary per search index).
 - Live 12 severe graphical issues on default options; `-_ForceGdiBackend` workaround left Max devices' UIs frozen (Wine bug 57260, https://list.winehq.org/archives/list/wine-bugs@list.winehq.org/thread/DUN3WQJ4TUSHKDA37BVL3PELHXZD6BRP/).
 - Live 12 crashes opening sets saved in older versions, and M4L freezes (Wine bugs 56540 and 56537, https://list.winehq.org/hyperkitty/list/wine-bugs@list.winehq.org/thread/O2SD7WTZRJJPOQRWUBMG6CGACLCE6FPQ/).
 - Freeze at "Starting Max..." on wine-tkg (https://github.com/Frogging-Family/wine-tkg-git/issues/1226).

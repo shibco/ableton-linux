@@ -18,14 +18,14 @@ Already covered, so forks offering these add nothing:
 | Fork | Beyond upstream Wine | Targets | DAW relevance | Port difficulty |
 |---|---|---|---|---|
 | GE-Proton | Game fixes, media foundation, NVAPI, ntsync toggle | Games | Low | High |
-| wine-tkg / proton-tkg | Build system with perf patch toggles | Games | Medium (mechanism, some patches) | Low–medium |
-| wine-staging | ~100 experimental patch sets; a few perf-named | General + games | Medium | Low–medium |
+| wine-tkg / proton-tkg | Build system with perf patch toggles | Games | Medium (mechanism, some patches) | Low-medium |
+| wine-staging | ~100 experimental patch sets; a few perf-named | General + games | Medium | Low-medium |
 | Kron4ek Wine-Builds | Binaries; `-O3 -msse3` flags | General | Medium (flags only) | Trivial |
 | CachyOS proton-cachyos | Bleeding-edge Proton + winepipewire.drv + v3/LTO packaging | Games | Medium (audio driver) | Medium |
 | Valve Proton experimental | Per-game fixes, CPU topology, thread priorities | Games | Low (watch only) | High |
 | Proton-EM | winewayland.drv improvements | Games | Low (watch only) | High |
 | wine-wayland (upstream) | Native Wayland driver | General | Low in 2026 | Very high |
-| Wine-NSPA | RT/audio fork: PI, IPC, client-side NT, io_uring | Pro audio | Highest | Medium–high |
+| Wine-NSPA | RT/audio fork: PI, IPC, client-side NT, io_uring | Pro audio | Highest | Medium-high |
 | wine-rt / wineasio / yabridge | Historical RT patches; plugin bridge | Pro audio | Superseded / reference | n/a |
 | hangover / box64 | x86 on ARM64 emulation | ARM64 | None (x86-64 only) | n/a |
 
@@ -60,7 +60,7 @@ wine-staging is Wine's experimental patch queue, a staging area for work not yet
 | `shell32-IconCache`, `dxgi_getFrameStatistics` | Icon cache; DXGI frame statistics API | Low |
 | `dsound-EAX` | Positional audio for games | None |
 
-The APC set matters here. APC stands for asynchronous procedure call, a callback Windows queues onto a thread for delivery at its next alertable wait. Live's APC-coalescing thread burns 30–40% of a core at idle (`notes/ABLETON-WINE-APC-COALESCING.md:3`), and this repo has a written, unimplemented proposal to deliver same-process user APCs through the ntsync alert event instead of wineserver (`notes/ABLETON-WINE-APC-COALESCING.md:32-41`). Read `ntdll-APC_Performance` before writing that patch. Adoption difficulty for any staging set: low to medium; staging patches are formatted against the matching upstream Wine and this base is Wine 11.13 plus a fork's dcomp work, so context drift is the main risk.
+The APC set matters here. APC stands for asynchronous procedure call, a callback Windows queues onto a thread for delivery at its next alertable wait. Live's APC-coalescing thread burns 30-40% of a core at idle (`notes/ABLETON-WINE-APC-COALESCING.md:3`), and this repo has a written, unimplemented proposal to deliver same-process user APCs through the ntsync alert event instead of wineserver (`notes/ABLETON-WINE-APC-COALESCING.md:32-41`). Read `ntdll-APC_Performance` before writing that patch. Adoption difficulty for any staging set: low to medium; staging patches are formatted against the matching upstream Wine and this base is Wine 11.13 plus a fork's dcomp work, so context drift is the main risk.
 
 ## Kron4ek Wine-Builds: compiler flags, not patches
 
@@ -70,8 +70,8 @@ Kron4ek publishes vanilla, staging, staging-tkg, and proton-flavored Wine binari
 
 proton-cachyos tracks Valve's Proton experimental bleeding-edge, applies wine-staging, and imports winewayland.drv improvements from Proton-EM (https://github.com/CachyOS/proton-cachyos/releases, May 2026 entry). Two items stand out for an audio workload:
 
-- `winepipewire.drv`, a native PipeWire backend for mmdevapi (the standard Windows audio API above ASIO), enabled by default, with a documented note that full `+pipewire` tracing perturbs audio timing (https://github.com/CachyOS/proton-cachyos). This repo serves Live through PipeASIO, but an mmdevapi-level PipeWire path covers everything that is not ASIO.
-- Distro-level optimization: CachyOS rebuilds packages for x86-64-v3/v4 with LTO (https://wiki.cachyos.org/features/optimized_repos/). wine-cachyos exists as a separate build with ntsync support (https://discuss.cachyos.org/t/ntsync-in-latest-proton-cachyos-wine-cachyos/5254); its exact patch list is Unverified — the repository README is the stock Wine README (https://github.com/CachyOS/wine-cachyos).
+- `winepipewire.drv`, a native PipeWire backend for mmdevapi (the standard Windows audio API above ASIO), enabled by default, with a documented warning that full `+pipewire` tracing perturbs audio timing (https://github.com/CachyOS/proton-cachyos). This repo serves Live through PipeASIO, but an mmdevapi-level PipeWire path covers everything that is not ASIO.
+- Distro-level optimization: CachyOS rebuilds packages for x86-64-v3/v4 with LTO (https://wiki.cachyos.org/features/optimized_repos/). wine-cachyos exists as a separate build with ntsync support (https://discuss.cachyos.org/t/ntsync-in-latest-proton-cachyos-wine-cachyos/5254); its exact patch list is Unverified: the repository README is the stock Wine README (https://github.com/CachyOS/wine-cachyos).
 
 Relevance: medium. Adoption difficulty: medium for winepipewire.drv (one driver, new code rather than a conflict with the existing series), trivial for the compiler-flag idea.
 
@@ -79,7 +79,7 @@ Relevance: medium. Adoption difficulty: medium for winepipewire.drv (one driver,
 
 Proton 11.0-1 rebased on Wine 11.0 and ships updated DXVK, vkd3d-proton, and Wine Mono; Proton experimental tracks it plus per-game fixes, current as of 2026-07-28 (https://github.com/ValveSoftware/Proton/wiki/Changelog). ntsync is the headline sync change: SteamOS 3.7.20 loads the ntsync module by default (https://www.phoronix.com/news/Steam-OS-Beta-NTSYNC, https://www.gamingonlinux.com/2026/01/steamos-3-7-20-adds-the-ntsync-driver-to-help-improve-some-game-performance/), and Proton 11 brings it to the Steam ecosystem (https://www.tweaktown.com/news/111106/valves-proton-11-beta-unlocks-more-playable-games-and-boosts-performance-for-steam-deck-and-linux-fans/index.html).
 
-Three Proton changelog entries touch thread and CPU behavior rather than games: "Fixed Proton not setting priorities correctly for new threads" (9.0-4), "Fixed CPU topology override issues on machines with more than 32 logical cores" (10.0-1), and per-game core-count limits for old titles (9.0-1) (all: https://github.com/ValveSoftware/Proton/wiki/Changelog). Relevance: low for adoption — the fork's delta from mainline is huge and Steam-runtime-bound — but it is the fastest-moving public consumer of Wine 11 sync work. Treat it as an early-warning feed.
+Three Proton changelog entries touch thread and CPU behavior rather than games: "Fixed Proton not setting priorities correctly for new threads" (9.0-4), "Fixed CPU topology override issues on machines with more than 32 logical cores" (10.0-1), and per-game core-count limits for old titles (9.0-1) (all: https://github.com/ValveSoftware/Proton/wiki/Changelog). Relevance: low for adoption (the fork's delta from mainline is huge and Steam-runtime-bound), but it is the fastest-moving public consumer of Wine 11 sync work. Treat it as an early-warning feed.
 
 ## Proton-EM: where Wayland fixes land first
 
@@ -89,13 +89,13 @@ Proton-EM is Etaash Mathamsetty's Proton fork carrying winewayland.drv improveme
 
 The upstream Wayland driver is improving but still acquiring windowing basics in mid-2026: Wine 11.0 shipped "better Wine Wayland driver support" (https://www.phoronix.com/news/Wine-11.0-Released), Wine 11.11 added layered windows and min/max size hints (https://www.phoronix.com/news/Wine-11.11-Released), Wine 11.12 added fractional scaling (https://www.phoronix.com/linux/WINE news archive, 29 June 2026 entry), and alpha-modifier support landed the same month (https://www.phoronix.com/news/Wine-Wayland-Alpha-Modifier). Downstream consumers still treat it as experimental: proton-cachyos documents white-window failures for CEF/Electron apps and notes Proton 11 removed Proton 10's automated Wayland hacks (https://github.com/CachyOS/proton-cachyos); GE-Proton notes Steam overlay and Steam Input do not work with the driver (https://github.com/GloriousEggroll/proton-ge-custom).
 
-This project's series is deeply winex11-shaped — winex11 changes run through patches 0002–0017 and recur at 0039, 0042, 0053, and 0062 (`patches/BASE.txt:14` and the per-patch provenance list) — and Live's validated configuration is XWayland (see the resize and menu notes under `notes/`). Migration would port or discard most of that work for an unclear gain. Verdict: keep winex11; re-check the driver after it stops landing per-release windowing basics.
+This project's series is deeply winex11-shaped: winex11 changes run through patches 0002-0017 and recur at 0039, 0042, 0053, and 0062 (`patches/BASE.txt:14` and the per-patch provenance list), and Live's validated configuration is XWayland (see the resize and menu notes under `notes/`). Migration would port or discard most of that work for an unclear gain. Verdict: keep winex11; re-check the driver after it stops landing per-release windowing basics.
 
 ## Wine-NSPA: the pro-audio fork to mine
 
-Wine-NSPA (nine7nine) is a PREEMPT_RT-focused fork of Wine 11.8 for pro audio — PREEMPT_RT is the kernel patch set that makes Linux fully preemptible for real-time workloads (https://github.com/nine7nine/Wine-NSPA). Its documented work, per the README's architecture index and status:
+Wine-NSPA (nine7nine) is a PREEMPT_RT-focused fork of Wine 11.8 for pro audio: PREEMPT_RT is the kernel patch set that makes Linux fully preemptible for real-time workloads (https://github.com/nine7nine/Wine-NSPA). Its documented work, per the README's architecture index and status:
 
-- Priority inheritance (PI) for `CRITICAL_SECTION` and Win32 condition variables, via a bundled librtpi re-implementation. PI temporarily raises a lock holder's priority to prevent priority inversion — directly relevant to this repo's noted risk that Live's real-time threads outrank the `SCHED_OTHER` wineserver they synchronously call (`notes/ABLETON-WINE-RT-SCHEDULING.md:15-20`).
+- Priority inheritance (PI) for `CRITICAL_SECTION` and Win32 condition variables, via a bundled librtpi re-implementation. PI temporarily raises a lock holder's priority to prevent priority inversion: directly relevant to this repo's noted risk that Live's real-time threads outrank the `SCHED_OTHER` wineserver they synchronously call (`notes/ABLETON-WINE-RT-SCHEDULING.md:15-20`).
 - A kernel-mediated wineserver IPC layer ("gamma channel dispatcher") with aggregate-wait and burst drain, plus a kernel-side ntsync PI overlay in the companion Linux-NSPA kernel (https://github.com/nine7nine/Linux-NSPA-pkgbuild).
 - Client-side NT surfaces: local events, local timers, local files, local sections, and thread/process shared-state readers that turn some waits into "zero-time" waits without a wineserver round trip.
 - `io_uring` (Linux's shared-ring async I/O interface) for file and socket I/O.
@@ -104,13 +104,13 @@ Wine-NSPA (nine7nine) is a PREEMPT_RT-focused fork of Wine 11.8 for pro audio �
 - Audio: winejack and nspaASIO drivers; embedding protocols that let winelib hosts (winelib is Wine's library for building Unix applications against the Win32 API) embed Wine HWND plugin editors over X11 or Wayland; a Yabridge-NSPA bridge fork.
 - Stated validation: native ntsync suite 3 PASS / 0 FAIL, PE matrix 32 PASS / 0 FAIL / 0 TIMEOUT (`v9-validation-default`).
 
-This is the only surveyed fork built for the same workload class as this project, and the relationship already exists: patches 0002–0003 here are winex11 changes from nine7nine/wine-nspa-src commits (`patches/BASE.txt:34-36`). Community reports also credit the Wine-NSPA ecosystem's Ableton Options.txt tuning with large CPU reductions under Wine (https://github.com/nine7nine/Wine-NSPA/issues/4). Two cautions. First, the 11.x repository publishes "design, architecture, and validation documentation"; whether full 11.x sources or patch files are public is Unverified — verify before planning ports. Second, several items (kernel IPC overlay, PI ntsync) assume the custom Linux-NSPA kernel, which this project does not ship; the client-side items (message ring, empty-poll caching, local events/timers, `mlockall`) are the portable subset. Adoption difficulty: medium-high per item, high for the kernel-dependent items.
+This is the only surveyed fork built for the same workload class as this project, and the relationship already exists: patches 0002-0003 here are winex11 changes from nine7nine/wine-nspa-src commits (`patches/BASE.txt:34-36`). Community reports also credit the Wine-NSPA ecosystem's Ableton Options.txt tuning with large CPU reductions under Wine (https://github.com/nine7nine/Wine-NSPA/issues/4). Two cautions. First, the 11.x repository publishes "design, architecture, and validation documentation"; whether full 11.x sources or patch files are public is Unverified. Verify before planning ports. Second, several items (kernel IPC overlay, PI ntsync) assume the custom Linux-NSPA kernel, which this project does not ship; the client-side items (message ring, empty-poll caching, local events/timers, `mlockall`) are the portable subset. Adoption difficulty: medium-high per item, high for the kernel-dependent items.
 
 ## wine-rt, wineasio, yabridge: the real-time lineage
 
 - wine-rt: a 2013-era patch that gave Wine threads `SCHED_FIFO` via the `WINE_RT` environment variable (https://github.com/PlayOnLinux/wine-patches/blob/master/custom/RealTime/rt.patch); KXStudio shipped an rt-patched Wine for audio work (https://forum.winehq.org/viewtopic.php?t=32742). Superseded by this repo's launcher-level `chrt` policy (`notes/ABLETON-WINE-RT-SCHEDULING.md:1-11`). Nothing to adopt.
 - wineasio: the classic ASIO-to-JACK driver. This project ships PipeASIO instead (see `notes/ABLETON-WINE-PIPEASIO.md`). Nothing to adopt.
-- yabridge: runs Windows VST2/VST3/CLAP plugins in Wine for native Linux hosts, bridging over shared memory and UNIX sockets with under 1 ms added latency in one 2026 account (https://bonnef.in/posts/linux-music-production/, project at https://github.com/robbert-vdh/yabridge). Live loads plugins in-process here, so the bridge is not needed; its Yabridge-NSPA fork is worth tracking as a bellwether for Wine-NSPA's RT rules.
+- yabridge: runs Windows VST2/VST3/CLAP plugins in Wine for native Linux hosts, bridging over shared memory and UNIX sockets with under 1 ms added latency in one 2026 account (https://bonnef.in/posts/linux-music-production/, project at https://github.com/robbert-vdh/yabridge). Live loads plugins in-process here, so the bridge is not needed; track its Yabridge-NSPA fork as an early indicator of Wine-NSPA's RT rules.
 
 ## hangover and box64: out of scope
 
@@ -118,8 +118,8 @@ hangover pairs Wine with the FEX or Box64 emulators to run x86 Windows applicati
 
 ## Key opportunities
 
-1. **Mine Wine-NSPA's portable client-side work** — message ring, empty-poll caching, local events/timers, shared-state waits, `mlockall` — as individual patches, starting with whichever maps to the largest measured wineserver load. Impact: high. Effort: high. Evidence: https://github.com/nine7nine/Wine-NSPA (documented highlights); existing port precedent at `patches/BASE.txt:34-36`.
-2. **Read wine-staging's `ntdll-APC_Performance` before implementing the proposed same-process APC bypass.** Impact: high (targets a measured 30–40% idle core and suspected playback xruns). Effort: medium. Evidence: `notes/ABLETON-WINE-APC-COALESCING.md:3` and `:32-41`; patch set listed at https://github.com/wine-staging/wine-staging/tree/master/patches.
+1. **Mine Wine-NSPA's portable client-side work** (message ring, empty-poll caching, local events/timers, shared-state waits, `mlockall`) as individual patches, starting with whichever maps to the largest measured wineserver load. Impact: high. Effort: high. Evidence: https://github.com/nine7nine/Wine-NSPA (documented highlights); existing port precedent at `patches/BASE.txt:34-36`.
+2. **Read wine-staging's `ntdll-APC_Performance` before implementing the proposed same-process APC bypass.** Impact: high (targets a measured 30-40% idle core and suspected playback xruns). Effort: medium. Evidence: `notes/ABLETON-WINE-APC-COALESCING.md:3` and `:32-41`; patch set listed at https://github.com/wine-staging/wine-staging/tree/master/patches.
 3. **Benchmark an `-O3 -march=x86-64-v3` build against the current default-flags build.** Impact: medium. Effort: low. Evidence: no `CFLAGS`/`-march` in `scripts/container-build.sh:53-56`; Kron4ek ships `-O3 -msse3` (https://github.com/Kron4ek/Wine-Builds); CachyOS ships v3/v4+LTO repos (https://wiki.cachyos.org/features/optimized_repos/).
 4. **Audit Windows thread-priority mapping against the launcher's `SCHED_RR` inheritance, and check whether Proton's new-thread priority fix has an upstream equivalent.** Impact: medium. Effort: medium. Evidence: "Fixed Proton not setting priorities correctly for new threads" (https://github.com/ValveSoftware/Proton/wiki/Changelog, 9.0-4); priority-inversion risk noted at `notes/ABLETON-WINE-RT-SCHEDULING.md:15-20`.
 5. **Evaluate proton-cachyos' `winepipewire.drv` as an mmdevapi-level PipeWire reference for non-ASIO audio paths.** Impact: low. Effort: medium. Evidence: enabled by default with latency-tuning notes at https://github.com/CachyOS/proton-cachyos.

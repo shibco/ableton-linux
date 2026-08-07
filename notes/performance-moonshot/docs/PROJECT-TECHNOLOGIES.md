@@ -354,14 +354,14 @@ DSP load is Live's own audio-engine utilization meter.
   beta/scripts/ableton-linux-profiler.sh:1-3).
 - `tools/` holds about 40 diagnostic utilities: PE probes built like Wine's
   own PE modules (swamprobe, liveinject, midihot, linkprobe, mousespy,
-  setsyscolors, learnheal, webviewclose, metricprobe2 — the nine with
+  setsyscolors, learnheal, webviewclose, metricprobe2; the nine with
   `build_*.sh` scripts), plus X11-side helpers (xmon, xdrag, xclose, ukey,
   uidrag) and one-off probes without build scripts. `tools/m4l-hang-capture.sh`
   and `tools/m4l-font-audit.py` target Max for Live stalls.
 
-Why it matters: the bench harness defines the project's evidence standard —
-every moonshot claim needs a committed before/after pair — but the automated
-metrics cover only wined3d_cs CPU and wineserver context switches.
+Why it matters: the bench harness defines the project's evidence standard
+(every moonshot claim needs a committed before/after pair), but the
+automated metrics cover only wined3d_cs CPU and wineserver context switches.
 
 ## Gaps and unknowns
 

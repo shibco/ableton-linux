@@ -22,7 +22,7 @@ One table per category. Columns:
 
 ## Terms used in this document
 
-- **Non-client (NC) area**: the window zone outside the app's drawing area — title bar, borders, menu band. Live draws its own, which is why so many patches touch it.
+- **Non-client (NC) area**: the window zone outside the app's drawing area: title bar, borders, menu band. Live draws its own, which is why so many patches touch it.
 - **MWM / Motif hints**: X11 properties that tell the window manager which decorations and buttons a window wants.
 - **Frame extents**: the `_NET_FRAME_EXTENTS` X11 property reporting the window manager's frame thickness.
 - **Override-redirect**: an X11 window the window manager ignores; Wine uses it for popup menus.
@@ -41,8 +41,8 @@ The largest category. Most entries fight window-growth loops, double frames, or 
 
 | Patch | Purpose | Relevance | Origin | Note |
 |---|---|---|---|---|
-| 0002 NSPA visible-rect + decoration gates | Moves the window==client check after the style-mask lookup so custom-NC apps still get decoration masking; stops a 4 px/frame growth loop (Wine bug 57955) | stability | Experimental — from nine7nine/wine-nspa-src (`patches/BASE.txt:34-36`) | `notes/ABLETON-WINE-REBASE-11.13.md:21` (bug 57955 open as of 2026-07-17; current status Unverified — bugs.winehq.org was not reachable for re-check) |
-| 0003 NSPA 1c frame extents + reentrancy | Frame-extents handling, reentrancy suppression, ncsize guard; fixes the winex11 atom enum order locally | stability | Experimental — nine7nine plus local fix (`patches/BASE.txt:34-36`) | same as 0002 |
+| 0002 NSPA visible-rect + decoration gates | Moves the window==client check after the style-mask lookup so custom-NC apps still get decoration masking; stops a 4 px/frame growth loop (Wine bug 57955) | stability | Experimental, from nine7nine/wine-nspa-src (`patches/BASE.txt:34-36`) | `notes/ABLETON-WINE-REBASE-11.13.md:21` (bug 57955 open as of 2026-07-17; current status Unverified: bugs.winehq.org was not reachable for re-check) |
+| 0003 NSPA 1c frame extents + reentrancy | Frame-extents handling, reentrancy suppression, ncsize guard; fixes the winex11 atom enum order locally | stability | Experimental, nine7nine plus local fix (`patches/BASE.txt:34-36`) | same as 0002 |
 | 0004 GNOME per-thread reentrant state | Makes reentrant-WM_WINDOWPOSCHANGED state per-thread (menu wedge race); drops MWM decor for custom-NC windows | stability | Local (`patches/BASE.txt:37-38`); plausibly upstreamable, general reentrancy bug | BASE |
 | 0005 no frame allowance for custom-NC | Removes the white rim around Live's modal dialogs | correctness | Local; Live-specific visual fix | BASE |
 | 0006 disable frame-extents reconstruction | Stops comdlg32 dialogs landing off-screen at high DPI | stability | Local workaround; later reverted and re-instated by 0008/0009 | `notes/ABLETON-WINE-RESIZE-BUG.md` |
@@ -67,8 +67,8 @@ One Wine patch and the two PipeASIO driver patches. No patch touches Wine's audi
 | Patch | Purpose | Relevance | Origin | Note |
 |---|---|---|---|---|
 | 0021 mmdevapi FriendlyName re-wrap | Stops wrapping a stored endpoint FriendlyName again on every reload; the multi-level names crashed or hung Live's device enumeration | stability | Local; upstreamable, general bug | `notes/ABLETON-WINE-AUDIO-CRASH-BUG.md` |
-| pipeasio 0001 keep graph sample rate | Reports success at the PipeWire graph rate instead of ASE_NoClock; Live treated the refusal as fatal and crash-looped on fresh installs (`patches/pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch:14-30`) | stability | Experimental — downstream patch to vendored PipeASIO 1.2.2 | `notes/ABLETON-WINE-PIPEASIO.md` |
-| pipeasio 0002 timeGetTime systemTime | Reports `timeGetTime()` as the ASIO systemTime so Live stops dropping live-played MIDI as out of window (`patches/pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch:17`) | correctness | Experimental — downstream PipeASIO patch | `notes/ABLETON-WINE-PIPEASIO.md` |
+| pipeasio 0001 keep graph sample rate | Reports success at the PipeWire graph rate instead of ASE_NoClock; Live treated the refusal as fatal and crash-looped on fresh installs (`patches/pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch:14-30`) | stability | Experimental, downstream patch to vendored PipeASIO 1.2.2 | `notes/ABLETON-WINE-PIPEASIO.md` |
+| pipeasio 0002 timeGetTime systemTime | Reports `timeGetTime()` as the ASIO systemTime so Live stops dropping live-played MIDI as out of window (`patches/pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch:17`) | correctness | Experimental, downstream PipeASIO patch | `notes/ABLETON-WINE-PIPEASIO.md` |
 
 ## MIDI and input
 
@@ -93,7 +93,7 @@ The second-largest category. It holds the fork's DirectComposition reblit machin
 
 | Patch | Purpose | Relevance | Origin | Note |
 |---|---|---|---|---|
-| 0001 sashaduke redraw patchset | Implements dcomp/dxgi frame statistics, refresh-rate-aware WaitForVBlank, refresh-rate fallback in swapchain descs, color-space semi-stubs, `WINED3D_DCOMP_FORCE_FULL_REDRAW`, and cs.c assert relaxations | performance + stability | Experimental — third-party patchset from sashaduke/ableton-live12-linux (`patches/BASE.txt:32-33`) | `notes/ABLETON-WINE-GPU-RENDERER-WEBVIEW2-DIAGNOSIS.md` |
+| 0001 sashaduke redraw patchset | Implements dcomp/dxgi frame statistics, refresh-rate-aware WaitForVBlank, refresh-rate fallback in swapchain descs, color-space semi-stubs, `WINED3D_DCOMP_FORCE_FULL_REDRAW`, and cs.c assert relaxations | performance + stability | Experimental, third-party patchset from sashaduke/ableton-live12-linux (`patches/BASE.txt:32-33`) | `notes/ABLETON-WINE-GPU-RENDERER-WEBVIEW2-DIAGNOSIS.md` |
 | 0016 orphaned dcomp target subclass | Keeps the window's true original wndproc; an orphaned subclass swallowed all mouse input on JUCE D2D editors | stability | Local; flagged upstreamable (`notes/ABLETON-WINE-INPUT-BUG.md:93`) | `notes/ABLETON-WINE-INPUT-BUG.md` |
 | 0020 sRGB pixel formats on EGL | Advertises and honors sRGB-capable formats; baseview/nih-plug editors aborted Live without one | stability | Local; upstreamable | `notes/ABLETON-WINE-INPUT-BUG.md` |
 | 0022 reblit timer stops forcing Present | Timer ticks signal the frame-latency event and refresh from the comp buffer instead of forcing a Present | performance | Local; experimental, fork-specific reblit design | BASE (`patches/BASE.txt:37-38` range; message at `patches/0022-dxgi-stop-forcing-swapchain-presents-from-the-dcomp-.patch:1`) |
@@ -117,8 +117,8 @@ The second-largest category. It holds the fork's DirectComposition reblit machin
 | 0023 present/resize rects in window's DPI context | Brackets the present-time client-rect queries with the window's own DPI awareness context | correctness | Local; upstreamable | `notes/ABLETON-WINE-PIANOTEQ-DPI-GHOST-BUG.md:32-35` |
 | 0024 present/resize DPI diagnostics at trace | Demotes the PRESENT-DBG/RESIZE-DBG probes from fixme to trace | correctness | Local; fork diagnostics, not for upstream | `notes/ABLETON-WINE-PIANOTEQ-DPI-GHOST-BUG.md:37-38` |
 | 0029 menu bar SM_CYMENU + 4 | Lays out the menu band 4 px taller so NCCALCSIZE matches Live's outer-rect model at 96 DPI | correctness | Local; Live-specific geometry matching | `notes/ABLETON-WINE-DPI-SCALE-100.md` (per `patches/BASE.txt:43-45`) |
-| 0040 scale menu band with menu DPI | Makes the band max(4, muldiv(4, dpi, 96) − 1); the resize negotiation converges in one pass at 125–200% | stability + correctness | Local; Live-specific geometry matching | `notes/ABLETON-WINE-DPI-SCALE-100.md`, `notes/FINDINGS-RESIZE-GROWTH-2026-07-21.md` |
-| 0042 alias sub-scale WM config rounding | Treats sub-scale grant/request differences as compositor rounding instead of feeding them to Win32; stops the 2 px/cycle growth and answers in-band requests locally, removing one request per pointer motion during drags | stability + performance | Adapted from ENCORE (`patches/BASE.txt:86-90`); experimental workaround — an upstream *report* is drafted, not a patch | `notes/FINDINGS-RESIZE-GROWTH-2026-07-21.md`, `notes/ABLETON-WINE-DPI-SCALE-100.md`, `notes/ABLETON-WINE-RESIZE-BUG.md`, `notes/UPSTREAM-ISSUE-DRAFT-RESIZE-PARITY.md`, `notes/ABLETON-WINE-ENCORE-REVIEW.md` |
+| 0040 scale menu band with menu DPI | Makes the band max(4, muldiv(4, dpi, 96) − 1); the resize negotiation converges in one pass at 125-200% | stability + correctness | Local; Live-specific geometry matching | `notes/ABLETON-WINE-DPI-SCALE-100.md`, `notes/FINDINGS-RESIZE-GROWTH-2026-07-21.md` |
+| 0042 alias sub-scale WM config rounding | Treats sub-scale grant/request differences as compositor rounding instead of feeding them to Win32; stops the 2 px/cycle growth and answers in-band requests locally, removing one request per pointer motion during drags | stability + performance | Adapted from ENCORE (`patches/BASE.txt:86-90`); experimental workaround (an upstream *report* is drafted, not a patch) | `notes/FINDINGS-RESIZE-GROWTH-2026-07-21.md`, `notes/ABLETON-WINE-DPI-SCALE-100.md`, `notes/ABLETON-WINE-RESIZE-BUG.md`, `notes/UPSTREAM-ISSUE-DRAFT-RESIZE-PARITY.md`, `notes/ABLETON-WINE-ENCORE-REVIEW.md` |
 
 ## Portals and desktop integration
 
@@ -139,7 +139,7 @@ All five serve the native win32 menu chrome that the launcher themes to match Li
 | 0050 invalidate sys-color cache on WM_SYSCOLORCHANGE | Re-reads colors and frees cached brushes/pens when another process calls SetSysColors | correctness | Local; upstreamable | `notes/ABLETON-WINE-MENU-COLOR-THEMING.md:139,226`, `notes/FINDINGS-LIVE-THEME-PREVIEW-SIGNAL-2026-07-26.md` |
 | 0051 SetSysColors repaints non-client area | Adds RDW_FRAME to the forced repaint so menu bars and captions follow | correctness | Local; upstreamable | `notes/ABLETON-WINE-MENU-COLOR-THEMING.md:151,227` |
 | 0052 hide menu-bar mnemonic underlines | Hides the alt-key underlines real Windows only shows after Alt; also makes the dead DT_HIDEPREFIX flag actually work in user32 | correctness | Mixed: the DT_HIDEPREFIX gating fix is upstreamable; hiding the underlines is a style choice (`patches/BASE.txt:138-148`) | `notes/ABLETON-WINE-MENU-COLOR-THEMING.md:196,228` |
-| 0054 linked-font fallback for menu glyphs | Falls back to SystemLink families when the Ableton Sans substitute lacks a glyph; measures with the same fallback font | correctness | Local; experimental — whole-string swap trade-off recorded in the commit message | `notes/ABLETON-WINE-MENU-FONT-FALLBACK.md` |
+| 0054 linked-font fallback for menu glyphs | Falls back to SystemLink families when the Ableton Sans substitute lacks a glyph; measures with the same fallback font | correctness | Local; experimental (whole-string swap trade-off recorded in the commit message) | `notes/ABLETON-WINE-MENU-FONT-FALLBACK.md` |
 
 ## Live-specific workarounds
 
@@ -147,9 +147,9 @@ Patches that exist only because of Live's behavior or hardware.
 
 | Patch | Purpose | Relevance | Origin | Note |
 |---|---|---|---|---|
-| 0032 host USB bridge for Push 2 | Exports the 16-function Win64 libusb 1.0.23 ABI so Push2DisplayProcess.exe drives the Push 2 display through host libusb | stability | Experimental — helper-scoped bridge, i386 half disabled (`patches/BASE.txt:52-55`) | `notes/ABLETON-WINE-PUSH2-DISPLAY.md` |
+| 0032 host USB bridge for Push 2 | Exports the 16-function Win64 libusb 1.0.23 ABI so Push2DisplayProcess.exe drives the Push 2 display through host libusb | stability | Experimental, helper-scoped bridge, i386 half disabled (`patches/BASE.txt:52-55`) | `notes/ABLETON-WINE-PUSH2-DISPLAY.md` |
 | 0033 WINE_DISABLE_UNIX_MOUNT_REPARSE | Reports Unix mount points as plain directories; Live's browser omitted folders behind unresolvable junctions | correctness | From ENCORE (`patches/BASE.txt:56-58`); experimental environment-variable workaround | `notes/ABLETON-WINE-ENCORE-REVIEW.md` |
-| 0062 keep a selected top-level class offscreen | `WINE_X11_FORCE_OFFSCREEN_CLASS` pins Live's main window class on the offscreen path; M4L track selection no longer unmaps/reparents the whole client (black flash) | stability | Local; experimental — environment variable with an exact class name | `notes/ABLETON-WINE-M4L-SELECTION-FLICKER.md` |
+| 0062 keep a selected top-level class offscreen | `WINE_X11_FORCE_OFFSCREEN_CLASS` pins Live's main window class on the offscreen path; M4L track selection no longer unmaps/reparents the whole client (black flash) | stability | Local; experimental (environment variable with an exact class name) | `notes/ABLETON-WINE-M4L-SELECTION-FLICKER.md` |
 
 ## Misc: shell, OLE, and build maintenance
 
@@ -167,9 +167,9 @@ These systems already cover performance ground without being Wine patches. Later
 
 | System | What it does | Evidence |
 |---|---|---|
-| ntsync (kernel fast path for NT synchronization) | The build vendors `linux/ntsync.h` and fails if either runtime half is missing. Without it every NT wait crosses wineserver: ~45% of one core idle and ~9,000 context switches/s; restoring it gave 4–50× synchronization throughput | `notes/ABLETON-WINE-NTSYNC-REGRESSION.md:3-14`, `vendor/ntsync-uapi/` |
+| ntsync (kernel fast path for NT synchronization) | The build vendors `linux/ntsync.h` and fails if either runtime half is missing. Without it every NT wait crosses wineserver: ~45% of one core idle and ~9,000 context switches/s; restoring it gave 4-50× synchronization throughput | `notes/ABLETON-WINE-NTSYNC-REGRESSION.md:3-14`, `vendor/ntsync-uapi/` |
 | Real-time scheduling | The launcher starts Wine under `SCHED_RR` priority 10 when permitted; PipeASIO requests `SCHED_FIFO` 15 for its data-loop thread | `notes/ABLETON-WINE-RT-SCHEDULING.md:3-5,16-17` |
-| Live GPU renderer enablement | `setup-prefix.sh` removes `-_ForceGdiBackend` so Live uses its Direct2D/D3D11 renderer; idle CPU dropped from ~59% of one core to 1–2% | `notes/ABLETON-WINE-GPU-RENDERER.md:8-9,28-29` |
+| Live GPU renderer enablement | `setup-prefix.sh` removes `-_ForceGdiBackend` so Live uses its Direct2D/D3D11 renderer; idle CPU dropped from ~59% of one core to 1-2% | `notes/ABLETON-WINE-GPU-RENDERER.md:8-9,28-29` |
 | PipeASIO driver | Native PipeWire ASIO client; replaced WineASIO and removed JACK from Live's audio path in release 2026.07.17.2 | `notes/ABLETON-WINE-PIPEASIO.md:3-4` |
 | Ableton Link | Live joins Link through Wine's unmodified network stack; a native daemon (`tools/ableton-linkd.cpp`) holds the session across restarts | `notes/ABLETON-WINE-LINK-FIRSTCLASS.md:11`, `notes/ABLETON-WINE-LINK.md` |
 | APC coalescing fix | Proposal only. Unimplemented: the `-DontCombineAPCs` experiment was reverted and current releases strip it | `notes/ABLETON-WINE-APC-COALESCING.md:9,77-79` |
