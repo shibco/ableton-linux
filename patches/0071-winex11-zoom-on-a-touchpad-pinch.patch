@@ -1,0 +1,220 @@
+Subject: winex11: zoom on a touchpad pinch
+
+Wine reports touchpad input as pointer and wheel events only. A pinch
+reaches the X server as an XInput2 gesture, which winex11 never selects, so
+the gesture is dropped and Live has no zoom on a trackpad other than
+Ctrl+scroll (issue 64).
+
+Select XI_GesturePinchBegin, XI_GesturePinchUpdate and XI_GesturePinchEnd on
+each top-level window, next to the touch events already selected there, and
+report the scale change as Ctrl+wheel at the pointer. This is the input a
+Windows precision touchpad produces for a pinch its application does not
+handle itself, so applications that zoom on Ctrl+wheel need no change.
+
+A whole wheel notch stands for a 1.1x scale change, but a pinch reports its
+scale many times a second, so each report is worth a fraction of one and is
+sent as that fraction: WHEEL_DELTA is a unit, not a minimum, and an
+application that follows the amount rather than counting messages zooms
+continuously instead of in steps. The running scale is tracked across the
+gesture rather than per event, so slow and fast pinches of the same size are
+worth the same amount of wheel. WINE_X11_PINCH_ZOOM=notch rounds to whole
+notches for an application that ignores the rest.
+
+Gesture events need XInput2 version 2.4. The server refuses to select them
+for a client that asked for less, so the version request only rises to 2.4
+when the feature is wanted, and stays at 2.2 under WINE_X11_PINCH_ZOOM=off.
+An X server without 2.4 warns and behaves as before. Headers without the
+gesture definitions compile the path out.
+---
+ dlls/winex11.drv/mouse.c | 133 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 133 insertions(+)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 014b4a7..c0cb010 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -129,6 +129,9 @@ static Cursor create_cursor( HANDLE handle );
+ #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+ static BOOL xinput2_available;
+ static BOOL broken_rawevents;
++#ifdef XI_GesturePinchBegin
++static BOOL xinput2_gestures;
++#endif
+ #define MAKE_FUNCPTR(f) static typeof(f) * p##f
+ MAKE_FUNCPTR(XIGetClientPointer);
+ MAKE_FUNCPTR(XIFreeDeviceInfo);
+@@ -136,6 +139,49 @@ MAKE_FUNCPTR(XIQueryDevice);
+ MAKE_FUNCPTR(XIQueryVersion);
+ MAKE_FUNCPTR(XISelectEvents);
+ #undef MAKE_FUNCPTR
++
++#ifdef XI_GesturePinchBegin
++/***********************************************************************
++ *              pinch_zoom_enabled
++ *
++ * Report a touchpad pinch as the Ctrl+wheel input Win32 applications zoom
++ * with. WINE_X11_PINCH_ZOOM=off keeps the XInput2 version at 2.2 and leaves
++ * gesture events with the X server.
++ */
++static BOOL pinch_zoom_enabled(void)
++{
++    static int enabled = -1;
++    const char *value;
++
++    if (enabled == -1)
++    {
++        value = getenv( "WINE_X11_PINCH_ZOOM" );
++        enabled = !value || (strcmp( value, "off" ) && strcmp( value, "0" ));
++    }
++    return enabled;
++}
++
++/***********************************************************************
++ *              pinch_zoom_notched
++ *
++ * WINE_X11_PINCH_ZOOM=notch reports whole wheel notches instead of following
++ * the pinch continuously, for an application that ignores the part of a
++ * notch a precision touchpad reports.
++ */
++static BOOL pinch_zoom_notched(void)
++{
++    static int notched = -1;
++    const char *value;
++
++    if (notched == -1)
++    {
++        value = getenv( "WINE_X11_PINCH_ZOOM" );
++        notched = value && !strcmp( value, "notch" );
++    }
++    return notched;
++}
++#endif
++
+ #endif
+ 
+ /***********************************************************************
+@@ -305,6 +351,14 @@ void x11drv_xinput2_enable( Display *display, Window window )
+         XISetMask( mask_bits, XI_TouchBegin );
+         XISetMask( mask_bits, XI_TouchUpdate );
+         XISetMask( mask_bits, XI_TouchEnd );
++#ifdef XI_GesturePinchBegin
++        if (xinput2_gestures)
++        {
++            XISetMask( mask_bits, XI_GesturePinchBegin );
++            XISetMask( mask_bits, XI_GesturePinchUpdate );
++            XISetMask( mask_bits, XI_GesturePinchEnd );
++        }
++#endif
+     }
+ 
+     pXISelectEvents( display, window, &mask, 1 );
+@@ -346,6 +400,13 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+     XIEventMask mask;
+     int count;
+ 
++#ifdef XI_GesturePinchBegin
++    /* gesture events need version 2.4, and the server refuses to select them
++     * for a client that asked for less, so only raise the request when they
++     * are wanted */
++    if (pinch_zoom_enabled()) minor = 4;
++#endif
++
+     if (!xinput2_available || pXIQueryVersion( data->display, &major, &minor ))
+     {
+         WARN( "XInput 2.0 not available\n" );
+@@ -353,6 +414,12 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+         return;
+     }
+ 
++#ifdef XI_GesturePinchBegin
++    xinput2_gestures = pinch_zoom_enabled() && (major > 2 || minor >= 4);
++    if (pinch_zoom_enabled() && !xinput2_gestures)
++        WARN( "XInput2 %d.%d has no gesture events, pinch zoom unavailable\n", major, minor );
++#endif
++
+     mask.mask     = mask_bits;
+     mask.mask_len = sizeof(mask_bits);
+     mask.deviceid = XIAllMasterDevices;
+@@ -1918,6 +1985,64 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+     return TRUE;
+ }
+ 
++#ifdef XI_GesturePinchBegin
++
++/***********************************************************************
++ *           X11DRV_GesturePinchEvent
++ *
++ * Report a touchpad pinch as the wheel input a Windows precision touchpad
++ * sends for one: the scale change becomes wheel movement held with Ctrl, so
++ * an application that zooms on Ctrl+wheel zooms on a pinch.
++ *
++ * A pinch reports a scale many times a second, so each report is worth a
++ * fraction of a notch. WHEEL_DELTA is a unit, not a minimum: a precision
++ * touchpad sends part of it too, and an application that follows the amount
++ * rather than counting messages zooms continuously. WINE_X11_PINCH_ZOOM=notch
++ * rounds to whole notches instead, for an application that ignores the rest.
++ */
++static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
++{
++    /* scale change one whole wheel notch stands for */
++    static const double zoom_step = 1.1;
++    static const int max_delta = 16 * WHEEL_DELTA;
++    static double reported_scale = 1.0;
++
++    XIGesturePinchEvent *event = xev->data;
++    UINT time = EVENT_x11_time_to_win32_time( event->time );
++    POINT pt = { event->event_x, event->event_y }, root = { event->root_x, event->root_y };
++    double units;
++    int delta;
++    HWND hwnd;
++
++    if (event->evtype != XI_GesturePinchUpdate)
++    {
++        TRACE( "pinch %s on %lx, scale %f\n",
++               event->evtype == XI_GesturePinchBegin ? "begin" : "end", event->event, event->scale );
++        reported_scale = 1.0;
++        return TRUE;
++    }
++
++    if (!(event->scale > 0.0)) return FALSE;
++    if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
++
++    units = WHEEL_DELTA * log( event->scale / reported_scale ) / log( zoom_step );
++    if (pinch_zoom_notched()) units = trunc( units / WHEEL_DELTA ) * WHEEL_DELTA;
++    if ((delta = round( units )) > max_delta) delta = max_delta;
++    else if (delta < -max_delta) delta = -max_delta;
++    if (!delta) return TRUE;
++
++    /* advance by what was reported, so the rest waits for the next update */
++    reported_scale *= pow( zoom_step, (double)delta / WHEEL_DELTA );
++
++    TRACE( "hwnd %p/%lx scale %f delta %d\n", hwnd, event->event, event->scale, delta );
++
++    pt = map_event_coords( hwnd, event->event, event->root, root, pt );
++    send_wheel_input( hwnd, pt, MOUSEEVENTF_WHEEL, delta, TRUE, time );
++    return TRUE;
++}
++
++#endif /* XI_GesturePinchBegin */
++
+ #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
+ 
+ 
+@@ -1989,6 +2114,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+         ret = X11DRV_TouchEvent( hwnd, event );
+         break;
+ 
++#ifdef XI_GesturePinchBegin
++    case XI_GesturePinchBegin:
++    case XI_GesturePinchUpdate:
++    case XI_GesturePinchEnd:
++        ret = X11DRV_GesturePinchEvent( event );
++        break;
++#endif
++
+     default:
+         TRACE( "Unhandled event %#x\n", event->evtype );
+         break;
+-- 
+2.55.0
+

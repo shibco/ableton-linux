@@ -11,11 +11,11 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 65 files, numbered 0001 through 0070.
+The current Wine series contains 66 files, numbered 0001 through 0071.
 Patches 0027 and 0044 are intentionally absent. Patches 0066 through 0068
 are reserved by PR 124 and will enter this branch when it rebases after merge.
-Other open branches also number their first new patch 0070, so 0070 here may
-need renumbering at merge time.
+Other open branches also number their first new patch 0070, so 0070 and 0071
+here may need renumbering at merge time.
 
 ## Applying the series
 
@@ -261,4 +261,13 @@ Apply them in sequence with the rest of the series.
   so a Ctrl the user holds turns the same drag into Ctrl+wheel. A press that
   does not move is replayed as a plain middle click on release. Off unless
   `WINE_X11_MIDDLE_DRAG=navigate`. See issue 50 and
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0071`: select XInput2 pinch gestures on each top-level window and report
+  the scale change as Ctrl+wheel, which is what a Windows precision touchpad
+  sends for a pinch the application does not handle itself. A whole notch
+  stands for 1.1x, and each gesture report is sent as its fraction of one, so
+  an application that follows the amount zooms continuously;
+  `WINE_X11_PINCH_ZOOM=notch` rounds to whole notches. Needs an X server with
+  XInput2 2.4; `WINE_X11_PINCH_ZOOM=off` keeps the version request at 2.2 and
+  leaves the gestures with the server. See issue 64 and
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.

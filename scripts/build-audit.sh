@@ -146,6 +146,7 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0070|ascii|lib/wine/x86_64-unix/winex11.so|WINE_X11_MIDDLE_DRAG
+0071|ascii|lib/wine/x86_64-unix/winex11.so|WINE_X11_PINCH_ZOOM
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
