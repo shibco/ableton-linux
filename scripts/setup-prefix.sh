@@ -327,15 +327,32 @@ esac
 # the major parsed from the chosen zip > 12.
 live_installed() { ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe >/dev/null 2>&1; }
 installer_dir="${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
+# Newest of several installers: Ableton names them
+# ableton_live_<edition>_<major>.<minor>.<patch>_64.zip, so the edition sits
+# BEFORE the version and a plain `sort -V` on the name ranks the edition first —
+# ableton_live_suite_12.0.1 would beat ableton_live_standard_12.5.1, and any
+# "trial" would beat every "standard". Sort on a version key cut out of the
+# basename instead, with the name as tiebreak inside one version (so the
+# alphabetically last edition wins a genuine tie, deterministically).
+# sed -n exits 0 whether or not it matches, so set -e/pipefail stay happy; a
+# name with no parsable version keys as 0 and is chosen only when it is alone.
+newest_installer() {   # <-iname glob> -> highest-versioned match, empty if none
+    local zip v
+    find "$installer_dir" -maxdepth 1 -iname "$1" \
+    | while IFS= read -r zip; do
+          v="$(basename "$zip" | sed -nE 's/^[^0-9]*_([0-9]+(\.[0-9]+)*).*$/\1/p')"
+          printf '%s\t%s\n' "${v:-0}" "$zip"
+      done \
+    | sort -t$'\t' -k1,1V -k2,2 | tail -n 1 | cut -f2-
+}
 live_zip=""
 if [ -d "$installer_dir" ]; then
     if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
         # An explicit major pin only accepts a matching installer — never
         # silently install another major into a prefix prepared for this one.
-        live_zip="$(find "$installer_dir" -maxdepth 1 -iname "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip" | sort -V | tail -n 1)"
+        live_zip="$(newest_installer "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip")"
     else
-        # Newest by version-sort when several editions/versions are present.
-        live_zip="$(find "$installer_dir" -maxdepth 1 -iname 'ableton_live*.zip' | sort -V | tail -n 1)"
+        live_zip="$(newest_installer 'ableton_live*.zip')"
     fi
 fi
 live_major="${ABLETON_LIVE_VERSION:-12}"
