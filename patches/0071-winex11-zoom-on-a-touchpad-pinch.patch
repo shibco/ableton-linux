@@ -30,7 +30,7 @@ gesture definitions compile the path out.
  1 file changed, 133 insertions(+)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 014b4a7..c0cb010 100644
+index e118ae1..2bd3402 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -129,6 +129,9 @@ static Cursor create_cursor( HANDLE handle );
@@ -64,7 +64,7 @@ index 014b4a7..c0cb010 100644
 +    if (enabled == -1)
 +    {
 +        value = getenv( "WINE_X11_PINCH_ZOOM" );
-+        enabled = !value || (strcmp( value, "off" ) && strcmp( value, "0" ));
++        enabled = !value || !strcmp( value, "on" ) || !strcmp( value, "1" ) || !strcmp( value, "notch" );
 +    }
 +    return enabled;
 +}
@@ -135,7 +135,7 @@ index 014b4a7..c0cb010 100644
      mask.mask     = mask_bits;
      mask.mask_len = sizeof(mask_bits);
      mask.deviceid = XIAllMasterDevices;
-@@ -1918,6 +1985,64 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+@@ -1923,6 +1990,64 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -200,7 +200,7 @@ index 014b4a7..c0cb010 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
  
-@@ -1989,6 +2114,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -1994,6 +2119,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
          ret = X11DRV_TouchEvent( hwnd, event );
          break;
  
@@ -217,4 +217,3 @@ index 014b4a7..c0cb010 100644
          break;
 -- 
 2.55.0
-

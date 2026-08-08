@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 66 files, numbered 0001 through 0071.
+The current Wine series contains 67 files, numbered 0001 through 0072.
 Patches 0027 and 0044 are intentionally absent. Patches 0066 through 0068
 are reserved by PR 124 and will enter this branch when it rebases after merge.
 Other open branches also number their first new patch 0070, so 0070 and 0071
@@ -270,4 +270,10 @@ Apply them in sequence with the rest of the series.
   `WINE_X11_PINCH_ZOOM=notch` rounds to whole notches. Needs an X server with
   XInput2 2.4; `WINE_X11_PINCH_ZOOM=off` keeps the version request at 2.2 and
   leaves the gestures with the server. See issue 64 and
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0072`: consume XInput2 2.1 scroll valuators on each Wine window and preserve
+  their fractional vertical and horizontal movement as Win32 wheel input.
+  This removes the whole-notch stepping from two-finger touchpad navigation
+  while suppressing the legacy button events synthesized from the same
+  movement. `WINE_X11_SMOOTH_SCROLL=off` restores Wine's core-wheel path. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.

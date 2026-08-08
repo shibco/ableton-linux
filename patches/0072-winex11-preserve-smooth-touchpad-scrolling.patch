@@ -1,0 +1,322 @@
+Subject: winex11: preserve smooth touchpad scrolling
+
+XInput2 2.1 reports touchpad and high-resolution wheel scrolling as
+cumulative valuator positions with an increment that represents one wheel
+notch. Wine only consumes the legacy button events the X server synthesizes
+from those valuators, reducing every update to a whole WHEEL_DELTA and making
+two-finger navigation visibly stepped.
+
+Select XI_Motion and XI_ButtonPress on each Wine window. Preserve native
+scroll-valuator changes as fractional vertical and horizontal Win32 wheel
+input, carrying sub-unit remainders between reports. Ignore the corresponding
+emulated XI and core button events so each movement is delivered once, while
+still accepting native XI wheel buttons from devices without scroll axes.
+
+The first valuator report establishes its cumulative baseline, device changes
+refresh the axis metadata, and individual reports are capped at 16 notches to
+avoid a discontinuity producing an extreme jump. WINE_X11_SMOOTH_SCROLL=off
+restores Wine's core button path. Builds without XInput2 2.1 scroll definitions
+compile this path out.
+---
+ dlls/winex11.drv/mouse.c  | 188 ++++++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/x11drv.h |  16 ++++
+ 2 files changed, 204 insertions(+)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 2bd3402c0e..7aee2412db 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -129,6 +129,9 @@ static Cursor create_cursor( HANDLE handle );
+ #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+ static BOOL xinput2_available;
+ static BOOL broken_rawevents;
++#ifdef XIScrollClass
++static BOOL xinput2_smooth_scroll;
++#endif
+ #ifdef XI_GesturePinchBegin
+ static BOOL xinput2_gestures;
+ #endif
+@@ -140,6 +143,28 @@ MAKE_FUNCPTR(XIQueryVersion);
+ MAKE_FUNCPTR(XISelectEvents);
+ #undef MAKE_FUNCPTR
+ 
++#ifdef XIScrollClass
++/***********************************************************************
++ *              smooth_scroll_enabled
++ *
++ * Use XInput2 scroll valuators to preserve the fractional movement from a
++ * touchpad or high-resolution wheel. Off leaves Wine's core button-to-wheel
++ * path unchanged.
++ */
++static BOOL smooth_scroll_enabled(void)
++{
++    static int enabled = -1;
++    const char *value;
++
++    if (enabled == -1)
++    {
++        value = getenv( "WINE_X11_SMOOTH_SCROLL" );
++        enabled = !value || !strcmp( value, "on" ) || !strcmp( value, "1" );
++    }
++    return enabled;
++}
++#endif
++
+ #ifdef XI_GesturePinchBegin
+ /***********************************************************************
+  *              pinch_zoom_enabled
+@@ -323,6 +348,60 @@ static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes
+     thread_data->y_valuator.value = 0;
+ }
+ 
++#ifdef XIScrollClass
++/***********************************************************************
++ *              update_scroll_valuators
++ */
++static void update_scroll_valuators( XIAnyClassInfo **classes, int num_classes, int sourceid )
++{
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    struct x11drv_scroll_axis *axis;
++    int i;
++
++    data->scroll_sourceid = sourceid;
++    data->scroll_x.number = data->scroll_y.number = -1;
++    data->scroll_x.increment = data->scroll_y.increment = 0.0;
++    data->scroll_x.value_valid = data->scroll_y.value_valid = FALSE;
++
++    for (i = 0; i < num_classes; i++)
++    {
++        XIScrollClassInfo *scroll;
++
++        if (classes[i]->type != XIScrollClass) continue;
++        scroll = (XIScrollClassInfo *)classes[i];
++        if (!scroll->increment) continue;
++        if (!data->scroll_sourceid) data->scroll_sourceid = scroll->sourceid;
++        if (scroll->sourceid != data->scroll_sourceid) continue;
++
++        if (scroll->scroll_type == XIScrollTypeVertical) axis = &data->scroll_y;
++        else if (scroll->scroll_type == XIScrollTypeHorizontal) axis = &data->scroll_x;
++        else continue;
++        if (axis->number >= 0 && !(scroll->flags & XIScrollFlagPreferred)) continue;
++        axis->number = scroll->number;
++        axis->sourceid = scroll->sourceid;
++        axis->increment = scroll->increment;
++    }
++
++    TRACE( "source %d scroll x %d/%f, y %d/%f\n", data->scroll_sourceid,
++           data->scroll_x.number, data->scroll_x.increment,
++           data->scroll_y.number, data->scroll_y.increment );
++}
++
++static void query_scroll_valuators( Display *display, int sourceid )
++{
++    XIDeviceInfo *info;
++    int count;
++
++    if (!(info = pXIQueryDevice( display, sourceid, &count )))
++    {
++        update_scroll_valuators( NULL, 0, sourceid );
++        return;
++    }
++    update_scroll_valuators( info->classes, info->num_classes, sourceid );
++    pXIFreeDeviceInfo( info );
++}
++#endif
++
+ 
+ /***********************************************************************
+  *              x11drv_xinput2_enable
+@@ -351,6 +430,13 @@ void x11drv_xinput2_enable( Display *display, Window window )
+         XISetMask( mask_bits, XI_TouchBegin );
+         XISetMask( mask_bits, XI_TouchUpdate );
+         XISetMask( mask_bits, XI_TouchEnd );
++#ifdef XIScrollClass
++        if (xinput2_smooth_scroll)
++        {
++            XISetMask( mask_bits, XI_Motion );
++            XISetMask( mask_bits, XI_ButtonPress );
++        }
++#endif
+ #ifdef XI_GesturePinchBegin
+         if (xinput2_gestures)
+         {
+@@ -419,6 +505,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+     if (pinch_zoom_enabled() && !xinput2_gestures)
+         WARN( "XInput2 %d.%d has no gesture events, pinch zoom unavailable\n", major, minor );
+ #endif
++#ifdef XIScrollClass
++    xinput2_smooth_scroll = smooth_scroll_enabled() && (major > 2 || minor >= 1);
++#endif
+ 
+     mask.mask     = mask_bits;
+     mask.mask_len = sizeof(mask_bits);
+@@ -433,6 +522,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+     {
+         XIDeviceInfo *pointer_info = pXIQueryDevice( data->display, data->xinput2_pointer, &count );
+         update_relative_valuators( pointer_info->classes, pointer_info->num_classes );
++#ifdef XIScrollClass
++        if (xinput2_smooth_scroll) update_scroll_valuators( pointer_info->classes, pointer_info->num_classes, 0 );
++#endif
+         pXIFreeDeviceInfo( pointer_info );
+     }
+ 
+@@ -1777,6 +1869,9 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+     }
+ 
+     pt = map_event_coords( hwnd, event->window, event->root, root, pt );
++#if defined(HAVE_X11_EXTENSIONS_XINPUT2_H) && defined(XIScrollClass)
++    if (xinput2_smooth_scroll && button >= 3 && button <= 6) return TRUE;
++#endif
+     if (middle_drag_begin( hwnd, event, pt )) return TRUE;
+     send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
+     return TRUE;
+@@ -1867,6 +1962,9 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
+ 
+     if (event->deviceid != data->xinput2_pointer) return FALSE;
+     update_relative_valuators( event->classes, event->num_classes );
++#ifdef XIScrollClass
++    if (xinput2_smooth_scroll) update_scroll_valuators( event->classes, event->num_classes, event->sourceid );
++#endif
+     return TRUE;
+ }
+ 
+@@ -1990,6 +2088,89 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+     return TRUE;
+ }
+ 
++#ifdef XIScrollClass
++
++static int smooth_scroll_delta( struct x11drv_scroll_axis *axis, double value, BOOL emulated )
++{
++    static const int max_delta = 16 * WHEEL_DELTA;
++    double units;
++    int delta;
++
++    if (!axis->value_valid || emulated)
++    {
++        axis->value = value;
++        axis->value_valid = TRUE;
++        return 0;
++    }
++
++    units = WHEEL_DELTA * (value - axis->value) / axis->increment;
++    if ((delta = round( units )) > max_delta) delta = max_delta;
++    else if (delta < -max_delta) delta = -max_delta;
++    axis->value += (double)delta * axis->increment / WHEEL_DELTA;
++    return delta;
++}
++
++/***********************************************************************
++ *           X11DRV_SmoothScrollEvent
++ *
++ * XInput2 reports touchpad and high-resolution wheel scrolling as cumulative
++ * valuator positions. Turn the change into fractional Win32 wheel units and
++ * ignore the legacy button events the X server emulates from the same input.
++ */
++static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
++{
++    XIDeviceEvent *event = xev->data;
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    POINT pt = { event->event_x, event->event_y }, root = { event->root_x, event->root_y };
++    UINT time = EVENT_x11_time_to_win32_time( event->time );
++    BOOL emulated = event->flags & XIPointerEmulated;
++    const double *values = event->valuators.values;
++    int i, delta_x = 0, delta_y = 0;
++    BOOL saw_scroll = FALSE;
++    HWND hwnd;
++
++    if (!xinput2_smooth_scroll) return FALSE;
++    if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
++
++    if (event->evtype == XI_ButtonPress)
++    {
++        int button = event->detail - 1;
++
++        if (button < 3 || button > 6) return FALSE;
++        if (emulated) return TRUE;
++        pt = map_event_coords( hwnd, event->event, event->root, root, pt );
++        send_wheel_input( hwnd, pt, button_down_flags[button], (int)button_down_data[button], FALSE, time );
++        return TRUE;
++    }
++
++    if (data->scroll_sourceid != event->sourceid) query_scroll_valuators( event->display, event->sourceid );
++    for (i = 0; i < event->valuators.mask_len * 8; i++)
++    {
++        if (!XIMaskIsSet( event->valuators.mask, i )) continue;
++        if (i == data->scroll_x.number)
++        {
++            delta_x = smooth_scroll_delta( &data->scroll_x, *values, emulated );
++            saw_scroll = TRUE;
++        }
++        if (i == data->scroll_y.number)
++        {
++            delta_y = smooth_scroll_delta( &data->scroll_y, *values, emulated );
++            saw_scroll = TRUE;
++        }
++        values++;
++    }
++    if (!saw_scroll) return FALSE;
++    if (emulated) return TRUE;
++
++    TRACE( "hwnd %p/%lx smooth scroll delta %d,%d\n", hwnd, event->event, delta_x, delta_y );
++    pt = map_event_coords( hwnd, event->event, event->root, root, pt );
++    if (delta_y) send_wheel_input( hwnd, pt, MOUSEEVENTF_WHEEL, -delta_y, FALSE, time );
++    if (delta_x) send_wheel_input( hwnd, pt, MOUSEEVENTF_HWHEEL, delta_x, FALSE, time );
++    return TRUE;
++}
++
++#endif /* XIScrollClass */
++
+ #ifdef XI_GesturePinchBegin
+ 
+ /***********************************************************************
+@@ -2113,6 +2294,13 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+         ret = X11DRV_RawMotion( event );
+         break;
+ 
++#ifdef XIScrollClass
++    case XI_Motion:
++    case XI_ButtonPress:
++        ret = X11DRV_SmoothScrollEvent( event );
++        break;
++#endif
++
+     case XI_TouchBegin:
+     case XI_TouchUpdate:
+     case XI_TouchEnd:
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 34b53ce403..7e74ca7ebf 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -411,6 +411,17 @@ struct display_state
+     Window net_active_window;
+ };
+ 
++#if defined(HAVE_X11_EXTENSIONS_XINPUT2_H) && defined(XIScrollClass)
++struct x11drv_scroll_axis
++{
++    int number;
++    int sourceid;
++    double increment;
++    double value;
++    BOOL value_valid;
++};
++#endif
++
+ struct x11drv_thread_data
+ {
+     Display *display;
+@@ -432,6 +443,11 @@ struct x11drv_thread_data
+     XIValuatorClassInfo y_valuator;
+     int      xinput2_pointer;      /* XInput2 master pointer device id */
+     int      root_window_users;    /* counter for root window XISelectEvents */
++#ifdef XIScrollClass
++    int      scroll_sourceid;      /* source device represented by scroll axes */
++    struct x11drv_scroll_axis scroll_x;
++    struct x11drv_scroll_axis scroll_y;
++#endif
+ #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
+ 
+     struct display_state desired_state;       /* display state tracking the desired / win32 state */
+-- 
+2.55.0

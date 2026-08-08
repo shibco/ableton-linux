@@ -10,6 +10,7 @@
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
 #            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
 #            WINE_X11_PINCH_ZOOM=off (stop touchpad pinch gestures from zooming),
+#            WINE_X11_SMOOTH_SCROLL=off (restore coarse core wheel events),
 #            WINE_X11_MIDDLE_DRAG=navigate (scroll the arrangement with a middle-button drag).
 set -u
 # Clear inherited Wine variables so this launch uses only the patched build.
@@ -39,6 +40,9 @@ export WINE_X11_MIDDLE_DRAG="${WINE_X11_MIDDLE_DRAG:-off}"
 # Touchpad pinch gestures arrive as the Ctrl+wheel input Live zooms with
 # (patch 0071); "off" is a one-launch A/B override.
 export WINE_X11_PINCH_ZOOM="${WINE_X11_PINCH_ZOOM:-on}"
+# Preserve fractional XInput2 scroll motion for smooth two-finger navigation
+# (patch 0072); "off" restores Wine's core button-to-wheel path.
+export WINE_X11_SMOOTH_SCROLL="${WINE_X11_SMOOTH_SCROLL:-on}"
 # Report host mount points as plain dirs (patch 0033); Live's browser treats
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"

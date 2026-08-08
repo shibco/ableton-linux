@@ -1,4 +1,4 @@
-/* pinchgen.c - create a virtual multitouch touchpad and perform one pinch.
+/* pinchgen.c - create a virtual multitouch touchpad and perform one gesture.
  *
  * libinput turns the two-finger movement into a pinch gesture, the compositor
  * forwards it to the surface under the pointer, and XWayland reports it as an
@@ -9,10 +9,12 @@
  * the logged-in user. The virtual device disappears when the program exits.
  *
  * build: gcc -O2 -o pinchgen pinchgen.c
- * usage: ./pinchgen [out|in] [steps]
+ * usage: ./pinchgen [out|in|up|down|left|right] [steps]
  *
  * See notes/ABLETON-WINE-POINTER-GESTURES.md.
  */
+#define _POSIX_C_SOURCE 200809L
+
 #include <fcntl.h>
 #include <linux/uinput.h>
 #include <stdio.h>
@@ -22,6 +24,16 @@
 #include <unistd.h>
 
 static int fd;
+
+enum gesture
+{
+    PINCH_OUT,
+    PINCH_IN,
+    PAN_UP,
+    PAN_DOWN,
+    PAN_LEFT,
+    PAN_RIGHT,
+};
 
 static void emit( int type, int code, int value )
 {
@@ -59,10 +71,28 @@ static void finger( int slot, int x, int y )
 
 int main( int argc, char **argv )
 {
-    int out = argc < 2 || strcmp( argv[1], "in" );
+    const char *name = argc > 1 ? argv[1] : "out";
+    enum gesture gesture;
     int steps = argc > 2 ? atoi( argv[2] ) : 30;
     struct uinput_setup setup = { .name = "pinchgen virtual touchpad" };
     int i;
+
+    if (!strcmp( name, "out" )) gesture = PINCH_OUT;
+    else if (!strcmp( name, "in" )) gesture = PINCH_IN;
+    else if (!strcmp( name, "up" )) gesture = PAN_UP;
+    else if (!strcmp( name, "down" )) gesture = PAN_DOWN;
+    else if (!strcmp( name, "left" )) gesture = PAN_LEFT;
+    else if (!strcmp( name, "right" )) gesture = PAN_RIGHT;
+    else
+    {
+        fprintf( stderr, "usage: %s [out|in|up|down|left|right] [steps]\n", argv[0] );
+        return 2;
+    }
+    if (steps < 1)
+    {
+        fprintf( stderr, "steps must be positive\n" );
+        return 2;
+    }
 
     if ((fd = open( "/dev/uinput", O_WRONLY | O_NONBLOCK )) < 0)
     {
@@ -111,9 +141,10 @@ int main( int argc, char **argv )
     printf( "virtual touchpad created, settling\n" );
     nap( 1500 );  /* let libinput and the compositor pick the device up */
 
-    /* two fingers down, 20 mm apart when pinching out, 60 mm when pinching in */
+    /* Two fingers down: start wider for pinch-in, then change their span or
+     * move their centre together for two-finger panning. */
     {
-        int start = out ? 400 : 1200;
+        int start = gesture == PINCH_IN ? 1200 : 400;
         emit( EV_ABS, ABS_MT_SLOT, 0 );
         emit( EV_ABS, ABS_MT_TRACKING_ID, 1 );
         finger( 0, 2000 - start, 1400 );
@@ -130,11 +161,19 @@ int main( int argc, char **argv )
 
         for (i = 1; i <= steps; i++)
         {
-            int span = out ? start + (800 * i) / steps : start - (800 * i) / steps;
-            finger( 0, 2000 - span, 1400 );
-            finger( 1, 2000 + span, 1400 );
-            emit( EV_ABS, ABS_X, 2000 - span );
-            emit( EV_ABS, ABS_Y, 1400 );
+            int distance = (800 * i) / steps;
+            int span = start, x = 2000, y = 1400;
+
+            if (gesture == PINCH_OUT) span += distance;
+            else if (gesture == PINCH_IN) span -= distance;
+            else if (gesture == PAN_UP) y -= distance;
+            else if (gesture == PAN_DOWN) y += distance;
+            else if (gesture == PAN_LEFT) x -= distance;
+            else if (gesture == PAN_RIGHT) x += distance;
+            finger( 0, x - span, y );
+            finger( 1, x + span, y );
+            emit( EV_ABS, ABS_X, x - span );
+            emit( EV_ABS, ABS_Y, y );
             syn();
             nap( 12 );
         }
@@ -148,7 +187,7 @@ int main( int argc, char **argv )
         syn();
     }
 
-    printf( "pinch %s done\n", out ? "out" : "in" );
+    printf( "%s gesture done\n", name );
     nap( 400 );
     ioctl( fd, UI_DEV_DESTROY );
     close( fd );

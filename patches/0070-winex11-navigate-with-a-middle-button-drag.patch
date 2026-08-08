@@ -26,11 +26,11 @@ whatever the application does for Ctrl+wheel.
 The default is off, where the middle button reports WM_MBUTTONDOWN and
 WM_MBUTTONUP exactly as before.
 ---
- dlls/winex11.drv/mouse.c | 183 +++++++++++++++++++++++++++++++++++++++
- 1 file changed, 183 insertions(+)
+ dlls/winex11.drv/mouse.c | 188 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 188 insertions(+)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 2c394b6..014b4a7 100644
+index 2c394b6..e118ae1 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,6 +30,8 @@
@@ -42,7 +42,7 @@ index 2c394b6..014b4a7 100644
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
  #include <X11/extensions/XInput2.h>
  #endif
-@@ -557,6 +559,183 @@ static void send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT
+@@ -557,6 +559,188 @@ static void send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT
      NtUserSendHardwareInput( hwnd, SEND_HWMSG_RAWINPUT, &input, (LPARAM)raw );
  }
  
@@ -72,7 +72,7 @@ index 2c394b6..014b4a7 100644
 + *           middle_drag_enabled
 + *
 + * WINE_X11_MIDDLE_DRAG=navigate turns a middle-button drag into navigation
-+ * input: vertical movement becomes Ctrl+wheel notches, horizontal movement
++ * input: vertical movement becomes wheel notches, horizontal movement
 + * becomes horizontal wheel notches. Default off, where the middle button
 + * reports WM_MBUTTONDOWN and WM_MBUTTONUP as usual.
 + */
@@ -186,8 +186,12 @@ index 2c394b6..014b4a7 100644
 +    middle_drag.accum_x += pt.x - middle_drag.last.x;
 +    middle_drag.accum_y += pt.y - middle_drag.last.y;
 +    middle_drag.last = pt;
-+    if (abs( middle_drag.accum_x ) > MIDDLE_DRAG_SLOP || abs( middle_drag.accum_y ) > MIDDLE_DRAG_SLOP)
++    if (!middle_drag.moved)
++    {
++        if (abs( pt.x - middle_drag.origin.x ) <= MIDDLE_DRAG_SLOP &&
++            abs( pt.y - middle_drag.origin.y ) <= MIDDLE_DRAG_SLOP) return TRUE;
 +        middle_drag.moved = TRUE;
++    }
 +
 +    if ((delta = middle_drag_delta( &middle_drag.accum_y, notched )))  /* up scrolls up */
 +    {
@@ -220,13 +224,14 @@ index 2c394b6..014b4a7 100644
 +        send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MIDDLEDOWN, 0, time, NULL );
 +        send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MIDDLEUP, 0, time, NULL );
 +    }
++    else send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
 +    return TRUE;
 +}
 +
  #ifdef SONAME_LIBXCURSOR
  
  /***********************************************************************
-@@ -1526,6 +1705,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+@@ -1526,6 +1710,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -234,7 +239,7 @@ index 2c394b6..014b4a7 100644
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
      return TRUE;
  }
-@@ -1545,6 +1725,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+@@ -1545,6 +1730,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
      TRACE( "hwnd %p/%lx button %u pos %s\n", hwnd, event->window, button, wine_dbgstr_point( &pt ) );
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -242,7 +247,7 @@ index 2c394b6..014b4a7 100644
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_up_data[button], time, NULL );
      return TRUE;
  }
-@@ -1569,6 +1750,8 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
+@@ -1569,6 +1755,8 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -253,4 +258,3 @@ index 2c394b6..014b4a7 100644
  }
 -- 
 2.55.0
-
