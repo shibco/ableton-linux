@@ -77,6 +77,9 @@ make verify
   layout and exit-state fix for one launch.
 - `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
   resizability fix for one launch without disabling fullscreen normalization.
+- `WINE_X11_MIDDLE_DRAG=navigate` reports a middle-button drag as scrolling
+  instead of a middle click, for one launch. `=notch` reports whole wheel
+  notches instead of following the pointer.
 - `ABLETON_RT=off` disables realtime scheduling for one launch.
 - `PIPEASIO_*` variables override PipeASIO settings for one launch.
 - `ENGINE` selects the container engine used by build scripts. The default is

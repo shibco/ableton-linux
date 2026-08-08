@@ -11,9 +11,11 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 64 files, numbered 0001 through 0069.
+The current Wine series contains 65 files, numbered 0001 through 0070.
 Patches 0027 and 0044 are intentionally absent. Patches 0066 through 0068
 are reserved by PR 124 and will enter this branch when it rebases after merge.
+Other open branches also number their first new patch 0070, so 0070 here may
+need renumbering at merge time.
 
 ## Applying the series
 
@@ -251,3 +253,12 @@ Apply them in sequence with the rest of the series.
   borderless fullscreen, unselected windows, and plugin windows retain Wine's
   existing behavior. `WINE_WIN32_RESIZABLE_CLASS=off` disables only this fix
   for comparison. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+- `0070`: hold a middle-button press back and report the movement that
+  follows as wheel input at the press position: vertical movement as wheel,
+  horizontal movement as horizontal wheel, one whole notch per 24 px. The
+  report follows the pointer continuously rather than waiting for a whole
+  notch; `WINE_X11_MIDDLE_DRAG=notch` rounds instead. No modifier is added,
+  so a Ctrl the user holds turns the same drag into Ctrl+wheel. A press that
+  does not move is replayed as a plain middle click on release. Off unless
+  `WINE_X11_MIDDLE_DRAG=navigate`. See issue 50 and
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.

@@ -1,0 +1,256 @@
+Subject: winex11: navigate with a middle-button drag
+
+Live drives arrangement zoom from Ctrl+wheel and has no function on the
+middle button. Other DAWs put navigation there: holding the middle button
+and moving the pointer scrolls the arrangement in both directions without
+reaching for a scrollbar (issue 50).
+
+WINE_X11_MIDDLE_DRAG=navigate holds a middle-button press back from the
+application and reports the movement that follows as wheel input at the
+position the press landed on. Vertical movement becomes wheel, horizontal
+movement becomes horizontal wheel, one whole notch per 24 px of the
+window's own coordinates, so the display scale does not change how far a
+notch is. A press that moves no further than 3 px is replayed as a plain
+middle click on release, so the button keeps its normal reporting when it
+is not used for a drag.
+
+The report follows the pointer continuously rather than waiting for a whole
+notch: WHEEL_DELTA is a unit, not a minimum, and a precision pointing device
+sends part of one too. WINE_X11_MIDDLE_DRAG=notch rounds to whole notches
+for an application that ignores the rest.
+
+No modifier is added. A Ctrl the user holds during the drag still reaches
+the message through the desktop key state, so the same drag performs
+whatever the application does for Ctrl+wheel.
+
+The default is off, where the middle button reports WM_MBUTTONDOWN and
+WM_MBUTTONUP exactly as before.
+---
+ dlls/winex11.drv/mouse.c | 183 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 183 insertions(+)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 2c394b6..014b4a7 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -30,6 +30,8 @@
+ #include <X11/Xlib.h>
+ #include <X11/cursorfont.h>
+ #include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
+ #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+ #include <X11/extensions/XInput2.h>
+ #endif
+@@ -557,6 +559,183 @@ static void send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT
+     NtUserSendHardwareInput( hwnd, SEND_HWMSG_RAWINPUT, &input, (LPARAM)raw );
+ }
+ 
++/***********************************************************************
++ *           send_wheel_input
++ *
++ * Send wheel or horizontal wheel input, optionally with Ctrl held. The
++ * MK_CONTROL bit in the message and GetKeyState() both read the desktop key
++ * state, so the modifier has to be a key event and not a flag on the mouse
++ * input. A Ctrl the user is already holding is left alone.
++ */
++static void send_wheel_input( HWND hwnd, POINT pos, UINT flags, int delta, BOOL control, UINT time )
++{
++    INPUT input = { .type = INPUT_KEYBOARD, .ki = { .wVk = VK_CONTROL, .wScan = 0x1d, .time = time } };
++    BOOL press_control = control && !(NtUserGetAsyncKeyState( VK_CONTROL ) & 0x8000);
++
++    if (press_control) NtUserSendHardwareInput( hwnd, 0, &input, 0 );
++    send_mouse_input( hwnd, pos, MOUSEEVENTF_ABSOLUTE | flags, delta, time, NULL );
++    if (press_control)
++    {
++        input.ki.dwFlags = KEYEVENTF_KEYUP;
++        NtUserSendHardwareInput( hwnd, 0, &input, 0 );
++    }
++}
++
++/***********************************************************************
++ *           middle_drag_enabled
++ *
++ * WINE_X11_MIDDLE_DRAG=navigate turns a middle-button drag into navigation
++ * input: vertical movement becomes Ctrl+wheel notches, horizontal movement
++ * becomes horizontal wheel notches. Default off, where the middle button
++ * reports WM_MBUTTONDOWN and WM_MBUTTONUP as usual.
++ */
++static BOOL middle_drag_enabled(void)
++{
++    static int enabled = -1;
++    const char *value;
++
++    if (enabled == -1)
++    {
++        value = getenv( "WINE_X11_MIDDLE_DRAG" );
++        enabled = value && (!strcmp( value, "navigate" ) || !strcmp( value, "on" ) ||
++                            !strcmp( value, "1" ) || !strcmp( value, "notch" ));
++    }
++    return enabled;
++}
++
++/***********************************************************************
++ *           middle_drag_notched
++ *
++ * WINE_X11_MIDDLE_DRAG=notch reports whole wheel notches instead of following
++ * the pointer continuously, for an application that ignores the part of a
++ * notch a precision pointing device reports.
++ */
++static BOOL middle_drag_notched(void)
++{
++    static int notched = -1;
++    const char *value;
++
++    if (notched == -1)
++    {
++        value = getenv( "WINE_X11_MIDDLE_DRAG" );
++        notched = value && !strcmp( value, "notch" );
++    }
++    return notched;
++}
++
++/* movement one wheel notch stands for */
++#define MIDDLE_DRAG_STEP 24
++/* movement below this leaves the press a plain middle click */
++#define MIDDLE_DRAG_SLOP 3
++
++static struct
++{
++    BOOL  active;
++    BOOL  moved;
++    HWND  hwnd;
++    POINT origin;      /* window position the notches are reported at */
++    POINT last;        /* previous position, in the same window coordinates */
++    int   accum_x;
++    int   accum_y;
++} middle_drag;
++
++/***********************************************************************
++ *           middle_drag_begin
++ *
++ * Hold back a middle-button press. The release replays it as a plain click
++ * when the pointer did not move, so a middle click keeps working.
++ */
++static BOOL middle_drag_begin( HWND hwnd, XButtonEvent *event, POINT pt )
++{
++    if (!middle_drag_enabled()) return FALSE;
++    if (event->button != Button2) return FALSE;
++    if (event->state & (Button1Mask | Button3Mask)) return FALSE;
++
++    TRACE( "hwnd %p/%lx begin at %s\n", hwnd, event->window, wine_dbgstr_point( &pt ) );
++
++    middle_drag.active = TRUE;
++    middle_drag.moved = FALSE;
++    middle_drag.hwnd = hwnd;
++    middle_drag.origin = pt;
++    middle_drag.last = pt;
++    middle_drag.accum_x = middle_drag.accum_y = 0;
++    return TRUE;
++}
++
++/***********************************************************************
++ *           middle_drag_motion
++ *
++ * Report movement during a middle-button drag as wheel notches at the point
++ * the drag started, and keep the movement itself from the application. Each
++ * axis reports its own wheel, so the drag scrolls the way the pointer moves.
++ * The movement is measured in the window's own coordinates, so one notch
++ * covers the same distance whatever the display scale is.
++ *
++ * No modifier is added: a Ctrl the user holds during the drag still reaches
++ * the message through the key state, which turns the same drag into whatever
++ * the application does for Ctrl+wheel.
++ */
++static int middle_drag_delta( int *accum, BOOL notched )
++{
++    int delta = *accum * WHEEL_DELTA / MIDDLE_DRAG_STEP;
++
++    if (notched) delta = (delta / WHEEL_DELTA) * WHEEL_DELTA;
++    *accum -= delta * MIDDLE_DRAG_STEP / WHEEL_DELTA;
++    return delta;
++}
++
++static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
++{
++    BOOL notched = middle_drag_notched();
++    int delta;
++
++    if (!middle_drag.active) return FALSE;
++    if (!(event->state & Button2Mask))  /* the release went somewhere else */
++    {
++        middle_drag.active = FALSE;
++        return FALSE;
++    }
++
++    middle_drag.accum_x += pt.x - middle_drag.last.x;
++    middle_drag.accum_y += pt.y - middle_drag.last.y;
++    middle_drag.last = pt;
++    if (abs( middle_drag.accum_x ) > MIDDLE_DRAG_SLOP || abs( middle_drag.accum_y ) > MIDDLE_DRAG_SLOP)
++        middle_drag.moved = TRUE;
++
++    if ((delta = middle_drag_delta( &middle_drag.accum_y, notched )))  /* up scrolls up */
++    {
++        TRACE( "hwnd %p wheel delta %d\n", middle_drag.hwnd, -delta );
++        send_wheel_input( middle_drag.hwnd, middle_drag.origin, MOUSEEVENTF_WHEEL,
++                          -delta, FALSE, time );
++    }
++    if ((delta = middle_drag_delta( &middle_drag.accum_x, notched )))  /* right scrolls right */
++    {
++        TRACE( "hwnd %p hwheel delta %d\n", middle_drag.hwnd, delta );
++        send_wheel_input( middle_drag.hwnd, middle_drag.origin, MOUSEEVENTF_HWHEEL,
++                          delta, FALSE, time );
++    }
++    return TRUE;
++}
++
++/***********************************************************************
++ *           middle_drag_end
++ */
++static BOOL middle_drag_end( HWND hwnd, XButtonEvent *event, POINT pt, UINT time )
++{
++    if (!middle_drag.active) return FALSE;
++    if (event->button != Button2) return FALSE;
++    middle_drag.active = FALSE;
++
++    TRACE( "hwnd %p/%lx end at %s, moved %u\n", hwnd, event->window, wine_dbgstr_point( &pt ), middle_drag.moved );
++
++    if (!middle_drag.moved)
++    {
++        send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MIDDLEDOWN, 0, time, NULL );
++        send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MIDDLEUP, 0, time, NULL );
++    }
++    return TRUE;
++}
++
+ #ifdef SONAME_LIBXCURSOR
+ 
+ /***********************************************************************
+@@ -1526,6 +1705,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+     }
+ 
+     pt = map_event_coords( hwnd, event->window, event->root, root, pt );
++    if (middle_drag_begin( hwnd, event, pt )) return TRUE;
+     send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
+     return TRUE;
+ }
+@@ -1545,6 +1725,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+     TRACE( "hwnd %p/%lx button %u pos %s\n", hwnd, event->window, button, wine_dbgstr_point( &pt ) );
+ 
+     pt = map_event_coords( hwnd, event->window, event->root, root, pt );
++    if (middle_drag_end( hwnd, event, pt, time )) return TRUE;
+     send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_up_data[button], time, NULL );
+     return TRUE;
+ }
+@@ -1569,6 +1750,8 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
+     }
+ 
+     pt = map_event_coords( hwnd, event->window, event->root, root, pt );
++    if (middle_drag_motion( event, pt, time )) return TRUE;
++
+     send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
+     return TRUE;
+ }
+-- 
+2.55.0
+

@@ -8,7 +8,8 @@
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
 #            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
-#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix).
+#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
+#            WINE_X11_MIDDLE_DRAG=navigate (scroll the arrangement with a middle-button drag).
 set -u
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
@@ -31,6 +32,9 @@ export WINE_WIN32_FULLSCREEN_CLASS="${WINE_WIN32_FULLSCREEN_CLASS:-Ableton Live 
 # resizable independently of the fullscreen normalization selector above;
 # "off" is a non-matching one-launch A/B override.
 export WINE_WIN32_RESIZABLE_CLASS="${WINE_WIN32_RESIZABLE_CLASS:-Ableton Live Window Class}"
+# The middle button keeps reporting a plain click until a drag on it is asked
+# for with "navigate" (patch 0070).
+export WINE_X11_MIDDLE_DRAG="${WINE_X11_MIDDLE_DRAG:-off}"
 # Report host mount points as plain dirs (patch 0033); Live's browser treats
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
