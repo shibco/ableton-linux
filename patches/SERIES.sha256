@@ -64,6 +64,6 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 4b4ca42a11539df9482e7160141be08c10e8f4b1d1c46e1ce3fa60caa0fb993a  0069-win32u-keep-selected-captioned-monitor-sized-window-resizable.patch
 eeec9c6272f962d9be6b8c893de2269aefb68f149094ab8a1b10a4a3c0f16dfb  0070-winex11-navigate-with-a-middle-button-drag.patch
 f743a1c10f5edde062077478b0b9d90341d61acfe6fe0c9e05a8e3d9ccb30e33  0071-winex11-zoom-on-a-touchpad-pinch.patch
-5e5b880d7fb4e110239b8a1831167a0222ea93d92f32b6924c0113bfda9e15bf  0072-winex11-preserve-smooth-touchpad-scrolling.patch
+77ea1941681de5fa99b6da4891097fc87a97d4a1cf97c5e2f9d3ada56c3a3ba0  0072-winex11-preserve-smooth-touchpad-scrolling.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

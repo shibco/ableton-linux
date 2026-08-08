@@ -110,19 +110,27 @@ Wine previously consumed only the legacy button 4-7 events the X server
 synthesizes when the cumulative movement crosses a whole scroll increment.
 Live therefore received only whole `WHEEL_DELTA` reports.
 
-The handler selects `XI_Motion` and `XI_ButtonPress` on each Wine window,
-tracks the source device's preferred vertical and horizontal scroll axes, and
-reports each change as `WHEEL_DELTA * change / increment`. Rounding only to a
-single Win32 wheel unit and carrying the remainder preserves small movements
-instead of waiting for a notch. Vertical XInput2 scroll has the opposite sign
-from Win32 wheel input; horizontal scroll has the same sign.
+The handler selects `XI_Motion`, `XI_ButtonPress`, and `XI_ButtonRelease` on
+each Wine window, tracks the source device's preferred vertical and horizontal
+scroll axes, and reports each change as `WHEEL_DELTA * change / increment`.
+Rounding only to a single Win32 wheel unit and carrying the remainder preserves
+small movements instead of waiting for a notch. Vertical XInput2 scroll has the
+opposite sign from Win32 wheel input; horizontal scroll has the same sign.
+
+Selecting a master-device XI event prevents the X server from delivering its
+core equivalent. The handler therefore reconstructs a core event for every
+non-scroll XI motion or button press/release and feeds it through Wine's
+existing handlers. This preserves pointer motion, left/right/middle clicks,
+extra buttons, activation timestamps, button state, and the optional middle
+drag. Handling release symmetrically is required because an XI button press
+starts an implicit grab; selecting only the press loses its matching release.
 
 X servers mark the legacy XI button event synthesized from a native scroll
-valuator with `XIPointerEmulated`. The handler consumes that duplicate and
-suppresses the matching core button event, while still translating original
-XI button events from an ordinary physical wheel. The first event establishes
-the cumulative baseline. Device-change events replace the stored axis
-metadata. A single report cannot exceed sixteen notches.
+valuator with `XIPointerEmulated`. The handler consumes that duplicate while
+still translating original XI wheel buttons from an ordinary physical wheel.
+The first event establishes its cumulative baseline. Device-change events
+replace the stored axis metadata. A single report cannot exceed sixteen
+notches.
 
 Smooth scrolling defaults to on when the build headers and X server support
 XInput2 2.1 scroll classes. `WINE_X11_SMOOTH_SCROLL=off` restores the original
@@ -134,10 +142,16 @@ Patches 0070 and 0071 were measured from X11 input through the messages
 received by the application. Patch 0072 has the following build results:
 
 - All 67 Wine patches apply in order with `git am`.
-- `dlls/winex11.drv/mouse.c` compiles against the pinned Wine source.
-- The packaged runtime passes the relocation and registration check.
-- The build audit passes 95 checks, including the three pointer-patch
-  fingerprints in `winex11.so`.
+- `dlls/winex11.drv/mouse.c` compiles and `winex11.so` links against the pinned
+  Wine source.
+- The rebuilt release artifact passes the relocation and PipeASIO registration
+  gate plus all 95 build-audit checks, including patch 0072's
+  `WINE_X11_SMOOTH_SCROLL` fingerprint.
+- With smooth scrolling enabled in an isolated XWayland runtime, ordinary
+  motion reached `WM_MOUSEMOVE`, and injected left, middle, right, XBUTTON1,
+  and XBUTTON2 input produced exactly five presses and five releases in Wine's
+  existing button handlers. The application log showed paired Win32 down/up
+  dispatch rather than the press-only behaviour from the broken patch.
 
 Two-finger panning through patch 0072 has not been run in Live. Behaviour on
 physical touchpads under Xorg and XWayland is not verified.

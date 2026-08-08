@@ -6,24 +6,32 @@ notch. Wine only consumes the legacy button events the X server synthesizes
 from those valuators, reducing every update to a whole WHEEL_DELTA and making
 two-finger navigation visibly stepped.
 
-Select XI_Motion and XI_ButtonPress on each Wine window. Preserve native
-scroll-valuator changes as fractional vertical and horizontal Win32 wheel
-input, carrying sub-unit remainders between reports. Ignore the corresponding
-emulated XI and core button events so each movement is delivered once, while
-still accepting native XI wheel buttons from devices without scroll axes.
+Select XI_Motion, XI_ButtonPress, and XI_ButtonRelease on each Wine window.
+Preserve native scroll-valuator changes as fractional vertical and horizontal
+Win32 wheel input, carrying sub-unit remainders between reports. Ignore the
+corresponding emulated XI scroll-button duplicate so each movement is delivered
+once, while still accepting native XI wheel buttons from devices without
+scroll axes.
+
+Selecting a master-device XI event prevents the X server from delivering its
+core equivalent. Forward non-scroll XI motion and button press/release events
+through Wine's existing core handlers, including button state reconstruction,
+so the smooth path preserves ordinary pointer motion, left/right/middle clicks,
+extra buttons, activation timestamps, and middle-drag handling.
 
 The first valuator report establishes its cumulative baseline, device changes
 refresh the axis metadata, and individual reports are capped at 16 notches to
 avoid a discontinuity producing an extreme jump. WINE_X11_SMOOTH_SCROLL=off
 restores Wine's core button path. Builds without XInput2 2.1 scroll definitions
 compile this path out.
+
 ---
- dlls/winex11.drv/mouse.c  | 188 ++++++++++++++++++++++++++++++++++++++
- dlls/winex11.drv/x11drv.h |  16 ++++
- 2 files changed, 204 insertions(+)
+ dlls/winex11.drv/mouse.c  | 255 ++++++++++++++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/x11drv.h |  16 +++
+ 2 files changed, 271 insertions(+)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 2bd3402c0e..7aee2412db 100644
+index 2bd3402c0e..abe13bf5e0 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -129,6 +129,9 @@ static Cursor create_cursor( HANDLE handle );
@@ -126,7 +134,7 @@ index 2bd3402c0e..7aee2412db 100644
  
  /***********************************************************************
   *              x11drv_xinput2_enable
-@@ -351,6 +430,13 @@ void x11drv_xinput2_enable( Display *display, Window window )
+@@ -351,6 +430,14 @@ void x11drv_xinput2_enable( Display *display, Window window )
          XISetMask( mask_bits, XI_TouchBegin );
          XISetMask( mask_bits, XI_TouchUpdate );
          XISetMask( mask_bits, XI_TouchEnd );
@@ -135,12 +143,13 @@ index 2bd3402c0e..7aee2412db 100644
 +        {
 +            XISetMask( mask_bits, XI_Motion );
 +            XISetMask( mask_bits, XI_ButtonPress );
++            XISetMask( mask_bits, XI_ButtonRelease );
 +        }
 +#endif
  #ifdef XI_GesturePinchBegin
          if (xinput2_gestures)
          {
-@@ -419,6 +505,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+@@ -419,6 +506,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
      if (pinch_zoom_enabled() && !xinput2_gestures)
          WARN( "XInput2 %d.%d has no gesture events, pinch zoom unavailable\n", major, minor );
  #endif
@@ -150,7 +159,7 @@ index 2bd3402c0e..7aee2412db 100644
  
      mask.mask     = mask_bits;
      mask.mask_len = sizeof(mask_bits);
-@@ -433,6 +522,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+@@ -433,6 +523,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
      {
          XIDeviceInfo *pointer_info = pXIQueryDevice( data->display, data->xinput2_pointer, &count );
          update_relative_valuators( pointer_info->classes, pointer_info->num_classes );
@@ -160,7 +169,7 @@ index 2bd3402c0e..7aee2412db 100644
          pXIFreeDeviceInfo( pointer_info );
      }
  
-@@ -1777,6 +1869,9 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+@@ -1777,6 +1870,9 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -170,7 +179,7 @@ index 2bd3402c0e..7aee2412db 100644
      if (middle_drag_begin( hwnd, event, pt )) return TRUE;
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
      return TRUE;
-@@ -1867,6 +1962,9 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
+@@ -1867,6 +1963,9 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
  
      if (event->deviceid != data->xinput2_pointer) return FALSE;
      update_relative_valuators( event->classes, event->num_classes );
@@ -180,7 +189,7 @@ index 2bd3402c0e..7aee2412db 100644
      return TRUE;
  }
  
-@@ -1990,6 +2088,89 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+@@ -1990,6 +2089,154 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -206,6 +215,71 @@ index 2bd3402c0e..7aee2412db 100644
 +    return delta;
 +}
 +
++static unsigned int xinput2_core_state( const XIDeviceEvent *event )
++{
++    unsigned int state = event->mods.effective;
++    int button;
++
++    /* XIButtonState uses button numbers as bit indices.  Core X state only
++     * has masks for the first five buttons, which is all the existing core
++     * handlers inspect. */
++    for (button = 1; button <= 5; button++)
++        if (button / 8 < event->buttons.mask_len && XIMaskIsSet( event->buttons.mask, button ))
++            state |= Button1Mask << (button - 1);
++    return state;
++}
++
++/***********************************************************************
++ *           forward_xinput2_core_event
++ *
++ * Selecting a master-device XI event prevents the X server from delivering
++ * its core equivalent.  Feed non-scroll button events and motion through
++ * Wine's existing core handlers so smooth scrolling does not replace normal
++ * pointer input.
++ */
++static BOOL forward_xinput2_core_event( HWND hwnd, XIDeviceEvent *event )
++{
++    XEvent core = {0};
++
++    if (event->evtype == XI_ButtonPress || event->evtype == XI_ButtonRelease)
++    {
++        core.xbutton.type = event->evtype == XI_ButtonPress ? ButtonPress : ButtonRelease;
++        core.xbutton.serial = event->serial;
++        core.xbutton.send_event = event->send_event;
++        core.xbutton.display = event->display;
++        core.xbutton.window = event->event;
++        core.xbutton.root = event->root;
++        core.xbutton.subwindow = event->child;
++        core.xbutton.time = event->time;
++        core.xbutton.x = event->event_x;
++        core.xbutton.y = event->event_y;
++        core.xbutton.x_root = event->root_x;
++        core.xbutton.y_root = event->root_y;
++        core.xbutton.state = xinput2_core_state( event );
++        core.xbutton.button = event->detail;
++        core.xbutton.same_screen = True;
++        if (event->evtype == XI_ButtonPress) return X11DRV_ButtonPress( hwnd, &core );
++        return X11DRV_ButtonRelease( hwnd, &core );
++    }
++
++    core.xmotion.type = MotionNotify;
++    core.xmotion.serial = event->serial;
++    core.xmotion.send_event = event->send_event;
++    core.xmotion.display = event->display;
++    core.xmotion.window = event->event;
++    core.xmotion.root = event->root;
++    core.xmotion.subwindow = event->child;
++    core.xmotion.time = event->time;
++    core.xmotion.x = event->event_x;
++    core.xmotion.y = event->event_y;
++    core.xmotion.x_root = event->root_x;
++    core.xmotion.y_root = event->root_y;
++    core.xmotion.state = xinput2_core_state( event );
++    core.xmotion.is_hint = NotifyNormal;
++    core.xmotion.same_screen = True;
++    return X11DRV_MotionNotify( hwnd, &core );
++}
++
 +/***********************************************************************
 + *           X11DRV_SmoothScrollEvent
 + *
@@ -228,12 +302,12 @@ index 2bd3402c0e..7aee2412db 100644
 +    if (!xinput2_smooth_scroll) return FALSE;
 +    if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
 +
-+    if (event->evtype == XI_ButtonPress)
++    if (event->evtype == XI_ButtonPress || event->evtype == XI_ButtonRelease)
 +    {
 +        int button = event->detail - 1;
 +
-+        if (button < 3 || button > 6) return FALSE;
-+        if (emulated) return TRUE;
++        if (button < 3 || button > 6) return forward_xinput2_core_event( hwnd, event );
++        if (event->evtype == XI_ButtonRelease || emulated) return TRUE;
 +        pt = map_event_coords( hwnd, event->event, event->root, root, pt );
 +        send_wheel_input( hwnd, pt, button_down_flags[button], (int)button_down_data[button], FALSE, time );
 +        return TRUE;
@@ -255,7 +329,7 @@ index 2bd3402c0e..7aee2412db 100644
 +        }
 +        values++;
 +    }
-+    if (!saw_scroll) return FALSE;
++    if (!saw_scroll) return forward_xinput2_core_event( hwnd, event );
 +    if (emulated) return TRUE;
 +
 +    TRACE( "hwnd %p/%lx smooth scroll delta %d,%d\n", hwnd, event->event, delta_x, delta_y );
@@ -270,13 +344,14 @@ index 2bd3402c0e..7aee2412db 100644
  #ifdef XI_GesturePinchBegin
  
  /***********************************************************************
-@@ -2113,6 +2294,13 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -2113,6 +2360,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
          ret = X11DRV_RawMotion( event );
          break;
  
 +#ifdef XIScrollClass
 +    case XI_Motion:
 +    case XI_ButtonPress:
++    case XI_ButtonRelease:
 +        ret = X11DRV_SmoothScrollEvent( event );
 +        break;
 +#endif
@@ -318,5 +393,3 @@ index 34b53ce403..7e74ca7ebf 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
--- 
-2.55.0
