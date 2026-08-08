@@ -1,0 +1,229 @@
+From e9b185c1036ae8df27229a7c87539412099bcd00 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Wed, 5 Aug 2026 20:46:35 +0200
+Subject: [PATCH 2/3] win32u: skip redundant set_queue_mask calls
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Idle Live 12 re-asserts the queue masks with identical args ~800
+times/sec. The masks are purely client-written sticky state: the
+only server-side writers are the queue init (server/queue.c:337-340),
+the set_queue_mask handler (server/queue.c:3153-3155) and the
+get_message STATUS_PENDING tail (server/queue.c:3436-3437), both of
+the latter storing client-supplied values. So a per-thread memo of
+what was last asserted always matches the shared-memory masks, and
+an identical re-assertion can be skipped outright.
+
+This patch adds a {wake_mask, changed_mask, valid} memo to the
+win32u user_thread_info, noted after every set_queue_mask call and
+after every non-internal get_message that returned STATUS_PENDING
+(the internal early return, server/queue.c:3348, stores nothing, so
+internal peeks never note). Gated by WINE_MSG_FASTPATH (on by
+default; "0"/"off" disables, case-insensitive); with the gate off
+every path is byte-identical to today.
+
+Call sites:
+
+- check_queue_masks (dlls/win32u/message.c), used by
+  process_driver_events, consults the memo instead of the
+  shared-memory masks. The two are equivalent whenever the memo is
+  valid — the memo tracks the only writer — and the shared-memory
+  access_time freshness rule (<3000 ms, the heartbeat that keeps
+  is_queue_hung / SEND_MSG_ABORT_IF_HUNG working, server/queue.c:1287,
+  :3203) is kept exactly. A driver-event re-arm is still never
+  skipped: set_queue_mask with poll_events=1 clears QS_DRIVER and
+  re-arms the fd (server/queue.c:3144-3149), and the drained case
+  still takes the server call, which then refreshes the memo.
+- wait_message_reply: today, once a sent message or its result is
+  pending, check_queue_bits cannot skip (the bits are set), so every
+  iteration pays a set_queue_mask round trip solely to fetch
+  wake_bits — the call clears nothing without poll_events. With the
+  memo matching, the wake bits come from the same shared-memory
+  seqlock read instead, zero round trips for the whole wait. QS_
+  SENDMESSAGE/QS_SMRESULT are consumed only by this thread, so a set
+  bit read from shared memory cannot be lost; a bit set just after
+  the read is caught by the blocking wait on the server queue sync
+  object, which the server signals on every bits change.
+- peek_message notes the masks when get_message pends, keeping the
+  memo warm at zero cost.
+
+The memo is per-thread, starts cold on new queues (first assertion
+goes to the server), and a wineserver restart kills the session
+anyway. A defensive WARN drops the memo if it is ever found to
+disagree with the shared-memory masks, falling back to the server
+call.
+
+Verification: full series (62 main + performance 0001..0003 + this)
+applies with git am --3way onto the pristine base;
+dlls/win32u/message.o compiles warning-free with Wine's warning set.
+---
+ dlls/win32u/message.c        | 105 ++++++++++++++++++++++++++++++++---
+ dlls/win32u/ntuser_private.h |   3 +
+ 2 files changed, 100 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index c90ac89..d2c24ba 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2913,6 +2913,68 @@ static BOOL process_hardware_message( MSG *msg, UINT hw_id, const struct hardwar
+     return ret;
+ }
+ 
++/***********************************************************************
++ *           note_queue_masks
++ *
++ * WINE_MSG_FASTPATH: record the queue masks this thread last asserted to
++ * the server. The masks are purely client-written sticky state — the only
++ * server-side writes are the set_queue_mask handler and the get_message
++ * STATUS_PENDING tail, both storing client-supplied values (server/queue.c)
++ * — so a per-thread memo always matches the shared-memory masks and lets
++ * the fast path skip redundant re-assertions.
++ */
++static void note_queue_masks( UINT wake_mask, UINT changed_mask )
++{
++    struct user_thread_info *thread_info = get_user_thread_info();
++
++    thread_info->queue_mask_wake    = wake_mask;
++    thread_info->queue_mask_changed = changed_mask;
++    thread_info->queue_mask_valid   = TRUE;
++}
++
++/***********************************************************************
++ *           read_queue_wake_bits
++ *
++ * WINE_MSG_FASTPATH: when the mask memo says the requested masks are
++ * already asserted, fetch the wake bits from the shared queue instead of a
++ * set_queue_mask round trip made solely for the reply. The access_time
++ * freshness rule is the one check_queue_bits/check_queue_masks apply: a
++ * queue not touched for 3s needs the server call as a heartbeat for
++ * is_queue_hung / SEND_MSG_ABORT_IF_HUNG (server/queue.c). Returns FALSE
++ * when the server call must be made.
++ */
++static BOOL read_queue_wake_bits( UINT wake_mask, UINT changed_mask, UINT *bits )
++{
++    struct user_thread_info *thread_info = get_user_thread_info();
++    struct object_lock lock = OBJECT_LOCK_INIT;
++    const queue_shm_t *queue_shm;
++    BOOL skip = FALSE;
++    UINT status;
++
++    if (!thread_info->queue_mask_valid ||
++        thread_info->queue_mask_wake != wake_mask ||
++        thread_info->queue_mask_changed != changed_mask)
++        return FALSE;
++
++    while ((status = get_shared_queue( &lock, &queue_shm )) == STATUS_PENDING)
++    {
++        if (queue_shm->wake_mask != wake_mask || queue_shm->changed_mask != changed_mask)
++        {
++            /* the memo tracks the only mask writer, so this cannot happen;
++               drop the memo and take the server path if it ever does */
++            WARN( "WINE_MSG_FASTPATH queue mask memo diverged from the server masks\n" );
++            thread_info->queue_mask_valid = FALSE;
++            skip = FALSE;
++            continue;
++        }
++        *bits = queue_shm->wake_bits;
++        skip = get_tick_count() - (UINT64)queue_shm->access_time / 10000 < 3000; /* avoid hung queue */
++    }
++
++    if (status) return FALSE;
++    return skip;
++}
++
+ /***********************************************************************
+  *           check_queue_bits
+  *
+@@ -3030,6 +3092,10 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
+             if (buffer != buffer_init) free( buffer );
+             if (res == STATUS_PENDING)
+             {
++                /* a non-internal get_message that pends stores the requested
++                   masks server-side; a check_queue_bits skip proved them equal */
++                if (msg_fastpath_enabled() && !filter->internal)
++                    note_queue_masks( wake_mask, filter->mask );
+                 if (hwnd == (HWND)-1 && idle_event) NtSetEvent( idle_event, NULL );
+                 return 0;
+             }
+@@ -3321,7 +3387,16 @@ static BOOL check_queue_masks( UINT wake_mask, UINT changed_mask )
+ 
+     while ((status = get_shared_queue( &lock, &queue_shm )) == STATUS_PENDING)
+     {
+-        if (queue_shm->wake_mask != wake_mask || queue_shm->changed_mask != changed_mask) skip = FALSE;
++        if (msg_fastpath_enabled())
++        {
++            struct user_thread_info *thread_info = get_user_thread_info();
++
++            skip = thread_info->queue_mask_valid &&
++                   thread_info->queue_mask_wake == wake_mask &&
++                   thread_info->queue_mask_changed == changed_mask &&
++                   get_tick_count() - (UINT64)queue_shm->access_time / 10000 < 3000; /* avoid hung queue */
++        }
++        else if (queue_shm->wake_mask != wake_mask || queue_shm->changed_mask != changed_mask) skip = FALSE;
+         else skip = get_tick_count() - (UINT64)queue_shm->access_time / 10000 < 3000; /* avoid hung queue */
+     }
+ 
+@@ -3359,6 +3434,9 @@ static BOOL process_driver_events( UINT events_mask, UINT wake_mask, UINT change
+             wine_server_call( req );
+         }
+         SERVER_END_REQ;
++        /* a drained (poll_events=1) call re-arms the driver fd and is never
++           skipped above; it stores the same masks, so it can be noted too */
++        if (msg_fastpath_enabled()) note_queue_masks( wake_mask, changed_mask );
+     }
+ 
+     /* process every pending internal hardware messages */
+@@ -3768,17 +3846,28 @@ static void wait_message_reply( UINT flags )
+     {
+         UINT wake_bits, changed_bits;
+ 
+-        if (check_queue_bits( wake_mask, wake_mask, wake_mask, wake_mask,
++        /* WINE_MSG_FASTPATH: when the mask memo says the masks are already
++           asserted, the wake bits come from the same shared-memory read —
++           the set_queue_mask round trip would only fetch them (it clears
++           nothing without poll_events) */
++        if (msg_fastpath_enabled() &&
++            read_queue_wake_bits( wake_mask, wake_mask, &wake_bits ))
++            wake_bits = wake_bits & wake_mask;
++        else if (check_queue_bits( wake_mask, wake_mask, wake_mask, wake_mask,
+                               &wake_bits, &changed_bits, FALSE ))
+             wake_bits = wake_bits & wake_mask;
+-        else SERVER_START_REQ( set_queue_mask )
++        else
+         {
+-            req->wake_mask    = wake_mask;
+-            req->changed_mask = wake_mask;
+-            wine_server_call( req );
+-            wake_bits = reply->wake_bits & wake_mask;
++            SERVER_START_REQ( set_queue_mask )
++            {
++                req->wake_mask    = wake_mask;
++                req->changed_mask = wake_mask;
++                wine_server_call( req );
++                wake_bits = reply->wake_bits & wake_mask;
++            }
++            SERVER_END_REQ;
++            if (msg_fastpath_enabled()) note_queue_masks( wake_mask, wake_mask );
+         }
+-        SERVER_END_REQ;
+ 
+         if (wake_bits & QS_SMRESULT) return;  /* got a result */
+         if (wake_bits & QS_SENDMESSAGE)
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index ccff337..8729dfc 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -106,6 +106,9 @@ struct user_thread_info
+     struct ntuser_thread_info    *client_info;            /* Data shared with client */
+     HANDLE                        server_queue;           /* Handle to server-side queue */
+     HANDLE                        idle_event;             /* Handle to the process idle event */
++    UINT                          queue_mask_wake;        /* last asserted set_queue_mask wake mask */
++    UINT                          queue_mask_changed;     /* last asserted set_queue_mask changed mask */
++    BOOL                          queue_mask_valid;       /* the memo matches the server-side masks */
+     LONGLONG                      last_driver_time;       /* Get/PeekMessage driver event time */
+     HWND                          top_window;             /* desktop window */
+     HWND                          msg_window;             /* HWND_MESSAGE parent window */
+-- 
+2.55.0
+

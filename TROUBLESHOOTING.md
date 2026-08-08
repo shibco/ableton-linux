@@ -133,6 +133,67 @@ Start Live and enable **Show Link Toggle** and Link again. See
 [Ableton Link diagnostics](notes/ABLETON-WINE-LINK.md) if peers still do not
 appear.
 
+## Audio cuts out for a few seconds, or plays at the wrong speed
+
+Another audio application (usually a JACK one) told PipeWire to run at a
+different buffer size. Live mutes for a few seconds while the driver
+switches to that size, then audio comes back on its own. If it happens
+once, there is nothing to do.
+
+If it keeps happening, or audio plays too fast or too slow instead of
+coming back (releases up to 2026.08.04.1 do this), clear the stuck buffer
+size and restart Live:
+
+```bash
+pw-metadata -n settings 0 clock.force-quantum 0
+```
+
+If you still have problems, try rebooting. If they come back after that,
+run `./scripts/audio-report.sh` from a repository checkout and attach the
+output to an issue.
+
+## Live is slow and CPU use stays high
+
+Live runs much slower without a Linux feature called ntsync. The launcher
+warns at each startup while it is missing.
+
+`./scripts/setup-realtime.sh` already does both steps below. If you ran it,
+restart Live and the warning should be gone. Otherwise turn ntsync on now and
+at every boot:
+
+```bash
+sudo modprobe ntsync
+echo ntsync | sudo tee /etc/modules-load.d/90-ableton-ntsync.conf
+```
+
+Restart Live. The startup warning no longer appears.
+
+If the first command reports that the module does not exist, move to a kernel
+that provides ntsync (Linux 6.14 or newer) and run the commands again.
+
+## Live uses much CPU when it is idle
+
+Live sends many messages between its audio engine and its interface, also
+when nothing plays. On Windows, these messages are almost free. In Wine,
+each message went through a helper program (the wineserver) many times.
+Release 2026.08.05.1 removes most of these requests. The measured traffic
+from these messages fell by more than 99%.
+
+If Live still uses much CPU when it is idle:
+
+1. Do the check in "Live is slow and wineserver uses a full CPU core". A
+   Linux kernel older than 6.14 can keep Live at about 30% CPU on an empty
+   project. The Debian 13 kernel is older than 6.14.
+2. Turn the new code off for one test, and compare the readings:
+
+   ```bash
+   env WINE_APC_FASTPATH=off WINE_MSG_FASTPATH=off ableton-live
+   ```
+
+   If the CPU use changes, [open an issue](https://github.com/shibco/ableton-linux/issues) and include both readings.
+3. Programs that attach tools to Live's windows (screen readers, macro
+   tools, overlays) add more messages. Close them and measure again.
+
 ## Audio latency remains high
 
 PipeWire 1.6 or newer can match its graph quantum to PipeASIO's buffer. Check

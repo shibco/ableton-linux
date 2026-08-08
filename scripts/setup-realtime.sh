@@ -8,13 +8,16 @@
 #   /etc/security/limits.d/90-ableton-rt.conf   rtprio 95, memlock unlimited,
 #                                               nice -19 for the RT group
 #   /etc/sysctl.d/90-ableton-rt.conf            vm.swappiness = 10
+#   /etc/modules-load.d/90-ableton-ntsync.conf  loads the ntsync module at boot
+#                                               (kernels that provide it)
 # The limits grant the rtprio rights the launcher's opportunistic
 # `chrt -r 10` probes for (scripts/ableton-live), so installing this profile is
 # what turns that probe on.
 #
 # Host state changed besides the drop-ins: the invoking user is added to the RT
-# group, the running kernel's swappiness is applied immediately, and
-# rtirq.service is enabled when installed. Earlier versions also set the
+# group, the running kernel's swappiness is applied immediately, the ntsync
+# module is loaded when the kernel provides it, and rtirq.service is enabled
+# when installed. Earlier versions also set the
 # performance CPU governor here and enabled a boot-time unit reapplying it;
 # that is now session-scoped (the launcher holds the "performance" power
 # profile while Live runs), and this script removes the old unit when found.
@@ -40,6 +43,7 @@ RT_GROUP="${ABLETON_RT_GROUP:-audio}"
 DESTDIR="${DESTDIR:-}"
 LIMITS="$DESTDIR/etc/security/limits.d/90-ableton-rt.conf"
 SYSCTL="$DESTDIR/etc/sysctl.d/90-ableton-rt.conf"
+NTSYNC_CONF="$DESTDIR/etc/modules-load.d/90-ableton-ntsync.conf"
 # Installed by versions of this script before 2026-08; removed in step 3.
 OLD_GOV_UNIT=/etc/systemd/system/ableton-cpufreq-performance.service
 
@@ -58,7 +62,7 @@ install_dropin() {  # $1 = destination path; file content on stdin
     rm -f "$tmp"
 }
 
-echo "== [1/5] RT privileges: $RT_GROUP group + PAM limits =="
+echo "== [1/6] RT privileges: $RT_GROUP group + PAM limits =="
 if [ -n "$DESTDIR" ]; then
     echo "   staged mode (DESTDIR=$DESTDIR) — skipping groupadd/usermod"
 else
@@ -80,7 +84,7 @@ install_dropin "$LIMITS" <<EOF
 EOF
 echo "   wrote $LIMITS"
 
-echo "== [2/5] sysctl: vm.swappiness = 10 =="
+echo "== [2/6] sysctl: vm.swappiness = 10 =="
 install_dropin "$SYSCTL" <<EOF
 vm.swappiness = 10
 EOF
@@ -90,7 +94,7 @@ if [ -z "$DESTDIR" ]; then
     echo "   applied to the running kernel (sysctl --system)"
 fi
 
-echo "== [3/5] CPU speed: session-scoped, not boot policy =="
+echo "== [3/6] CPU speed: session-scoped, not boot policy =="
 # Earlier versions set the performance governor here and enabled a unit that
 # reapplied it at every boot: a permanent battery cost for hosts that run
 # Live occasionally. The launcher now holds the "performance" power profile
@@ -125,7 +129,34 @@ EOF
     fi
 fi
 
-echo "== [4/5] IRQ threading (verify and advise — the bootloader is never touched) =="
+echo "== [4/6] ntsync: kernel NT synchronization =="
+# Without /dev/ntsync every Windows wait is a wineserver round trip; the
+# launcher warns at startup. ntsync ships in Linux 6.14+ (CONFIG_NTSYNC).
+if modinfo -n ntsync >/dev/null 2>&1; then
+    install_dropin "$NTSYNC_CONF" <<'EOF'
+# ableton-linux: load the NT synchronization driver (/dev/ntsync) at boot
+ntsync
+EOF
+    echo "   wrote $NTSYNC_CONF"
+    if [ -z "$DESTDIR" ]; then
+        "${sudo[@]}" modprobe ntsync 2>/dev/null || true
+        if [ -c /dev/ntsync ]; then
+            echo "   /dev/ntsync is available"
+        else
+            echo "-- modprobe ntsync did not produce /dev/ntsync — check 'dmesg | tail'"
+        fi
+    fi
+elif [ -c /dev/ntsync ]; then
+    echo "   /dev/ntsync present (built into this kernel; nothing to load)"
+else
+    cat <<'EOF'
+-- NOTE: this kernel provides no ntsync module; without /dev/ntsync every
+   Windows wait becomes a wineserver round trip and Live runs much slower.
+   Use a Linux 6.14+ kernel with CONFIG_NTSYNC. See TROUBLESHOOTING.md.
+EOF
+fi
+
+echo "== [5/6] IRQ threading (verify and advise — the bootloader is never touched) =="
 if grep -qw threadirqs /proc/cmdline; then
     echo "   threadirqs present on the kernel command line"
 else
@@ -147,7 +178,7 @@ if [ -z "$DESTDIR" ]; then
     fi
 fi
 
-echo "== [5/5] report =="
+echo "== [6/6] report =="
 echo "   kernel: $(uname -r)"
 case "$(uname -r)" in
     *rt*|*lowlatency*) ;;

@@ -19,6 +19,28 @@
 - ableton-linkd rejects fractional `--linger` values instead of
   truncating them toward the never-exit setting.
 
+## 2026.08.05.1
+
+- Live uses less CPU when nothing plays. Live's audio engine and its
+  interface exchange many small messages all the time. Each of these
+  messages made several requests to the wineserver (Wine's helper
+  program). The new release removes most of these requests. In
+  measurements, the removed kinds of traffic decreased by more than 99%.
+- Short waits and small engine callbacks now also skip the wineserver most
+  of the time. This helps more while Live plays than while it is idle.
+- The new code is on by default. The old code stays available for a test:
+
+  ```bash
+  env WINE_APC_FASTPATH=off WINE_MSG_FASTPATH=off ableton-live
+  ```
+
+  If Live behaves differently with the new code, open an issue and include
+  both readings.
+- On a Linux kernel older than 6.14, Live's idle CPU stays high. The
+  Debian 13 kernel is older than 6.14. These kernels do not have the ntsync
+  feature that Wine needs. See TROUBLESHOOTING.md, "Live is slow and
+  wineserver uses a full CPU core".
+
 ## 2026.08.04.1
 
 - Full Screen works (issue 42). Entering it no longer shifts Live's

@@ -29,7 +29,10 @@ while [ $SECONDS -lt $deadline ]; do
     if printf '%s' "$new" | grep -qa "Open: finished"; then
         verdict=opened; break
     fi
-    if ! pgrep -f "Ableton Live.*\.exe" >/dev/null 2>&1; then
+    # Only meaningful once Live has logged something: before the exe appears
+    # (wineboot after a runtime swap takes seconds) an empty pgrep is normal,
+    # and a true pre-log failure still ends in the timeout verdict.
+    if [ -n "$new" ] && ! pgrep -f "Ableton Liv[e].*\.exe" >/dev/null 2>&1; then
         verdict=died; break
     fi
 done

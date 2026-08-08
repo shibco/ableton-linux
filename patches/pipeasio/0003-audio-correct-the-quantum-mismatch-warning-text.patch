@@ -1,0 +1,21 @@
+diff --git a/src/audio.c b/src/audio.c
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -1412,10 +1412,13 @@
+         if (!quantum_warned)
+         {
+             quantum_warned = true;
+-            WARN("PipeWire quantum %u != host buffer_size %u: graph clamped our "
+-                 "forced quantum, playback runs at %u/%u speed. Raise the host "
+-                 "buffer size or relax clock.min-quantum/clock.max-quantum "
+-                 "(pw-metadata -n settings).\n",
++            WARN("PipeWire quantum %u != host buffer_size %u: a forced quantum "
++                 "elsewhere outranks ours (arbitration is last-change-wins; "
++                 "clock.min-quantum/clock.max-quantum play no part). Playback "
++                 "runs at %u/%u speed. Check clock.force-quantum in "
++                 "'pw-metadata -n settings' and other clients' node.force-quantum "
++                 "in 'pw-dump'; PIPEASIO_FOLLOW_DEVICE_CLOCK=on adopts the "
++                 "graph quantum (pipeasio-quantum-arbitration).\n",
+                  (unsigned)quantum, (unsigned)c->buffer_size, (unsigned)c->buffer_size,
+                  (unsigned)quantum);
+         }

@@ -80,3 +80,8 @@ Live DSP percentage. The script appends the result to `bench/results.csv`.
 
 Keep the current default until that comparison shows whether launcher-wide RR
 helps, needs a CPU-count limit, or should be narrowed.
+
+2026-08-02: the comparison ran. Launcher-wide RR eliminated all xruns on a
+four-CPU cpuset (242 to 0 idle, 228 to 0 playing) and stays the default; it
+also slowed Live's startup about sixfold there. Full rows and conditions:
+[FINDINGS-RT-AB-2026-08-02.md](FINDINGS-RT-AB-2026-08-02.md).
