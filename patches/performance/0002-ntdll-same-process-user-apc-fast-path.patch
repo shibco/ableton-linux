@@ -1,0 +1,1016 @@
+From aa5f6def09b28c167998da49a53ca0457bbaa546 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Wed, 5 Aug 2026 19:11:37 +0200
+Subject: [PATCH] ntdll: queue same-process user APCs without a wineserver
+ round trip
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Every same-process user APC costs at least two wineserver round trips
+today: one to queue (dlls/ntdll/unix/thread.c:1796-1824,
+NtQueueApcThreadEx2, unconditional SERVER_START_REQ(queue_apc)) and one
+to drain on the waiting side even with ntsync (dlls/ntdll/unix/sync.c,
+zero-timeout server_wait asserting STATUS_USER_APC after an alert wake).
+NtTestAlert and the TEST_ALERT branch of NtContinueEx are each another
+full zero-timeout server select even when nothing is pending
+(dlls/ntdll/unix/server.c:848-879). Idle Live 12 keeps ~3,650 wineserver
+context switches/sec alive on an empty set through exactly this traffic.
+
+This patch adds a client-side fast path, gated by WINE_APC_FASTPATH
+(on by default; "0"/"off" disables, case-insensitive) and by ntsync
+being present (inproc_device_fd >= 0); with either off, every code path
+falls back to today's exact behavior.
+
+Queue side. Each user thread registers in a process-wide registry at
+init (server_init_process / server_init_thread) and deregisters at exit
+(pthread_exit_wrapper, before the fds are closed, so queuers can never
+touch a recycled fd number). Registration eagerly creates the thread's
+alert fd (one get_inproc_alert_fd server call per thread, trivial) and a
+client-owned manual-reset ntsync poke event (NTSYNC_IOC_CREATE_EVENT on
+the process's /dev/ntsync instance, no server object behind it). System
+threads (no TEB) are not registered: the server rejects APCs to them
+with STATUS_ACCESS_DENIED, and unregistered targets keep that path.
+
+NtQueueApcThreadEx2 takes the fast path only for plain user APCs
+(flags == QUEUE_USER_APC_FLAGS_NONE, no reserve handle; special APCs
+and reserves keep their server semantics). The target handle is resolved
+through a generation-validated cache: on a miss, one
+NtQueryInformationThread(ThreadBasicInformation) learns the pid/tid;
+cross-process handles are permanently marked server-routed. Cached
+handle -> {tid, generation} entries are validated against the registry
+on every use; the generation is bumped per registration, and
+deregistration poisons cache entries for the exiting tid, so a recycled
+ptid (alloc_ptid reuses freed slots promptly) can never validate a stale
+entry. On a validation failure the mapping is refreshed through a new
+query. Handle recycling is covered separately: wineserver hands a freed
+handle slot straight back (server/handle.c: alloc_entry starts at
+table->free, close_handle lowers it), so NtClose and NtDuplicateObject's
+DUPLICATE_CLOSE_SOURCE branch call apc_fastpath_forget_handle to drop
+the cache entry for the closed handle before the slot can be
+reallocated, following the fd cache's remove-before-close discipline
+("always remove the cached fd; if the server request fails we'll just
+retrieve it again"). Without this a recycled handle would validate
+against the old thread and deliver its APCs there. If the target left
+the registry, is a system thread, or is blocked where a poke cannot
+reach it (server_select, WaitAll and full 64-handle waits,
+signal-and-wait, tracked by an unarmed_wait_depth counter), the APC
+falls back to today's server queue_apc.
+
+Signal safety. Every apc_mutex section runs under
+server_enter_uninterrupted_section, the way virtual.c guards
+virtual_mutex: SIGUSR1 (suspend, or a system APC queued to a thread not
+already in an APC wait, server/thread.c:1473-1477) re-enters the fast
+path through usr1_handler -> wait_suspend -> server_select ->
+apc_fastpath_enter_unarmed_wait, and the queue and fetch sides hold the
+mutex across ntsync ioctls, so a signal delivered inside an unprotected
+section would self-deadlock the thread with apc_mutex held for the life
+of the process.
+
+Wake protocol. The poke event mirrors the client queue state, following
+the server's own alert_sync protocol (server/thread.c:1483-1488,
+1520-1521, 1536-1537): queuers append the payload and set the event only
+on the empty-to-non-empty transition, the owner pops and resets the
+event on the non-empty-to-empty transition, both under apc_mutex, and
+waiters always poll the client queue before sleeping. A poke can never
+be lost between the queue-empty poll and the in-kernel wait that follows
+it, and the event is never left signaled behind an empty queue (which
+would otherwise turn every later wait into an instant-return loop, the
+issue-109 livelock class). Self-queued APCs skip the poke entirely: the
+owner cannot be blocked while running, and its next poll finds the APC.
+The server's alert event stays strictly server-owned (the client never
+sets or resets it), so it keeps tracking the server-side queue
+(cross-process and special APCs) and remains a reliable "server queue
+non-empty" predicate for the drain side. (An earlier draft of this work
+poked the server's alert fd directly; that leaves the manual-reset event
+signaled forever once a peer APC lands, since the server only resets it
+on server-queue transitions, degrading every later in-kernel wait to an
+instant wake. The dedicated poke event avoids that outright.)
+
+Drain side. Every alertable entry point polls the client queue first and
+dispatches through the existing invoke_user_apc (server.c:385), so
+KiUserApcDispatcher semantics (one APC armed per call, the rest chained
+through the dispatcher's KCONTINUE_FLAG_TEST_ALERT continue) are
+unchanged:
+
+- server_select (server.c:718-789) raises unarmed_wait_depth for its
+  whole duration, then, for alertable calls, delivers one queued client
+  APC through *user_apc (the existing callers invoke it with the right
+  context, so NtTestAlert and NtContinueEx get client APCs with zero
+  changes). Alertable zero-handle zero-timeout polls (NtTestAlert,
+  NtContinueEx's TEST_ALERT, alert drains) skip the server request
+  entirely when NTSYNC_IOC_EVENT_READ shows the alert event unsignaled (the
+  server-side queue is then provably empty), returning the same
+  STATUS_TIMEOUT the select would have returned. Thread termination does
+  not depend on these round trips (kill_thread signals SIGQUIT,
+  server/thread.c:1635), and system APCs arrive through SIGUSR1 signal
+  frames, so skipping the poll is safe.
+- inproc_wait arms the poke event as an extra wait object in alertable
+  WaitAny waits with a free slot (count < 64), so a same-process APC
+  wakes the wait in-kernel; WaitAll/full waits raise unarmed_wait_depth
+  instead, which routes queuers through the server exactly like today.
+  The alert branch of linux_wait_objs no longer drains internally with
+  assert(ret == STATUS_USER_APC): the wake is returned raw and the
+  callers drain, so the cancel race (APC cancelled between kernel wake
+  and drain) now reports STATUS_USER_APC instead of crashing on the
+  assert. inproc_signal_and_wait gets the same treatment via the
+  unarmed_wait_depth protocol.
+- The alertable sleep fast path from the previous patch arms the poke
+  event as its single wait object; a client wake delivers one APC and
+  returns STATUS_USER_APC, exactly the result an alert wake produces
+  today.
+
+Thread exit discards undelivered client APCs, matching Windows dropping
+APCs queued to terminated threads (the server path likewise fails the
+queue with STATUS_UNSUCCESSFUL once the thread is gone). Cross-process
+APCs, special APCs, system APCs, thread_cancel_apc semantics, and the
+alert event reset all remain server-owned.
+
+Hosts without /dev/ntsync are short-circuited at the gate (inproc_device_fd >= 0): with no ntsync device no thread can register a poke event, so attempting the fast path there would only add a wasted NtQueryInformationThread round trip per handle to every queue_apc call.
+
+Verification: full series plus this patch applies with git am --3way
+onto the pristine base; dlls/ntdll/unix/{sync,server,thread,virtual}.o
+compile warning-free with HAVE_LINUX_NTSYNC_H; ntsync count=0/count=1
+alert-wait semantics, the poke event create/set/reset ioctls, and
+EVENT_READ queue-state polling were exercised against /dev/ntsync on the
+build host with a standalone test. The handle-reuse and suspend-stress
+regressions found in review are pinned by apcprobe case7 (a closed
+thread handle recycled by CreateThread must not deliver to the old
+thread) and case8 (a SuspendThread/ResumeThread hammer against a queuer
+and an alertable waiter, with bounded joins), which fail on the pre-fix
+revision and pass here, with the gate on and off.
+---
+ dlls/ntdll/unix/server.c       |  60 ++++++
+ dlls/ntdll/unix/sync.c         | 187 ++++++++++++++--
+ dlls/ntdll/unix/thread.c       | 413 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h |  15 ++
+ dlls/ntdll/unix/virtual.c      |   2 +
+ 5 files changed, 658 insertions(+), 19 deletions(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 730a0cd..5eb0ac5 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -389,6 +389,25 @@ static NTSTATUS invoke_user_apc( CONTEXT *context, const struct user_apc *apc, N
+ }
+ 
+ 
++/***********************************************************************
++ *              apc_fastpath_deliver_client_apc
++ *
++ * Fetch and dispatch one same-process user APC queued through the client
++ * fast path (WINE_APC_FASTPATH), through the same KiUserApcDispatcher path
++ * as server-delivered APCs. Returns TRUE if one was dispatched; further
++ * queued APCs are delivered through the dispatcher's TEST_ALERT continue,
++ * exactly like the server-side queue.
++ */
++BOOL apc_fastpath_deliver_client_apc( CONTEXT *context )
++{
++    struct user_apc apc;
++
++    if (!apc_fastpath_fetch_client_apc( &apc )) return FALSE;
++    invoke_user_apc( context, &apc, STATUS_USER_APC );
++    return TRUE;
++}
++
++
+ /***********************************************************************
+  *              invoke_system_apc
+  */
+@@ -723,6 +742,7 @@ unsigned int server_select( const union select_op *select_op, data_size_t size,
+     struct thread_data *data = get_thread_data();
+     obj_handle_t apc_handle = 0;
+     BOOL suspend_context = !!context;
++    BOOL fastpath = apc_fastpath_enabled();
+     union apc_result result;
+     sigset_t old_set;
+     int signaled;
+@@ -735,6 +755,33 @@ unsigned int server_select( const union select_op *select_op, data_size_t size,
+ 
+     memset( &result, 0, sizeof(result) );
+ 
++    if (fastpath)
++    {
++        /* While blocked in the server protocol a client-queue poke cannot
++           reach this thread, so same-process queuers fall back to the server
++           path for the duration. */
++        apc_fastpath_enter_unarmed_wait();
++        if ((flags & SELECT_ALERTABLE) && !context && user_apc)
++        {
++            /* deliver same-process user APCs queued while this thread was
++               busy, before a long server wait would delay them */
++            if (apc_fastpath_fetch_client_apc( user_apc ))
++            {
++                apc_fastpath_leave_unarmed_wait();
++                return STATUS_USER_APC;
++            }
++            /* Alertable zero-handle polls (NtTestAlert, NtContinueEx's
++               TEST_ALERT, alert drains) can skip the round trip entirely when
++               the server-side user APC queue is empty; the manual-reset alert
++               event is signaled iff it is not. */
++            if (!select_op && !abs_timeout && !apc_fastpath_server_apc_pending())
++            {
++                apc_fastpath_leave_unarmed_wait();
++                return STATUS_TIMEOUT;
++            }
++        }
++    }
++
+     do
+     {
+         pthread_sigmask( SIG_BLOCK, &server_block_set, &old_set );
+@@ -778,6 +825,8 @@ unsigned int server_select( const union select_op *select_op, data_size_t size,
+     }
+     while (ret == STATUS_USER_APC || ret == STATUS_KERNEL_APC);
+ 
++    if (fastpath) apc_fastpath_leave_unarmed_wait();
++
+     if (ret == STATUS_USER_APC) *user_apc = reply_data.call.user;
+     if (reply_size > sizeof(reply_data.call))
+     {
+@@ -1706,6 +1755,8 @@ size_t server_init_process(void)
+ 
+     if (ret) server_protocol_error( "init_first_thread failed with status %x\n", ret );
+ 
++    apc_fastpath_register_thread( data );
++
+     if (!supported_machines_count)
+         fatal_error( "'%s' is a 64-bit installation, it cannot be used with a 32-bit wineserver.\n",
+                      config_dir );
+@@ -1806,6 +1857,9 @@ void server_init_thread( struct thread_data *data )
+ 
+     if (data->teb)
+     {
++        /* user threads only: the server rejects APCs queued to system
++           threads, and unregistered targets keep the server path */
++        apc_fastpath_register_thread( data );
+         init_teb_data( data );
+         signal_start_thread( data->start, data->param, data->teb );
+     }
+@@ -1888,3 +1942,4 @@
+         fd = remove_fd_from_cache( source );
+         close_inproc_sync( source );
++        apc_fastpath_forget_handle( source );
+     }
+@@ -1955,1 +2010,6 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
++    /* a closed handle's slot can be reallocated right away (server/handle.c
++       alloc_entry starts at table->free), so the apc handle cache must forget
++       it before that happens */
++    apc_fastpath_forget_handle( handle );
++
+     /* hold fd_cache_mutex to prevent the fd from being added again between the
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 2c58962..5343cf5 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -454,14 +454,7 @@ static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_
+     if (!ret)
+     {
+         if (args.index == count)
+-        {
+-            static const LARGE_INTEGER timeout;
+-
+-            if (!count) return STATUS_USER_APC;  /* alert-only wait: leave the drain to the caller */
+-            ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &timeout );
+-            assert( ret == STATUS_USER_APC );
+-            return ret;
+-        }
++            return STATUS_USER_APC;  /* alert wake: the callers drain server-side APCs */
+ 
+         return type != WaitAll ? args.index : 0;
+     }
+@@ -470,6 +463,62 @@ static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_
+     return errno_to_status( errno );
+ }
+ 
++
++/***********************************************************************
++ *           apc_fastpath_create_event
++ *
++ * Create a thread's client poke event: a manual-reset ntsync event owned by
++ * the client (no server object behind it), used to wake the thread's
++ * in-kernel waits when a same-process user APC is queued to it. Returns
++ * -1 when ntsync is unavailable.
++ */
++int apc_fastpath_create_event(void)
++{
++    struct ntsync_event_args args = {.manual = 1, .signaled = 0};
++
++    if (inproc_device_fd < 0) return -1;
++    return ioctl( inproc_device_fd, NTSYNC_IOC_CREATE_EVENT, &args );
++}
++
++void apc_fastpath_set_event( int fd )
++{
++    __u32 prev;
++    int ret;
++
++    do { ret = ioctl( fd, NTSYNC_IOC_EVENT_SET, &prev ); }
++    while (ret < 0 && errno == EINTR);
++    if (ret < 0) WARN( "client APC poke event set failed: %s\n", strerror( errno ) );
++}
++
++void apc_fastpath_reset_event( int fd )
++{
++    __u32 prev;
++    int ret;
++
++    do { ret = ioctl( fd, NTSYNC_IOC_EVENT_RESET, &prev ); }
++    while (ret < 0 && errno == EINTR);
++    if (ret < 0) WARN( "client APC poke event reset failed: %s\n", strerror( errno ) );
++}
++
++/***********************************************************************
++ *           apc_fastpath_server_apc_pending
++ *
++ * The server-side alert event is manual-reset and is signaled iff the
++ * server-side user APC queue of this thread is non-empty (signaled on the
++ * first queue, server/thread.c:1483-1488, reset when it empties,
++ * server/thread.c:1520-1521,1536-1537), and same-process queuers never
++ * touch it. Returns 1 if signaled, 0 if not, -1 when unknown.
++ */
++int apc_fastpath_server_apc_pending(void)
++{
++    struct ntsync_event_args args = {0};
++    int fd = get_inproc_alert_fd();
++
++    if (fd < 0) return -1;
++    if (ioctl( fd, NTSYNC_IOC_EVENT_READ, &args ) < 0) return -1;
++    return args.signaled;
++}
++
+ #else /* NTSYNC_IOC_EVENT_READ */
+ 
+ static NTSTATUS linux_release_semaphore_obj( int obj, ULONG count, ULONG *prev_count )
+@@ -518,6 +567,24 @@ static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_
+     return STATUS_NOT_IMPLEMENTED;
+ }
+ 
++int apc_fastpath_create_event(void)
++{
++    return -1;
++}
++
++void apc_fastpath_set_event( int fd )
++{
++}
++
++void apc_fastpath_reset_event( int fd )
++{
++}
++
++int apc_fastpath_server_apc_pending(void)
++{
++    return -1;
++}
++
+ #endif /* NTSYNC_IOC_EVENT_READ */
+ 
+ /* It's possible for synchronization primitives to remain alive even after being
+@@ -890,7 +957,7 @@ static NTSTATUS inproc_query_mutex( HANDLE handle, MUTANT_BASIC_INFORMATION *inf
+     return ret;
+ }
+ 
+-static int get_inproc_alert_fd(void)
++int get_inproc_alert_fd(void)
+ {
+     struct thread_data *data = get_thread_data();
+     obj_handle_t token;
+@@ -921,7 +988,9 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, WAIT_TYPE type,
+                              BOOLEAN alertable, const LARGE_INTEGER *timeout )
+ {
+     struct inproc_sync *syncs[64], stack[ARRAY_SIZE(syncs)];
+-    int objs[ARRAY_SIZE(syncs)], alert_fd = 0;
++    int objs[ARRAY_SIZE(syncs)], alert_fd = 0, client_event = -1;
++    DWORD wait_count = count;
++    BOOL unarmed = FALSE;
+     NTSTATUS ret;
+ 
+     if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
+@@ -938,8 +1007,50 @@ static NTSTATUS inproc_wait( DWORD count, const HANDLE *handles, WAIT_TYPE type,
+         objs[i] = syncs[i]->fd;
+     }
+ 
+-    if (alertable) alert_fd = get_inproc_alert_fd();
+-    ret = linux_wait_objs( inproc_device_fd, count, objs, type, alert_fd, timeout );
++    if (alertable)
++    {
++        alert_fd = get_inproc_alert_fd();
++
++        if (apc_fastpath_enabled())
++        {
++            /* The client poke event can only ride along as a wait object in
++               WaitAny waits with a free slot; while blocked anywhere else
++               (WaitAll, full 64-handle waits) same-process queuers fall back
++               to the server path, whose alert event is always armed. */
++            if (type == WaitAll || count == ARRAY_SIZE(syncs) ||
++                (client_event = apc_fastpath_client_event()) < 0)
++            {
++                apc_fastpath_enter_unarmed_wait();
++                unarmed = TRUE;
++            }
++            else objs[wait_count++] = client_event;
++
++            /* deliver same-process user APCs queued while busy, before sleeping */
++            if (apc_fastpath_deliver_client_apc( NULL ))
++            {
++                if (unarmed) apc_fastpath_leave_unarmed_wait();
++                while (count--) release_inproc_sync( syncs[count] );
++                return STATUS_USER_APC;
++            }
++        }
++    }
++
++    ret = linux_wait_objs( inproc_device_fd, wait_count, objs, type, alert_fd, timeout );
++    if (unarmed) apc_fastpath_leave_unarmed_wait();
++
++    if (ret == STATUS_USER_APC)  /* alert wake: drain the server-side user APC queue */
++    {
++        static const LARGE_INTEGER zero_timeout;
++
++        ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero_timeout );
++        if (ret == STATUS_TIMEOUT) ret = STATUS_USER_APC;  /* spurious wake (cancel race): report alerted */
++    }
++    else if (client_event >= 0 && ret == count)  /* client poke event wake (index == original count) */
++    {
++        if (!apc_fastpath_deliver_client_apc( NULL ))
++            WARN( "client APC event signaled with an empty queue\n" );
++        ret = STATUS_USER_APC;
++    }
+ 
+     while (count--) release_inproc_sync( syncs[count] );
+     return ret;
+@@ -950,6 +1061,7 @@ static NTSTATUS inproc_signal_and_wait( HANDLE signal, HANDLE wait,
+ {
+     struct inproc_sync stack_signal, stack_wait, *signal_sync = &stack_signal, *wait_sync = &stack_wait;
+     int alert_fd = 0;
++    BOOL unarmed = FALSE;
+     NTSTATUS ret;
+ 
+     if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
+@@ -969,8 +1081,32 @@ static NTSTATUS inproc_signal_and_wait( HANDLE signal, HANDLE wait,
+ 
+     if (!ret)
+     {
+-        if (alertable) alert_fd = get_inproc_alert_fd();
+-        ret = linux_wait_objs( inproc_device_fd, 1, &wait_sync->fd, WaitAny, alert_fd, timeout );
++        if (alertable)
++        {
++            alert_fd = get_inproc_alert_fd();
++            if (apc_fastpath_enabled())
++            {
++                /* a client-event poke cannot reach this wait, so same-process
++                   queuers fall back to the server path for its duration */
++                apc_fastpath_enter_unarmed_wait();
++                unarmed = TRUE;
++                /* deliver same-process user APCs queued while busy, before sleeping */
++                if (apc_fastpath_deliver_client_apc( NULL )) ret = STATUS_USER_APC;
++            }
++        }
++        if (!ret)
++        {
++            ret = linux_wait_objs( inproc_device_fd, 1, &wait_sync->fd, WaitAny, alert_fd, timeout );
++            if (unarmed) apc_fastpath_leave_unarmed_wait();
++            if (ret == STATUS_USER_APC)  /* alert wake: drain the server-side user APC queue */
++            {
++                static const LARGE_INTEGER zero_timeout;
++
++                ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero_timeout );
++                if (ret == STATUS_TIMEOUT) ret = STATUS_USER_APC;  /* spurious wake: report alerted */
++            }
++        }
++        else if (unarmed) apc_fastpath_leave_unarmed_wait();
+     }
+ 
+     release_inproc_sync( wait_sync );
+@@ -2449,15 +2585,22 @@ static NTSTATUS alertable_sleep_fastpath( const LARGE_INTEGER *timeout )
+ {
+     static const LARGE_INTEGER zero_timeout;
+     LARGE_INTEGER start, now, remaining;
++    int objs[1], alert_fd, count = 0;
+     NTSTATUS status;
+-    int alert_fd;
+ 
+     if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
+     if ((alert_fd = get_inproc_alert_fd()) < 0) return STATUS_NOT_IMPLEMENTED;
+ 
++    /* deliver same-process user APCs queued while busy, before sleeping */
++    if (apc_fastpath_deliver_client_apc( NULL )) return STATUS_USER_APC;
++
++    /* arm the client poke event so a same-process APC queued mid-sleep wakes
++       the wait in-kernel */
++    if ((objs[0] = apc_fastpath_client_event()) >= 0) count = 1;
++
+     if (timeout && timeout->QuadPart < 0) NtQueryPerformanceCounter( &start, NULL );
+ 
+-    status = linux_wait_objs( inproc_device_fd, 0, NULL, WaitAny, alert_fd, timeout );
++    status = linux_wait_objs( inproc_device_fd, count, objs, WaitAny, alert_fd, timeout );
+     if (status == STATUS_TIMEOUT)
+     {
+         /* server_wait() yields implicitly when a wait times out
+@@ -2466,10 +2609,16 @@ static NTSTATUS alertable_sleep_fastpath( const LARGE_INTEGER *timeout )
+         NtYieldExecution();
+         return STATUS_SUCCESS;
+     }
+-    if (status != STATUS_USER_APC) return STATUS_NOT_IMPLEMENTED;  /* ntsync error: use the server path */
++    if (count && !status)  /* client poke event wake (index 0) */
++    {
++        if (apc_fastpath_deliver_client_apc( NULL )) return STATUS_USER_APC;
++        WARN( "client APC event signaled with an empty queue\n" );
++        /* spurious: fall through to the drain + remaining-timeout wait below */
++    }
++    else if (status != STATUS_USER_APC) return STATUS_NOT_IMPLEMENTED;  /* ntsync error: use the server path */
+ 
+-    /* The alert event was signaled: drain the server-side user APC queue the
+-       same way the alert branch of linux_wait_objs() does for handle waits. */
++    /* Alert wake: drain the server-side user APC queue the same way the
++       alert branch of inproc_wait() does for handle waits. */
+     status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero_timeout );
+     if (status != STATUS_TIMEOUT) return status;  /* an APC was dispatched */
+ 
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 546963a..4bbb774 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1102,6 +1102,10 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
+ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+ {
+     struct thread_data *data = get_thread_data();
++    /* deregister before closing the fds: queuers hold apc_mutex while using
++       the registered fds, so they can never touch a recycled fd number */
++    apc_fastpath_deregister_thread( data );
++    close( data->client_event_fd );
+     close( data->alert_fd );
+     close( data->wait_fd[0] );
+     close( data->wait_fd[1] );
+@@ -1790,6 +1794,403 @@ NTSTATUS WINAPI PsTerminateSystemThread( NTSTATUS exit_code )
+ }
+ 
+ 
++/******************************************************************************
++ * Same-process user APC fast path (WINE_APC_FASTPATH)
++ *
++ * A user APC queued through wineserver costs at least two round trips (one
++ * to queue, one to drain on the waiting side); idle Live 12 generates enough
++ * of this traffic to keep ~3,650 wineserver context switches/sec going on an
++ * empty set. Same-process plain user APCs need none of it: the payload is
++ * appended to the target thread's client queue, and the target is woken
++ * through a client-owned ntsync event that its alertable in-kernel waits
++ * carry as a wait object.
++ *
++ * The poke event mirrors the client queue state, mirroring the server's own
++ * alert_sync protocol: queuers set it when appending to an empty queue, the
++ * owning thread resets it when the queue drains empty, both under apc_mutex,
++ * and waiters always poll the client queue before sleeping. A poke therefore
++ * can never be lost between the queue-empty poll and the in-kernel wait that
++ * follows it, and the event is never left signaled behind an empty queue.
++ * The server's alert event stays server-owned; it keeps tracking the
++ * server-side queue (cross-process and special APCs) only.
++ */
++
++struct client_apc
++{
++    struct list entry;
++    client_ptr_t func;
++    apc_param_t args[3];
++};
++
++struct apc_target
++{
++    struct list  entry;
++    DWORD        tid;
++    unsigned int generation;         /* bumped per registration: a recycled tid never validates a stale handle cache entry */
++    int          alert_fd;           /* the thread's server-side alert event */
++    int          client_event_fd;    /* the thread's client poke event */
++    LONG         unarmed_wait_depth; /* >0 while blocked where a poke can't reach it (server_select, WaitAll, ...) */
++    struct list  client_apcs;        /* queued same-process user APCs */
++};
++
++struct apc_handle_entry
++{
++    struct list  entry;
++    HANDLE       handle;
++    DWORD        tid;
++    unsigned int generation;         /* 0: cross-process verdict, always queue via the server */
++};
++
++#define MAX_APC_HANDLE_CACHE_ENTRIES 256
++
++static struct list apc_targets = LIST_INIT( apc_targets );
++static struct list apc_handle_cache = LIST_INIT( apc_handle_cache );
++static unsigned int apc_handle_cache_count;
++static unsigned int apc_generation;
++/* All apc_mutex sections run under server_enter_uninterrupted_section:
++   SIGUSR1 (suspend, system APC wakeup) must never re-enter this mutex from
++   a signal frame while the thread already holds it. */
++static pthread_mutex_t apc_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++/* apc_mutex must be held */
++static struct apc_target *find_apc_target( DWORD tid )
++{
++    struct apc_target *target;
++
++    LIST_FOR_EACH_ENTRY( target, &apc_targets, struct apc_target, entry )
++        if (target->tid == tid) return target;
++    return NULL;
++}
++
++/* apc_mutex must be held */
++static struct apc_handle_entry *find_apc_handle_entry( HANDLE handle )
++{
++    struct apc_handle_entry *entry;
++
++    LIST_FOR_EACH_ENTRY( entry, &apc_handle_cache, struct apc_handle_entry, entry )
++        if (entry->handle == handle) return entry;
++    return NULL;
++}
++
++/***********************************************************************
++ *           apc_fastpath_register_thread
++ *
++ * Register a thread in the same-process APC registry. The alert fd is
++ * created eagerly (one server round trip per thread) so that peers can
++ * wake the thread right away and the alertable fast paths never need lazy
++ * setup; the poke event is a plain client-side ntsync object.
++ */
++void apc_fastpath_register_thread( struct thread_data *data )
++{
++    struct apc_target *target;
++    sigset_t sigset;
++
++    if (!apc_fastpath_enabled()) return;
++
++    if ((data->client_event_fd = apc_fastpath_create_event()) < 0) return;
++    if (get_inproc_alert_fd() < 0 || !(target = malloc( sizeof(*target) )))
++    {
++        close( data->client_event_fd );
++        data->client_event_fd = -1;
++        return;
++    }
++
++    target->tid                = data->tid;
++    target->alert_fd           = data->alert_fd;
++    target->client_event_fd    = data->client_event_fd;
++    target->unarmed_wait_depth = 0;
++    list_init( &target->client_apcs );
++
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    target->generation = ++apc_generation;
++    list_add_tail( &apc_targets, &target->entry );
++    data->apc_target = target;
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++}
++
++/***********************************************************************
++ *           apc_fastpath_deregister_thread
++ *
++ * Remove a thread from the registry on exit. Undelivered client APCs are
++ * discarded, matching Windows dropping APCs queued to a terminated thread,
++ * and handle cache entries referring to this tid are poisoned: wineserver
++ * recycles ptids promptly (alloc_ptid reuses freed slots), and a stale
++ * entry must never validate against a future thread reusing this one.
++ */
++void apc_fastpath_deregister_thread( struct thread_data *data )
++{
++    struct apc_handle_entry *hentry, *hnext;
++    struct apc_target *target = data->apc_target;
++    struct client_apc *apc, *anext;
++    sigset_t sigset;
++
++    if (!target) return;
++
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    data->apc_target = NULL;
++    list_remove( &target->entry );
++    LIST_FOR_EACH_ENTRY_SAFE( apc, anext, &target->client_apcs, struct client_apc, entry )
++    {
++        list_remove( &apc->entry );
++        free( apc );
++    }
++    LIST_FOR_EACH_ENTRY_SAFE( hentry, hnext, &apc_handle_cache, struct apc_handle_entry, entry )
++    {
++        if (hentry->tid != target->tid) continue;
++        list_remove( &hentry->entry );
++        free( hentry );
++        apc_handle_cache_count--;
++    }
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++    free( target );
++}
++
++/***********************************************************************
++ *           apc_fastpath_client_event
++ *
++ * The calling thread's poke event, carried as a wait object by its
++ * alertable in-kernel waits; -1 when the fast path is unavailable.
++ */
++int apc_fastpath_client_event(void)
++{
++    return get_thread_data()->client_event_fd;
++}
++
++/***********************************************************************
++ *           apc_fastpath_enter_unarmed_wait / apc_fastpath_leave_unarmed_wait
++ *
++ * Mark the calling thread as blocked somewhere a client-event poke cannot
++ * reach (server_select, WaitAll and full 64-handle waits, signal-and-wait);
++ * same-process queuers fall back to the server path for the duration.
++ */
++void apc_fastpath_enter_unarmed_wait(void)
++{
++    struct apc_target *target = get_thread_data()->apc_target;
++    sigset_t sigset;
++
++    if (!target) return;
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    target->unarmed_wait_depth++;
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++}
++
++void apc_fastpath_leave_unarmed_wait(void)
++{
++    struct apc_target *target = get_thread_data()->apc_target;
++    sigset_t sigset;
++
++    if (!target) return;
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    if (target->unarmed_wait_depth > 0) target->unarmed_wait_depth--;
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++}
++
++/***********************************************************************
++ *           apc_fastpath_fetch_client_apc
++ *
++ * Pop one APC from the calling thread's client queue. The poke event is
++ * reset when the queue drains empty; together with queuers setting it on
++ * the empty-to-non-empty transition, both under apc_mutex, the event state
++ * always reflects the queue state at lock release.
++ */
++BOOL apc_fastpath_fetch_client_apc( struct user_apc *apc )
++{
++    struct apc_target *target = get_thread_data()->apc_target;
++    struct client_apc *head;
++    sigset_t sigset;
++
++    if (!target) return FALSE;
++
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    if (list_empty( &target->client_apcs ))
++    {
++        server_leave_uninterrupted_section( &apc_mutex, &sigset );
++        return FALSE;
++    }
++    head = LIST_ENTRY( list_head( &target->client_apcs ), struct client_apc, entry );
++    list_remove( &head->entry );
++    if (list_empty( &target->client_apcs ))
++        apc_fastpath_reset_event( target->client_event_fd );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++
++    apc->type    = APC_USER;
++    apc->flags   = 0;
++    apc->func    = head->func;
++    apc->args[0] = head->args[0];
++    apc->args[1] = head->args[1];
++    apc->args[2] = head->args[2];
++    free( head );
++    return TRUE;
++}
++
++/***********************************************************************
++ *           resolve_client_apc_tid
++ *
++ * Resolve a thread handle to the tid of a registered same-process thread,
++ * through a generation-validated handle cache. On a miss, one
++ * NtQueryInformationThread call learns the target's pid/tid; cross-process
++ * handles are permanently marked server-routed. Returns
++ * STATUS_NOT_IMPLEMENTED when the handle must stay on the server path, or
++ * the query error (the same error the server queue_apc request returns).
++ */
++static unsigned int resolve_client_apc_tid( HANDLE handle, DWORD *tid_ret )
++{
++    struct apc_handle_entry *hentry;
++    struct apc_target *target;
++    THREAD_BASIC_INFORMATION tbi;
++    unsigned int ret;
++    DWORD tid;
++    sigset_t sigset;
++
++    if (handle == GetCurrentThread())  /* pseudo-handle: self */
++    {
++        *tid_ret = GetCurrentThreadId();
++        return STATUS_SUCCESS;
++    }
++
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    if ((hentry = find_apc_handle_entry( handle )))
++    {
++        if (!hentry->generation)  /* cross-process verdict */
++        {
++            server_leave_uninterrupted_section( &apc_mutex, &sigset );
++            return STATUS_NOT_IMPLEMENTED;
++        }
++        if ((target = find_apc_target( hentry->tid )) && target->generation == hentry->generation)
++        {
++            *tid_ret = hentry->tid;
++            server_leave_uninterrupted_section( &apc_mutex, &sigset );
++            return STATUS_SUCCESS;
++        }
++        /* stale entry (the tid was recycled): drop it and refresh below */
++        list_remove( &hentry->entry );
++        free( hentry );
++        apc_handle_cache_count--;
++    }
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++
++    if ((ret = NtQueryInformationThread( handle, ThreadBasicInformation,
++                                         &tbi, sizeof(tbi), NULL )))
++        return ret;
++
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    if (apc_handle_cache_count < MAX_APC_HANDLE_CACHE_ENTRIES &&
++        !find_apc_handle_entry( handle ) && (hentry = malloc( sizeof(*hentry) )))
++    {
++        hentry->handle = handle;
++        hentry->tid = 0;
++        hentry->generation = 0;  /* cross-process verdict unless proven same-process below */
++        list_add_tail( &apc_handle_cache, &hentry->entry );
++        apc_handle_cache_count++;
++    }
++    else hentry = NULL;
++
++    if (HandleToULong( tbi.ClientId.UniqueProcess ) != pid)
++    {
++        server_leave_uninterrupted_section( &apc_mutex, &sigset );
++        return STATUS_NOT_IMPLEMENTED;  /* cross-process APCs belong to the server */
++    }
++    tid = HandleToULong( tbi.ClientId.UniqueThread );
++    if ((target = find_apc_target( tid )) && hentry)
++    {
++        hentry->tid = tid;
++        hentry->generation = target->generation;
++    }
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++
++    if (!target)
++    {
++        /* not a registered thread (exited, or a system thread): the server
++           path provides the matching error and semantics */
++        if (hentry)
++        {
++            server_enter_uninterrupted_section( &apc_mutex, &sigset );
++            list_remove( &hentry->entry );
++            free( hentry );
++            apc_handle_cache_count--;
++            server_leave_uninterrupted_section( &apc_mutex, &sigset );
++        }
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    *tid_ret = tid;
++    return STATUS_SUCCESS;
++}
++
++/***********************************************************************
++ *           apc_fastpath_forget_handle
++ *
++ * Drop a handle cache entry when its handle is closed. wineserver hands a
++ * freed handle slot straight back (server/handle.c: alloc_entry starts at
++ * table->free and close_handle lowers it), so a handle -> tid mapping must
++ * not outlive the handle it was learned from: a recycled handle would
++ * otherwise validate against the old thread and deliver its APCs there.
++ */
++void apc_fastpath_forget_handle( HANDLE handle )
++{
++    struct apc_handle_entry *hentry;
++    sigset_t sigset;
++
++    if (!apc_handle_cache_count) return;
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    if ((hentry = find_apc_handle_entry( handle )))
++    {
++        list_remove( &hentry->entry );
++        free( hentry );
++        apc_handle_cache_count--;
++    }
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++}
++
++/***********************************************************************
++ *           queue_client_apc
++ *
++ * Queue a same-process user APC without a wineserver round trip. Returns
++ * STATUS_NOT_IMPLEMENTED when the server path must be used for this APC.
++ */
++static unsigned int queue_client_apc( HANDLE handle, PNTAPCFUNC func,
++                                      ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3 )
++{
++    struct apc_target *target;
++    struct client_apc *apc;
++    unsigned int ret;
++    DWORD tid;
++    sigset_t sigset;
++
++    if ((ret = resolve_client_apc_tid( handle, &tid ))) return ret;
++
++    if (!(apc = malloc( sizeof(*apc) ))) return STATUS_NO_MEMORY;
++    apc->func    = wine_server_client_ptr( func );
++    apc->args[0] = arg1;
++    apc->args[1] = arg2;
++    apc->args[2] = arg3;
++
++    server_enter_uninterrupted_section( &apc_mutex, &sigset );
++    if (!(target = find_apc_target( tid )) || target->unarmed_wait_depth ||
++        target->client_event_fd < 0)
++    {
++        /* The target left the registry (exited) or is blocked somewhere a
++           poke cannot reach: queue this APC through the server instead. */
++        server_leave_uninterrupted_section( &apc_mutex, &sigset );
++        free( apc );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++    /* append first, then poke: waiters always poll the client queue before
++       sleeping, so the poke only has to reach threads already blocked in an
++       armed in-kernel wait */
++    if (list_empty( &target->client_apcs ))
++    {
++        list_add_tail( &target->client_apcs, &apc->entry );
++        /* self-queued APCs need no poke: the owner polls its queue before
++           every sleep and can never be blocked while running this code */
++        if (tid != GetCurrentThreadId())
++            apc_fastpath_set_event( target->client_event_fd );
++    }
++    else list_add_tail( &target->client_apcs, &apc->entry );
++    server_leave_uninterrupted_section( &apc_mutex, &sigset );
++    return STATUS_SUCCESS;
++}
++
++
+ /******************************************************************************
+  *              NtQueueApcThreadEx2  (NTDLL.@)
+  */
+@@ -1801,6 +2197,18 @@ NTSTATUS WINAPI NtQueueApcThreadEx2( HANDLE handle, HANDLE reserve_handle, ULONG
+ 
+     TRACE( "%p %p %#x %p %p %p %p.\n", handle, reserve_handle, flags, func, (void *)arg1, (void *)arg2, (void *)arg3 );
+ 
++    /* Same-process plain user APCs are queued without a wineserver round
++       trip. Special APCs, reserve-handle APCs, and cross-process or
++       unresolvable targets keep the server path. The inproc_device_fd check
++       keeps hosts without /dev/ntsync on today's exact path: without ntsync
++       no thread can register (no poke event), so attempting the fast path
++       would only add a wasted NtQueryInformationThread round trip per
++       handle. */
++    if (func && !reserve_handle && flags == QUEUE_USER_APC_FLAGS_NONE &&
++        inproc_device_fd >= 0 && apc_fastpath_enabled() &&
++        (ret = queue_client_apc( handle, func, arg1, arg2, arg3 )) != STATUS_NOT_IMPLEMENTED)
++        return ret;
++
+     SERVER_START_REQ( queue_apc )
+     {
+         req->handle = wine_server_obj_handle( handle );
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 3e3864c..34b5459 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -107,6 +107,8 @@ struct thread_data
+     int          reply_fd;          /* fd for receiving server replies */
+     int          wait_fd[2];        /* fd for sleeping server requests */
+     int          alert_fd;          /* inproc sync fd for user apc alerts */
++    int          client_event_fd;   /* inproc event for same-process user apc wakeups */
++    void        *apc_target;        /* same-process user apc fast path registration */
+     DWORD        tid;               /* thread id */
+     BOOL         allow_writes;      /* ThreadAllowWrites flags */
+     BOOL         suspend;           /* suspend on startup */
+@@ -251,6 +253,19 @@ extern unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const
+ extern unsigned int server_queue_process_apc( HANDLE process, const union apc_call *call,
+                                               union apc_result *result );
+ extern int apc_fastpath_enabled(void);
++extern int get_inproc_alert_fd(void);
++extern int apc_fastpath_create_event(void);
++extern void apc_fastpath_set_event( int fd );
++extern void apc_fastpath_reset_event( int fd );
++extern int apc_fastpath_server_apc_pending(void);
++extern void apc_fastpath_register_thread( struct thread_data *data );
++extern void apc_fastpath_deregister_thread( struct thread_data *data );
++extern int apc_fastpath_client_event(void);
++extern void apc_fastpath_enter_unarmed_wait(void);
++extern void apc_fastpath_leave_unarmed_wait(void);
++extern BOOL apc_fastpath_fetch_client_apc( struct user_apc *apc );
++extern BOOL apc_fastpath_deliver_client_apc( CONTEXT *context );
++extern void apc_fastpath_forget_handle( HANDLE handle );
+ extern int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
+                                int *needs_close, enum server_fd_type *type, unsigned int *options );
+ extern int wine_server_receive_fd( obj_handle_t *handle );
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 3005aea..26982b0 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4154,6 +4154,8 @@ struct thread_data *virtual_alloc_thread_data(void)
+         data->wait_fd[0] = -1;
+         data->wait_fd[1] = -1;
+         data->alert_fd   = -1;
++        data->client_event_fd = -1;
++        data->apc_target      = NULL;
+ #ifdef VALGRIND_STACK_REGISTER
+         VALGRIND_STACK_REGISTER( (char *)data + signal_stack_mask + 1, (char *)data + view->size );
+ #endif
+-- 
+2.55.0

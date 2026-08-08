@@ -1,0 +1,201 @@
+From 551b4b71bdac4be364f314ddeb74dcb5201f1497 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Wed, 5 Aug 2026 18:59:54 +0200
+Subject: [PATCH] ntdll: reroute alertable zero-handle sleeps through the
+ ntsync alert event
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Live 12 idles at ~30% of one core on an empty set; wineserver context
+switches run at ~3,650/sec. One verified contributor: every alertable
+zero-handle sleep costs a full wineserver round trip. NtDelayExecution
+with alertable=TRUE unconditionally calls server_wait(NULL, 0,
+SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout) — the comment says
+"if alertable, we need to query the server" (dlls/ntdll/unix/sync.c,
+NtDelayExecution) — because the server-side user APC queue has to be
+checked before and during the sleep.
+
+The per-thread ntsync alert machinery makes that check unnecessary on
+the client side: the server creates thread->alert_sync as a manual-reset
+event (server/thread.c:570), signals it when the first user APC is
+queued (server/thread.c:1483-1488) and resets it when the server-side
+user APC queue empties (server/thread.c:1520-1521,1536-1537), and the
+client already caches its own fd for it through get_inproc_alert_fd()
+(dlls/ntdll/unix/sync.c:872-897). A count=0 wait with only an alert fd
+is legal — the NTSYNC_MAX_WAIT_COUNT check only bounds count above — and
+sleeps in-kernel until the alert event signals or the timeout expires.
+
+With WINE_APC_FASTPATH on (default; "0"/"off" disables,
+case-insensitive), NtDelayExecution now performs the alertable sleep as
+an in-kernel NTSYNC_IOC_WAIT_ANY with count=0 and args.alert set to the
+thread's alert fd, via a small alertable_sleep_fastpath() helper that
+reuses linux_wait_objs() (sync.c:399-450). Reusing linux_wait_objs()
+keeps the do/ioctl/while(EINTR) retry, so system APCs delivered through
+SIGUSR1 signal frames interrupt the wait exactly as they do for
+alertable handle waits today. linux_wait_objs() only learns to return
+STATUS_USER_APC to the caller for count=0 waits instead of draining
+internally; the count>0 path is byte-identical.
+
+Semantics preserved, point by point:
+
+- Timeout expiry maps to STATUS_SUCCESS and still yields: today the
+  yield happens inside server_wait (server.c:813-816), so the fast path
+  calls NtYieldExecution() itself on ETIMEDOUT. The comment above the
+  fallback ("we never return STATUS_NO_YIELD_PERFORMED") stays true.
+- An alert wake does the same zero-timeout server_wait drain that the
+  alert branch of linux_wait_objs() does for handle waits
+  (sync.c:436-443), and STATUS_USER_APC propagates after dispatch.
+- If that drain finds no user APC (spurious wake — the APC was
+  cancelled between the kernel wake and the drain — the issue-109
+  livelock class), the fast path never loops client-side: it computes
+  the remaining timeout and falls back to a normal blocking server_wait,
+  which is today's exact behavior with less time left.
+- get_inproc_alert_fd() failure, a missing /dev/ntsync
+  (inproc_device_fd < 0), or any ntsync error falls back to today's
+  exact server_wait path. With ntsync absent, linux_wait_objs() is the
+  STATUS_NOT_IMPLEMENTED stub, so the fallback is taken before any wait.
+- The non-alertable path is untouched.
+
+Verification: series applies with git am --3way on top of the 62-patch
+stack; the follow-up patch in this series (same-process user APC fast
+path) extends this helper, and the combined tree was exercised against
+/dev/ntsync on the build host (count=0 alert wait legality, timeout and
+wake semantics confirmed with a standalone ioctl test).
+---
+ dlls/ntdll/unix/sync.c         | 83 +++++++++++++++++++++++++++++++++-
+ dlls/ntdll/unix/unix_private.h |  1 +
+ 2 files changed, 83 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index fbf054e..2c58962 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -77,6 +77,26 @@ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ HANDLE keyed_event = 0;
+ int inproc_device_fd = -1;
+ 
++
++/***********************************************************************
++ *           apc_fastpath_enabled
++ *
++ * Single gate for the WINE_APC_FASTPATH fast paths that keep alertable
++ * waits and same-process user APCs off the wineserver socket. Enabled by
++ * default; "0"/"off" (case-insensitive) disables it.
++ */
++int apc_fastpath_enabled(void)
++{
++    static int enabled = -1;
++
++    if (enabled == -1)
++    {
++        const char *env = getenv( "WINE_APC_FASTPATH" );
++        enabled = !(env && (!strcasecmp( env, "0" ) || !strcasecmp( env, "off" )));
++    }
++    return enabled;
++}
++
+ static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
+ {
+     if (!timeout) return "(infinite)";
+@@ -437,6 +457,7 @@ static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_
+         {
+             static const LARGE_INTEGER timeout;
+ 
++            if (!count) return STATUS_USER_APC;  /* alert-only wait: leave the drain to the caller */
+             ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &timeout );
+             assert( ret == STATUS_USER_APC );
+             return ret;
+@@ -2413,6 +2434,61 @@ NTSTATUS WINAPI NtYieldExecution(void)
+ }
+ 
+ 
++/***********************************************************************
++ *           alertable_sleep_fastpath
++ *
++ * Perform an alertable sleep without a wineserver round trip, as an
++ * in-kernel ntsync wait with count 0 whose only wake source is the calling
++ * thread's own alert event (a count 0 wait with only an alert fd is legal;
++ * NTSYNC_MAX_WAIT_COUNT only bounds count above). The wait goes through
++ * linux_wait_objs() so that EINTR/system APC (SIGUSR1) handling is identical
++ * to alertable handle waits. Returns STATUS_NOT_IMPLEMENTED when the fast
++ * path is unavailable and the caller should use server_wait() instead.
++ */
++static NTSTATUS alertable_sleep_fastpath( const LARGE_INTEGER *timeout )
++{
++    static const LARGE_INTEGER zero_timeout;
++    LARGE_INTEGER start, now, remaining;
++    NTSTATUS status;
++    int alert_fd;
++
++    if (inproc_device_fd < 0) return STATUS_NOT_IMPLEMENTED;
++    if ((alert_fd = get_inproc_alert_fd()) < 0) return STATUS_NOT_IMPLEMENTED;
++
++    if (timeout && timeout->QuadPart < 0) NtQueryPerformanceCounter( &start, NULL );
++
++    status = linux_wait_objs( inproc_device_fd, 0, NULL, WaitAny, alert_fd, timeout );
++    if (status == STATUS_TIMEOUT)
++    {
++        /* server_wait() yields implicitly when a wait times out
++           (dlls/ntdll/unix/server.c:813-816); replicate that here so the
++           implicit-yield behavior of an expired alertable sleep is unchanged */
++        NtYieldExecution();
++        return STATUS_SUCCESS;
++    }
++    if (status != STATUS_USER_APC) return STATUS_NOT_IMPLEMENTED;  /* ntsync error: use the server path */
++
++    /* The alert event was signaled: drain the server-side user APC queue the
++       same way the alert branch of linux_wait_objs() does for handle waits. */
++    status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero_timeout );
++    if (status != STATUS_TIMEOUT) return status;  /* an APC was dispatched */
++
++    /* Spurious wake (the APC was cancelled between the kernel wake and the
++       drain): never loop client-side — block in the server for the remaining
++       timeout instead. */
++    if (timeout && timeout->QuadPart < 0)
++    {
++        NtQueryPerformanceCounter( &now, NULL );
++        remaining.QuadPart = timeout->QuadPart + (now.QuadPart - start.QuadPart);
++        if (remaining.QuadPart > 0) remaining.QuadPart = 0;  /* expired: zero-timeout poll */
++        timeout = &remaining;
++    }
++    if ((status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout )) == STATUS_TIMEOUT)
++        status = STATUS_SUCCESS;
++    return status;
++}
++
++
+ /******************************************************************
+  *		NtDelayExecution (NTDLL.@)
+  */
+@@ -2420,9 +2496,14 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+ {
+     unsigned int status = STATUS_SUCCESS;
+ 
+-    /* if alertable, we need to query the server */
++    /* if alertable, the server-side user APC queue has to be checked; the
++       WINE_APC_FASTPATH path does that in-kernel through the alert event */
+     if (alertable)
+     {
++        if (apc_fastpath_enabled() &&
++            (status = alertable_sleep_fastpath( timeout )) != STATUS_NOT_IMPLEMENTED)
++            return status;
++
+         /* Since server_wait will result in an unconditional implicit yield,
+            we never return STATUS_NO_YIELD_PERFORMED */
+         if ((status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout )) == STATUS_TIMEOUT)
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index c8ca97d..3e3864c 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -250,6 +250,7 @@ extern unsigned int server_wait( const union select_op *select_op, data_size_t s
+ extern unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const LARGE_INTEGER *timeout );
+ extern unsigned int server_queue_process_apc( HANDLE process, const union apc_call *call,
+                                               union apc_result *result );
++extern int apc_fastpath_enabled(void);
+ extern int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
+                                int *needs_close, enum server_fd_type *type, unsigned int *options );
+ extern int wine_server_receive_fd( obj_handle_t *handle );
+-- 
+2.55.0
+

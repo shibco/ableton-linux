@@ -15,11 +15,19 @@ The current Wine series contains 64 files, numbered 0001 through 0069.
 Patches 0027 and 0044 are intentionally absent. Patches 0066 through 0068
 are reserved by PR 124 and will enter this branch when it rebases after merge.
 
+`patches/performance/` holds a second Wine series, numbered 0001 through 0005
+in a sequence of its own. It carries the moonshot idle-CPU fast paths, which
+are gated at runtime (`WINE_APC_FASTPATH`, `WINE_MSG_FASTPATH`) and kept apart
+from the numbered series so they can be added or dropped as a set.
+
 ## Applying the series
 
 Run `./build.sh`. Inside the Podman image, `scripts/container-build.sh`
 unpacks `vendor/wine-base-5c23dd1c.tar.zst`, creates a Git repository, and
 applies `patches/00*.patch` in lexical order with `git am --3way`.
+
+It then applies `patches/performance/*.patch` the same way, in lexical order
+with `git am --3way`, onto the same tree after the numbered series.
 
 It separately unpacks `vendor/pipeasio-1.2.2.tar.gz` and applies
 `patches/pipeasio/*.patch` in lexical order with `patch -p1`.

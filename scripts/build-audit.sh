@@ -12,7 +12,7 @@ fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
 # --- --freeze: (re)generate the frozen series manifest ------------------------
 if [ "${1:-}" = --freeze ]; then
-    new="$(cd "$root/patches" && sha256sum 00*.patch pipeasio/*.patch)"
+    new="$(cd "$root/patches" && sha256sum 00*.patch performance/*.patch pipeasio/*.patch)"
     if [ -f "$SERIES" ]; then
         say "== freeze diff (old -> new) =="
         diff -u "$SERIES" <(printf '%s\n' "$new") && say "   (no changes)"
@@ -64,7 +64,7 @@ while read -r sum file; do
         sha_ok["$file"]=0
     fi
 done < "$SERIES"
-extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
+extras="$(cd "$root/patches" && ls 00*.patch performance/*.patch pipeasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
 # Retired numbers stay retired (renumbering would break cross-references in patch
 # titles and notes/); a gap is fine if documented here, a dropped patch is not.
@@ -76,7 +76,7 @@ declare -A SERIES_GAPS=(
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
 )
 seq_expect=1
-for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
+for f in $(awk '{print $2}' "$SERIES" | grep -v -e '^pipeasio/' -e '^performance/' | sort); do
     num="${f%%-*}"
     printf -v want '%04d' "$seq_expect"
     while [ "$num" != "$want" ] && [ -n "${SERIES_GAPS[$want]:-}" ]; do
@@ -87,9 +87,25 @@ for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
     [ "$num" = "$want" ] || bad "series numbering" "expected $want, found $num"
     seq_expect=$((seq_expect+1))
 done
-# The pipeasio series is numbered independently of the Wine one, and the loop
-# above skips it. Check it the same way, or a dropped or misnumbered pipeasio
-# patch passes with only its checksum looked at.
+# The performance and pipeasio series are numbered independently of the Wine
+# one, and the loop above skips both. Check each the same way, or a dropped or
+# misnumbered patch passes with only its checksum looked at.
+declare -A PERFORMANCE_GAPS=(
+    [0000]="no retired performance numbers yet; entries take the same form as SERIES_GAPS"
+)
+perf_expect=1
+for f in $(awk '{print $2}' "$SERIES" | grep '^performance/' | sort); do
+    base="${f#performance/}"
+    num="${base%%-*}"
+    printf -v want '%04d' "$perf_expect"
+    while [ "$num" != "$want" ] && [ -n "${PERFORMANCE_GAPS[$want]:-}" ]; do
+        ok "performance numbering" "$want gap documented (${PERFORMANCE_GAPS[$want]})"
+        perf_expect=$((perf_expect+1))
+        printf -v want '%04d' "$perf_expect"
+    done
+    [ "$num" = "$want" ] || bad "performance numbering" "expected $want, found $num"
+    perf_expect=$((perf_expect+1))
+done
 declare -A PIPEASIO_GAPS=(
     [0000]="no retired pipeasio numbers yet; entries take the same form as SERIES_GAPS"
 )
@@ -106,9 +122,10 @@ for f in $(awk '{print $2}' "$SERIES" | grep '^pipeasio/' | sort); do
     [ "$num" = "$want" ] || bad "pipeasio numbering" "expected $want, found $num"
     asio_expect=$((asio_expect+1))
 done
-n_wine="$(awk '{print $2}' "$SERIES" | grep -vc '^pipeasio/' || true)"
+n_wine="$(awk '{print $2}' "$SERIES" | grep -vc -e '^pipeasio/' -e '^performance/' || true)"
+n_perf="$(awk '{print $2}' "$SERIES" | grep -c '^performance/' || true)"
 n_asio="$(awk '{print $2}' "$SERIES" | grep -c '^pipeasio/' || true)"
-say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_asio pipeasio patches (0001..$(printf '%04d' "$((asio_expect-1))"))"
+say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_perf performance patches (0001..$(printf '%04d' "$((perf_expect-1))")) + $n_asio pipeasio patches (0001..$(printf '%04d' "$((asio_expect-1))"))"
 
 # --- [2/4] artifact provenance stamp ------------------------------------------
 say "== [2/4] artifact provenance (patch stack stamped at build time) =="
@@ -163,6 +180,11 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
+performance/0001|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_APC_FASTPATH
+performance/0002|ascii|lib/wine/x86_64-unix/ntdll.so|client APC event signaled with an empty queue
+performance/0003|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH hook chain snapshot cache allocation failed
+performance/0004|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH queue mask memo diverged from the server masks
+performance/0005|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH known-clean GetUpdateRect
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
