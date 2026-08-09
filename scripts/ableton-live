@@ -736,9 +736,16 @@ if [ -n "$EXE" ] && [ -f "$learnheal" ]; then
     disown
 fi
 
+cleanup_wineserver() {
+    local rc=$1
+    "$WINESERVER" -k 2>/dev/null || true
+    exit "$rc"
+}
+
 if [ -n "${ABLETON_VDESK:-}" ]; then
     require_live
-    exec "${run[@]}" explorer "/desktop=AbletonLive,${ABLETON_VDESK}" "$EXE"
+    "${run[@]}" explorer "/desktop=AbletonLive,${ABLETON_VDESK}" "$EXE"
+    cleanup_wineserver $?
 elif [ "$#" -gt 0 ]; then
     # ableton:// URLs, .auz license files, Live documents from the file
     # manager or command line. A single existing file arrives as a unix path
@@ -752,14 +759,22 @@ elif [ "$#" -gt 0 ]; then
                 require_live
                 doc="$(winepath -w "$1" 2>/dev/null || true)"
                 if [ -n "$doc" ]; then
-                    exec "${run[@]}" "$EXE" "$doc"
+                    "${run[@]}" "$EXE" "$doc"
+                    cleanup_wineserver $?
                 fi
                 ;;
         esac
-        case "$1" in /*) exec "${run[@]}" start /unix "$1" ;; esac
+        case "$1" in /*)
+            "${run[@]}" start /unix "$1"
+            cleanup_wineserver $?
+            ;;
+        esac
     fi
-    exec "${run[@]}" start "$@"
+    "${run[@]}" start "$@"
+    cleanup_wineserver $?
 else
     require_live
-    exec "${run[@]}" "$EXE"
+    "${run[@]}" "$EXE"
+    cleanup_wineserver $?
 fi
+
