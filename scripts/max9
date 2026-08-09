@@ -47,4 +47,8 @@ if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
     "$LINKD" --daemon || echo "max9: ableton-linkd failed to start" >&2
 fi
 
-exec "${run[@]}" "$MAX_EXE" ${args[@]+"${args[@]}"}
+"${run[@]}" "$MAX_EXE" ${args[@]+"${args[@]}"}
+rc=$?
+"$WINESERVER" -k 2>/dev/null || true
+exit $rc
+
