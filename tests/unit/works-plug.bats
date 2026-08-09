@@ -50,6 +50,17 @@ store() {
     ln -sfn 2026.06.01.1+bbbbbbb "$C/stable"
 }
 
+# Register an application the way its Windows installer would: a value under
+# HKLM\Software\RegisteredApplications naming it, which is the index the Default
+# Programs schema defines and what works_plug_tenants reads. Written in Wine's
+# own .reg syntax, so the fixture and the field agree about the format.
+a_registered() {   # plug, display name
+    local reg="$P/$1/system.reg"
+    grep -q '^\[Software\\\\RegisteredApplications\]' "$reg" 2>/dev/null || {
+        printf '\n[Software\\\\RegisteredApplications] 1784299416\n' >> "$reg"; }
+    printf '"%s"="SOFTWARE\\\\Vendor\\\\%s\\\\Capabilities"\n' "$2" "${2// /}" >> "$reg"
+}
+
 # --- list ---------------------------------------------------------------------
 
 @test "list says so when there are no Plugs yet" {
@@ -61,10 +72,44 @@ store() {
 
 @test "list names each Plug and what is installed in it" {
     store; a_plug studio 12; a_plug work 11
+    a_registered studio "Ableton Live 12 Suite"
+    a_registered work "Ableton Live 11 Suite"
     run PLUG list
     [ "$status" -eq 0 ]
-    [[ "$output" == *"studio"* ]] && [[ "$output" == *"Live 12"* ]]
-    [[ "$output" == *"work"* ]] && [[ "$output" == *"Live 11"* ]]
+    [[ "$output" == *"studio"* ]] && [[ "$output" == *"Live 12 Suite"* ]]
+    [[ "$output" == *"work"* ]] && [[ "$output" == *"Live 11 Suite"* ]]
+}
+
+# guards: tenants come from the prefix's own RegisteredApplications index, not
+# from globbing for filenames anybody here recognises. That is what makes the
+# read vendor-neutral — but it also means an application that never registered
+# does not appear, so the tradeoff is pinned here rather than left implied. Files
+# on disk are not a tenant; the registration is.
+@test "a Plug that registers nothing lists without tenants" {
+    store; a_plug studio 12
+    run PLUG list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"studio"* ]]
+    [[ "$output" != *"Live"* ]] \
+        || { echo "an unregistered install was reported as a tenant" >&2; false; }
+}
+
+# guards: two applications in one Plug is the shape ~/.wine-ableton was already
+# in before Plugs had a name, and nothing about the read is per-application — a
+# second vendor needs no new file, no new glob and no change here.
+#
+# Asserted against the resolver rather than the rendered row: the TENANTS column
+# truncates the way BUILD does, and a real registered name is long enough
+# ("Ableton Live 12 Suite" is 21 of its 24 columns) that a second one is cut off
+# on screen. That is a display question; this test is about discovery.
+@test "a Plug with two registered applications reports both" {
+    store; a_plug studio 12
+    a_registered studio "Ableton Live 12 Suite"
+    a_registered studio "Max 9"
+    run bash -c '. "$0"; works_plug_tenants "$1"' "$REPO/scripts/runtime-env.sh" "$P/studio"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Ableton Live 12 Suite"* ]]
+    [[ "$output" == *"Max 9"* ]]
 }
 
 # guards: the selection is a symlink, and a list that does not say which one is

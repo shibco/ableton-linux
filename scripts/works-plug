@@ -285,8 +285,67 @@ cmd_new() {
     [ -n "$from" ] || cat <<EOF
 
 Nothing is installed in it yet. To set the prefix up and install into it:
-  WORKS_PLUG=$plugs/$want ~/works/apps/ableton-live/setup-prefix.sh
+  works plug setup $want
 EOF
+}
+
+# Run an application's prefix setup against a Plug. This verb exists because the
+# line above used to name ~/works/lib/setup-prefix.sh, and install.sh never put
+# a setup-prefix.sh there - it lived only in the unpacked kit, which the .run
+# deletes on the way out. So the Plug lifecycle had no third step on any
+# installed machine, and the documented recovery for a 32-bit prefix (make a new
+# Plug, select it, set it up) stopped at "set it up".
+#
+# Which application's setup is a real question once there is more than one, and
+# it is not one to guess at: a prefix set up for the wrong application is a slow
+# failure. One installed application is the answer when there is only one.
+cmd_setup() {
+    local want="" app="" apps n
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --app)   shift; app="${1:-}"
+                     [ -n "$app" ] || { echo "!! --app needs a name" >&2; return 1; } ;;
+            --app=*) app="${1#--app=}" ;;
+            -*)      echo "!! unknown option: $1" >&2; return 1 ;;
+            *)       [ -z "$want" ] || { echo "!! one name at a time: $1" >&2; return 1; }
+                     want="$1" ;;
+        esac
+        shift
+    done
+    # No name is the selected Plug, the way the launchers resolve it.
+    if [ -z "$want" ]; then
+        want="$(works_plug_path)"; want="${want##*/}"
+    fi
+    valid_name "$want" || return 1
+    exists "$want" || {
+        echo "!! no such Plug: $want" >&2
+        echo "   installed:" >&2; works_plug_names | sed 's/^/     /' >&2
+        return 1; }
+
+    if [ -z "$app" ]; then
+        apps="$(works_app_names)"
+        n="$(printf '%s\n' "$apps" | grep -c . || true)"
+        if [ "$n" -eq 0 ]; then
+            echo "!! no application is installed, so there is no prefix setup to run" >&2
+            return 1
+        elif [ "$n" -gt 1 ]; then
+            echo "!! more than one application is installed; say which one:" >&2
+            printf '%s\n' "$apps" | sed "s/^/     works plug setup $want --app /" >&2
+            return 1
+        fi
+        app="$apps"
+    fi
+
+    local setup; setup="$(works_home)/apps/$app/setup-prefix.sh"
+    [ -x "$setup" ] || {
+        echo "!! $app ships no prefix setup at $setup" >&2
+        return 1; }
+    echo "== setting up $want for $app =="
+    # No argument pass-through: the parser above rejects any unrecognised option,
+    # so by here nothing is left to forward. Writing "$@" would read as a
+    # pass-through that cannot fire - if setup-prefix.sh's own flags are ever
+    # wanted here, they need a `--` convention and a test, not an empty expansion.
+    WORKS_PLUG="$plugs/$want" "$setup"
 }
 
 cmd_rm() {
@@ -343,11 +402,12 @@ cmd_rm() {
 
 short_usage() {
     cat <<'EOF'
-usage: works plug {list|new|use|rm}        `works plug help` for detail
+usage: works plug {list|new|use|setup|rm}   `works plug help` for detail
 
   works plug list                 every Plug, what is in it, what it runs
   works plug new <name>           a fresh Plug, or --from a clone of another
   works plug use [name]           make one the default for new launches
+  works plug setup [name]         install an application's prefix setup into it
   works plug rm <name> [-y]       remove a Plug and everything in it
 EOF
 }
@@ -362,6 +422,8 @@ The Plugs on this machine: the Wine prefixes applications are installed into.
   works plug new <n> --runtime <id>   pin the new Plug to one build
   works plug use                  choose from a numbered list
   works plug use <name>           make one the default for new launches
+  works plug setup [name]         run an application's prefix setup against it
+  works plug setup <n> --app <a>  say which application, when several are here
   works plug rm <name> [-y]       remove a Plug and everything in it
 EOF
 }
@@ -371,6 +433,7 @@ case "${1:-list}" in
     use)       shift
                if [ -z "${1:-}" ]; then cmd_pick; else cmd_use "$1"; fi ;;
     new|add)   shift; cmd_new "$@" ;;
+    setup)     shift; cmd_setup "$@" ;;
     rm|remove) shift; cmd_rm "$@" ;;
     -h|--help|help) long_usage ;;
     *) echo "!! unknown command: $1" >&2; short_usage >&2; exit 1 ;;

@@ -7,7 +7,7 @@ from the files, and the *Guards* column from `# guards:` annotations above a
 test. Run `./tests/catalogue.sh` after adding or renaming a test;
 `tests/repo-hygiene.bats` fails when this file is stale.
 
-414 tests across 17 suites. See [README.md](README.md) for how to run
+420 tests across 17 suites. See [README.md](README.md) for how to run
 them and [../.github/workflows/ci-checks.yml](../.github/workflows/ci-checks.yml)
 for which run on a PR.
 
@@ -25,9 +25,9 @@ for which run on a PR.
 - [tests/unit/migrate-layout.bats](#migrate-layout) — 42 test(s)
 - [tests/unit/works.bats](#works) — 12 test(s)
 - [tests/unit/promote.bats](#promote) — 11 test(s)
-- [tests/unit/works-runtime.bats](#works-runtime) — 32 test(s)
-- [tests/unit/works-plug.bats](#works-plug) — 40 test(s)
-- [tests/unit/works-update.bats](#works-update) — 32 test(s)
+- [tests/unit/works-runtime.bats](#works-runtime) — 34 test(s)
+- [tests/unit/works-plug.bats](#works-plug) — 42 test(s)
+- [tests/unit/works-update.bats](#works-update) — 34 test(s)
 - [tests/unit/runtime-env.bats](#runtime-env) — 72 test(s)
 - [tests/patch-stack.bats](#patch-stack) — 12 test(s)
 
@@ -529,18 +529,20 @@ resolve through it instead of naming a directory.
 | 18 | use refuses a base change with no terminal to ask on | the prefix cannot be taken back, so this must not happen quietly |
 | 19 | use --force accepts a base change deliberately | — |
 | 20 | a downgrade is named as a downgrade | forward Wine supports, backward it does not - the wording has to differ |
-| 21 | use with no argument refuses when there is no terminal | a script calling `use` with no argument must fail, not block forever |
-| 22 | use with no argument leaves the channel alone | — |
-| 23 | list: a nightly id does not crowd the WINE column | the BUILD column was exactly as wide as a nightly id -- |
-| 24 | use accepts a nightly build by its full name | the id contains dots and a plus, so anything treating it as a pattern |
-| 25 | stop says so when nothing is running | — |
-| 26 | stop refuses a running Live with no terminal to confirm on | stopping Live discards unsaved work, so it is the one process here |
-| 27 | stop -y stops a running Live without asking | -y was parsed by cmd_stop but never reached it. The dispatch called |
-| 28 | stop --yes is the same flag spelled out | — |
-| 29 | works stop -y reaches the flag through the top-level dispatcher | `works stop` is the documented spelling, and it crosses two dispatchers |
-| 30 | runtime help ends on a command, not on prose | every help here is a fixed line range over the file's header comment, |
-| 31 | runtime help names every verb it dispatches | — |
-| 32 | runtime help answers to -h and help as well | — |
+| 21 | a Plug pinned to a build is not warned about | a Plug pinned to a build does not follow the channel, so a retarget |
+| 22 | a Plug that cannot name its base is a refusal, not a skip | a booted prefix that cannot say what booted it is the case the old |
+| 23 | use with no argument refuses when there is no terminal | a script calling `use` with no argument must fail, not block forever |
+| 24 | use with no argument leaves the channel alone | — |
+| 25 | list: a nightly id does not crowd the WINE column | the BUILD column was exactly as wide as a nightly id -- |
+| 26 | use accepts a nightly build by its full name | the id contains dots and a plus, so anything treating it as a pattern |
+| 27 | stop says so when nothing is running | — |
+| 28 | stop refuses a running Live with no terminal to confirm on | stopping Live discards unsaved work, so it is the one process here |
+| 29 | stop -y stops a running Live without asking | -y was parsed by cmd_stop but never reached it. The dispatch called |
+| 30 | stop --yes is the same flag spelled out | — |
+| 31 | works stop -y reaches the flag through the top-level dispatcher | `works stop` is the documented spelling, and it crosses two dispatchers |
+| 32 | runtime help ends on a command, not on prose | every help here is a fixed line range over the file's header comment, |
+| 33 | runtime help names every verb it dispatches | — |
+| 34 | runtime help answers to -h and help as well | — |
 
 <a id="works-plug"></a>
 
@@ -561,44 +563,46 @@ destructive verbs refuse before they act rather than after.
 | --- | --- | --- |
 | 1 | list says so when there are no Plugs yet | — |
 | 2 | list names each Plug and what is installed in it | — |
-| 3 | list marks the selected Plug, and use moves the mark | the selection is a symlink, and a list that does not say which one is |
-| 4 | list separates following a channel from being pinned to a build | a Plug bound to the channel link and a Plug pinned to a build resolve |
-| 5 | an unbound Plug is reported as following the channel | — |
-| 6 | a pre-store install is not reported as following a channel | found by hand. With no store there is no channel for a Plug to follow, |
-| 7 | list does not offer a directory that is not a prefix | a directory someone dropped under plugs/ is not a prefix, and offering |
-| 8 | a dangling default is called out rather than left to look deliberate | a default pointing at a removed Plug silently falls back to studio, so |
-| 9 | use retargets the default, relatively | — |
-| 10 | list shows each Plug's path, abbreviated under home | the path is what people copy into a script or a bug report, and it is |
-| 11 | use with no argument refuses when there is no terminal, naming the Plugs | `works runtime use` with no argument offers a numbered list, so this |
-| 12 | use with no argument leaves the default alone | — |
-| 13 | use refuses a Plug that is not there, and lists what is | — |
-| 14 | default is refused as a Plug name | `default` is the selection link itself, so a Plug by that name could |
-| 15 | a name that is not a plain directory name is refused | — |
-| 16 | new creates a Plug that follows the channel | — |
-| 17 | a Plug created but never booted is still listed | a Plug with no prefix in it yet still has to appear, or `new` produces |
-| 18 | new refuses a name already taken | — |
-| 19 | new --runtime pins the Plug to one build | — |
-| 20 | new --runtime refuses a build that is not in the store | — |
-| 21 | new --from clones the prefix and what is installed in it | — |
-| 22 | cloning keeps the prefix's symlinks as symlinks | dosdevices holds relative links back into the Plug and outward ones to |
-| 23 | a clone inherits the binding the source had | — |
-| 24 | new --from refuses a source that is not a Plug | — |
-| 25 | new says which kind of copy it is about to make | — |
-| 26 | the clone names the filesystem the mount table reports | `stat -f` reads statfs.f_type, and ext2, ext3 and ext4 all share magic |
-| 27 | new --from succeeds on a machine with no version store | found by hand on a pre-store machine. The clone landed, the *default* |
-| 28 | an explicit --runtime is refused before anything is cloned | an explicit --runtime is a different case from the default binding, and |
-| 29 | rm -y removes the Plug and everything in it | — |
-| 30 | rm refuses the default Plug while others exist, and names the successors | removing what default points at leaves the selection dangling and |
-| 31 | removing the last Plug takes the default link with it | the guard above cannot fire for the last Plug, and leaving the link |
-| 32 | rm without -y and with no terminal refuses rather than assuming | this deletes a prefix that can hold a licensed Live and tens of GB of |
-| 33 | rm refuses a Plug that is not there | — |
-| 34 | a Plug's binding decides the runtime a launch binds to | two Plugs running different builds is the whole point of the binding, |
-| 35 | an unbound Plug binds to whatever the channel resolves to | — |
-| 36 | WORKS_RUNTIME still overrides a Plug's binding | the VMs and anyone bisecting a build rely on WORKS_RUNTIME being the |
-| 37 | retention keeps a build a Plug is bound to | a Plug held deliberately on an older build is exactly what the count |
-| 38 | retention prunes that same build when no Plug is bound to it | — |
-| 39 | help ends on a command, not on prose | — |
-| 40 | plug is reachable through the dispatcher | — |
+| 3 | a Plug that registers nothing lists without tenants | tenants come from the prefix's own RegisteredApplications index, not |
+| 4 | a Plug with two registered applications reports both | two applications in one Plug is the shape ~/.wine-ableton was already |
+| 5 | list marks the selected Plug, and use moves the mark | the selection is a symlink, and a list that does not say which one is |
+| 6 | list separates following a channel from being pinned to a build | a Plug bound to the channel link and a Plug pinned to a build resolve |
+| 7 | an unbound Plug is reported as following the channel | — |
+| 8 | a pre-store install is not reported as following a channel | found by hand. With no store there is no channel for a Plug to follow, |
+| 9 | list does not offer a directory that is not a prefix | a directory someone dropped under plugs/ is not a prefix, and offering |
+| 10 | a dangling default is called out rather than left to look deliberate | a default pointing at a removed Plug silently falls back to studio, so |
+| 11 | use retargets the default, relatively | — |
+| 12 | list shows each Plug's path, abbreviated under home | the path is what people copy into a script or a bug report, and it is |
+| 13 | use with no argument refuses when there is no terminal, naming the Plugs | `works runtime use` with no argument offers a numbered list, so this |
+| 14 | use with no argument leaves the default alone | — |
+| 15 | use refuses a Plug that is not there, and lists what is | — |
+| 16 | default is refused as a Plug name | `default` is the selection link itself, so a Plug by that name could |
+| 17 | a name that is not a plain directory name is refused | — |
+| 18 | new creates a Plug that follows the channel | — |
+| 19 | a Plug created but never booted is still listed | a Plug with no prefix in it yet still has to appear, or `new` produces |
+| 20 | new refuses a name already taken | — |
+| 21 | new --runtime pins the Plug to one build | — |
+| 22 | new --runtime refuses a build that is not in the store | — |
+| 23 | new --from clones the prefix and what is installed in it | — |
+| 24 | cloning keeps the prefix's symlinks as symlinks | dosdevices holds relative links back into the Plug and outward ones to |
+| 25 | a clone inherits the binding the source had | — |
+| 26 | new --from refuses a source that is not a Plug | — |
+| 27 | new says which kind of copy it is about to make | — |
+| 28 | the clone names the filesystem the mount table reports | `stat -f` reads statfs.f_type, and ext2, ext3 and ext4 all share magic |
+| 29 | new --from succeeds on a machine with no version store | found by hand on a pre-store machine. The clone landed, the *default* |
+| 30 | an explicit --runtime is refused before anything is cloned | an explicit --runtime is a different case from the default binding, and |
+| 31 | rm -y removes the Plug and everything in it | — |
+| 32 | rm refuses the default Plug while others exist, and names the successors | removing what default points at leaves the selection dangling and |
+| 33 | removing the last Plug takes the default link with it | the guard above cannot fire for the last Plug, and leaving the link |
+| 34 | rm without -y and with no terminal refuses rather than assuming | this deletes a prefix that can hold a licensed Live and tens of GB of |
+| 35 | rm refuses a Plug that is not there | — |
+| 36 | a Plug's binding decides the runtime a launch binds to | two Plugs running different builds is the whole point of the binding, |
+| 37 | an unbound Plug binds to whatever the channel resolves to | — |
+| 38 | WORKS_RUNTIME still overrides a Plug's binding | the VMs and anyone bisecting a build rely on WORKS_RUNTIME being the |
+| 39 | retention keeps a build a Plug is bound to | a Plug held deliberately on an older build is exactly what the count |
+| 40 | retention prunes that same build when no Plug is bound to it | — |
+| 41 | help ends on a command, not on prose | — |
+| 42 | plug is reachable through the dispatcher | — |
 
 <a id="works-update"></a>
 
@@ -632,25 +636,27 @@ file:// URL, which is the same code path a real channel takes.
 | 11 | an unknown option is refused | — |
 | 12 | a manifest that cannot be fetched is an error, not an update | — |
 | 13 | an incomplete manifest is refused | a half-read manifest cannot answer "is this newer" or "does this |
-| 14 | a Wine base change is refused | a Plug is bound to its base by .update-timestamp and cannot be taken |
-| 15 | --yes does not override a Wine base change | — |
-| 16 | a Wine base change is refused even when the build is already in the store | found in review. The "already in the store, just retarget" branch ran |
-| 17 | --check reports a base change instead of refusing | --check is a question, not an action, so it reports the base change |
-| 18 | it refuses while something is running from the runtime | replacing the tree under a running Live is how a session is lost |
-| 19 | with no terminal to ask on it stops rather than assuming yes | an unattended run must not hang waiting on a prompt nobody can answer |
-| 20 | a checksum mismatch stops the install | the checksum is the only thing making the manifest's URL trustworthy |
-| 21 | a matching checksum reaches the installer, through the update door | which door of the installer this opens, which is not a detail. Both |
-| 22 | the installer is fetched from beside the manifest | releases move, and the manifest must stay the thing that locates the |
-| 23 | a downgrade is named as one | — |
-| 24 | a machine with nothing installed is offered the build | — |
-| 25 | --help says what it does without touching anything | — |
-| 26 | a build with the same timestamp is not called older | two builds can share a timestamp -- the same build published on two |
-| 27 | a genuinely older build is still called older | — |
-| 28 | both sides of the report are ids, not one id and one version | reporting the channel's bare version against the installed id put a |
-| 29 | a release is reported without a kind | a release has no kind, and must not grow one |
-| 30 | the report's columns line up between available and installed | the two ids differ in length by design -- a nightly carries its kind -- |
-| 31 | update help ends on a command, not on prose | the help is a fixed line range over the header comment, so editing that |
-| 32 | update help names every flag it accepts | — |
+| 14 | a Wine base change on the download path is announced, not refused | the manifest describes a build that is not on disk yet, so the base |
+| 15 | a base change that takes a Plug backward is refused from the store | found in review. The "already in the store, just retarget" branch ran |
+| 16 | a base change that moves a Plug forward is refused with no terminal | forward is supported and irreversible, so it takes consent rather than |
+| 17 | --yes accepts a forward base change and retargets | — |
+| 18 | with no Plug, a base change from the store is not obstructed | the old guard compared two runtimes and applied the answer to a machine |
+| 19 | --check reports a base change instead of refusing | --check is a question, not an action, so it reports the base change |
+| 20 | it refuses while something is running from the runtime | replacing the tree under a running Live is how a session is lost |
+| 21 | with no terminal to ask on it stops rather than assuming yes | an unattended run must not hang waiting on a prompt nobody can answer |
+| 22 | a checksum mismatch stops the install | the checksum is the only thing making the manifest's URL trustworthy |
+| 23 | a matching checksum reaches the installer, through the update door | which door of the installer this opens, which is not a detail. Both |
+| 24 | the installer is fetched from beside the manifest | releases move, and the manifest must stay the thing that locates the |
+| 25 | a downgrade is named as one | — |
+| 26 | a machine with nothing installed is offered the build | — |
+| 27 | --help says what it does without touching anything | — |
+| 28 | a build with the same timestamp is not called older | two builds can share a timestamp -- the same build published on two |
+| 29 | a genuinely older build is still called older | — |
+| 30 | both sides of the report are ids, not one id and one version | reporting the channel's bare version against the installed id put a |
+| 31 | a release is reported without a kind | a release has no kind, and must not grow one |
+| 32 | the report's columns line up between available and installed | the two ids differ in length by design -- a nightly carries its kind -- |
+| 33 | update help ends on a command, not on prose | the help is a fixed line range over the header comment, so editing that |
+| 34 | update help names every flag it accepts | — |
 
 <a id="runtime-env"></a>
 
@@ -797,9 +803,10 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | ``works stop` is the documented spelling, and it crosses two dispatchers` | works-runtime: works stop -y reaches the flag through the top-level dispatcher |
 | `a Plug bound to the channel link and a Plug pinned to a build resolve` | works-plug: list separates following a channel from being pinned to a build |
 | `a Plug held deliberately on an older build is exactly what the count` | works-plug: retention keeps a build a Plug is bound to |
-| `a Plug is bound to its base by .update-timestamp and cannot be taken` | works-update: a Wine base change is refused |
+| `a Plug pinned to a build does not follow the channel, so a retarget` | works-runtime: a Plug pinned to a build is not warned about |
 | `a Plug with no prefix in it yet still has to appear, or `new` produces` | works-plug: a Plug created but never booted is still listed |
 | `a bats on PATH used to beat the pin, so a checkout ran whatever the` | repo-hygiene: CI runs the bats tests/run.sh pins, not one of its own |
+| `a booted prefix that cannot say what booted it is the case the old` | works-runtime: a Plug that cannot name its base is a refusal, not a skip |
 | `a channel names a symlink and selects a URL; it is user configuration` | works-update: an unknown channel is refused before any fetch |
 | `a channel pointing at a pruned entry is a broken install produced by` | migrate-layout: retention never removes what the channel points at |
 | `a dangling channel must not resolve to nothing and strand the launcher` | runtime-env: runtime root: a dangling channel falls back rather than resolving empty |
@@ -837,9 +844,10 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `every help here is a fixed line range over the file's header comment,` | works-runtime: runtime help ends on a command, not on prose |
 | `every runtime installed anywhere today predates source-commit` | runtime-env: runtime id: the patch-stack fallback still works with a kind |
 | `forward Wine supports, backward it does not - the wording has to differ` | works-runtime: a downgrade is named as a downgrade |
+| `forward is supported and irreversible, so it takes consent rather than` | works-update: a base change that moves a Plug forward is refused with no terminal |
 | `found by hand on a pre-store machine. The clone landed, the *default*` | works-plug: new --from succeeds on a machine with no version store |
 | `found by hand. With no store there is no channel for a Plug to follow,` | works-plug: a pre-store install is not reported as following a channel |
-| `found in review. The "already in the store, just retarget" branch ran` | works-update: a Wine base change is refused even when the build is already in the store |
+| `found in review. The "already in the store, just retarget" branch ran` | works-update: a base change that takes a Plug backward is refused from the store |
 | `found in review. install.sh hands this to `wineserver -k` *before*` | runtime-env: live prefix: names the legacy path while the destination is absent |
 | `found in review. works-update guards its Wine-base refusal on the field` | manifest: a manifest with no wine field is refused |
 | `found on a VM after a fix that did not work. The architecture is` | runtime-env: a 32-bit prefix declared only in user.reg is not mistaken for unfinished |
@@ -880,6 +888,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `someone with both set has already migrated and left the old one in a` | runtime-env: compat: the new name wins when both are set |
 | `sort -V orders the -debug suffix last, so glob+tail installs a tree with no share/` | runtime-env: the runtime wins over a debug tree sitting beside it |
 | `stopping Live discards unsaved work, so it is the one process here` | works-runtime: stop refuses a running Live with no terminal to confirm on |
+| `tenants come from the prefix's own RegisteredApplications index, not` | works-plug: a Plug that registers nothing lists without tenants |
 | `the BUILD column was exactly as wide as a nightly id --` | works-runtime: list: a nightly id does not crowd the WINE column |
 | `the Plug holds Live, its authorisation and the user's sets` | install-runs: uninstalling keeps the Plug, and the work inside it |
 | `the VMs and anyone bisecting a build rely on WORKS_RUNTIME being the` | works-plug: WORKS_RUNTIME still overrides a Plug's binding |
@@ -901,7 +910,9 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `the installed shape is a symlink on PATH pointing into works/bin, with` | works: works resolves its verbs through a symlink on PATH |
 | `the installer name becomes both a URL component and a filename` | manifest: an installer name containing a path is refused |
 | `the launcher's stale-wineserver kill` | runtime-env: a lingering wineserver means busy, but not that Live is running |
+| `the manifest describes a build that is not on disk yet, so the base` | works-update: a Wine base change on the download path is announced, not refused |
 | `the marker says an application has been installed here. It does NOT say` | run-header: a runtime with no prefix takes the full install, not the update |
+| `the old guard compared two runtimes and applied the answer to a machine` | works-update: with no Plug, a base change from the store is not obstructed |
 | `the path is what people copy into a script or a bug report, and it is` | works-plug: list shows each Plug's path, abbreviated under home |
 | `the path is what people copy into a script, a bug report or a `cd`,` | works-runtime: list shows each build's path, abbreviated under home |
 | `the prefix cannot be taken back, so this must not happen quietly` | works-runtime: use refuses a base change with no terminal to ask on |
@@ -929,6 +940,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `this is the only runtime artifact the nightly channel publishes, so` | runtime-env: tarball predicate: a nightly label is accepted |
 | `this is the whole point -- the directory name answers "when"` | runtime-env: runtime id: dates order correctly across both channels |
 | `two Plugs running different builds is the whole point of the binding,` | works-plug: a Plug's binding decides the runtime a launch binds to |
+| `two applications in one Plug is the shape ~/.wine-ableton was already` | works-plug: a Plug with two registered applications reports both |
 | `two builds can share a timestamp -- the same build published on two` | works-update: a build with the same timestamp is not called older |
 | `two installs of one build collapse to one entry, and the loser is set` | migrate-layout: two rollbacks holding one build keep one and set the rest aside |
 | `two prefixes can hold different Lives and different authorisations` | migrate-layout: plug: a prefix at both paths refuses, naming both |

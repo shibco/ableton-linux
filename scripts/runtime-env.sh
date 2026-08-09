@@ -19,6 +19,27 @@
 #   WINE_ROOT="$(works_runtime_path)"           # just the path
 #   works_bind_runtime                       # the full launcher binding
 
+# The contract this library offers the applications that source it. Bumped only
+# when the surface changes - a function renamed, removed, or given different
+# semantics - never for a release. Deliberately not the kit's VERSION: that is a
+# date, so keying compatibility on it would make every application raise its
+# floor for reasons unrelated to whether anything it calls actually moved.
+#
+# Read by install-works.sh, which installs this library only when it is absent or
+# carries a higher number, and by each application's installer, which refuses an
+# infrastructure above the WORKS_ABI_MIN its launcher declares. Two applications
+# shipping different generations of this file is the ordinary case once more than
+# one exists, and last-writer-wins silently downgrades whichever ran first.
+#
+# The same shape as LINK_SETUP_VERSION in setup-link.sh: a variable inside the
+# script that implements the thing, read with sed, never a file beside it that
+# can drift from what it describes.
+#
+# shellcheck disable=SC2034  # read with sed by install-works.sh and by each
+# application's installer; nothing in this library consumes it, and that is the
+# point - a number this file could read for itself would not be a contract.
+WORKS_ABI=1
+
 # Names this library answered to before the runtime was its own thing. They are
 # honoured for one release and say so once, because the rename lands in the same
 # breath as a migration that moves every path a person or a script had learned -
@@ -285,6 +306,100 @@ works_plug_runtime() {
     printf '%s\n' "$_t"
 }
 
+# --- which Wine base a Plug was bootstrapped against -------------------------
+#
+# A runtime and a Plug are independent objects with independent lifecycles, and
+# everything above keeps them that way. Wine imposes exactly one coupling and it
+# is asymmetric: it compares the prefix's .update-timestamp against the runtime's
+# share/wine/wine.inf and runs `wineboot --update` when they differ. Forward it
+# does. Back it does not support.
+#
+# Until this existed every guard for that asked the *runtime* - `works runtime
+# use` compared the channel's current target against the incoming build, and
+# `works update` compared the installed runtime against the manifest. Neither
+# ever asked a Plug what had bootstrapped it, so a Plug pinned to a build while
+# the channel moved on, a clone carrying a binding but no history, and the
+# WORKS_RUNTIME escape hatch the VMs use for bisecting were all unguarded.
+#
+# Nothing new is recorded to answer it. The prefix already carries the fact, and
+# these two reads are the same comparison Wine itself makes - so the granularity
+# is right by construction: two builds whose wine.inf did not change compare
+# equal, which is correct, because Wine considers such a prefix current.
+works_plug_base() {
+    local _p="${1:-}"; [ -n "$_p" ] || _p="$(works_plug_path)"
+    _p="${_p%/}"
+    [ -r "$_p/.update-timestamp" ] || return 1
+    # One line, an epoch second. Anything else means a prefix we cannot reason
+    # about, and reasoning about it anyway is how a Plug gets taken backward.
+    local _v
+    _v="$(head -1 "$_p/.update-timestamp" 2>/dev/null | tr -d '[:space:]')"
+    case "$_v" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$_v"
+}
+
+works_runtime_base() {
+    local _r="${1:-}"; [ -n "$_r" ] || _r="$(works_runtime_path)"
+    _r="${_r%/}"
+    # tar restores mtimes, so this is the same number on every machine that
+    # unpacked the same tarball - which is what makes it an identity rather than
+    # a local artefact.
+    local _v
+    _v="$(stat -c %Y "$_r/share/wine/wine.inf" 2>/dev/null)" || return 1
+    case "$_v" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$_v"
+}
+
+# Which Plugs a retarget of the channel actually moves. A Plug pinned to a build
+# is not one of them - that is what pinning is for - and asking about it would
+# warn people away from a switch that cannot reach them. Unbound follows the
+# channel, because that is what unbound means.
+#
+# Here rather than in works-runtime because install-runtime.sh needs the same
+# set: the guard that used to live only in the commands has to hold for every
+# door, and two copies of this predicate is how the doors drift apart again.
+works_plugs_following() {
+    local _chan="${1:-}" _n _b
+    [ -n "$_chan" ] || _chan="$(works_channel)"
+    while read -r _n; do
+        [ -n "$_n" ] || continue
+        _b="$(readlink "$(works_plugs_dir)/$_n/.works-runtime" 2>/dev/null || true)"
+        [ -z "$_b" ] || [ "${_b##*/}" = "$_chan" ] || continue
+        printf '%s\n' "$_n"
+    done < <(works_plug_names)
+}
+
+# Where running <runtime> against <plug> would take the prefix. Prints one word
+# and leaves the rendering to the caller, because the three commands that ask
+# want to say different things about the same answer.
+#
+#   fresh     the Plug has never been booted; anything may bootstrap it
+#   same      Wine will not re-run wineboot at all
+#   forward   supported, but a one-way door
+#   backward  Wine does not support it
+#
+# Returns 1 without printing when either side cannot be read. That is a refusal,
+# not a skip: the guard it replaces was switched off by an unreadable BUILD-INFO
+# field rather than stopping on one.
+works_base_move() {
+    local _r="${1:-}" _p="${2:-}" _rb _pb
+    [ -n "$_p" ] || _p="$(works_plug_path)"
+    _p="${_p%/}"
+    _rb="$(works_runtime_base "$_r")" || return 1
+    if ! _pb="$(works_plug_base "$_p")"; then
+        # No stamp. Which of the two that is turns on whether wineboot has ever
+        # run here at all - system.reg is the same marker works_is_stub_prefix
+        # keys on. A prefix that has been booted and still cannot say what booted
+        # it is the case to refuse, and it is exactly the case the wine: field
+        # comparison used to pass over in silence.
+        [ -e "$_p/system.reg" ] && return 1
+        printf 'fresh\n'; return 0
+    fi
+    if   [ "$_rb" -eq "$_pb" ]; then printf 'same\n'
+    elif [ "$_rb" -gt "$_pb" ]; then printf 'forward\n'
+    else                             printf 'backward\n'
+    fi
+}
+
 # Every Plug, by name. Two markers, because a Plug exists before Wine has ever
 # run in it: system.reg is Wine's own "this is a prefix", and .works-runtime is
 # ours for one created but not yet booted. Requiring either keeps a stray
@@ -301,28 +416,71 @@ works_plug_names() {
     done
 }
 
-# What is installed in a Plug. Discovered by globbing drive_c rather than
-# recorded anywhere - nothing registers a tenant, so what is on disk is the only
-# honest answer - using the same globs the launchers use to find their own app.
+# Every application installed on this machine. The directory is the list: an
+# application exists because its payload directory does. No registry, for the
+# same reason Plugs have none - a list beside the filesystem is a list that can
+# disagree with it.
+works_app_names() {
+    local _d _a
+    _d="$(works_home)/apps"
+    [ -d "$_d" ] || return 0
+    for _a in "$_d"/*/; do
+        _a="${_a%/}"
+        [ -d "$_a" ] && [ ! -L "$_a" ] || continue
+        printf '%s\n' "${_a##*/}"
+    done
+}
+
+# What is installed in a Plug — asked of Windows, which already knows.
+#
+# HKLM\Software\RegisteredApplications is the index the Default Programs schema
+# defines: one value per application, its name on the left and the path to its
+# Capabilities key on the right. Every installer that wants to appear in "Set
+# your default programs" writes it, Wine stores it in system.reg like any other
+# key, and it is completely vendor-neutral - there is nothing about Ableton in
+# the read below, and there would be nothing about the next application either.
+#
+# This replaced two worse answers in one day. First a pair of hardcoded globs for
+# Ableton and Cycling '74 living in the library every application sources, where
+# discovery depended on which kit had most recently written this file. Then a
+# per-application tenants.sh that each payload shipped, which fixed the ordering
+# but made every new application a new file and a new protocol to honour. Both
+# were solving a problem Windows had already solved: the prefix is the database,
+# and this is the table.
+#
+# Not the Uninstall keys, which would seem the obvious place and are not: in a
+# real Live 12 prefix they hold nine entries, all of them redistributables and
+# Wine's own Mono, and no Live. Checked before this was written.
 works_plug_tenants() {
-    local _p _e _d
+    local _p
     _p="${1:-}"; [ -n "$_p" ] || _p="$(works_plug_path)"
-    {
-        for _e in "$_p"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live "*.exe; do
-            [ -e "$_e" ] || continue
-            _e="${_e##*/Ableton Live }"; _e="${_e%.exe}"
-            printf 'Live %s\n' "${_e%% *}"
-        done
-        # The vendor directory is spelled with a space and an apostrophe, so it
-        # is built once here rather than quoted inline: two adjacent quoted
-        # segments in one glob read as a splicing mistake even when they are not.
-        local _mx="$_p/drive_c/Program Files/Cycling '74"
-        for _d in "$_mx"/Max\ */Max.exe; do
-            [ -e "$_d" ] || continue
-            _d="${_d%/Max.exe}"
-            printf '%s\n' "${_d##*/}"
-        done
-    } | sort -u | awk 'NR>1{printf ", "} {printf "%s", $0} END{if (NR) print ""}'
+    _p="${_p%/}"
+    [ -r "$_p/system.reg" ] || return 0
+    # A section runs until the next line opening a key, so the header match is
+    # latched rather than the file being range-matched: a blank-line terminator
+    # would be a guess about formatting this does not need to make.
+    #
+    # One rule with ifs inside, rather than awk's natural pattern-action pairs: a
+    # bare `latched && /re/ {` starts a line with an identifier followed by more
+    # words, which packaging.bats's "every function a script calls is defined"
+    # scan reads as a shell call to an undefined function. That check earns its
+    # keep - it is what caught works_channel_file going missing - so the awk is
+    # written to suit it rather than the check taught to ignore this.
+    awk '
+        {
+            if ($0 ~ /^\[/) {
+                latched = ($0 ~ /^\[Software\\\\RegisteredApplications\]/)
+                next
+            }
+            if (latched && $0 ~ /^"[^"]*"="/) {
+                name = $0
+                sub(/^"/, "", name)
+                sub(/"=".*$/, "", name)
+                if (name != "") print name
+            }
+        }
+    ' "$_p/system.reg" 2>/dev/null \
+      | sort -u | awk 'NR>1{printf ", "} {printf "%s", $0} END{if (NR) print ""}'
 }
 
 # Bind this shell to the runtime: drop inherited Wine settings that would reach

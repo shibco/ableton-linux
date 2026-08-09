@@ -38,11 +38,29 @@ setup() {
 
 # A build in the store: a directory with a BUILD-INFO the resolver can read.
 # Only the fields the updater compares are set; a real one carries more.
-a_build() {   # name, commit, built-at, wine
+#
+# The Wine base is two separate facts and they are not interchangeable. The
+# `wine:` label is what a manifest carries and what the early advisory compares;
+# share/wine/wine.inf is what Wine itself reads, and its mtime is what
+# works_base_move answers from. A fixture setting only the label would satisfy a
+# test the real field could not.
+a_build() {   # name, commit, built-at, wine, [base-stamp]
     local d="$STORE/$1"
-    mkdir -p "$d/bin"
+    mkdir -p "$d/bin" "$d/share/wine"
     printf 'dist-version: %s\nsource-commit: %s\nbuilt-at:     %s\nwine:         %s\n' \
         "${1%%+*}" "$2" "$3" "$4" > "$d/ABLETON-WINE-BUILD-INFO.txt"
+    : > "$d/share/wine/wine.inf"
+    touch -d "@${5:-1700000000}" "$d/share/wine/wine.inf"
+}
+
+# A Plug that has been booted, and the base it was booted against. Unbound on
+# purpose: an unbound Plug follows the channel, which is what makes it one of
+# the Plugs a retarget actually moves.
+a_plug() {   # name, base-stamp
+    local d="$WORKS_HOME/plugs/$1"
+    mkdir -p "$d/drive_c"
+    : > "$d/system.reg"
+    printf '%s\n' "$2" > "$d/.update-timestamp"
 }
 
 # What a channel is publishing. Written through the real writer so a change to
@@ -217,48 +235,92 @@ point_at()   { ln -sfn "$2" "$STORE/$1"; }
     [[ "$output" == *"incomplete"* ]]
 }
 
-# guards: a Plug is bound to its base by .update-timestamp and cannot be taken
-# back across one — this refusal is the only thing standing between a user and
-# a one-way prefix rebuild they did not ask for
-@test "a Wine base change is refused" {
+# guards: the manifest describes a build that is not on disk yet, so the base
+# cannot be read from it the way Wine reads it — the label is all there is. That
+# makes this an advisory and not a verdict: it exists so nobody spends 113 MB of
+# download to be asked a question that could have been asked first. The verdict
+# is install.sh's, where the tree is unpacked and every door passes through.
+#
+# It used to exit 1 here and say "install it deliberately with the full installer
+# if you mean it", and the full installer had no base check at all — so the
+# escape hatch it named was less careful than the refusal naming it.
+@test "a Wine base change on the download path is announced, not refused" {
     a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13
     point_at stable 2026.08.04.1+aaaa
     on_channel stable
     a_manifest stable bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 x.run deadbeef
 
     run "$UPD" --yes
-    [ "$status" -ne 0 ]
     [[ "$output" == *"changes the Wine base"* ]]
     [[ "$output" == *"wine-11.13 -> wine-11.14"* ]]
-}
-
-@test "--yes does not override a Wine base change" {
-    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13
-    point_at stable 2026.08.04.1+aaaa
-    on_channel stable
-    a_manifest stable bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 x.run deadbeef
-
-    run "$UPD" --yes
-    [ "$status" -ne 0 ]
+    # It got past the advisory and went for the installer, rather than stopping
+    # on the base. (The download itself fails: x.run is not published here.)
+    [[ "$output" == *"downloading"* ]] || { echo "$output" >&2; false; }
 }
 
 # guards: found in review. The "already in the store, just retarget" branch ran
 # *above* both refusals, so the one path that costs no download was also the one
-# path that crossed a Wine base unchecked — and with Live running. Both existing
-# base tests use a commit that is not in the store, so they only ever reached the
-# download path.
-@test "a Wine base change is refused even when the build is already in the store" {
-    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13
-    a_build 2026.08.04.1+bbbb bbbbbbbb 2026-08-07T10:00:00Z wine-11.14
+# path that crossed a Wine base unchecked — and with Live running. It is also
+# the one path install.sh never sees, so the guard has to be repeated here; the
+# build being on disk is what makes it answerable properly.
+@test "a base change that takes a Plug backward is refused from the store" {
+    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13 1700000000
+    a_build 2026.08.04.1+bbbb bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 1600000000
+    a_plug studio 1700000000        # booted against the newer base
     point_at stable 2026.08.04.1+aaaa
     on_channel stable
     a_manifest stable bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 x.run deadbeef
 
     run "$UPD" --yes
     [ "$status" -ne 0 ]
-    [[ "$output" == *"changes the Wine base"* ]]
+    [[ "$output" == *"OLDER Wine base"* ]]
     [ "$(readlink "$STORE/stable")" = "2026.08.04.1+aaaa" ] \
-        || { echo "the channel was retargeted across a base change" >&2; false; }
+        || { echo "the channel was retargeted backward across a base" >&2; false; }
+}
+
+# guards: forward is supported and irreversible, so it takes consent rather than
+# a refusal — but consent nobody can give is not consent. bats has no controlling
+# terminal, which is the same position a cron job or a script is in.
+@test "a base change that moves a Plug forward is refused with no terminal" {
+    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13 1600000000
+    a_build 2026.08.04.1+bbbb bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 1700000000
+    a_plug studio 1600000000        # booted against the older base
+    point_at stable 2026.08.04.1+aaaa
+    on_channel stable
+    a_manifest stable bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 x.run deadbeef
+
+    run "$UPD"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no terminal to confirm a base change"* ]]
+    [ "$(readlink "$STORE/stable")" = "2026.08.04.1+aaaa" ]
+}
+
+@test "--yes accepts a forward base change and retargets" {
+    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13 1600000000
+    a_build 2026.08.04.1+bbbb bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 1700000000
+    a_plug studio 1600000000
+    point_at stable 2026.08.04.1+aaaa
+    on_channel stable
+    a_manifest stable bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 x.run deadbeef
+
+    run "$UPD" --yes
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [ "$(readlink "$STORE/stable")" = "2026.08.04.1+bbbb" ]
+}
+
+# guards: the old guard compared two runtimes and applied the answer to a machine
+# that might have no prefix at all. There is nothing to re-bootstrap here, so
+# there is nothing to warn about — asking the Plug is what makes that visible.
+@test "with no Plug, a base change from the store is not obstructed" {
+    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13 1600000000
+    a_build 2026.08.04.1+bbbb bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 1700000000
+    point_at stable 2026.08.04.1+aaaa
+    on_channel stable
+    a_manifest stable bbbbbbbb 2026-08-07T10:00:00Z wine-11.14 x.run deadbeef
+
+    run "$UPD" --yes
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [ "$(readlink "$STORE/stable")" = "2026.08.04.1+bbbb" ]
 }
 
 # guards: --check is a question, not an action, so it reports the base change

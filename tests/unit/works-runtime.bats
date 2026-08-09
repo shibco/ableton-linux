@@ -46,6 +46,29 @@ plant() {
     { printf 'dist-version: %s\n' "$ver"; printf 'patch-stack:  %s\n' "$disc"
       printf 'wine:         %s\n' "$base"
       [ -z "$at" ] || printf 'built-at:     %s\n' "$at"; } > "$dir/ABLETON-WINE-BUILD-INFO.txt"
+    # The Wine base is two facts. The `wine:` label above is what a person reads
+    # and what the report prints; share/wine/wine.inf is what Wine compares a
+    # prefix's .update-timestamp against, and so what decides whether a switch
+    # takes a Plug forward or back. Derived from the label rather than passed
+    # separately, so a fixture cannot state one and imply the other — which is
+    # how these tests came to assert a refusal the code could not produce.
+    mkdir -p "$dir/share/wine"
+    : > "$dir/share/wine/wine.inf"
+    local n; n="$(printf '%s' "$base" | tr -cd '0-9')"
+    touch -d "@$((1500000000 + 10#$n * 1000))" "$dir/share/wine/wine.inf"
+}
+
+# A Plug that has been booted, and the base it was booted against — stamped the
+# same way plant() stamps a build, so the two agree by construction. Unbound, so
+# it follows the channel: that is what makes it one of the Plugs a retarget
+# moves, and a pinned one is deliberately not asked about.
+a_plug() {   # name, base-label
+    local d n
+    d="$(works_plugs_dir)/$1"
+    mkdir -p "$d/drive_c"
+    : > "$d/system.reg"
+    n="$(printf '%s' "${2:-wine-11.13}" | tr -cd '0-9')"
+    printf '%s\n' "$((1500000000 + 10#$n * 1000))" > "$d/.update-timestamp"
 }
 
 store() {
@@ -208,6 +231,7 @@ store() {
 # guards: the prefix cannot be taken back, so this must not happen quietly
 @test "use refuses a base change with no terminal to ask on" {
     store
+    a_plug studio wine-11.13
     plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.14
     # setsid detaches the controlling terminal. Without it this inherits the
     # terminal of whoever ran the suite, takes the interactive branch, and blocks.
@@ -220,9 +244,11 @@ store() {
 
 @test "use --force accepts a base change deliberately" {
     store
+    a_plug studio wine-11.13
     plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.14
     run RT use 2026.07.01.1+ddddddd --force
     [ "$status" -eq 0 ]
+    [[ "$output" == *"--force given"* ]]
     [ "$(readlink "$C/stable")" = "2026.07.01.1+ddddddd" ]
 }
 
@@ -231,9 +257,41 @@ store() {
     plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.14
     plant "$C/2026.01.01.1+aaaaaaa" 2026.01.01.1 aaaaaaaxxx 2026-01-01T00:00:00Z wine-11.13
     ln -s "2026.07.01.1+ddddddd" "$C/stable"
+    a_plug studio wine-11.14
     run setsid bash "$REPO/scripts/works-runtime" use 2026.01.01.1+aaaaaaa
     [[ "$output" == *"DOWNGRADE"* ]]
     [[ "$output" == *"does not support"* ]]
+    [[ "$output" == *"studio"* ]] \
+        || { echo "the refusal did not name the Plug it is about" >&2; false; }
+}
+
+# guards: a Plug pinned to a build does not follow the channel, so a retarget
+# cannot reach it and warning about it would talk people out of a switch that
+# has nothing to do with them. The old guard compared two runtimes and so warned
+# about every Plug on the machine, pinned or not.
+@test "a Plug pinned to a build is not warned about" {
+    store
+    a_plug studio wine-11.13
+    ln -sfn "../../runtimes/2026.06.01.1+bbbbbbb" "$(works_plugs_dir)/studio/.works-runtime"
+    plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.14
+    run setsid bash "$REPO/scripts/works-runtime" use 2026.07.01.1+ddddddd
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" != *"different Wine base"* ]]
+    [ "$(readlink "$C/stable")" = "2026.07.01.1+ddddddd" ]
+}
+
+# guards: a booted prefix that cannot say what booted it is the case the old
+# `wine:` comparison passed over in silence — it was guarded on the field being
+# readable, so an unreadable one switched the guard off instead of stopping on it
+@test "a Plug that cannot name its base is a refusal, not a skip" {
+    store
+    a_plug studio wine-11.13
+    rm -f "$(works_plugs_dir)/studio/.update-timestamp"
+    plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.14
+    run setsid bash "$REPO/scripts/works-runtime" use 2026.07.01.1+ddddddd
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"will not say which Wine base"* ]]
+    [ "$(readlink "$C/stable")" = "2026.06.01.1+bbbbbbb" ]
 }
 
 # --- the picker ---------------------------------------------------------------

@@ -282,6 +282,71 @@ else
     echo "   (binutils not found: skipping deep binary checks)"
 fi
 
+# --- does this build take any Plug backward? ----------------------------------
+# Here, and not in the commands. `works update` and `works runtime use` each grew
+# their own version of this, comparing the `wine:` field of two BUILD-INFO files
+# - which asked about two runtimes when the question is about a prefix, and left
+# the installer, the one path both of them told people to use instead, with no
+# check at all. The refusal named an escape hatch less careful than itself.
+#
+# The staged candidate is a full tree, so share/wine/wine.inf is right there and
+# this is answerable before anything is promoted. The comparison is Wine's own:
+# it reads the prefix's .update-timestamp against that file and re-runs wineboot
+# when they differ, forward only.
+#
+# A pinned WORKS_RUNTIME is deliberately exempt. Running an old build against a
+# newer prefix is exactly what bisecting is, the regression VMs depend on it, and
+# a pin is already the outermost explicit say in every other resolver here.
+if [ -z "${WORKS_RUNTIME:-}" ]; then
+    back=""; fwd=""
+    while read -r _plug; do
+        [ -n "$_plug" ] || continue
+        move="$(works_base_move "$candidate" "$(works_plugs_dir)/$_plug")" || {
+            echo "!! $_plug has been booted but will not say which Wine base bootstrapped" >&2
+            echo "   it, so whether this build takes it backward cannot be answered." >&2
+            echo "   Refusing rather than guessing. Set WORKS_ALLOW_BASE_CHANGE=1 to" >&2
+            echo "   install anyway." >&2
+            [ "${WORKS_ALLOW_BASE_CHANGE:-0}" = 1 ] || exit 1
+            move=""; }
+        case "$move" in
+            backward) back="$back $_plug" ;;
+            forward)  fwd="$fwd $_plug" ;;
+        esac
+    done < <(works_plugs_following "$CHANNEL")
+
+    # Backward is not a warning. Wine does not support taking a prefix back, so
+    # this refuses the way the prefix migration refuses: only an explicit say
+    # gets past it, and nothing is deleted either way.
+    if [ -n "$back" ]; then
+        echo "!! This build is on an OLDER Wine base than the Plug(s) it would run:$back" >&2
+        echo "   Wine cannot take a prefix back. Those Plugs were bootstrapped against" >&2
+        echo "   a newer base and would break." >&2
+        if [ "${WORKS_ALLOW_BASE_CHANGE:-0}" != 1 ]; then
+            echo "   Refusing. Keep a copy of the Plug and set WORKS_ALLOW_BASE_CHANGE=1" >&2
+            echo "   if you mean it, or pick a newer build." >&2
+            exit 1
+        fi
+        echo "   (WORKS_ALLOW_BASE_CHANGE=1 given)"
+    fi
+
+    # Forward is supported and is what every base bump is, so this informs and
+    # asks rather than refusing. No terminal proceeds with the notice printed:
+    # refusing would break every scripted install the first time a base moves,
+    # and unlike force-closing Live there is no unsaved work at stake.
+    if [ -n "$fwd" ] && [ "${WORKS_ALLOW_BASE_CHANGE:-0}" != 1 ]; then
+        echo "== this build changes the Wine base =="
+        echo "   Re-bootstrapped on next launch, and not reversible:$fwd"
+        if { : >/dev/tty; } 2>/dev/null; then
+            printf 'Continue? [Y/n] ' > /dev/tty
+            ans=""
+            read -r -t 60 ans < /dev/tty || printf '\n' > /dev/tty 2>/dev/null || true
+            case "$ans" in [Nn]*) echo "cancelled"; exit 1 ;; esac
+        else
+            echo "   (no terminal to ask on; continuing)"
+        fi
+    fi
+fi
+
 # Promote. Into the store this is: file the candidate under the name its own
 # BUILD-INFO gives it, then retarget the channel. No dated rollback directory is
 # created, because the entry one would hold is already in the store under its
@@ -415,6 +480,17 @@ install -m755 "$here/setup-link.sh" "$HOME/works/apps/ableton-live/setup-link.sh
 # it that could not work, and there was no supported way to set a second Plug up
 # at all. That is what blocked the documented recovery for a 32-bit prefix.
 install -m755 "$here/setup-prefix.sh" "$HOME/works/apps/ableton-live/setup-prefix.sh"
+
+# Where this application's kit came from, so an updater can ask the right channel
+# for the right application without a table of URLs in the library every
+# application shares. One line, written by the installer from the kit that
+# installed it; never edited by hand, and absent on a checkout install, which has
+# no origin to record.
+for _o in "$here/../origin" "$root/dist/origin"; do
+    [ -r "$_o" ] || continue
+    install -m644 "$_o" "$HOME/works/apps/ableton-live/origin"
+    break
+done
 
 # Record the kit version so a later installer can tell what it is updating
 # (the kit and the repo both carry VERSION at the root).

@@ -120,18 +120,26 @@ fi
 #
 # A Plug is bound to a Wine base and cannot be taken back across one. Say it
 # before downloading 113M, not after.
+# An advisory, and deliberately no longer a refusal. It used to stop here and
+# say "install it deliberately with the full installer if you mean it" - and the
+# full installer had no base check at all, so the escape hatch it named was less
+# careful than the refusal that named it. The authoritative guard now lives in
+# install.sh, where the candidate tree is on disk and every door passes through:
+# it reads the prefix's own .update-timestamp rather than comparing two
+# BUILD-INFO strings, so it also catches the Plugs a runtime-to-runtime
+# comparison cannot see.
+#
+# What survives here is the part worth saying early: do not spend 113 MB of
+# download to be asked a question that can be asked now.
 if [ -n "$have_wine" ] && [ -n "$want_wine" ] && [ "$have_wine" != "$want_wine" ]; then
     echo
-    echo "!! This changes the Wine base: $have_wine -> $want_wine"
-    echo "   Your Plug will be re-bootstrapped and cannot be taken back."
-    # --check is a question, not an action, so it reports this rather than
-    # failing on it.
+    echo "note: this changes the Wine base: $have_wine -> $want_wine"
+    echo "      Plugs following this channel are re-bootstrapped on next launch,"
+    echo "      and cannot be taken back. The installer asks before doing it."
     if [ "$CHECK" -eq 1 ]; then
-        echo "   (--check: nothing was changed)"
+        echo "      (--check: nothing was changed)"
         exit 0
     fi
-    echo "   Refusing. Install it deliberately with the full installer if you mean it."
-    exit 1
 fi
 
 # Already in the store from an earlier install? Then this is a channel switch,
@@ -143,6 +151,38 @@ for e in "$container"/*; do
     echo
     echo "That build is already installed as ${e##*/} — no download needed."
     [ "$CHECK" -eq 0 ] || exit 0
+    # The one path install.sh never sees, so the guard it owns has to be repeated
+    # here - and here it is answerable properly, because the build is on disk.
+    # Costing no download is exactly what made this branch look harmless; it is
+    # the same one-way door as any other.
+    back=""; fwd=""
+    while read -r _plug; do
+        [ -n "$_plug" ] || continue
+        move="$(works_base_move "$e" "$(works_plugs_dir)/$_plug")" || {
+            echo "!! $_plug will not say which Wine base bootstrapped it; refusing" >&2
+            exit 1; }
+        case "$move" in
+            backward) back="$back $_plug" ;;
+            forward)  fwd="$fwd $_plug" ;;
+        esac
+    done < <(works_plugs_following "$CHANNEL")
+    if [ -n "$back" ] && [ "${WORKS_ALLOW_BASE_CHANGE:-0}" != 1 ]; then
+        echo "!! that build is on an OLDER Wine base than:$back" >&2
+        echo "   Wine cannot take a prefix back. Refusing; set" >&2
+        echo "   WORKS_ALLOW_BASE_CHANGE=1 if you mean it." >&2
+        exit 1
+    fi
+    if [ -n "$fwd" ] && [ "$ASSUME_YES" -eq 0 ] && [ "${WORKS_ALLOW_BASE_CHANGE:-0}" != 1 ]; then
+        echo "   Re-bootstrapped on next launch, and not reversible:$fwd"
+        if { : >/dev/tty; } 2>/dev/null; then
+            printf 'Continue? [y/N] ' > /dev/tty
+            ans=""; read -r -t 60 ans < /dev/tty || ans=n
+            case "$ans" in y|Y|yes|Yes|YES) ;; *) echo "cancelled"; exit 0 ;; esac
+        else
+            echo "!! no terminal to confirm a base change on; pass --yes if you mean it" >&2
+            exit 1
+        fi
+    fi
     # Asked before the retarget, not after: the resolver follows the channel, so
     # once it has moved this would be asking whether anything runs from the build
     # being switched *to*. What the note is about is the one being switched from.

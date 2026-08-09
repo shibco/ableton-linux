@@ -71,7 +71,9 @@ cmd_path() {
 # The Wine base is not in the entry name and should not be - it is derivable,
 # and one runtime release is built on one base. But it is the fact that decides
 # whether switching is safe for a Plug, so it belongs in front of anyone
-# choosing.
+# choosing. This is the label; works_base_move is the decision, and the two are
+# deliberately not the same read: a label can be missing from a BUILD-INFO and
+# still leave a perfectly answerable question about the prefix.
 base_of() { works_buildinfo_field "$container/$1/ABLETON-WINE-BUILD-INFO.txt" wine; }
 
 cmd_list() {
@@ -204,22 +206,39 @@ cmd_use() {
         echo "!! $want has no bin/wine; refusing to point the channel at it" >&2
         return 1; }
 
-    # A Plug is bound to a Wine base: Wine compares the prefix's
-    # .update-timestamp against the runtime's share/wine/wine.inf and runs
-    # wineboot --update when they differ. Forward it does; back it does not
-    # support. Switching between bases is therefore a one-way door for every
-    # Plug using this channel, and nothing said so until now.
+    # Wine compares the prefix's .update-timestamp against the runtime's
+    # share/wine/wine.inf and runs wineboot --update when they differ. Forward it
+    # does; back it does not support. So the question is not "do these two builds
+    # carry different `wine:` strings" - it is "where does this build take each
+    # Plug that would run it", and only the Plug can answer that. A Plug pinned
+    # while the channel moved on, and a clone carrying a binding but no history,
+    # both go unasked by any comparison made between two runtimes.
     from="$(base_of "$(readlink "$channel" 2>/dev/null)")"
     to="$(base_of "$want")"
-    if [ -n "$from" ] && [ -n "$to" ] && [ "$from" != "$to" ]; then
-        echo "This build is on a different Wine base: $from -> $to"
-        if [ "$(printf '%s\n%s\n' "$from" "$to" | sort -V | tail -1)" = "$from" ]; then
-            echo "  That is a DOWNGRADE. Wine does not support it: your Plug was"
-            echo "  bootstrapped against $from and cannot be taken back to $to."
-            echo "  Expect breakage, and keep a copy of the Plug first."
-        else
-            echo "  Your Plug will be re-bootstrapped against $to on next launch,"
-            echo "  and cannot be taken back to $from afterwards."
+    local -a back=() fwd=(); local p move
+    while read -r p; do
+        [ -n "$p" ] || continue
+        move="$(works_base_move "$container/$want" "$(works_plugs_dir)/$p")" || {
+            echo "!! $p has been booted but will not say which Wine base bootstrapped it," >&2
+            echo "   so whether this build would take it backward cannot be answered." >&2
+            echo "   Refusing rather than guessing." >&2
+            return 1; }
+        case "$move" in
+            backward) back+=("$p") ;;
+            forward)  fwd+=("$p") ;;
+        esac
+    done < <(works_plugs_following "$(works_channel)")
+
+    if [ "${#back[@]}" -gt 0 ] || [ "${#fwd[@]}" -gt 0 ]; then
+        [ -z "$from" ] || [ -z "$to" ] || echo "This build is on a different Wine base: $from -> $to"
+        if [ "${#back[@]}" -gt 0 ]; then
+            echo "  That is a DOWNGRADE for: ${back[*]}"
+            echo "  Wine does not support it: those Plugs were bootstrapped against a"
+            echo "  newer base and cannot be taken back. Expect breakage, and keep a"
+            echo "  copy first."
+        fi
+        if [ "${#fwd[@]}" -gt 0 ]; then
+            echo "  Re-bootstrapped on next launch, and not reversible: ${fwd[*]}"
         fi
         if [ "$force" = "--force" ]; then
             echo "  (--force given)"
