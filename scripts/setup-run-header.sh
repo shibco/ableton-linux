@@ -54,6 +54,27 @@ for marker in "$HOME/works/apps/$APP/VERSION" \
     if [ -f "$marker" ]; then returning=1; break; fi
 done
 
+# And a prefix for update mode to act on, because update mode ends in
+# setup-prefix.sh --refresh, which exits 2 on a prefix that is not there rather
+# than creating one. The marker alone is not that question: --runtime-only writes
+# it and creates no prefix, so a machine set up that way would be offered an
+# update that could only fail. Answering "has this been installed" and "is there
+# something to refresh" separately is what keeps both cases right.
+#
+# A glob over plugs/*, not a named Plug: any Plug will do, and naming one here
+# would put the literal back that the resolver exists to remove. The legacy path
+# is listed beside it because on an unmigrated machine that is where the prefix
+# still is - which is the whole point of this test.
+if [ "$returning" = 1 ]; then
+    have_prefix=0
+    for reg in "${WORKS_PLUG:+$WORKS_PLUG/system.reg}" \
+               "$HOME"/works/plugs/*/system.reg \
+               "$HOME/.wine-ableton/system.reg"; do
+        if [ -n "$reg" ] && [ -f "$reg" ]; then have_prefix=1; break; fi
+    done
+    [ "$have_prefix" = 1 ] || returning=0
+fi
+
 self="$(readlink -f -- "$0")"
 stick_dir="$(dirname -- "$self")"
 

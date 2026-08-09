@@ -124,6 +124,25 @@ a_works_install() {
     [[ "$output" == *"updating it to 9.9.9"* ]]
 }
 
+# guards: the marker says an application has been installed here. It does NOT say
+# there is a prefix, and `--runtime-only` writes the marker while creating none.
+# Keying the update offer on the marker alone sent exactly that machine into
+# update mode, which ends in setup-prefix.sh --refresh — and that exits 2 on a
+# prefix that is not there rather than creating one. The install would fail where
+# the full path would have worked. Two questions, asked separately.
+@test "a runtime with no prefix takes the full install, not the update" {
+    mkdir -p "$HOME/works/runtimes/stub/bin" "$HOME/works/apps/ableton-live"
+    ln -sfn stub "$HOME/works/runtimes/stable"
+    printf '2026.08.01.1\n' > "$HOME/works/apps/ableton-live/VERSION"
+    # deliberately no prefix, at either path
+    run sh "$RUN" --no-launch --no-link
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" != *"existing installation was found"* ]] \
+        || { echo "offered an update with no prefix to refresh" >&2; false; }
+    [[ "$output" != *"--refresh"* ]] \
+        || { echo "reached the refresh path with no prefix" >&2; false; }
+}
+
 # --- modes that must not consult the machine at all --------------------------
 
 @test "--runtime-only stops before the prefix, on any machine" {

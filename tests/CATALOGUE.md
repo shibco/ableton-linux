@@ -7,7 +7,7 @@ from the files, and the *Guards* column from `# guards:` annotations above a
 test. Run `./tests/catalogue.sh` after adding or renaming a test;
 `tests/repo-hygiene.bats` fails when this file is stale.
 
-413 tests across 17 suites. See [README.md](README.md) for how to run
+414 tests across 17 suites. See [README.md](README.md) for how to run
 them and [../.github/workflows/ci-checks.yml](../.github/workflows/ci-checks.yml)
 for which run on a PR.
 
@@ -20,7 +20,7 @@ for which run on a PR.
 - [tests/unit/detect-theme.bats](#detect-theme) — 22 test(s)
 - [tests/unit/launcher.bats](#launcher) — 20 test(s)
 - [tests/unit/install-runs.bats](#install-runs) — 20 test(s)
-- [tests/unit/run-header.bats](#run-header) — 11 test(s)
+- [tests/unit/run-header.bats](#run-header) — 12 test(s)
 - [tests/unit/manifest.bats](#manifest) — 21 test(s)
 - [tests/unit/migrate-layout.bats](#migrate-layout) — 42 test(s)
 - [tests/unit/works.bats](#works) — 12 test(s)
@@ -322,13 +322,14 @@ not what the decision runs.
 | 2 | a machine on the ~/works layout is offered an update | — |
 | 3 | an unmigrated machine is offered an update, not a fresh install | THE defect. Every existing user is on the legacy layout on the day the |
 | 4 | with no terminal the update is taken, not the install | with no terminal nobody can answer, and the header takes the update |
-| 5 | --runtime-only stops before the prefix, on any machine | — |
-| 6 | --update goes to the prefix refresh without asking | — |
-| 7 | --extract writes the kit and does nothing else | — |
-| 8 | --uninstall runs the kit's uninstaller and stops | — |
-| 9 | a damaged payload is refused before anything runs | — |
-| 10 | help ends on an option, not on prose about the payload | --help sliced lines 2-18 of this file's own header comment, and line 18 |
-| 11 | help names every mode the argument parser accepts | — |
+| 5 | a runtime with no prefix takes the full install, not the update | the marker says an application has been installed here. It does NOT say |
+| 6 | --runtime-only stops before the prefix, on any machine | — |
+| 7 | --update goes to the prefix refresh without asking | — |
+| 8 | --extract writes the kit and does nothing else | — |
+| 9 | --uninstall runs the kit's uninstaller and stops | — |
+| 10 | a damaged payload is refused before anything runs | — |
+| 11 | help ends on an option, not on prose about the payload | --help sliced lines 2-18 of this file's own header comment, and line 18 |
+| 12 | help names every mode the argument parser accepts | — |
 
 <a id="manifest"></a>
 
@@ -900,6 +901,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `the installed shape is a symlink on PATH pointing into works/bin, with` | works: works resolves its verbs through a symlink on PATH |
 | `the installer name becomes both a URL component and a filename` | manifest: an installer name containing a path is refused |
 | `the launcher's stale-wineserver kill` | runtime-env: a lingering wineserver means busy, but not that Live is running |
+| `the marker says an application has been installed here. It does NOT say` | run-header: a runtime with no prefix takes the full install, not the update |
 | `the path is what people copy into a script or a bug report, and it is` | works-plug: list shows each Plug's path, abbreviated under home |
 | `the path is what people copy into a script, a bug report or a `cd`,` | works-runtime: list shows each build's path, abbreviated under home |
 | `the prefix cannot be taken back, so this must not happen quietly` | works-runtime: use refuses a base change with no terminal to ask on |
