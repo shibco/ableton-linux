@@ -31,7 +31,7 @@ ableton_shortcuts_strip_ctrl_alt()
     inner="${inner%]}"
     local IFS=,
     for entry in $inner; do
-        entry="${entry#"${entry%%[![:space:]]*}"}"
+        entry="${entry#${entry%%[![:space:]]*}}"
         accelerator="${entry#\'}"
         accelerator="${accelerator%\'}"
         accelerator="${accelerator,,}"
@@ -79,13 +79,8 @@ ableton_shortcuts_keys()
 
 ableton_shortcuts_live_running()
 {
-    if declare -F ableton_live_running >/dev/null 2>&1; then
-        ableton_live_running
-        return
-    fi
-    # Without the prefix/runtime-scoped lifecycle helper there is no safe
-    # process identity test. Treat Live as absent instead of matching globally.
-    return 1
+    pgrep -af '[P]rogramData.*Ableton Live.*\.exe|[A]bleton Live.*\.exe.*ProgramData' \
+        >/dev/null 2>&1
 }
 
 ableton_shortcuts_init_state()
@@ -149,61 +144,10 @@ ableton_shortcuts_state_has_key()
 
 ableton_shortcuts_state_valid()
 {
-    local state="${ableton_shortcuts_state:-}" header schema key original held extra terminal
-    local -A seen=()
+    local header=""
     [ -f "$ableton_shortcuts_state" ] || return 0
-    [ ! -L "$state" ] && [ -O "$state" ] && [ -r "$state" ] \
-        && [ "$(stat -c '%a' -- "$state" 2>/dev/null || true)" = 600 ] \
-        && [ "$(LC_ALL=C tr -cd '\000' < "$state" 2>/dev/null | wc -c)" -eq 0 ] || return 1
-    IFS= read -r header < "$state" || return 1
-    [ "$header" = ABLETON_SHORTCUT_HOLD_V2 ] || return 1
-    local saw_header=0
-    while IFS='|' read -r schema key original held extra || [ -n "$schema$key$original$held$extra" ]; do
-        if [ "$schema" = ABLETON_SHORTCUT_HOLD_V2 ]; then
-            [ "$saw_header" -eq 0 ] && [ -z "$key$original$held$extra" ] \
-                && { saw_header=1; continue; }
-            return 1
-        fi
-        [ "$saw_header" -eq 1 ] || return 1
-        [ -z "$extra" ] && [ -n "$original" ] && [ -n "$held" ] || return 1
-        case "$schema|$key" in
-            org.gnome.desktop.wm.keybindings\|switch-to-workspace-up) terminal=Up ;;
-            org.gnome.desktop.wm.keybindings\|switch-to-workspace-down) terminal=Down ;;
-            org.gnome.settings-daemon.plugins.media-keys\|logout) terminal=Delete ;;
-            *) return 1 ;;
-        esac
-        [ -z "${seen[$schema|$key]+x}" ] \
-            && [ "$held" = "$(ableton_shortcuts_strip_ctrl_alt "$original" "$terminal")" ] \
-            && [ "$held" != "$(ableton_shortcuts_normalize_value "$original")" ] || return 1
-        seen["$schema|$key"]=1
-    done < "$state"
-    [ "${#seen[@]}" -ge 1 ]
-}
-
-ableton_shortcuts_legacy_v1_valid()
-{
-    local state="$1" schema key original extra terminal
-    local -A seen=()
-    [ -f "$state" ] && [ ! -L "$state" ] && [ -O "$state" ] && [ -r "$state" ] \
-        && [ "$(stat -c '%a' -- "$state" 2>/dev/null || true)" = 600 ] || return 1
-    [ "$(LC_ALL=C tr -cd '\000' < "$state" 2>/dev/null | wc -c)" -eq 0 ] || return 1
-    while IFS='|' read -r schema key original extra || [ -n "$schema$key$original$extra" ]; do
-        [ -z "$extra" ] && [ -n "$original" ] || return 1
-        case "$schema|$key" in
-            org.gnome.desktop.wm.keybindings\|switch-to-workspace-up) terminal=Up ;;
-            org.gnome.desktop.wm.keybindings\|switch-to-workspace-down) terminal=Down ;;
-            org.gnome.settings-daemon.plugins.media-keys\|logout) terminal=Delete ;;
-            *) return 1 ;;
-        esac
-        [ -z "${seen[$schema|$key]+x}" ] || return 1
-        case "$original" in \[*\]|@as\ \[*\]) ;; *) return 1 ;; esac
-        # Historical state was written only for a binding that actually
-        # contained the exact Ctrl+Alt accelerator being held.
-        [ "$(ableton_shortcuts_strip_ctrl_alt "$original" "$terminal")" \
-            != "$(ableton_shortcuts_normalize_value "$original")" ] || return 1
-        seen["$schema|$key"]=1
-    done < "$state"
-    [ "${#seen[@]}" -ge 1 ]
+    IFS= read -r header < "$ableton_shortcuts_state" || return 1
+    [ "$header" = "ABLETON_SHORTCUT_HOLD_V2" ]
 }
 
 ableton_shortcuts_append_state()
@@ -227,10 +171,6 @@ ableton_shortcuts_restore_locked()
 {
     local header schema key original held current tmp failures=0 changed=0 malformed=0
     [ -f "$ableton_shortcuts_state" ] || return 0
-    ableton_shortcuts_state_valid || {
-        echo "ableton-live: refusing unknown shortcut recovery state: $ableton_shortcuts_state" >&2
-        return 1
-    }
     IFS= read -r header < "$ableton_shortcuts_state" || header=""
     if [ "$header" != "ABLETON_SHORTCUT_HOLD_V2" ]; then
         echo "ableton-live: refusing unknown shortcut recovery state: $ableton_shortcuts_state" >&2
@@ -344,9 +284,6 @@ ableton_shortcuts_stat_start_time()
         *') '*) fields="${stat##*) }" ;;
         *) return 1 ;;
     esac
-    # /proc/PID/stat fields are deliberately split on whitespace after the
-    # parenthesized command field has been removed.
-    # shellcheck disable=SC2086
     set -- $fields
     [ "$#" -ge 20 ] || return 1
     shift 19
@@ -416,17 +353,14 @@ ableton_shortcuts_prepare()
     # V1 has no held-value field with which to detect concurrent user edits.
     if [ -n "$legacy_state" ] && [ -f "$legacy_state" ] && ! ableton_shortcuts_live_running; then
         failures=0
-        if ableton_shortcuts_legacy_v1_valid "$legacy_state"; then
-            while IFS='|' read -r schema key original; do
-                gsettings set "$schema" "$key" "$original" 2>/dev/null || failures=$((failures + 1))
-            done < "$legacy_state"
-            if [ "$failures" -eq 0 ]; then
-                rm -f -- "$legacy_state"
-            else
-                echo "ableton-live: legacy shortcut recovery state retained at $legacy_state" >&2
-            fi
+        while IFS='|' read -r schema key original; do
+            [ -n "$schema" ] && [ -n "$key" ] && [ -n "$original" ] || continue
+            gsettings set "$schema" "$key" "$original" 2>/dev/null || failures=$((failures + 1))
+        done < "$legacy_state"
+        if [ "$failures" -eq 0 ]; then
+            rm -f -- "$legacy_state"
         else
-            echo "ableton-live: refusing malformed legacy shortcut recovery state: $legacy_state" >&2
+            echo "ableton-live: legacy shortcut recovery state retained at $legacy_state" >&2
         fi
     fi
 
@@ -457,7 +391,8 @@ ableton_shortcuts_prepare()
     exec 8>&-
 
     if [ "$watch_needed" -eq 1 ]; then
-        # Read by the launcher after this sourced helper returns.
+        # Read by the sourcing launcher (scripts/ableton-live) to decide whether
+        # to start the detached watcher; nothing in this file reads it.
         # shellcheck disable=SC2034
         ableton_shortcuts_active=1
     fi
@@ -466,12 +401,6 @@ ableton_shortcuts_prepare()
 ableton_shortcuts_watch_loop()
 {
     local delay="${ABLETON_SHORTCUTS_POLL_SECONDS:-2}"
-    if ! awk -v value="$delay" 'BEGIN {
-        exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value + 0 > 0 && value + 0 <= 60)
-    }' </dev/null; then
-        echo "ableton-live: invalid ABLETON_SHORTCUTS_POLL_SECONDS '$delay'; using 2" >&2
-        delay=2
-    fi
     exec 7>"$ableton_shortcuts_watch_lock" || return 1
     flock -n 7 || return 0
     while [ -f "$ableton_shortcuts_state" ]; do

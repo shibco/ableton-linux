@@ -19,6 +19,9 @@ gdi32="$wine_build/dlls/gdi32/x86_64-windows"
 ntdll="$wine_build/dlls/ntdll/x86_64-windows"
 comdlg32="$wine_build/dlls/comdlg32/x86_64-windows"
 
+# The commas below belong inside single -Wl arguments, which is how the linker
+# takes a flag and its value; they are not element separators.
+# shellcheck disable=SC2054
 common=(
     -target x86_64-windows-gnu -fuse-ld=lld --no-default-config
     -fno-stack-protector -mno-stack-arg-probe -nostdlib -nostdinc

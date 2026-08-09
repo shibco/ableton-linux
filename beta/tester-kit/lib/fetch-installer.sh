@@ -73,6 +73,9 @@ fetch_and_verify_installer() {
     fi
 
     chmod 700 "$destination"
+    # Read by the sourcing script (run-session records it with the INSTALLER
+    # result); nothing in this file reads it.
+    # shellcheck disable=SC2034
     INSTALLER_ACTUAL_SHA256="$actual"
     return 0
 }
