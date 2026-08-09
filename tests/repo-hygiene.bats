@@ -263,6 +263,6 @@ all_shell_files() {
     while read -r var; do
         [ -n "$var" ] || continue
         grep -q -- "-e \"$var=" build.sh || missing="$missing $var"
-    done < <(grep -oE '\$\{WORKS_[A-Z_]+:-' scripts/container-build.sh | sed 's/^\${//; s/:-$//' | sort -u)
+    done < <(grep -oE '\$\{(WORKS|ABLETON)_[A-Z_]+:-' scripts/container-build.sh | sed 's/^\${//; s/:-$//' | sort -u)
     [ -z "$missing" ] || { echo "container-build.sh reads these; build.sh passes none of them:$missing" >&2; false; }
 }

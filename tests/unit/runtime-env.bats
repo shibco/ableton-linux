@@ -22,6 +22,10 @@ setup() {
     . "$REPO/scripts/runtime-env.sh"
 }
 
+@test "runtime root: an unmigrated install still resolves where it actually is" {
+    [ "$(ableton_wine_root)" = "$HOME/.local/opt/wine-d2d1-nspa-11.13" ]
+}
+
 @test "runtime root: ABLETON_WINE_ROOT wins, so a bisect or VM run can pin one" {
     ABLETON_WINE_ROOT=/tmp/altroot
     [ "$(ableton_wine_root)" = "/tmp/altroot" ]
@@ -141,6 +145,18 @@ proc_setup() {
     ! ableton_live_running
 }
 
+# --- container vs legacy resolution ------------------------------------------
+# The layout migration moves the runtime into a container directory. The
+# resolver has to answer correctly on both sides of that move, because an
+# install that has not migrated yet still has to launch.
+
+@test "runtime root: an explicit pin beats the container" {
+    export ABLETON_OPT_DIR="$BATS_TEST_TMPDIR/opt"
+    mkdir -p "$ABLETON_OPT_DIR/ableton-wine/stable"
+    ABLETON_WINE_ROOT=/tmp/pinned
+    [ "$(ableton_wine_root)" = "/tmp/pinned" ]
+}
+
 # guards: observed during the first real migration — six "/proc/PID/cmdline:
 # No such file or directory" lines, because the processes exited between the
 # scan and the read. tr's 2>/dev/null cannot suppress that: the shell reports a
@@ -206,6 +222,8 @@ setup_dist() {
     [ -z "$output" ]
 }
 
+# --- naming an installed runtime ---------------------------------------------
+
 # <dir> holding a BUILD-INFO with the given body, so a test names only the
 # fields it cares about. Values are column-padded exactly as the build writes
 # them, because the separator the parser has to cope with is the padding.
@@ -215,11 +233,101 @@ make_tree() {
     printf '%s\n' "$@" > "$TREE/ABLETON-WINE-BUILD-INFO.txt"
 }
 
+# guards: no released runtime carries source-commit — measured across all 11 trees on the dev machine 2026-08-04
+@test "a runtime without source-commit is named from its patch stack" {
+    make_tree 'dist-version: 2026.08.04.1' \
+              'patch-stack:  9e48edd6b39579d6bd70e73ab1a049d50d7e972a'
+    [ "$(ableton_runtime_id "$TREE")" = "2026.08.04.1+9e48edd" ]
+}
+
+@test "source-commit is preferred over the patch stack when both are present" {
+    make_tree 'dist-version: 2026.08.04.1' \
+              'source-commit: 7193ece0f1a2b3c4' \
+              'patch-stack:  9e48edd6b39579d6'
+    [ "$(ableton_runtime_id "$TREE")" = "2026.08.04.1+7193ece" ]
+}
+
+# guards: 2026.07.29.1 appears four times on the dev machine under two patch stacks
+@test "two builds of one version under different patch stacks get different ids" {
+    make_tree 'dist-version: 2026.07.29.1' 'patch-stack:  237e53c65485761f'
+    a="$(ableton_runtime_id "$TREE")"
+    make_tree 'dist-version: 2026.07.29.1' 'patch-stack:  9614003b3a6394c2'
+    [ "$a" != "$(ableton_runtime_id "$TREE")" ]
+}
+
+@test "the same build named twice collapses to one id, so duplicates merge" {
+    make_tree 'dist-version: 2026.07.29.1' 'patch-stack:  237e53c65485761f'
+    a="$(ableton_runtime_id "$TREE")"
+    make_tree 'dist-version: 2026.07.29.1' 'patch-stack:  237e53c65485761f'
+    [ "$a" = "$(ableton_runtime_id "$TREE")" ]
+}
+
+@test "a tree with no BUILD-INFO cannot be named, and says so by echoing nothing" {
+    run ableton_runtime_id "$BATS_TEST_TMPDIR/absent"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "a version with no discriminator at all cannot be named" {
+    make_tree 'dist-version: 2026.08.04.1'
+    [ -z "$(ableton_runtime_id "$TREE")" ]
+}
+
+@test "a discriminator with no version cannot be named" {
+    make_tree 'patch-stack:  9e48edd6b39579d6'
+    [ -z "$(ableton_runtime_id "$TREE")" ]
+}
+
+# guards: the id becomes a directory name, and a BUILD-INFO is just text in a tarball
+@test "a BUILD-INFO carrying path traversal is refused, not turned into a path" {
+    make_tree 'dist-version: ../../../etc' 'patch-stack:  9e48edd6b39579d6'
+    [ -z "$(ableton_runtime_id "$TREE")" ]
+}
+
+@test "a BUILD-INFO carrying a slash is refused" {
+    make_tree 'dist-version: 2026.08.04.1' 'patch-stack:  9e48/edd6b39579d6'
+    [ -z "$(ableton_runtime_id "$TREE")" ]
+}
+
+# --- resolution across the two layouts ---------------------------------------
+# The store moves the runtime into a container with a channel symlink at the
+# live build. The resolver has to answer on both sides of that move, because an
+# install that has not migrated yet still has to launch.
+
+# guards: an install that predates the migration must still resolve and launch
+@test "runtime root: falls back to the legacy path before migrating" {
+    export ABLETON_OPT_DIR="$BATS_TEST_TMPDIR/opt"
+    mkdir -p "$ABLETON_OPT_DIR"
+    [ "$(ableton_wine_root)" = "$(works_legacy_root)" ]
+}
+
 # guards: /proc/PID/exe reports resolved paths, so a channel-path root matches no
 # process and the busy guard fails open while install.sh renames the directory
 
 # guards: the same resolution a running process reports, so the two can be
 # compared at all
+@test "runtime root: matches what /proc would report for a process under it" {
+    export ABLETON_OPT_DIR="$BATS_TEST_TMPDIR/opt"
+    entry="$ABLETON_OPT_DIR/ableton-wine/2026.08.05.1+abc1234"
+    mkdir -p "$entry/bin"
+    : > "$entry/bin/wine"
+    ln -s "2026.08.05.1+abc1234" "$ABLETON_OPT_DIR/ableton-wine/stable"
+    # what the kernel would show for a binary launched through the channel
+    resolved="$(readlink -f "$ABLETON_OPT_DIR/ableton-wine/stable/bin/wine")"
+    case "$resolved" in
+        "$(ableton_wine_root)"/*) ;;
+        *) echo "$resolved does not sit under $(ableton_wine_root)" >&2; false ;;
+    esac
+}
+
+# guards: the container winning over a stale legacy tree left beside it
+@test "runtime root: the container wins over a legacy tree still present" {
+    export ABLETON_OPT_DIR="$BATS_TEST_TMPDIR/opt"
+    entry="$ABLETON_OPT_DIR/ableton-wine/2026.08.05.1+abc1234"
+    mkdir -p "$entry" "$(works_legacy_root)"
+    ln -s "2026.08.05.1+abc1234" "$ABLETON_OPT_DIR/ableton-wine/stable"
+    [ "$(ableton_wine_root)" = "$entry" ]
+}
 
 # One test is still held back with the version store: the migration's own
 # behaviour, in migrate-layout.bats. ableton_wine_root resolves one
@@ -297,6 +405,10 @@ make_tree() {
     ! ableton_is_runtime_tarball "wine-d2d1-nspa-11.13-2026.08.04.1.tar.zst.part"
 }
 
+# --- channels -----------------------------------------------------------------
+# One channel was assumed throughout: `stable` was hardcoded in six places and
+# retention protected only that one. A second channel needs both generalised.
+
 # guards: the value names a symlink and, for the updater, part of a URL —
 # configuration the build does not control must not shape a request
 
@@ -310,6 +422,27 @@ id_of() {   # id_of <build-info lines...>
     local d="$BATS_TEST_TMPDIR/rt"; mkdir -p "$d"
     printf '%s\n' "$@" > "$d/ABLETON-WINE-BUILD-INFO.txt"
     ableton_runtime_id "$d"
+}
+
+@test "runtime id: a nightly says so, once, after the date" {
+    [ "$(id_of 'dist-version: 2026.08.06.1' 'source-commit: badafaf995572b26' 'build-kind:   nightly')" \
+      = "2026.08.06.1+nightly.badafaf" ]
+}
+
+@test "runtime id: a release carries no kind at all" {
+    [ "$(id_of 'dist-version: 2026.08.04.1' 'source-commit: b0d847af6fcc7ab9')" \
+      = "2026.08.04.1+b0d847a" ]
+}
+
+# guards: every runtime installed anywhere today predates source-commit
+@test "runtime id: the patch-stack fallback still works with a kind" {
+    [ "$(id_of 'dist-version: 2026.07.29.1' 'patch-stack:  9614003aabb' 'build-kind:   nightly')" \
+      = "2026.07.29.1+nightly.9614003" ]
+}
+
+# guards: build-kind becomes a directory name like everything else in the id
+@test "runtime id: a kind with a path separator is refused, not sanitised" {
+    [ -z "$(id_of 'dist-version: 2026.08.06.1' 'source-commit: badafaf9' 'build-kind:   ../evil')" ]
 }
 
 @test "tarball predicate: the nightly artifact name is accepted" {
