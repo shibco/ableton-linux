@@ -177,6 +177,23 @@ If fullscreen is still wrong after the update, launch once with
 [open an issue](https://github.com/shibco/ableton-linux/issues) and include
 your desktop environment and whether that launch behaved differently.
 
+## Touchpad or middle-button input misbehaves
+
+The touchpad and middle-button features (pinch zoom, smooth scrolling with
+inertia, middle-drag navigation) each have an off switch. Relaunch Live with
+a feature disabled to tell it apart from an input problem:
+
+```bash
+WINE_X11_PINCH_ZOOM=off ableton-live     # no pinch-to-zoom
+WINE_X11_SMOOTH_SCROLL=off ableton-live  # whole-notch scrolling, as before
+WINE_X11_SCROLL_INERTIA=off ableton-live # scrolling stops when the fingers lift
+WINE_X11_MIDDLE_DRAG=off ableton-live    # middle button is a plain click (the default)
+```
+
+Then [open an issue](https://github.com/shibco/ableton-linux/issues) and
+include your desktop environment, your input device, and which switch
+changed the behaviour.
+
 ## Report a problem
 
 Use the [GitHub issue form](https://github.com/shibco/ableton-linux/issues/new/choose).

@@ -61,6 +61,15 @@ static void abs_setup( int code, int min, int max, int res )
     if (ioctl( fd, UI_ABS_SETUP, &as ) < 0) perror( "UI_ABS_SETUP" );
 }
 
+static void set_bit( int request, int bit )
+{
+    if (ioctl( fd, request, bit ) < 0)
+    {
+        perror( "UI_SET_*" );
+        exit( 1 );
+    }
+}
+
 static void finger( int slot, int x, int y )
 {
     emit( EV_ABS, ABS_MT_SLOT, slot );
@@ -100,23 +109,23 @@ int main( int argc, char **argv )
         return 1;
     }
 
-    ioctl( fd, UI_SET_EVBIT, EV_KEY );
-    ioctl( fd, UI_SET_EVBIT, EV_ABS );
-    ioctl( fd, UI_SET_EVBIT, EV_SYN );
-    ioctl( fd, UI_SET_KEYBIT, BTN_LEFT );
-    ioctl( fd, UI_SET_KEYBIT, BTN_TOUCH );
-    ioctl( fd, UI_SET_KEYBIT, BTN_TOOL_FINGER );
-    ioctl( fd, UI_SET_KEYBIT, BTN_TOOL_DOUBLETAP );
-    ioctl( fd, UI_SET_PROPBIT, INPUT_PROP_POINTER );
-    ioctl( fd, UI_SET_PROPBIT, INPUT_PROP_BUTTONPAD );
-    ioctl( fd, UI_SET_ABSBIT, ABS_X );
-    ioctl( fd, UI_SET_ABSBIT, ABS_Y );
-    ioctl( fd, UI_SET_ABSBIT, ABS_PRESSURE );
-    ioctl( fd, UI_SET_ABSBIT, ABS_MT_SLOT );
-    ioctl( fd, UI_SET_ABSBIT, ABS_MT_POSITION_X );
-    ioctl( fd, UI_SET_ABSBIT, ABS_MT_POSITION_Y );
-    ioctl( fd, UI_SET_ABSBIT, ABS_MT_PRESSURE );
-    ioctl( fd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID );
+    set_bit( UI_SET_EVBIT, EV_KEY );
+    set_bit( UI_SET_EVBIT, EV_ABS );
+    set_bit( UI_SET_EVBIT, EV_SYN );
+    set_bit( UI_SET_KEYBIT, BTN_LEFT );
+    set_bit( UI_SET_KEYBIT, BTN_TOUCH );
+    set_bit( UI_SET_KEYBIT, BTN_TOOL_FINGER );
+    set_bit( UI_SET_KEYBIT, BTN_TOOL_DOUBLETAP );
+    set_bit( UI_SET_PROPBIT, INPUT_PROP_POINTER );
+    set_bit( UI_SET_PROPBIT, INPUT_PROP_BUTTONPAD );
+    set_bit( UI_SET_ABSBIT, ABS_X );
+    set_bit( UI_SET_ABSBIT, ABS_Y );
+    set_bit( UI_SET_ABSBIT, ABS_PRESSURE );
+    set_bit( UI_SET_ABSBIT, ABS_MT_SLOT );
+    set_bit( UI_SET_ABSBIT, ABS_MT_POSITION_X );
+    set_bit( UI_SET_ABSBIT, ABS_MT_POSITION_Y );
+    set_bit( UI_SET_ABSBIT, ABS_MT_PRESSURE );
+    set_bit( UI_SET_ABSBIT, ABS_MT_TRACKING_ID );
 
     /* 100 mm x 70 mm at 40 units/mm, the shape libinput expects of a touchpad */
     abs_setup( ABS_X, 0, 4000, 40 );

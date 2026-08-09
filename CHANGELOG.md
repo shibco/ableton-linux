@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Touchpad pinch zooms Live's arrangement (issue 64, Wine patch 0071).
+  Wine never selected XInput2 gesture events, so the X server dropped
+  pinches entirely; they now arrive as the same Ctrl+wheel input a Windows
+  precision touchpad produces, and zoom follows the fingers continuously
+  instead of in whole-notch steps. `WINE_X11_PINCH_ZOOM=off` leaves the
+  gestures with the X server as before.
+- Two-finger touchpad scrolling follows the fingers instead of moving in
+  whole wheel steps (Wine patch 0072); high-resolution scroll wheels keep
+  their extra precision too. A flick keeps coasting after the fingers lift,
+  the way macOS scrolls. `WINE_X11_SCROLL_INERTIA=off` stops the coasting
+  (tuned by `WINE_X11_SCROLL_INERTIA_FRICTION` and
+  `WINE_X11_SCROLL_INERTIA_CURVE`), and `WINE_X11_SMOOTH_SCROLL=off`
+  restores the old stepped scrolling.
+- The middle mouse button can navigate the arrangement (issue 50, Wine
+  patch 0070): hold it and move, as in other DAWs. Off by default;
+  `WINE_X11_MIDDLE_DRAG=navigate` turns it on.
+
 ## 2026.08.04.1
 
 - Full Screen works (issue 42). Entering it no longer shifts Live's

@@ -8,16 +8,26 @@ reaching for a scrollbar (issue 50).
 WINE_X11_MIDDLE_DRAG=navigate holds a middle-button press back from the
 application and reports the movement that follows as wheel input at the
 position the press landed on. Vertical movement becomes wheel, horizontal
-movement becomes horizontal wheel, one whole notch per 24 px of the
-window's own coordinates, so the display scale does not change how far a
-notch is. A press that moves no further than 3 px is replayed as a plain
-middle click on release, so the button keeps its normal reporting when it
-is not used for a drag.
+movement becomes horizontal wheel, one whole notch per 24 raw virtual
+screen pixels: map_event_coords() reports MDT_RAW_DPI coordinates with no
+DPI normalization, so one notch is a fixed physical distance and covers
+less of a window's content the more the display is scaled up. A press that
+moves no further than 3 raw pixels is replayed as a plain middle click on
+release, the down stamped with the time and at the position the press
+landed on, so the button keeps its normal reporting when it is not used
+for a drag.
 
 The report follows the pointer continuously rather than waiting for a whole
 notch: WHEEL_DELTA is a unit, not a minimum, and a precision pointing device
 sends part of one too. WINE_X11_MIDDLE_DRAG=notch rounds to whole notches
 for an application that ignores the rest.
+
+A press of another button during a drag ends it: a drag that reported
+wheel movement syncs the cursor to the real pointer position, a press that
+never moved is replayed as a click, and the press and the movement that
+follows go through, so placing the cursor with the left button while
+panning with the middle one does not leave a phantom click behind. A drag
+whose release was lost ends the same way on the next event.
 
 No modifier is added. A Ctrl the user holds during the drag still reaches
 the message through the desktop key state, so the same drag performs
@@ -25,12 +35,18 @@ whatever the application does for Ctrl+wheel.
 
 The default is off, where the middle button reports WM_MBUTTONDOWN and
 WM_MBUTTONUP exactly as before.
+
+The drag state is process-global while winex11 polls each thread's display
+on that thread, so drags on windows owned by different threads (Live's
+main window and a bridged plugin window) can race on it. A stale drag left
+by a lost release is flushed before a new one begins, which keeps the
+common single-pointer case in order.
 ---
- dlls/winex11.drv/mouse.c | 188 +++++++++++++++++++++++++++++++++++++++
- 1 file changed, 188 insertions(+)
+ dlls/winex11.drv/mouse.c | 243 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 243 insertions(+)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 2c394b6..e118ae1 100644
+index 2c394b6..20565ac 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,6 +30,8 @@
@@ -42,7 +58,7 @@ index 2c394b6..e118ae1 100644
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
  #include <X11/extensions/XInput2.h>
  #endif
-@@ -557,6 +559,188 @@ static void send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT
+@@ -557,6 +559,243 @@ static void send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT
      NtUserSendHardwareInput( hwnd, SEND_HWMSG_RAWINPUT, &input, (LPARAM)raw );
  }
  
@@ -110,31 +126,80 @@ index 2c394b6..e118ae1 100644
 +    return notched;
 +}
 +
-+/* movement one wheel notch stands for */
++/* movement one wheel notch stands for, in raw virtual screen pixels */
 +#define MIDDLE_DRAG_STEP 24
 +/* movement below this leaves the press a plain middle click */
 +#define MIDDLE_DRAG_SLOP 3
 +
++/* Process-global, while winex11 polls each thread's display on that thread:
++ * drags on windows owned by different threads can race on this. */
 +static struct
 +{
 +    BOOL  active;
 +    BOOL  moved;
 +    HWND  hwnd;
-+    POINT origin;      /* window position the notches are reported at */
-+    POINT last;        /* previous position, in the same window coordinates */
++    UINT  time;        /* when the press was held back */
++    POINT origin;      /* position the press landed on, virtual screen coordinates */
++    POINT last;        /* previous position, in the same coordinates */
 +    int   accum_x;
 +    int   accum_y;
 +} middle_drag;
 +
 +/***********************************************************************
++ *           middle_drag_flush_click
++ *
++ * Replay a held-back press that never moved as a plain middle click: the
++ * down stamped with the time and at the position the press landed on, the
++ * up with the time it is let go.
++ */
++static void middle_drag_flush_click( UINT time )
++{
++    if (middle_drag.moved) return;
++    send_mouse_input( middle_drag.hwnd, middle_drag.origin,
++                      MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MIDDLEDOWN, 0, middle_drag.time, NULL );
++    send_mouse_input( middle_drag.hwnd, middle_drag.origin,
++                      MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MIDDLEUP, 0, time, NULL );
++}
++
++/***********************************************************************
++ *           middle_drag_abort
++ *
++ * End a drag without its release: another button joined in, or the release
++ * was lost. A press that never moved is replayed as a click; a drag that
++ * reported wheel movement syncs the cursor to the real pointer position, so
++ * the input that follows lands there.
++ */
++static void middle_drag_abort( POINT pt, UINT time )
++{
++    middle_drag_flush_click( time );
++    if (middle_drag.moved)
++        send_mouse_input( middle_drag.hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
++    middle_drag.active = FALSE;
++}
++
++/***********************************************************************
 + *           middle_drag_begin
 + *
 + * Hold back a middle-button press. The release replays it as a plain click
-+ * when the pointer did not move, so a middle click keeps working.
++ * when the pointer did not move, so a middle click keeps working. A press
++ * of another button during a drag ends it instead and goes through, so a
++ * click placed mid-drag is not followed by motion a held-back drag keeps
++ * swallowing.
 + */
-+static BOOL middle_drag_begin( HWND hwnd, XButtonEvent *event, POINT pt )
++static BOOL middle_drag_begin( HWND hwnd, XButtonEvent *event, POINT pt, UINT time )
 +{
 +    if (!middle_drag_enabled()) return FALSE;
++
++    if (middle_drag.active)
++    {
++        if (event->button == Button2)
++            middle_drag_flush_click( time );  /* a stale drag, its release was lost */
++        else
++        {
++            middle_drag_abort( pt, time );
++            return FALSE;
++        }
++    }
 +    if (event->button != Button2) return FALSE;
 +    if (event->state & (Button1Mask | Button3Mask)) return FALSE;
 +
@@ -143,6 +208,7 @@ index 2c394b6..e118ae1 100644
 +    middle_drag.active = TRUE;
 +    middle_drag.moved = FALSE;
 +    middle_drag.hwnd = hwnd;
++    middle_drag.time = time;
 +    middle_drag.origin = pt;
 +    middle_drag.last = pt;
 +    middle_drag.accum_x = middle_drag.accum_y = 0;
@@ -155,8 +221,10 @@ index 2c394b6..e118ae1 100644
 + * Report movement during a middle-button drag as wheel notches at the point
 + * the drag started, and keep the movement itself from the application. Each
 + * axis reports its own wheel, so the drag scrolls the way the pointer moves.
-+ * The movement is measured in the window's own coordinates, so one notch
-+ * covers the same distance whatever the display scale is.
++ * The movement is measured in raw virtual screen pixels: map_event_coords()
++ * reports MDT_RAW_DPI coordinates with no DPI normalization, so one notch
++ * is a fixed physical distance and covers less of a window's content the
++ * more the display is scaled up.
 + *
 + * No modifier is added: a Ctrl the user holds during the drag still reaches
 + * the message through the key state, which turns the same drag into whatever
@@ -177,9 +245,10 @@ index 2c394b6..e118ae1 100644
 +    int delta;
 +
 +    if (!middle_drag.active) return FALSE;
-+    if (!(event->state & Button2Mask))  /* the release went somewhere else */
++    if (!(event->state & Button2Mask) ||                /* the release went somewhere else */
++        (event->state & (Button1Mask | Button3Mask)))   /* another button joined in */
 +    {
-+        middle_drag.active = FALSE;
++        middle_drag_abort( pt, time );
 +        return FALSE;
 +    }
 +
@@ -210,44 +279,46 @@ index 2c394b6..e118ae1 100644
 +
 +/***********************************************************************
 + *           middle_drag_end
++ *
++ * Let a held-back press go. A press that never moved is replayed as a plain
++ * click; after a drag the cursor is synced to the position the wheel input
++ * was reported at. Both go to the window and the position the drag started
++ * on: the release itself may land somewhere else when a grab broke.
 + */
-+static BOOL middle_drag_end( HWND hwnd, XButtonEvent *event, POINT pt, UINT time )
++static BOOL middle_drag_end( XButtonEvent *event, UINT time )
 +{
 +    if (!middle_drag.active) return FALSE;
 +    if (event->button != Button2) return FALSE;
++
++    TRACE( "hwnd %p/%lx end, moved %u\n", middle_drag.hwnd, event->window, middle_drag.moved );
++
++    middle_drag_flush_click( time );
++    if (middle_drag.moved)
++        send_mouse_input( middle_drag.hwnd, middle_drag.origin, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
 +    middle_drag.active = FALSE;
-+
-+    TRACE( "hwnd %p/%lx end at %s, moved %u\n", hwnd, event->window, wine_dbgstr_point( &pt ), middle_drag.moved );
-+
-+    if (!middle_drag.moved)
-+    {
-+        send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MIDDLEDOWN, 0, time, NULL );
-+        send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MIDDLEUP, 0, time, NULL );
-+    }
-+    else send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
 +    return TRUE;
 +}
 +
  #ifdef SONAME_LIBXCURSOR
  
  /***********************************************************************
-@@ -1526,6 +1710,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+@@ -1526,6 +1765,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
-+    if (middle_drag_begin( hwnd, event, pt )) return TRUE;
++    if (middle_drag_begin( hwnd, event, pt, time )) return TRUE;
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
      return TRUE;
  }
-@@ -1545,6 +1730,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+@@ -1545,6 +1785,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
      TRACE( "hwnd %p/%lx button %u pos %s\n", hwnd, event->window, button, wine_dbgstr_point( &pt ) );
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
-+    if (middle_drag_end( hwnd, event, pt, time )) return TRUE;
++    if (middle_drag_end( event, time )) return TRUE;
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_up_data[button], time, NULL );
      return TRUE;
  }
-@@ -1569,6 +1755,8 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
+@@ -1569,6 +1810,8 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );

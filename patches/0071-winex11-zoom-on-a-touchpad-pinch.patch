@@ -15,25 +15,57 @@ A whole wheel notch stands for a 1.1x scale change, but a pinch reports its
 scale many times a second, so each report is worth a fraction of one and is
 sent as that fraction: WHEEL_DELTA is a unit, not a minimum, and an
 application that follows the amount rather than counting messages zooms
-continuously instead of in steps. The running scale is tracked across the
-gesture rather than per event, so slow and fast pinches of the same size are
-worth the same amount of wheel. WINE_X11_PINCH_ZOOM=notch rounds to whole
-notches for an application that ignores the rest.
+continuously instead of in steps. The running scale is tracked per XInput2
+device rather than per event, so slow and fast pinches of the same size are
+worth the same amount of wheel and two concurrent pinch sources do not
+interleave updates against one baseline. WINE_X11_PINCH_ZOOM=notch rounds to
+whole notches for an application that ignores the rest.
+
+Ctrl is pressed once at gesture begin and held until gesture end, not around
+every update: at gesture rate the press, wheel and release would each force
+a wineserver round trip, and the application would see a real Ctrl key
+down/up pair for every tick instead of one per gesture. The wheel updates
+carry no modifier of their own and pick up MK_CONTROL from the held key. The
+synthesized key is a left Ctrl, so an application querying VK_LCONTROL agrees
+with MK_CONTROL. A Ctrl the user already holds is left alone, and at gesture
+end the synthesized key is released only when no physical Ctrl is down,
+checked with XQueryKeymap because GetAsyncKeyState cannot tell a synthesized
+press from a physical one, so a pinch neither leaves Ctrl stuck nor clears a
+physically held one. A begin that arrives while a synthesized Ctrl is still
+held (a lost end) reuses it instead of pressing twice.
+
+The wheel position is the pointer position frozen at gesture begin rather
+than the pinch focal point: a precision touchpad pinch never moves the
+cursor, but the focal point wanders with the fingers, and reporting it would
+drag the cursor across the screen.
 
 Gesture events need XInput2 version 2.4. The server refuses to select them
 for a client that asked for less, so the version request only rises to 2.4
 when the feature is wanted, and stays at 2.2 under WINE_X11_PINCH_ZOOM=off.
-An X server without 2.4 warns and behaves as before. Headers without the
-gesture definitions compile the path out.
+An X server without 2.4 warns and behaves as before. An unrecognized
+WINE_X11_PINCH_ZOOM value warns once and disables the feature. Headers
+without the gesture definitions compile the path out, with a warning when
+the feature is asked for.
+
+Depends on the send_wheel_input helper and the stdlib.h/string.h includes
+from the middle-button drag patch.
 ---
- dlls/winex11.drv/mouse.c | 133 +++++++++++++++++++++++++++++++++++++++
- 1 file changed, 133 insertions(+)
+ dlls/winex11.drv/mouse.c | 259 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 259 insertions(+)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index e118ae1..2bd3402 100644
+index e118ae1..2d7a230 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -129,6 +129,9 @@ static Cursor create_cursor( HANDLE handle );
+@@ -29,6 +29,7 @@
+ #include <dlfcn.h>
+ #include <X11/Xlib.h>
+ #include <X11/cursorfont.h>
++#include <X11/keysym.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -129,6 +130,9 @@ static Cursor create_cursor( HANDLE handle );
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
  static BOOL xinput2_available;
  static BOOL broken_rawevents;
@@ -43,7 +75,7 @@ index e118ae1..2bd3402 100644
  #define MAKE_FUNCPTR(f) static typeof(f) * p##f
  MAKE_FUNCPTR(XIGetClientPointer);
  MAKE_FUNCPTR(XIFreeDeviceInfo);
-@@ -136,6 +139,49 @@ MAKE_FUNCPTR(XIQueryDevice);
+@@ -136,6 +140,56 @@ MAKE_FUNCPTR(XIQueryDevice);
  MAKE_FUNCPTR(XIQueryVersion);
  MAKE_FUNCPTR(XISelectEvents);
  #undef MAKE_FUNCPTR
@@ -64,7 +96,14 @@ index e118ae1..2bd3402 100644
 +    if (enabled == -1)
 +    {
 +        value = getenv( "WINE_X11_PINCH_ZOOM" );
-+        enabled = !value || !strcmp( value, "on" ) || !strcmp( value, "1" ) || !strcmp( value, "notch" );
++        if (!value) enabled = TRUE;
++        else if (!strcmp( value, "on" ) || !strcmp( value, "1" ) || !strcmp( value, "notch" )) enabled = TRUE;
++        else if (!strcmp( value, "off" ) || !strcmp( value, "0" )) enabled = FALSE;
++        else
++        {
++            WARN( "unrecognized WINE_X11_PINCH_ZOOM=%s, disabling pinch zoom\n", debugstr_a( value ));
++            enabled = FALSE;
++        }
 +    }
 +    return enabled;
 +}
@@ -93,7 +132,7 @@ index e118ae1..2bd3402 100644
  #endif
  
  /***********************************************************************
-@@ -305,6 +351,14 @@ void x11drv_xinput2_enable( Display *display, Window window )
+@@ -305,6 +359,14 @@ void x11drv_xinput2_enable( Display *display, Window window )
          XISetMask( mask_bits, XI_TouchBegin );
          XISetMask( mask_bits, XI_TouchUpdate );
          XISetMask( mask_bits, XI_TouchEnd );
@@ -108,7 +147,7 @@ index e118ae1..2bd3402 100644
      }
  
      pXISelectEvents( display, window, &mask, 1 );
-@@ -346,6 +400,13 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+@@ -346,6 +408,23 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
      XIEventMask mask;
      int count;
  
@@ -117,12 +156,22 @@ index e118ae1..2bd3402 100644
 +     * for a client that asked for less, so only raise the request when they
 +     * are wanted */
 +    if (pinch_zoom_enabled()) minor = 4;
++#else
++    {
++        static BOOL pinch_zoom_warned;
++
++        if (!pinch_zoom_warned && getenv( "WINE_X11_PINCH_ZOOM" ))
++        {
++            pinch_zoom_warned = TRUE;
++            WARN( "WINE_X11_PINCH_ZOOM is set, but gesture events were not compiled in (old XInput2 headers)\n" );
++        }
++    }
 +#endif
 +
      if (!xinput2_available || pXIQueryVersion( data->display, &major, &minor ))
      {
          WARN( "XInput 2.0 not available\n" );
-@@ -353,6 +414,12 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+@@ -353,6 +432,12 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
          return;
      }
  
@@ -135,7 +184,7 @@ index e118ae1..2bd3402 100644
      mask.mask     = mask_bits;
      mask.mask_len = sizeof(mask_bits);
      mask.deviceid = XIAllMasterDevices;
-@@ -1923,6 +1990,64 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+@@ -1923,6 +2008,172 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -153,45 +202,153 @@ index e118ae1..2bd3402 100644
 + * touchpad sends part of it too, and an application that follows the amount
 + * rather than counting messages zooms continuously. WINE_X11_PINCH_ZOOM=notch
 + * rounds to whole notches instead, for an application that ignores the rest.
++ *
++ * Ctrl is pressed once at gesture begin and released once at gesture end,
++ * not around every update: at gesture rate a press, wheel and release per
++ * update would each force a wineserver round trip, and the application
++ * would see a real Ctrl key down/up pair for every tick instead of one per
++ * gesture. The wheel position is the pointer position frozen at gesture
++ * begin, because a precision touchpad pinch never moves the cursor: the
++ * pinch focal point wanders with the fingers, and reporting it would drag
++ * the cursor across the screen. Both the baseline scale and the anchor are
++ * tracked per XInput2 device, so two concurrent pinch sources do not
++ * interleave updates against one baseline.
 + */
 +static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
 +{
 +    /* scale change one whole wheel notch stands for */
 +    static const double zoom_step = 1.1;
 +    static const int max_delta = 16 * WHEEL_DELTA;
-+    static double reported_scale = 1.0;
++    static struct
++    {
++        int deviceid;    /* device with a gesture in progress, 0 = free slot */
++        HWND hwnd;       /* window the gesture reports to */
++        POINT anchor;    /* pointer position frozen at gesture begin */
++        double scale;    /* scale already reported as wheel movement */
++    } gestures[4];
++    static unsigned int active;  /* gestures in progress */
++    static BOOL ctrl_held;       /* a synthesized Ctrl is held for them */
 +
 +    XIGesturePinchEvent *event = xev->data;
 +    UINT time = EVENT_x11_time_to_win32_time( event->time );
 +    POINT pt = { event->event_x, event->event_y }, root = { event->root_x, event->root_y };
++    INPUT ctrl = { .type = INPUT_KEYBOARD, .ki = { .wVk = VK_LCONTROL, .wScan = 0x1d, .time = time } };
 +    double units;
-+    int delta;
++    int delta, i, slot = -1, free_slot = -1;
 +    HWND hwnd;
 +
-+    if (event->evtype != XI_GesturePinchUpdate)
++    for (i = 0; i < ARRAY_SIZE( gestures ); i++)
 +    {
-+        TRACE( "pinch %s on %lx, scale %f\n",
-+               event->evtype == XI_GesturePinchBegin ? "begin" : "end", event->event, event->scale );
-+        reported_scale = 1.0;
++        if (gestures[i].deviceid == event->deviceid) slot = i;
++        else if (!gestures[i].deviceid && free_slot == -1) free_slot = i;
++    }
++
++    if (event->evtype == XI_GesturePinchBegin)
++    {
++        Window root_win, child;
++        int x, y, win_x, win_y;
++        unsigned int xstate;
++
++        if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
++        if (slot == -1)
++        {
++            if ((slot = free_slot) == -1)
++            {
++                WARN( "no free pinch gesture slot for device %d\n", event->deviceid );
++                return FALSE;
++            }
++            memset( &gestures[slot], 0, sizeof(gestures[slot]) );
++            gestures[slot].deviceid = event->deviceid;
++            active++;
++        }
++        else TRACE( "pinch begin on device %d with a gesture in progress, re-arming\n", event->deviceid );
++
++        gestures[slot].hwnd = hwnd;
++        gestures[slot].scale = 1.0;
++        if (XQueryPointer( event->display, root_window, &root_win, &child, &x, &y, &win_x, &win_y, &xstate ))
++            gestures[slot].anchor = root_to_virtual_screen( x, y );
++        else gestures[slot].anchor = map_event_coords( hwnd, event->event, event->root, root, pt );
++
++        /* hold Ctrl across the gesture: a bare wheel update then picks up
++         * MK_CONTROL from the held key. A Ctrl the user already holds is
++         * left alone, and a begin while a synthesized Ctrl is still held (a
++         * lost end) reuses it instead of pressing twice. */
++        if (!ctrl_held && !(NtUserGetAsyncKeyState( VK_CONTROL ) & 0x8000))
++        {
++            NtUserSendHardwareInput( hwnd, 0, &ctrl, 0 );
++            ctrl_held = TRUE;
++        }
++
++        TRACE( "pinch begin on %lx, device %d\n", event->event, event->deviceid );
++        return TRUE;
++    }
++
++    if (event->evtype == XI_GesturePinchEnd)
++    {
++        char keys[32];
++        KeyCode left, right;
++
++        TRACE( "pinch end on %lx, device %d\n", event->event, event->deviceid );
++
++        hwnd = slot != -1 ? gestures[slot].hwnd : 0;
++        if (slot != -1) gestures[slot].deviceid = 0;
++        else TRACE( "pinch end on device %d without a begin\n", event->deviceid );
++        if (active) active--;
++        if (active || !ctrl_held) return TRUE;
++
++        /* release the synthesized Ctrl unless the user is physically holding
++         * one: the real release then clears the state, while ours would clear
++         * a Ctrl that is still down. GetAsyncKeyState cannot tell a
++         * synthesized press from a physical one, so ask the server. */
++        XQueryKeymap( event->display, keys );
++        left = XKeysymToKeycode( event->display, XK_Control_L );
++        right = XKeysymToKeycode( event->display, XK_Control_R );
++        if ((left && (keys[left >> 3] >> (left & 7)) & 1) ||
++            (right && (keys[right >> 3] >> (right & 7)) & 1))
++        {
++            ctrl_held = FALSE;
++            return TRUE;
++        }
++
++        ctrl.ki.dwFlags = KEYEVENTF_KEYUP;
++        NtUserSendHardwareInput( hwnd, 0, &ctrl, 0 );
++        ctrl_held = FALSE;
 +        return TRUE;
 +    }
 +
 +    if (!(event->scale > 0.0)) return FALSE;
-+    if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
 +
-+    units = WHEEL_DELTA * log( event->scale / reported_scale ) / log( zoom_step );
++    if (slot == -1)
++    {
++        /* the begin went somewhere else: start from the current scale at the
++         * event position rather than dropping the gesture */
++        if ((slot = free_slot) == -1) return FALSE;
++        if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
++        memset( &gestures[slot], 0, sizeof(gestures[slot]) );
++        gestures[slot].deviceid = event->deviceid;
++        gestures[slot].hwnd = hwnd;
++        gestures[slot].scale = event->scale;
++        gestures[slot].anchor = map_event_coords( hwnd, event->event, event->root, root, pt );
++        active++;
++        if (!ctrl_held && !(NtUserGetAsyncKeyState( VK_CONTROL ) & 0x8000))
++        {
++            NtUserSendHardwareInput( hwnd, 0, &ctrl, 0 );
++            ctrl_held = TRUE;
++        }
++    }
++
++    units = WHEEL_DELTA * log( event->scale / gestures[slot].scale ) / log( zoom_step );
 +    if (pinch_zoom_notched()) units = trunc( units / WHEEL_DELTA ) * WHEEL_DELTA;
 +    if ((delta = round( units )) > max_delta) delta = max_delta;
 +    else if (delta < -max_delta) delta = -max_delta;
 +    if (!delta) return TRUE;
 +
 +    /* advance by what was reported, so the rest waits for the next update */
-+    reported_scale *= pow( zoom_step, (double)delta / WHEEL_DELTA );
++    gestures[slot].scale *= pow( zoom_step, (double)delta / WHEEL_DELTA );
 +
-+    TRACE( "hwnd %p/%lx scale %f delta %d\n", hwnd, event->event, event->scale, delta );
++    TRACE( "hwnd %p/%lx scale %f delta %d\n", gestures[slot].hwnd, event->event, event->scale, delta );
 +
-+    pt = map_event_coords( hwnd, event->event, event->root, root, pt );
-+    send_wheel_input( hwnd, pt, MOUSEEVENTF_WHEEL, delta, TRUE, time );
++    send_wheel_input( gestures[slot].hwnd, gestures[slot].anchor, MOUSEEVENTF_WHEEL, delta, FALSE, time );
 +    return TRUE;
 +}
 +
@@ -200,7 +357,7 @@ index e118ae1..2bd3402 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
  
-@@ -1994,6 +2119,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -1994,6 +2245,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
          ret = X11DRV_TouchEvent( hwnd, event );
          break;
  

@@ -6,49 +6,104 @@ notch. Wine only consumes the legacy button events the X server synthesizes
 from those valuators, reducing every update to a whole WHEEL_DELTA and making
 two-finger navigation visibly stepped.
 
-Select XI_Motion, XI_ButtonPress, and XI_ButtonRelease on each Wine window.
-Preserve native scroll-valuator changes as fractional vertical and horizontal
-Win32 wheel input, carrying sub-unit remainders between reports. Ignore the
-corresponding emulated XI scroll-button duplicate so each movement is delivered
-once, while still accepting native XI wheel buttons from devices without
-scroll axes.
+Select XI_Motion, XI_ButtonPress, and XI_ButtonRelease on each Wine window,
+except windows whose core event mask has no pointer events: get_window_attributes
+leaves those off WS_EX_TRANSPARENT windows so clicks fall through, and an XI
+selection would make the window a delivery target again. Preserve native
+scroll-valuator changes as fractional vertical and horizontal Win32 wheel
+input, carrying sub-unit remainders between reports. Ignore the corresponding
+emulated XI scroll-button duplicate so each movement is delivered once, while
+still accepting native XI wheel buttons from devices without scroll axes.
+Both wheel paths update the window user time, so focus-stealing prevention
+keeps tracking scrolling as user activity.
 
 Selecting a master-device XI event prevents the X server from delivering its
 core equivalent. Forward non-scroll XI motion and button press/release events
 through Wine's existing core handlers, including button state reconstruction,
-so the smooth path preserves ordinary pointer motion, left/right/middle clicks,
-extra buttons, activation timestamps, and middle-drag handling.
+so the smooth path preserves ordinary pointer motion, left/right/middle
+clicks, extra buttons, activation timestamps, and middle-drag handling. A
+report that carries pointer motion next to the scroll axes forwards the
+motion too. Core wheel button events are left alone: outside a grab the
+server's per-client suppression already keeps their emulated duplicates from
+arriving twice, and during a core grab (popup menu tracking, interactive
+move/size, ClipCursor) the server delivers only core events, so dropping
+them would kill wheel scrolling entirely; synthesized wheel clicks sent with
+XSendEvent arrive as core events as well.
 
-The first valuator report establishes its cumulative baseline, device changes
-refresh the axis metadata, and individual reports are capped at 16 notches to
-avoid a discontinuity producing an extreme jump. WINE_X11_SMOOTH_SCROLL=off
-restores Wine's core button path. Builds without XInput2 2.1 scroll definitions
-compile this path out.
+While any button is held, the valuator path reports nothing: a clickpad
+thumb-hold with a moving finger is classified as two-finger scroll, and
+fractional wheel input with MK_LBUTTON set would steer the control being
+dragged. macOS delivers no scroll during a drag either. The cumulative
+baselines still advance while the button is held, so the first scroll after
+the release does not jump by the dragged distance, and no inertia samples
+are gathered, so a fling can neither run nor start during a drag. Physical
+wheel notches (native XI scroll buttons) are deliberate input and are still
+delivered while a button is held.
 
+Each slave device's scroll axes and cumulative baselines are kept in a small
+per-source cache, refreshed on XI_DeviceChanged. A device is queried once,
+the first time it reports; alternating between a mouse and a touchpad then
+costs no X round trip and does not discard the first movement after the
+switch. Individual reports are still capped at 16 notches to avoid a
+discontinuity producing an extreme jump.
+
+WINE_X11_SMOOTH_SCROLL=off restores Wine's core button path, and
+WINE_X11_SMOOTH_SCROLL=notch reports only whole wheel notches, carrying the
+remainder into the next report, for an application that ignores fractional
+wheel units. Builds without XInput2 2.1 scroll definitions compile this path
+out.
+
+When a gesture's reports stop, its final velocity decays into further wheel
+input, the way macOS keeps scrolling after a flick. Each report pushes what
+the application was actually sent (post-remainder, post-clamp) into an
+eight-sample ring; a lazily created thread wakes on the first report of a
+gesture, polls every 16 ms, and once input has been quiet for 50 ms starts
+a fling from the sum of the trailing 100 ms of samples. The fling ticks
+every 16 ms, decaying the velocity exponentially, v *= exp(-k * dt), and
+emits at the last scroll position through the same wheel-input path, keeping
+a per-axis remainder like the gesture path does. It ends below a floor of
+30 wheel units a second, after 3 seconds, or when cancelled, and never
+restarts: entering the fling consumes the samples, and every cancellation
+bumps a generation counter the fling checks each tick. A fling needs 60
+wheel units a second (half a notch) to start. Cancellation is instant on any
+new native scroll report, on any button press (core or XI), on a scroll
+report for another window, and on Ctrl held, which covers both a pinch zoom
+and a manual Ctrl+wheel.
+
+The thread only makes wineserver calls (the X display belongs to the event
+thread), the shared state is a small static block under one pthread mutex,
+and the wineserver event handle is signaled only on the idle-to-active
+transition, once per gesture.
+
+Inertia is controlled by three environment variables, parsed once:
+
+- WINE_X11_SCROLL_INERTIA=on|off (default on; unrecognized values warn once
+  and fall back to on),
+- WINE_X11_SCROLL_INERTIA_FRICTION=<float>, the decay rate k in 1/s, the
+  fraction of velocity lost per second (default 3.0, which halves the
+  velocity about every 230 ms; for the linear curve it scales the constant
+  deceleration so both curves share their initial slope),
+- WINE_X11_SCROLL_INERTIA_CURVE=expo|linear (default expo; unrecognized
+  values warn once and fall back to expo).
+
+Inertia only applies to the smooth valuator path: not to physical wheel
+notches, and not in WINE_X11_SMOOTH_SCROLL=notch mode.
 ---
- dlls/winex11.drv/mouse.c  | 255 ++++++++++++++++++++++++++++++++++++++++++++++
- dlls/winex11.drv/x11drv.h |  16 +++
- 2 files changed, 271 insertions(+)
+ dlls/winex11.drv/mouse.c  | 755 ++++++++++++++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/x11drv.h |  22 ++
+ 2 files changed, 777 insertions(+)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 2bd3402c0e..abe13bf5e0 100644
+index 1acd19d..63215b3 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -129,6 +129,9 @@ static Cursor create_cursor( HANDLE handle );
- #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
- static BOOL xinput2_available;
- static BOOL broken_rawevents;
-+#ifdef XIScrollClass
-+static BOOL xinput2_smooth_scroll;
-+#endif
- #ifdef XI_GesturePinchBegin
- static BOOL xinput2_gestures;
- #endif
-@@ -140,6 +143,28 @@ MAKE_FUNCPTR(XIQueryVersion);
- MAKE_FUNCPTR(XISelectEvents);
- #undef MAKE_FUNCPTR
+@@ -331,6 +331,141 @@ static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes
+     thread_data->y_valuator.value = 0;
+ }
  
 +#ifdef XIScrollClass
++static BOOL xinput2_smooth_scroll;
++
 +/***********************************************************************
 + *              smooth_scroll_enabled
 + *
@@ -64,33 +119,86 @@ index 2bd3402c0e..abe13bf5e0 100644
 +    if (enabled == -1)
 +    {
 +        value = getenv( "WINE_X11_SMOOTH_SCROLL" );
-+        enabled = !value || !strcmp( value, "on" ) || !strcmp( value, "1" );
++        enabled = !value || !strcmp( value, "on" ) || !strcmp( value, "1" ) || !strcmp( value, "notch" );
 +    }
 +    return enabled;
 +}
-+#endif
 +
- #ifdef XI_GesturePinchBegin
- /***********************************************************************
-  *              pinch_zoom_enabled
-@@ -323,6 +348,60 @@ static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes
-     thread_data->y_valuator.value = 0;
- }
- 
-+#ifdef XIScrollClass
++/***********************************************************************
++ *              smooth_scroll_notched
++ *
++ * WINE_X11_SMOOTH_SCROLL=notch reports whole wheel notches instead of
++ * fractional movement, for an application that ignores the part of a notch
++ * a precision touchpad reports.
++ */
++static BOOL smooth_scroll_notched(void)
++{
++    static int notched = -1;
++    const char *value;
++
++    if (notched == -1)
++    {
++        value = getenv( "WINE_X11_SMOOTH_SCROLL" );
++        notched = value && !strcmp( value, "notch" );
++    }
++    return notched;
++}
++
++static void scroll_inertia_cancel(void);
++
++/***********************************************************************
++ *              find_scroll_source
++ *
++ * Look up the scroll axes of a slave device. Each device keeps its own axis
++ * metadata and cumulative baselines, so alternating between a mouse and a
++ * touchpad neither re-queries the device nor discards the first movement
++ * after the switch.
++ */
++static struct x11drv_scroll_source *find_scroll_source( struct x11drv_thread_data *data,
++                                                        int sourceid, BOOL create )
++{
++    struct x11drv_scroll_source *src, *free = NULL;
++    int i;
++
++    for (i = 0; i < SCROLL_SOURCE_CACHE_SIZE; i++)
++    {
++        src = &data->scroll_sources[i];
++        if (src->sourceid == sourceid) return src;
++        if (!src->sourceid && !free) free = src;
++    }
++    if (!create) return NULL;
++    if (!free) free = &data->scroll_sources[0];  /* cache full, reuse the first slot */
++    memset( free, 0, sizeof(*free) );
++    free->sourceid = sourceid;
++    free->scroll_x.number = free->scroll_y.number = -1;
++    return free;
++}
++
 +/***********************************************************************
 + *              update_scroll_valuators
 + */
 +static void update_scroll_valuators( XIAnyClassInfo **classes, int num_classes, int sourceid )
 +{
 +    struct x11drv_thread_data *data = x11drv_thread_data();
++    struct x11drv_scroll_source *src;
 +    struct x11drv_scroll_axis *axis;
 +    int i;
 +
-+    data->scroll_sourceid = sourceid;
-+    data->scroll_x.number = data->scroll_y.number = -1;
-+    data->scroll_x.increment = data->scroll_y.increment = 0.0;
-+    data->scroll_x.value_valid = data->scroll_y.value_valid = FALSE;
++    if (!sourceid)  /* caller does not know the source, take it from the class */
++    {
++        for (i = 0; i < num_classes; i++)
++            if (classes[i]->type == XIScrollClass)
++            {
++                sourceid = ((XIScrollClassInfo *)classes[i])->sourceid;
++                break;
++            }
++    }
++    if (!sourceid) return;
++    if (!(src = find_scroll_source( data, sourceid, TRUE ))) return;
++
++    /* the device changed: its axes and their cumulative baselines restart */
++    src->scroll_x.number = src->scroll_y.number = -1;
++    src->scroll_x.value_valid = src->scroll_y.value_valid = FALSE;
 +
 +    for (i = 0; i < num_classes; i++)
 +    {
@@ -99,21 +207,19 @@ index 2bd3402c0e..abe13bf5e0 100644
 +        if (classes[i]->type != XIScrollClass) continue;
 +        scroll = (XIScrollClassInfo *)classes[i];
 +        if (!scroll->increment) continue;
-+        if (!data->scroll_sourceid) data->scroll_sourceid = scroll->sourceid;
-+        if (scroll->sourceid != data->scroll_sourceid) continue;
++        if (scroll->sourceid != sourceid) continue;
 +
-+        if (scroll->scroll_type == XIScrollTypeVertical) axis = &data->scroll_y;
-+        else if (scroll->scroll_type == XIScrollTypeHorizontal) axis = &data->scroll_x;
++        if (scroll->scroll_type == XIScrollTypeVertical) axis = &src->scroll_y;
++        else if (scroll->scroll_type == XIScrollTypeHorizontal) axis = &src->scroll_x;
 +        else continue;
 +        if (axis->number >= 0 && !(scroll->flags & XIScrollFlagPreferred)) continue;
 +        axis->number = scroll->number;
-+        axis->sourceid = scroll->sourceid;
 +        axis->increment = scroll->increment;
 +    }
 +
-+    TRACE( "source %d scroll x %d/%f, y %d/%f\n", data->scroll_sourceid,
-+           data->scroll_x.number, data->scroll_x.increment,
-+           data->scroll_y.number, data->scroll_y.increment );
++    TRACE( "source %d scroll x %d/%f, y %d/%f\n", src->sourceid,
++           src->scroll_x.number, src->scroll_x.increment,
++           src->scroll_y.number, src->scroll_y.increment );
 +}
 +
 +static void query_scroll_valuators( Display *display, int sourceid )
@@ -121,45 +227,54 @@ index 2bd3402c0e..abe13bf5e0 100644
 +    XIDeviceInfo *info;
 +    int count;
 +
-+    if (!(info = pXIQueryDevice( display, sourceid, &count )))
++    if ((info = pXIQueryDevice( display, sourceid, &count )))
 +    {
-+        update_scroll_valuators( NULL, 0, sourceid );
-+        return;
++        update_scroll_valuators( info->classes, info->num_classes, sourceid );
++        pXIFreeDeviceInfo( info );
 +    }
-+    update_scroll_valuators( info->classes, info->num_classes, sourceid );
-+    pXIFreeDeviceInfo( info );
++    else update_scroll_valuators( NULL, 0, sourceid );
 +}
 +#endif
 +
  
  /***********************************************************************
   *              x11drv_xinput2_enable
-@@ -351,6 +430,14 @@ void x11drv_xinput2_enable( Display *display, Window window )
+@@ -359,6 +494,23 @@ void x11drv_xinput2_enable( Display *display, Window window )
          XISetMask( mask_bits, XI_TouchBegin );
          XISetMask( mask_bits, XI_TouchUpdate );
          XISetMask( mask_bits, XI_TouchEnd );
 +#ifdef XIScrollClass
 +        if (xinput2_smooth_scroll)
 +        {
-+            XISetMask( mask_bits, XI_Motion );
-+            XISetMask( mask_bits, XI_ButtonPress );
-+            XISetMask( mask_bits, XI_ButtonRelease );
++            XWindowAttributes attr;
++
++            /* a window without core pointer events (WS_EX_TRANSPARENT) lets
++             * clicks fall through to the window below, and an XI selection
++             * would make it a delivery target again, so follow the core mask */
++            if (XGetWindowAttributes( display, window, &attr ) &&
++                (attr.your_event_mask & ButtonPressMask))
++            {
++                XISetMask( mask_bits, XI_Motion );
++                XISetMask( mask_bits, XI_ButtonPress );
++                XISetMask( mask_bits, XI_ButtonRelease );
++            }
 +        }
 +#endif
  #ifdef XI_GesturePinchBegin
          if (xinput2_gestures)
          {
-@@ -419,6 +506,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
-     if (pinch_zoom_enabled() && !xinput2_gestures)
-         WARN( "XInput2 %d.%d has no gesture events, pinch zoom unavailable\n", major, minor );
- #endif
+@@ -432,6 +584,10 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+         return;
+     }
+ 
 +#ifdef XIScrollClass
 +    xinput2_smooth_scroll = smooth_scroll_enabled() && (major > 2 || minor >= 1);
 +#endif
- 
-     mask.mask     = mask_bits;
-     mask.mask_len = sizeof(mask_bits);
-@@ -433,6 +523,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
++
+ #ifdef XI_GesturePinchBegin
+     xinput2_gestures = pinch_zoom_enabled() && (major > 2 || minor >= 4);
+     if (pinch_zoom_enabled() && !xinput2_gestures)
+@@ -451,6 +607,9 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
      {
          XIDeviceInfo *pointer_info = pXIQueryDevice( data->display, data->xinput2_pointer, &count );
          update_relative_valuators( pointer_info->classes, pointer_info->num_classes );
@@ -169,17 +284,17 @@ index 2bd3402c0e..abe13bf5e0 100644
          pXIFreeDeviceInfo( pointer_info );
      }
  
-@@ -1777,6 +1870,9 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+@@ -1850,6 +2009,9 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
 +#if defined(HAVE_X11_EXTENSIONS_XINPUT2_H) && defined(XIScrollClass)
-+    if (xinput2_smooth_scroll && button >= 3 && button <= 6) return TRUE;
++    scroll_inertia_cancel();
 +#endif
-     if (middle_drag_begin( hwnd, event, pt )) return TRUE;
+     if (middle_drag_begin( hwnd, event, pt, time )) return TRUE;
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
      return TRUE;
-@@ -1867,6 +1963,9 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
+@@ -1940,6 +2102,9 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
  
      if (event->deviceid != data->xinput2_pointer) return FALSE;
      update_relative_valuators( event->classes, event->num_classes );
@@ -189,7 +304,7 @@ index 2bd3402c0e..abe13bf5e0 100644
      return TRUE;
  }
  
-@@ -1990,6 +2089,154 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+@@ -2026,6 +2191,588 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -211,6 +326,8 @@ index 2bd3402c0e..abe13bf5e0 100644
 +    units = WHEEL_DELTA * (value - axis->value) / axis->increment;
 +    if ((delta = round( units )) > max_delta) delta = max_delta;
 +    else if (delta < -max_delta) delta = -max_delta;
++    if (smooth_scroll_notched()) delta = (delta / WHEEL_DELTA) * WHEEL_DELTA;
++    /* advance by what was reported, so the rest carries into the next report */
 +    axis->value += (double)delta * axis->increment / WHEEL_DELTA;
 +    return delta;
 +}
@@ -227,6 +344,15 @@ index 2bd3402c0e..abe13bf5e0 100644
 +        if (button / 8 < event->buttons.mask_len && XIMaskIsSet( event->buttons.mask, button ))
 +            state |= Button1Mask << (button - 1);
 +    return state;
++}
++
++static BOOL xinput2_any_button_down( const XIDeviceEvent *event )
++{
++    int button;
++
++    for (button = 1; button < event->buttons.mask_len * 8; button++)
++        if (XIMaskIsSet( event->buttons.mask, button )) return TRUE;
++    return FALSE;
 +}
 +
 +/***********************************************************************
@@ -280,6 +406,392 @@ index 2bd3402c0e..abe13bf5e0 100644
 +    return X11DRV_MotionNotify( hwnd, &core );
 +}
 +
++/* milliseconds of scroll reports the fling velocity sums */
++#define SCROLL_INERTIA_WINDOW 100
++/* quiet time before a gesture may turn into a fling, and before the thread sleeps */
++#define SCROLL_INERTIA_QUIET 50
++#define SCROLL_INERTIA_IDLE 100
++/* milliseconds between fling steps, and the longest a fling may run */
++#define SCROLL_INERTIA_TICK 16
++#define SCROLL_INERTIA_CAP 3000
++/* wheel units a second: below MIN no fling starts, below FLOOR a fling ends */
++#define SCROLL_INERTIA_MIN 60.0
++#define SCROLL_INERTIA_FLOOR 30.0
++
++enum scroll_inertia_state { INERTIA_IDLE, INERTIA_ACTIVE, INERTIA_FLING };
++
++static struct
++{
++    enum scroll_inertia_state state;
++    ULONG generation;           /* bumped by every cancellation */
++    DWORD last_tick;            /* time of the last scroll report */
++    HWND hwnd;                  /* window the running gesture reports at */
++    POINT pt;                   /* window coordinates it reports at */
++    struct
++    {
++        DWORD tick;
++        int delta_x, delta_y;   /* wheel units the application was sent */
++    } samples[8];
++    unsigned int count, pos;
++    HANDLE wake_event;
++    HANDLE thread;
++    BOOL failed;
++} scroll_inertia;
++
++/* this is unix-side code, where the codebase locks with pthread (see kbd_mutex) */
++static pthread_mutex_t scroll_inertia_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++/***********************************************************************
++ *              scroll_inertia_enabled
++ *
++ * WINE_X11_SCROLL_INERTIA=off keeps the scroll at the reports the device
++ * sent. Default on, where the end of a gesture decays into a fling.
++ */
++static BOOL scroll_inertia_enabled(void)
++{
++    static int enabled = -1;
++    const char *value;
++
++    if (enabled == -1)
++    {
++        value = getenv( "WINE_X11_SCROLL_INERTIA" );
++        if (!value || !strcmp( value, "on" ) || !strcmp( value, "1" )) enabled = TRUE;
++        else if (!strcmp( value, "off" ) || !strcmp( value, "0" )) enabled = FALSE;
++        else
++        {
++            WARN( "unrecognized WINE_X11_SCROLL_INERTIA=%s, using on\n", debugstr_a( value ));
++            enabled = TRUE;
++        }
++    }
++    return enabled;
++}
++
++/***********************************************************************
++ *              scroll_inertia_friction
++ *
++ * WINE_X11_SCROLL_INERTIA_FRICTION is the decay rate of a fling, a fraction
++ * of its velocity lost per second (1/s). The default 3.0 halves the
++ * velocity about four times a second. For the linear curve it scales the
++ * constant deceleration so both curves share their initial slope.
++ */
++static double scroll_inertia_friction(void)
++{
++    static double friction = -1.0;
++    const char *value;
++    char *end;
++    double parsed;
++
++    if (friction < 0)
++    {
++        friction = 3.0;
++        if ((value = getenv( "WINE_X11_SCROLL_INERTIA_FRICTION" )))
++        {
++            parsed = strtod( value, &end );
++            if (end == value || *end || parsed <= 0.0)
++                WARN( "unrecognized WINE_X11_SCROLL_INERTIA_FRICTION=%s, using %f\n",
++                      debugstr_a( value ), friction );
++            else friction = parsed;
++        }
++    }
++    return friction;
++}
++
++/***********************************************************************
++ *              scroll_inertia_linear
++ *
++ * WINE_X11_SCROLL_INERTIA_CURVE=linear decays a fling at a constant rate
++ * instead of the default exponential decay.
++ */
++static BOOL scroll_inertia_linear(void)
++{
++    static int linear = -1;
++    const char *value;
++
++    if (linear == -1)
++    {
++        value = getenv( "WINE_X11_SCROLL_INERTIA_CURVE" );
++        if (!value || !strcmp( value, "expo" )) linear = FALSE;
++        else if (!strcmp( value, "linear" )) linear = TRUE;
++        else
++        {
++            WARN( "unrecognized WINE_X11_SCROLL_INERTIA_CURVE=%s, using expo\n", debugstr_a( value ));
++            linear = FALSE;
++        }
++    }
++    return linear;
++}
++
++/* sum the reports of the trailing SCROLL_INERTIA_WINDOW ms, in wheel units a second */
++static void scroll_inertia_velocity( DWORD now, double *vx, double *vy )
++{
++    unsigned int i;
++    int sum_x = 0, sum_y = 0;
++
++    for (i = 0; i < scroll_inertia.count; i++)
++    {
++        unsigned int j = (scroll_inertia.pos + i) % ARRAY_SIZE( scroll_inertia.samples );
++
++        if (now - scroll_inertia.samples[j].tick > SCROLL_INERTIA_WINDOW) continue;
++        sum_x += scroll_inertia.samples[j].delta_x;
++        sum_y += scroll_inertia.samples[j].delta_y;
++    }
++    *vx = sum_x * (1000.0 / SCROLL_INERTIA_WINDOW);
++    *vy = sum_y * (1000.0 / SCROLL_INERTIA_WINDOW);
++}
++
++static double scroll_inertia_decay_linear( double v, double v0, double friction, DWORD dt )
++{
++    /* same initial slope as the exponential: dv/dt = -friction * v0 */
++    double dec = friction * fabs( v0 ) * dt / 1000.0;
++
++    if (v > 0) return max( 0.0, v - dec );
++    return min( 0.0, v + dec );
++}
++
++/***********************************************************************
++ *           scroll_inertia_thread
++ *
++ * Decay a gesture's final velocity into wheel input after its reports stop,
++ * the way macOS keeps scrolling after a flick. The thread only makes
++ * wineserver calls; the X display belongs to the event thread.
++ */
++static void CALLBACK scroll_inertia_thread( void *arg )
++{
++    HANDLE wake_event = scroll_inertia.wake_event;
++    LARGE_INTEGER timeout;
++
++    for (;;)
++    {
++        ULONG generation;
++        double vx, vy, v0x, v0y, rem_x, rem_y, friction;
++        DWORD start, last, now, quiet;
++        BOOL linear;
++
++        /* block until the first report of a gesture wakes the thread */
++        NtWaitForSingleObject( wake_event, FALSE, NULL );
++
++        for (;;)
++        {
++            timeout.QuadPart = -(LONGLONG)SCROLL_INERTIA_TICK * 10000;
++            NtWaitForSingleObject( wake_event, FALSE, &timeout );  /* doubles as the poll sleep */
++            now = NtGetTickCount();
++
++            pthread_mutex_lock( &scroll_inertia_mutex );
++            quiet = now - scroll_inertia.last_tick;
++            if (quiet > SCROLL_INERTIA_IDLE)
++            {
++                scroll_inertia.state = INERTIA_IDLE;
++                pthread_mutex_unlock( &scroll_inertia_mutex );
++                break;
++            }
++            if (quiet <= SCROLL_INERTIA_QUIET)
++            {
++                pthread_mutex_unlock( &scroll_inertia_mutex );
++                continue;
++            }
++
++            scroll_inertia_velocity( now, &vx, &vy );
++            if (fabs( vx ) < SCROLL_INERTIA_MIN && fabs( vy ) < SCROLL_INERTIA_MIN)
++            {
++                /* too slow to fling; keep polling until the gesture idles out */
++                pthread_mutex_unlock( &scroll_inertia_mutex );
++                continue;
++            }
++
++            /* consume the samples, so the fling can never restart from them */
++            scroll_inertia.count = 0;
++            scroll_inertia.state = INERTIA_FLING;
++            generation = scroll_inertia.generation;
++            pthread_mutex_unlock( &scroll_inertia_mutex );
++
++            v0x = vx;
++            v0y = vy;
++            rem_x = rem_y = 0.0;
++            friction = scroll_inertia_friction();
++            linear = scroll_inertia_linear();
++            start = last = now;
++
++            TRACE( "fling start velocity %f,%f\n", vx, vy );
++
++            for (;;)
++            {
++                HWND hwnd;
++                POINT pt;
++                DWORD dt;
++                int delta_x, delta_y;
++
++                timeout.QuadPart = -(LONGLONG)SCROLL_INERTIA_TICK * 10000;
++                NtWaitForSingleObject( wake_event, FALSE, &timeout );
++                now = NtGetTickCount();
++                if (!(dt = now - last)) continue;
++                last = now;
++
++                /* a held Ctrl means a pinch zoom or a manual Ctrl+wheel */
++                if (NtUserGetAsyncKeyState( VK_CONTROL ) & 0x8000)
++                {
++                    pthread_mutex_lock( &scroll_inertia_mutex );
++                    scroll_inertia.generation++;
++                    scroll_inertia.count = 0;
++                    scroll_inertia.state = INERTIA_ACTIVE;
++                    pthread_mutex_unlock( &scroll_inertia_mutex );
++                    break;
++                }
++
++                pthread_mutex_lock( &scroll_inertia_mutex );
++                if (scroll_inertia.generation != generation)  /* cancelled */
++                {
++                    pthread_mutex_unlock( &scroll_inertia_mutex );
++                    break;
++                }
++                if (now - start > SCROLL_INERTIA_CAP)
++                {
++                    scroll_inertia.state = INERTIA_ACTIVE;
++                    pthread_mutex_unlock( &scroll_inertia_mutex );
++                    break;
++                }
++
++                if (linear)
++                {
++                    vx = scroll_inertia_decay_linear( vx, v0x, friction, dt );
++                    vy = scroll_inertia_decay_linear( vy, v0y, friction, dt );
++                }
++                else
++                {
++                    double factor = exp( -friction * dt / 1000.0 );
++
++                    vx *= factor;
++                    vy *= factor;
++                }
++
++                if (fabs( vx ) < SCROLL_INERTIA_FLOOR && fabs( vy ) < SCROLL_INERTIA_FLOOR)
++                {
++                    scroll_inertia.state = INERTIA_ACTIVE;
++                    pthread_mutex_unlock( &scroll_inertia_mutex );
++                    break;
++                }
++
++                rem_x += vx * dt / 1000.0;
++                rem_y += vy * dt / 1000.0;
++                delta_x = (int)rem_x;
++                rem_x -= delta_x;
++                delta_y = (int)rem_y;
++                rem_y -= delta_y;
++                hwnd = scroll_inertia.hwnd;
++                pt = scroll_inertia.pt;
++                pthread_mutex_unlock( &scroll_inertia_mutex );
++
++                if (delta_y) send_wheel_input( hwnd, pt, MOUSEEVENTF_WHEEL, delta_y, FALSE, now );
++                if (delta_x) send_wheel_input( hwnd, pt, MOUSEEVENTF_HWHEEL, delta_x, FALSE, now );
++            }
++        }
++    }
++}
++
++/* start the inertia thread; called with scroll_inertia_mutex held */
++static BOOL scroll_inertia_start_thread(void)
++{
++    if (!scroll_inertia.wake_event &&
++        NtCreateEvent( &scroll_inertia.wake_event, EVENT_ALL_ACCESS, NULL, SynchronizationEvent, FALSE ))
++        return FALSE;
++    /* NtCreateThreadEx is what the unix side of ntdll exports for this */
++    return !NtCreateThreadEx( &scroll_inertia.thread, THREAD_ALL_ACCESS, NULL, NtCurrentProcess(),
++                              scroll_inertia_thread, NULL, 0, 0, 0, 0, NULL );
++}
++
++/***********************************************************************
++ *           scroll_inertia_cancel
++ *
++ * Cancel any fling for input outside the scroll valuators: a button press,
++ * or a core wheel step. The generation bump keeps the fling thread from
++ * emitting or restarting with what it already sampled.
++ */
++static void scroll_inertia_cancel(void)
++{
++    if (!xinput2_smooth_scroll) return;
++
++    pthread_mutex_lock( &scroll_inertia_mutex );
++    scroll_inertia.generation++;
++    scroll_inertia.count = 0;
++    if (scroll_inertia.state == INERTIA_FLING) scroll_inertia.state = INERTIA_ACTIVE;
++    pthread_mutex_unlock( &scroll_inertia_mutex );
++}
++
++/***********************************************************************
++ *           scroll_inertia_sample
++ *
++ * Record what one scroll report sent to the application, so a fling can
++ * continue from exactly that. Wakes the inertia thread on the first report
++ * of a gesture; any further report cancels a fling still running, and a
++ * report for another window starts its gesture over.
++ */
++static void scroll_inertia_sample( HWND hwnd, POINT pt, int delta_x, int delta_y )
++{
++    DWORD now = NtGetTickCount();
++
++    if (!scroll_inertia_enabled()) return;
++
++    pthread_mutex_lock( &scroll_inertia_mutex );
++
++    if (scroll_inertia.state == INERTIA_FLING || hwnd != scroll_inertia.hwnd)
++    {
++        scroll_inertia.generation++;
++        scroll_inertia.count = 0;
++        if (scroll_inertia.state == INERTIA_FLING) scroll_inertia.state = INERTIA_ACTIVE;
++    }
++
++    scroll_inertia.hwnd = hwnd;
++    scroll_inertia.pt = pt;
++    scroll_inertia.last_tick = now;
++
++    if (delta_x || delta_y)
++    {
++        unsigned int i;
++
++        if (scroll_inertia.count == ARRAY_SIZE( scroll_inertia.samples ))
++            scroll_inertia.pos = (scroll_inertia.pos + 1) % ARRAY_SIZE( scroll_inertia.samples );
++        else
++            scroll_inertia.count++;
++        i = (scroll_inertia.pos + scroll_inertia.count - 1) % ARRAY_SIZE( scroll_inertia.samples );
++        scroll_inertia.samples[i].tick = now;
++        scroll_inertia.samples[i].delta_x = delta_x;
++        scroll_inertia.samples[i].delta_y = delta_y;
++    }
++
++    if (scroll_inertia.state == INERTIA_IDLE && !scroll_inertia.failed)
++    {
++        if (!scroll_inertia.thread && !scroll_inertia_start_thread())
++        {
++            WARN( "failed to start the scroll inertia thread, inertia disabled\n" );
++            scroll_inertia.failed = TRUE;
++        }
++        else
++        {
++            scroll_inertia.state = INERTIA_ACTIVE;
++            NtSetEvent( scroll_inertia.wake_event, NULL );
++        }
++    }
++
++    pthread_mutex_unlock( &scroll_inertia_mutex );
++}
++
++/* latest value of each scroll axis in one event, and whether it carries motion */
++static void scan_scroll_valuators( XIDeviceEvent *event, struct x11drv_scroll_source *src,
++                                   double *value_x, double *value_y, BOOL *have_x, BOOL *have_y,
++                                   BOOL *saw_motion )
++{
++    const double *values = event->valuators.values;
++    int i;
++
++    for (i = 0; i < event->valuators.mask_len * 8; i++)
++    {
++        if (!XIMaskIsSet( event->valuators.mask, i )) continue;
++        if (i == src->scroll_x.number) { *value_x = *values; *have_x = TRUE; }
++        else if (i == src->scroll_y.number) { *value_y = *values; *have_y = TRUE; }
++        else if (i < 2) *saw_motion = TRUE;  /* valuators 0 and 1 are the pointer */
++        values++;
++    }
++}
++
 +/***********************************************************************
 + *           X11DRV_SmoothScrollEvent
 + *
@@ -291,12 +803,14 @@ index 2bd3402c0e..abe13bf5e0 100644
 +{
 +    XIDeviceEvent *event = xev->data;
 +    struct x11drv_thread_data *data = x11drv_thread_data();
++    struct x11drv_scroll_source *src;
++    struct x11drv_win_data *win_data;
 +    POINT pt = { event->event_x, event->event_y }, root = { event->root_x, event->root_y };
 +    UINT time = EVENT_x11_time_to_win32_time( event->time );
 +    BOOL emulated = event->flags & XIPointerEmulated;
-+    const double *values = event->valuators.values;
-+    int i, delta_x = 0, delta_y = 0;
-+    BOOL saw_scroll = FALSE;
++    double value_x = 0, value_y = 0;
++    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE;
++    int delta_x = 0, delta_y = 0;
 +    HWND hwnd;
 +
 +    if (!xinput2_smooth_scroll) return FALSE;
@@ -306,45 +820,80 @@ index 2bd3402c0e..abe13bf5e0 100644
 +    {
 +        int button = event->detail - 1;
 +
++        if (event->evtype == XI_ButtonPress) scroll_inertia_cancel();
 +        if (button < 3 || button > 6) return forward_xinput2_core_event( hwnd, event );
 +        if (event->evtype == XI_ButtonRelease || emulated) return TRUE;
++
++        if ((win_data = get_win_data( hwnd )))
++        {
++            window_set_user_time( win_data, event->time, FALSE );
++            release_win_data( win_data );
++        }
 +        pt = map_event_coords( hwnd, event->event, event->root, root, pt );
 +        send_wheel_input( hwnd, pt, button_down_flags[button], (int)button_down_data[button], FALSE, time );
 +        return TRUE;
 +    }
 +
-+    if (data->scroll_sourceid != event->sourceid) query_scroll_valuators( event->display, event->sourceid );
-+    for (i = 0; i < event->valuators.mask_len * 8; i++)
++    if (!(src = find_scroll_source( data, event->sourceid, FALSE )))
 +    {
-+        if (!XIMaskIsSet( event->valuators.mask, i )) continue;
-+        if (i == data->scroll_x.number)
-+        {
-+            delta_x = smooth_scroll_delta( &data->scroll_x, *values, emulated );
-+            saw_scroll = TRUE;
-+        }
-+        if (i == data->scroll_y.number)
-+        {
-+            delta_y = smooth_scroll_delta( &data->scroll_y, *values, emulated );
-+            saw_scroll = TRUE;
-+        }
-+        values++;
++        /* a device is queried once, when first seen; its axes and baselines
++         * stay cached after that, so alternating devices costs nothing */
++        query_scroll_valuators( event->display, event->sourceid );
++        if (!(src = find_scroll_source( data, event->sourceid, FALSE )))
++            return forward_xinput2_core_event( hwnd, event );
 +    }
-+    if (!saw_scroll) return forward_xinput2_core_event( hwnd, event );
-+    if (emulated) return TRUE;
++
++    scan_scroll_valuators( event, src, &value_x, &value_y, &have_x, &have_y, &saw_motion );
++    if (!have_x && !have_y) return forward_xinput2_core_event( hwnd, event );
++
++    if (emulated)
++    {
++        /* the emulated report only refreshes the baseline; the same movement
++         * arrives as core wheel buttons */
++        if (have_x) smooth_scroll_delta( &src->scroll_x, value_x, TRUE );
++        if (have_y) smooth_scroll_delta( &src->scroll_y, value_y, TRUE );
++        return TRUE;
++    }
++
++    if (have_x) delta_x = smooth_scroll_delta( &src->scroll_x, value_x, FALSE );
++    if (have_y) delta_y = smooth_scroll_delta( &src->scroll_y, value_y, FALSE );
++
++    pt = map_event_coords( hwnd, event->event, event->root, root, pt );
 +
 +    TRACE( "hwnd %p/%lx smooth scroll delta %d,%d\n", hwnd, event->event, delta_x, delta_y );
-+    pt = map_event_coords( hwnd, event->event, event->root, root, pt );
-+    if (delta_y) send_wheel_input( hwnd, pt, MOUSEEVENTF_WHEEL, -delta_y, FALSE, time );
-+    if (delta_x) send_wheel_input( hwnd, pt, MOUSEEVENTF_HWHEEL, delta_x, FALSE, time );
++
++    /* macOS delivers no scroll while a button is held: a clickpad thumb-hold
++     * with a moving finger reports two-finger scroll, and a dragged control
++     * would follow the noise. The baselines advanced above, so the first
++     * scroll after the release does not jump by the dragged distance, and the
++     * press itself already cancelled any running fling. */
++    if (!xinput2_any_button_down( event ))
++    {
++        if (delta_x || delta_y)
++        {
++            if ((win_data = get_win_data( hwnd )))
++            {
++                window_set_user_time( win_data, event->time, FALSE );
++                release_win_data( win_data );
++            }
++            if (delta_y) send_wheel_input( hwnd, pt, MOUSEEVENTF_WHEEL, -delta_y, FALSE, time );
++            if (delta_x) send_wheel_input( hwnd, pt, MOUSEEVENTF_HWHEEL, delta_x, FALSE, time );
++        }
++
++        if (!smooth_scroll_notched()) scroll_inertia_sample( hwnd, pt, delta_x, -delta_y );
++    }
++
++    /* a report can carry pointer motion next to the scroll axes */
++    if (saw_motion) forward_xinput2_core_event( hwnd, event );
 +    return TRUE;
 +}
 +
 +#endif /* XIScrollClass */
 +
- #ifdef XI_GesturePinchBegin
- 
- /***********************************************************************
-@@ -2113,6 +2360,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+ {
+     RECT virtual = NtUserGetVirtualScreenRect( MDT_RAW_DPI );
+@@ -2294,6 +3041,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
          ret = X11DRV_RawMotion( event );
          break;
  
@@ -360,36 +909,44 @@ index 2bd3402c0e..abe13bf5e0 100644
      case XI_TouchUpdate:
      case XI_TouchEnd:
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index 34b53ce403..7e74ca7ebf 100644
+index 34b53ce..92679b2 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -411,6 +411,17 @@ struct display_state
+@@ -411,6 +411,25 @@ struct display_state
      Window net_active_window;
  };
  
 +#if defined(HAVE_X11_EXTENSIONS_XINPUT2_H) && defined(XIScrollClass)
 +struct x11drv_scroll_axis
 +{
-+    int number;
-+    int sourceid;
-+    double increment;
-+    double value;
++    int number;         /* valuator number, -1 when the device has none */
++    double increment;   /* valuator units one wheel notch stands for */
++    double value;       /* cumulative valuator position already reported */
 +    BOOL value_valid;
++};
++
++#define SCROLL_SOURCE_CACHE_SIZE 8
++
++struct x11drv_scroll_source
++{
++    int sourceid;       /* slave device the axes belong to, 0 is a free slot */
++    struct x11drv_scroll_axis scroll_x;
++    struct x11drv_scroll_axis scroll_y;
 +};
 +#endif
 +
  struct x11drv_thread_data
  {
      Display *display;
-@@ -432,6 +443,11 @@ struct x11drv_thread_data
+@@ -432,6 +451,9 @@ struct x11drv_thread_data
      XIValuatorClassInfo y_valuator;
      int      xinput2_pointer;      /* XInput2 master pointer device id */
      int      root_window_users;    /* counter for root window XISelectEvents */
 +#ifdef XIScrollClass
-+    int      scroll_sourceid;      /* source device represented by scroll axes */
-+    struct x11drv_scroll_axis scroll_x;
-+    struct x11drv_scroll_axis scroll_y;
++    struct x11drv_scroll_source scroll_sources[SCROLL_SOURCE_CACHE_SIZE];
 +#endif
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
+-- 
+2.55.0

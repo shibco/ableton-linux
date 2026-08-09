@@ -5,14 +5,14 @@ prefix:       /opt/wine-d2d1-nspa-11.13 (configure-time only; tarball is relocat
 patches:      69
 wine-patches: 67
 pipeasio-patches: 2
-patch-head:   9439dbac1ce8761aa13302387e02e3754d3a0a26
-patch-stack:  01700ab562053cc8db62307337e13f77fdd0aca2326a4371fba63aa7118e54f5
+patch-head:   b7d88eab36b866c4165ca5138ed674c9611800a1
+patch-stack:  d05d54e101b6075676cbd86baf5a4e29f2fc4b54f489fa064dcee49006b45ac0
 pipeasio:     1.2.2
 pipewire-floor: 0.3.56 (pw_context_get_data_loop, pw_data_loop_set_thread_utils)
 ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
-libusb-pe:    d323875df02812de7736938a7ef37279e05a3944b7f22f4d8a4a82bb42ee3181
+libusb-pe:    dbdf89f93081b64139d93f1fd476c7c0dadfc8467e4f0faec66dfb58c1c50eed
 libusb-unix:  5c18dc48b25ce6dc14b38c40eec3e640378bd80490a8ec63ac0aaf6f227b842e
 portal-unix:  3374e60192b6a2af0d2b0120a716fbfdd6beb3ef71fcb5037515440e41eb10b0
 pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
-pipeasio-unix: 961464be609e049ce9b872dec8c422060eed0438a0372bc47395691234d3d7a7
+pipeasio-unix: 41bfa021b6c9dd8b9a8ebb23a88840f37425128b115b9916882f2f2117a9297c
 built-on:     Ubuntu 22.04 (glibc 2.35)
