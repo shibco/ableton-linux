@@ -167,7 +167,10 @@ printf 'Requested prefix: %s\n' "$PREFIX"
 
 section "PREFIX PREPARATION"
 if [[ ! -e "$PREFIX" ]]; then
-    mkdir -m 700 -p "$PREFIX"
+    # umask, not `mkdir -m 700 -p`: with -p, -m applies to the deepest
+    # directory only, so an intermediate this call creates is left at the
+    # caller's umask (0755 by default) with a Live install underneath it.
+    (umask 077 && mkdir -p "$PREFIX")
     printf 'Created empty prefix directory: %s\n' "$PREFIX"
 elif [[ ! -d "$PREFIX" ]]; then
     record_result SETUP FAIL "Prefix path is a directory" "$PREFIX exists but is not a directory"
