@@ -1,4 +1,4 @@
-From df07e2775f01ff567a24c4f8dc98c14c26511d11 Mon Sep 17 00:00:00 2001
+From ba1f4123aad7ae61438325e6c0f081681af527d6 Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
 Date: Sun, 9 Aug 2026 02:07:26 +0200
 Subject: [PATCH 6/6] audio: give the follower device buffer room

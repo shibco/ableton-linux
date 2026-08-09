@@ -591,8 +591,12 @@ rm -f "$WINEPREFIX"/drive_c/windows/system32/wineasio64.dll \
 wine regsvr32 /s pipeasio64.dll
 "$WINESERVER" -w
 
-# Seed the driver defaults once; the file is the config surface (PIPEASIO_*
-# environment variables override it per launch, see the README).
+# Seed the driver defaults once; the file is the config surface, edited with
+# pipeasio-settings or a text editor (PIPEASIO_* environment variables
+# override it per launch, see the README). 256 fixed frames is ~5.3 ms at
+# 48 kHz; since PipeASIO 1.4.3 the driver is scheduled synchronously, so the
+# loopback round trip is one buffer period, not two. sample_rate stays unset
+# (0): Live selects rates from its Preferences and the graph follows.
 pipeasio_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
 if [ ! -s "$pipeasio_cfg" ]; then
     mkdir -p "$(dirname "$pipeasio_cfg")"
@@ -604,7 +608,7 @@ buffer_size = 256
 fixed_buffer_size = true
 auto_connect = true
 EOF
-    echo "   seeded $pipeasio_cfg (2 in / 2 out, fixed 256-frame buffer)"
+    echo "   seeded $pipeasio_cfg (2 in / 2 out, fixed 256-frame buffer; edit with pipeasio-settings)"
 fi
 
 echo "== [5/5] set portal policy and scope Push 2 bridge to its helper =="

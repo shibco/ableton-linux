@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- PipeASIO moves from 1.2.2 to 1.5.0. The audio round trip through the
+  driver drops to one buffer period, half of before (measured 5.3 ms
+  instead of 10.7 ms at the default 256-frame buffer, 48 kHz). Live can
+  change the sample rate from Settings > Audio and the PipeWire graph
+  follows. The latency Live compensates recordings with now includes the
+  audio device's own delay. Missed cycles are counted and logged.
+- The driver's patch series is re-ported onto 1.5.0. The issue #49 fixes
+  carry over: any buffer size in range is accepted (Live's
+  non-power-of-two sizes included, now also when Live asks for one
+  directly), a foreign forced buffer size mutes and converges instead of
+  playing at the wrong speed, and two-device sessions keep the follower's
+  extra buffer room.
+- `pipeasio-settings`, the driver's own settings program, now ships with
+  the runtime: it is on PATH and in the application menu after install
+  (issue #60). It needs the host's Qt 6 base libraries.
+- The host PipeWire floor moves to 1.4.2, PipeASIO 1.5's minimum. Ubuntu
+  24.04 and Mint 22.x ship 1.0.5 and stay on release 2026.08.04.1 or
+  earlier until they update.
 - Link setup records its version marker only when the service step
   completed, so a host where that step failed retries it on the next
   update instead of counting itself configured. The version moves to 5.

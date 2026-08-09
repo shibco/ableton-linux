@@ -3,7 +3,56 @@
 PipeASIO 1.2.2 replaced WineASIO in release 2026.07.17.2. It exposes Live as a
 native PipeWire client and removes JACK from Live's audio path.
 
-This ignored note records the evaluation performed on 2026-07-17.
+This ignored note records the evaluation performed on 2026-07-17. The 1.2.2
+sections below stand as written; the 2026-08-09 update at the end supersedes
+them where they disagree.
+
+## Update 2026-08-09: 1.5.0
+
+Branch `moonshot-pipeasio-15` moves the vendored source to the v1.5.0 tag
+(no upstream release asset yet). What the update carries, from upstream's
+changelog and verified here:
+
+- 1.4.3 schedules the driver synchronously (clears `node.async` after
+  `pw_filter_connect`). Round trip drops from two buffer periods to one.
+- 1.4.1 makes the graph rate authoritative for `GetSampleRate`, and 1.5.0
+  lets the host set a rate (`CanSampleRate` offers the standard set,
+  `SetSampleRate` pins the graph through `node.force-rate`). Live's
+  sample-rate menu works.
+- 1.5.0 reports the connected device chain's delay in `GetLatencies`
+  (`PW_FILTER_FLAG_CUSTOM_LATENCY`), relays `kAsioLatenciesChanged`, and
+  counts missed cycles in the log.
+- The PipeWire floor is 1.4.2 (upstream builds against nothing older;
+  `spa_json_str_object_find` is from 1.4.0). Ubuntu 24.04 / Mint 22.x
+  (1.0.5) are below it; issue #150 shows that population already failing
+  on 1.2.2 for a different reason.
+
+The patch series was re-ported: 0001 narrowed to the config-pinned rate
+path (Live still dies on ASE_NoClock), 0002/0006/0007 carried over, 0003
+retired into 0005's diagnostic texts, 0004 extended to the CreateBuffers
+gate 1.5 added (host-controlled non-power-of-two requests returned -997),
+0005 rebuilt on the 1.5 settings-metadata handler and diagnostic relay,
+with WoW64 proxy entries added. `pipeasio-settings` (Qt 6 Widgets, talks
+to PipeWire via `pw-dump`) builds in the container and ships in the
+runtime (issue #60).
+
+Driver-level verification, 2026-08-09, CachyOS host, system wine, upstream
+`asio_loopback`/`asio_probe` against the session daemon and a null sink:
+
+- Round trip exactly 1.00 buffer periods at 128/192/256/512/883 frames
+  (1.2.2 built the same way measures 2.00 at 256: 10.67 ms vs 5.33 ms).
+- Zero discontinuities, bit errors, and sign errors in every window.
+- CPU within noise of 1.2.2 (loopback process 0.4% vs 0.3% of one core,
+  pipewire 1.8% both).
+- Predict path: with a global `clock.force-quantum 192` set, the driver
+  offers 192 from `GetBufferSize` and the run is clean at one period.
+- `asio_probe` passes lifecycle, cadence, position, latency-settle, and
+  measured-rate checks.
+
+Open: container build + audit run, a production-prefix run of
+`check-live-audio.sh`, the Live-level listening pass, and the two-device
+hardware run for 0007. "Works here" on this machine says nothing about the
+C3/C6 crackle causes.
 
 ## Why it replaced WineASIO
 

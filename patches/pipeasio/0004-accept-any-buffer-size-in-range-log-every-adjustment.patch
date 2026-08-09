@@ -1,4 +1,4 @@
-From 61fd6eb9d18ab374f6a51346fed39bf6527492d2 Mon Sep 17 00:00:00 2001
+From 3b92d1ebdd601296dff275599219b152767399a6 Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
 Date: Sun, 9 Aug 2026 01:52:01 +0200
 Subject: [PATCH 3/6] config: accept any buffer size in range, log every
@@ -10,12 +10,12 @@ silently replaced such values (issue #49 made that a 4x-worse mismatch).
 Any size in [MIN, MAX] now passes through; out-of-range clamps with a
 log line.
 ---
- src/asio.c   | 27 +++++++++++++++++++++------
+ src/asio.c   | 33 ++++++++++++++++++++++++++-------
  src/config.c | 22 +++++++++++++++++++---
- 2 files changed, 40 insertions(+), 9 deletions(-)
+ 2 files changed, 45 insertions(+), 10 deletions(-)
 
 diff --git a/src/asio.c b/src/asio.c
-index a504f16..aa2e748 100644
+index a504f16..61755d3 100644
 --- a/src/asio.c
 +++ b/src/asio.c
 @@ -2014,7 +2014,7 @@ apply_pending_config(IPipeASIOImpl *This)
@@ -27,7 +27,20 @@ index a504f16..aa2e748 100644
          This->pipeasio_sample_rate          = cfg.sample_rate;
          lstrcpynA(This->pipeasio_output_device, cfg.output_device,
                    sizeof This->pipeasio_output_device);
-@@ -2750,11 +2750,26 @@ configure_driver(IPipeASIOImpl *This)
+@@ -2153,7 +2153,11 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
+     }
+     else
+     {
+-        if (!pipeasio_buffer_size_supported(bufferSize) || (bufferSize & (bufferSize - 1)) != 0)
++        /* Any size inside the range is accepted, power of two or not: Live
++         * requests 882- and 960-sample buffers in host-controlled mode
++         * (issue #49), and GetBufferSize's granularity=-1 advertisement is
++         * a hint hosts routinely ignore. */
++        if (!pipeasio_buffer_size_supported(bufferSize))
+         {
+             set_last_error(This, "unsupported buffer size %ld", (long)bufferSize);
+             goto fail;
+@@ -2750,11 +2754,26 @@ configure_driver(IPipeASIOImpl *This)
          && pipeasio_parse_bool(environment_variable, &flag))
          This->pipeasio_follow_device_clock = flag ? TRUE : FALSE;
      if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,

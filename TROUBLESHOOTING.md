@@ -10,8 +10,10 @@ Open **Settings > Audio** and select:
 - **Driver Type:** ASIO
 - **Audio Device:** PipeASIO
 
-Confirm that PipeWire and WirePlumber are running on the host. If audio
-crackles, try a larger PipeASIO buffer:
+Confirm that PipeWire and WirePlumber are running on the host, and that it
+is PipeWire 1.4.2 or newer (`pipewire --version`; Ubuntu 24.04 and Mint 22.x
+ship 1.0.5, which is too old). If audio crackles, raise the buffer size in
+`pipeasio-settings` (installed next to Live), or for one launch:
 
 ```bash
 PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
@@ -196,8 +198,10 @@ If Live still uses much CPU when it is idle:
 
 ## Audio latency remains high
 
-PipeWire 1.6 or newer can match its graph quantum to PipeASIO's buffer. Check
-the PipeWire version before changing the host.
+Lower the buffer size in `pipeasio-settings` and restart the audio engine
+(Settings > Audio, set Audio Device to None and back to PipeASIO). Since the
+PipeASIO 1.5 update the round trip through the driver is one buffer period,
+half of what earlier releases measured.
 
 For advanced host tuning from a repository checkout, run:
 

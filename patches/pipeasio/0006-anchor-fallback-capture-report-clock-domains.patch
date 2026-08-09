@@ -1,4 +1,4 @@
-From 8019c79ad5d0b1c13e7fde0643fc14598d53e492 Mon Sep 17 00:00:00 2001
+From 36c3386d85bc50f534ed6c7fd7e7ae41b2ae172b Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
 Date: Sun, 9 Aug 2026 02:01:29 +0200
 Subject: [PATCH 5/6] audio: anchor the capture fallback, report clock domains

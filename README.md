@@ -40,7 +40,8 @@ Additionally, you need:
 - Linux 6.14 or newer with the `ntsync` module; older kernels work with a
   large performance loss (the launcher warns when `/dev/ntsync` is missing)
 - glibc 2.35 or newer
-- PipeWire 0.3.56 or newer (we recommend 1.6 or newer for audio performance)
+- PipeWire 1.4.2 or newer (we recommend 1.6 or newer; Ubuntu 24.04 and Mint 22.x
+  ship 1.0.5, which is too old)
 - GStreamer with its base and good plugin sets
 - `tar` and `zstd`
 - your installation files and activation details from Ableton

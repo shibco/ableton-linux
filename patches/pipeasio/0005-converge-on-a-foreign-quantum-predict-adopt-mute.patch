@@ -1,4 +1,4 @@
-From 815afba3ea32ea75a40ece747d230b4db4584b16 Mon Sep 17 00:00:00 2001
+From 190a8051edc40ab9ae6568daacb7be98e185e8d7 Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
 Date: Sun, 9 Aug 2026 01:58:11 +0200
 Subject: [PATCH 4/6] converge on a foreign quantum: predict, adopt, mute
@@ -78,7 +78,7 @@ index c4819cc..55ec7d2 100644
  };
  
 diff --git a/src/asio.c b/src/asio.c
-index aa2e748..2c1cb23 100644
+index 61755d3..2eec5ee 100644
 --- a/src/asio.c
 +++ b/src/asio.c
 @@ -296,6 +296,11 @@ typedef struct IPipeASIOImpl
@@ -218,7 +218,7 @@ index aa2e748..2c1cb23 100644
      }
  }
  
-@@ -2579,6 +2658,7 @@ process_callback(audio_nframes_t nframes, void *arg)
+@@ -2583,6 +2662,7 @@ process_callback(audio_nframes_t nframes, void *arg)
      pipeasio_host_call_token token;
      bool admitted = pipeasio_host_call_begin(This, PIPEASIO_HOST_PROCESS, &token);
      int  half     = 0;
@@ -226,7 +226,7 @@ index aa2e748..2c1cb23 100644
  
      if (admitted)
      {
-@@ -2594,6 +2674,13 @@ process_callback(audio_nframes_t nframes, void *arg)
+@@ -2598,6 +2678,13 @@ process_callback(audio_nframes_t nframes, void *arg)
              pipeasio_host_call_sample_rate(&token, rate);
          }
  
@@ -240,7 +240,7 @@ index aa2e748..2c1cb23 100644
          /* Read only while admitted: Start writes host_buffer_index after
           * draining the host gate, which rejected callbacks are not part of. */
          half = This->host_buffer_index;
-@@ -2601,7 +2688,9 @@ process_callback(audio_nframes_t nframes, void *arg)
+@@ -2605,7 +2692,9 @@ process_callback(audio_nframes_t nframes, void *arg)
          {
              if (!This->input_channel[i].active)
                  continue;
@@ -251,7 +251,7 @@ index aa2e748..2c1cb23 100644
              audio_sample_t *destination = &This->input_channel[i].audio_buffer[nframes * half];
              if (source)
                  memcpy(destination, source, sizeof(*destination) * nframes);
-@@ -2615,7 +2704,8 @@ process_callback(audio_nframes_t nframes, void *arg)
+@@ -2619,7 +2708,8 @@ process_callback(audio_nframes_t nframes, void *arg)
      for (int i = 0; i < This->pipeasio_number_outputs; ++i)
      {
          const audio_sample_t *source
@@ -261,7 +261,7 @@ index aa2e748..2c1cb23 100644
          audio_port_publish_output(This->output_channel[i].port, source, nframes, admitted,
                                    This->output_channel[i].active);
      }
-@@ -2749,6 +2839,11 @@ configure_driver(IPipeASIOImpl *This)
+@@ -2753,6 +2843,11 @@ configure_driver(IPipeASIOImpl *This)
                           sizeof(environment_variable))
          && pipeasio_parse_bool(environment_variable, &flag))
          This->pipeasio_follow_device_clock = flag ? TRUE : FALSE;
@@ -273,7 +273,7 @@ index aa2e748..2c1cb23 100644
      if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
                           sizeof(environment_variable)))
      {
-@@ -2812,6 +2907,7 @@ PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
+@@ -2816,6 +2911,7 @@ PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
      atomic_init(&pobj->host_time_stamp, 0);
      atomic_init(&pobj->config_pending, false);
      atomic_init(&pobj->follower_quantum, 0);
