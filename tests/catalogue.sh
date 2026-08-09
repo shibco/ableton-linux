@@ -32,6 +32,7 @@ SUITES=(
     tests/unit/detect-scale.bats
     tests/unit/detect-theme.bats
     tests/unit/launcher.bats
+    tests/unit/runtime-env.bats
     tests/patch-stack.bats
 )
 

@@ -159,3 +159,33 @@ kit_script_names() {
         printf '%s' "$missing" >&2; false; }
 }
 
+# guards: make-installer accepted ABLETON_RUNTIME_TARBALL with only an -f check,
+# packed a 1.6G kit, and the kit's own install.sh then selected nothing from its
+# own payload — observed 2026-08-05
+@test "make-installer refuses a tarball the kit's installer cannot select" {
+    cd "$REPO"
+    grep -qF 'ableton_is_runtime_tarball "$tarball"' "$MK" || {
+        echo "make-installer.sh no longer checks the tarball it packs against the selector" >&2
+        false; }
+}
+
+@test "kit-relative desktop and vendor paths are staged wholesale" {
+    cd "$REPO"
+    # In the kit, \$root is the kit root, so a "\$root/desktop/..." or
+    # "\$root/vendor/..." reference resolves only because make-installer.sh
+    # copies those trees entire. Assert those copies are still there.
+    grep -qE '^cp -a desktop "\$kit/desktop"' "$MK" || {
+        echo "make-installer.sh no longer stages desktop/ — install.sh reads \$root/desktop/*" >&2
+        false; }
+    grep -qE '^cp -a vendor/winetricks "' "$MK" || {
+        echo "make-installer.sh no longer stages winetricks itself — setup-prefix.sh needs it" >&2
+        false; }
+    grep -qF 'ls-files vendor/winetricks-cache' "$MK" || {
+        echo "make-installer.sh no longer stages the winetricks cache by tracked path" >&2
+        false; }
+    # guards: staging the cache directory wholesale ships whatever the build
+    # machine downloaded — 1.6G against CI's 112M, measured 2026-08-05
+    ! grep -qE '^cp -a vendor/winetricks-cache|winetricks vendor/winetricks-cache' "$MK" || {
+        echo "make-installer.sh stages the whole winetricks cache again" >&2
+        false; }
+}

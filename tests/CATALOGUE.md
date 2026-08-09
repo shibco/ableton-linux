@@ -7,18 +7,19 @@ from the files, and the *Guards* column from `# guards:` annotations above a
 test. Run `./tests/catalogue.sh` after adding or renaming a test;
 `tests/repo-hygiene.bats` fails when this file is stale.
 
-117 tests across 7 suites. See [README.md](README.md) for how to run
+138 tests across 8 suites. See [README.md](README.md) for how to run
 them and [../.github/workflows/ci-checks.yml](../.github/workflows/ci-checks.yml)
 for which run on a PR.
 
 ## Contents
 
 - [tests/repo-hygiene.bats](#repo-hygiene) — 17 test(s)
-- [tests/packaging.bats](#packaging) — 7 test(s)
+- [tests/packaging.bats](#packaging) — 9 test(s)
 - [tests/launcher-cli.bats](#launcher-cli) — 19 test(s)
 - [tests/unit/detect-scale.bats](#detect-scale) — 20 test(s)
 - [tests/unit/detect-theme.bats](#detect-theme) — 22 test(s)
 - [tests/unit/launcher.bats](#launcher) — 20 test(s)
+- [tests/unit/runtime-env.bats](#runtime-env) — 19 test(s)
 - [tests/patch-stack.bats](#patch-stack) — 12 test(s)
 
 <a id="repo-hygiene"></a>
@@ -78,6 +79,8 @@ staging list and checks it against what the kit's own scripts reference.
 | 5 | the kit ships the GPL source and licence Ableton Link requires | licence GPLv2+ — Ableton Link has no linking exception, so the source must travel with the binary |
 | 6 | release.yml's asset list matches what make-installer.sh actually produces | — |
 | 7 | every shell function a script calls is actually defined | lifting runtime_pids into the lib renamed it, and a replace that only |
+| 8 | make-installer refuses a tarball the kit's installer cannot select | make-installer accepted ABLETON_RUNTIME_TARBALL with only an -f check, |
+| 9 | kit-relative desktop and vendor paths are staged wholesale | — |
 
 <a id="launcher-cli"></a>
 
@@ -231,6 +234,41 @@ End-to-end launch behaviour is in tests/launcher-cli.bats.
 | 19 | windowmetrics: a value in another section is not picked up | — |
 | 20 | windowmetrics: a missing user.reg is silent, not an error cascade | — |
 
+<a id="runtime-env"></a>
+
+## tests/unit/runtime-env.bats
+
+
+scripts/runtime-env.sh — the shared runtime and prefix resolution.
+
+Seven scripts resolved these paths independently until this existed. The
+resolvers are pure so they can be tested here rather than through a launcher
+sandbox, which is the whole reason they echo instead of assigning.
+
+  ./tests/run.sh tests/unit/runtime-env.bats
+
+| # | Test | Guards |
+| --- | --- | --- |
+| 1 | the runtime wins over a debug tree sitting beside it | sort -V orders the -debug suffix last, so glob+tail installs a tree with no share/ |
+| 2 | the newest dated runtime wins when several are present | — |
+| 3 | the same-day counter orders numerically, not lexically | — |
+| 4 | a debug tree on its own selects nothing, so the caller fails loudly | — |
+| 5 | an undated or suffixed artifact is not mistaken for the runtime | the beta channel — a nightly artifact must never be taken for the stable runtime |
+| 6 | an empty directory selects nothing rather than erroring | — |
+| 7 | a missing directory selects nothing rather than erroring | — |
+| 8 | tarball predicate: the dated release form is accepted | — |
+| 9 | tarball predicate: a full path is judged by its basename | — |
+| 10 | tarball predicate: a debug tree is refused | — |
+| 11 | tarball predicate: a nightly label is accepted | — |
+| 12 | tarball predicate: a labelled debug tree is still refused | — |
+| 13 | tarball predicate: an empty label is refused | — |
+| 14 | tarball selector: the plain release wins over a labelled one beside it | — |
+| 15 | tarball selector: a labelled build alone is selectable | — |
+| 16 | tarball predicate: another Wine base is refused | — |
+| 17 | tarball predicate: an undated artifact is refused | — |
+| 18 | tarball predicate: a partial download is refused | the same-day counter must not be read as a date component |
+| 19 | tarball predicate: the nightly artifact name is accepted | — |
+
 <a id="patch-stack"></a>
 
 ## tests/patch-stack.bats
@@ -280,11 +318,15 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `issue label 'installer'` | packaging: every script a kit script sources is itself staged into the kit |
 | `licence GPLv2+` | packaging: the kit ships the GPL source and licence Ableton Link requires |
 | `lifting runtime_pids into the lib renamed it, and a replace that only` | packaging: every shell function a script calls is actually defined |
+| `make-installer accepted ABLETON_RUNTIME_TARBALL with only an -f check,` | packaging: make-installer refuses a tarball the kit's installer cannot select |
 | `scripts/ableton-live` | launcher-cli: a stale wineserver is killed and the session booted before registry writes<br>launcher: windowmetrics: a value wrapped across continuation lines is rejoined |
 | `scripts/build-audit.sh` | patch-stack: audit: every wine patch is registered in FINGERPRINTS or STAMP_ONLY |
 | `scripts/container-build.sh` | patch-stack: no patch needs the 3-way fallback — context drift is worth acting on |
 | `scripts/detect-scale.sh DPI policy` | detect-scale: block map: gnome scales collapse onto the ceil-based matched set<br>detect-scale: block map: non-gnome scales round to plain LogPixels with no IFEO |
 | `scripts/detect-theme.sh` | detect-theme: newest prefs dir: mtime wins, not a version sort<br>detect-theme: newest prefs dir: the sort -V trap case, stated explicitly |
 | `scripts/setup-run-header.sh line 19` | repo-hygiene: the installer header survives being run by a real POSIX sh |
+| `sort -V orders the -debug suffix last, so glob+tail installs a tree with no share/` | runtime-env: the runtime wins over a debug tree sitting beside it |
+| `the beta channel` | runtime-env: an undated or suffixed artifact is not mistaken for the runtime |
 | `the container sees only what build.sh passes with -e, and an unset` | repo-hygiene: build.sh forwards every variable container-build.sh reads from its environment |
+| `the same-day counter must not be read as a date component` | runtime-env: tarball predicate: a partial download is refused |
 | `the staging list is recovered by anchored sed, so a reformat of` | packaging: the kit staging list is still parseable out of make-installer.sh |

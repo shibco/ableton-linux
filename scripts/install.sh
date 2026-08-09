@@ -7,6 +7,9 @@ set -euo pipefail
 # filenames under a non-UTF-8 locale (issues #51, #55).
 export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
+# The runtime tarball is selected in one place; see scripts/runtime-env.sh.
+# shellcheck source=scripts/runtime-env.sh
+. "$here/runtime-env.sh"
 root="$(cd "$here/.." && pwd)"
 
 OPT="$HOME/.local/opt"
@@ -54,8 +57,8 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # tarball: prefer dist/ (freshly built), else a release tarball dropped in root
-tarball="$(ls "$root"/dist/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
-[ -z "$tarball" ] && tarball="$(ls "$root"/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
+tarball="${ABLETON_RUNTIME_TARBALL:-$(ableton_pick_tarball "$root/dist")}"
+[ -n "$tarball" ] || tarball="$(ableton_pick_tarball "$root")"
 [ -n "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst found: run ./build.sh first, or drop a release tarball in $root/dist/"; exit 1; }
 
 echo "== verify checksum =="
