@@ -4,8 +4,8 @@ PipeASIO 1.2.2 replaced WineASIO in release 2026.07.17.2. It exposes Live as a
 native PipeWire client and removes JACK from Live's audio path.
 
 This ignored note records the evaluation performed on 2026-07-17. The 1.2.2
-sections below stand as written; the 2026-08-09 update at the end supersedes
-them where they disagree.
+sections stand as written; the 2026-08-09 update below supersedes them where
+they disagree.
 
 ## Update 2026-08-09: 1.5.0
 

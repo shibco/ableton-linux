@@ -8,12 +8,12 @@
   change the sample rate from Settings > Audio and the PipeWire graph
   follows. The latency Live compensates recordings with now includes the
   audio device's own delay. Missed cycles are counted and logged.
-- The driver's patch series is re-ported onto 1.5.0. The issue #49 fixes
-  carry over: any buffer size in range is accepted (Live's
-  non-power-of-two sizes included, now also when Live asks for one
-  directly), a foreign forced buffer size mutes and converges instead of
-  playing at the wrong speed, and two-device sessions keep the follower's
-  extra buffer room.
+- The issue #49 audio fixes carry over to the new driver and close one
+  more gap: buffer sizes that are not powers of two are accepted on every
+  path (Live asks for such sizes), a buffer size forced by another audio
+  application mutes and converges instead of playing at the wrong speed,
+  and the second device of a two-device setup keeps its extra buffer
+  room.
 - `pipeasio-settings`, the driver's own settings program, now ships with
   the runtime: it is on PATH and in the application menu after install
   (issue #60). It needs the host's Qt 6 base libraries.

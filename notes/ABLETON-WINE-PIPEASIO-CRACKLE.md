@@ -423,3 +423,17 @@ it was written 2026-07-26. State of the plan as of this addendum:
   latency, which recording alignment needs.
 - Next per the Order section: the reply to #49, then the
   three-distribution verification matrix. G2 through G4 stay open.
+
+## Status addendum, 2026-08-09 (PipeASIO 1.5.0)
+
+Branch `moonshot-pipeasio-15` moves the vendored driver to 1.5.0 and
+re-ports the series; the F-plan patches carry over (0003's corrected
+warning text now lives inside 0005's diagnostic, and 0004 also covers a
+CreateBuffers power-of-two gate 1.5 added). Upstream 1.5 changes the
+ground under C1/C2: the driver is scheduled synchronously (round trip is
+one buffer period), the filter locks its quantum and rate while running,
+and missed cycles are counted in the log (part of what F0 wanted). The
+global clock.force-quantum arbitration in "How PipeWire decides the
+quantum" is unchanged and the predict path was verified against a live
+forced 192. Details and measurements:
+[ABLETON-WINE-PIPEASIO.md](ABLETON-WINE-PIPEASIO.md), update 2026-08-09.
