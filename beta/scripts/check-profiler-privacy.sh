@@ -75,6 +75,7 @@ if grep -Eq '[[:alnum:]]<USER>|<USER>[[:alnum:]]' <<< "$report"; then
     fail 'username placeholder was inserted inside ordinary data'
 fi
 
+# shellcheck source=../tester-kit/lib/common.sh
 source "$COMMON"
 redacted="$(
     printf '%s\n' \

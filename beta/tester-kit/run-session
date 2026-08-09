@@ -4,9 +4,13 @@ set -uo pipefail
 umask 077
 
 KIT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/common.sh
 source "$KIT_ROOT/lib/common.sh"
+# shellcheck source=lib/collect-linux.sh
 source "$KIT_ROOT/lib/collect-linux.sh"
+# shellcheck source=lib/fetch-installer.sh
 source "$KIT_ROOT/lib/fetch-installer.sh"
+# shellcheck source=lib/run-probes.sh
 source "$KIT_ROOT/lib/run-probes.sh"
 
 PREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"

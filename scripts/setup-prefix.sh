@@ -176,9 +176,11 @@ live_exe_names() {   # basenames of every Live exe installed in this prefix
 }
 
 # Shared display-scale detection and scale -> DPI block mapping (see detect-scale.sh).
+# shellcheck source=detect-scale.sh
 . "$here/detect-scale.sh"
 
 # Shared host light/dark-scheme detection (see detect-theme.sh).
+# shellcheck source=detect-theme.sh
 . "$here/detect-theme.sh"
 
 block_for_scale() {  # scale family -> calibrated block token, fails outside 100-250%
