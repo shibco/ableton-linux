@@ -408,6 +408,14 @@ fi
 # hook-removal failure.
 install -m755 "$here/setup-link.sh" "$HOME/works/apps/ableton-live/setup-link.sh"
 
+# The prefix setup belongs to this application, not to the runtime: it seeds
+# fonts, winetricks components and registry policy for Live specifically. It has
+# only ever been run out of the unpacked kit, which the .run deletes on the way
+# out - so it existed on no installed machine, `works plug new` printed a path to
+# it that could not work, and there was no supported way to set a second Plug up
+# at all. That is what blocked the documented recovery for a 32-bit prefix.
+install -m755 "$here/setup-prefix.sh" "$HOME/works/apps/ableton-live/setup-prefix.sh"
+
 # Record the kit version so a later installer can tell what it is updating
 # (the kit and the repo both carry VERSION at the root).
 printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" \

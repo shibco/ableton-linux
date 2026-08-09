@@ -319,7 +319,17 @@ point_at()   { ln -sfn "$2" "$STORE/$1"; }
     [[ "$output" == *"checksum mismatch"* ]]
 }
 
-@test "a matching checksum reaches the installer" {
+# guards: which door of the installer this opens, which is not a detail. Both
+# --runtime-only and --update install the runtime, the launcher, the verbs and
+# the toolkit; only --update goes on to configure Link and re-run the prefix
+# setup, where a kit's registry policy and DLL healing live.
+#
+# This asserted --runtime-only until 2026-08-09, which is how the defect stayed
+# invisible: updating by command and updating by installer left two different
+# machines, and the test pinned the difference in place as if it were the
+# contract. A user who only ever ran `works update` never received a
+# prefix-policy change and had no way to find out.
+@test "a matching checksum reaches the installer, through the update door" {
     a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13
     point_at stable 2026.08.04.1+aaaa
     on_channel stable
@@ -329,7 +339,9 @@ point_at()   { ln -sfn "$2" "$STORE/$1"; }
 
     run "$UPD" --yes
     [ "$status" -eq 0 ]
-    [[ "$output" == *"INSTALLER RAN --runtime-only"* ]]
+    [[ "$output" == *"INSTALLER RAN --update"* ]]
+    [[ "$output" != *"--runtime-only"* ]] \
+        || { echo "the updater took the door that skips the prefix" >&2; false; }
 }
 
 # guards: releases move, and the manifest must stay the thing that locates the

@@ -74,13 +74,26 @@ sed -i -e '\#^x-scheme-handler/ableton=wine-protocol-ableton\.desktop;\?$#d' \
 echo "removed desktop entries, icons and MIME registrations"
 
 if [ "${1:-}" = "--prefix" ]; then
-    pfx="${WORKS_PLUG:-$HOME/works/plugs/studio}"
+    # works_plug_path, not a literal: it honours WORKS_PLUG, then the `default`
+    # symlink `works plug use` writes, then studio. The literal removed the Plug
+    # the machine started with rather than the one it is actually using.
+    pfx="$(works_plug_path)"
     # No terminal means no answer; keep the prefix rather than delete it blind.
     read -rp "Also delete $pfx? This removes your Live installation AND its authorisation. [y/N] " a || a=n
     case "$a" in
         [yY]|[yY][eE][sS]) rm -rf "$pfx" && echo "removed $pfx" ;;
         *) echo "kept $pfx" ;;
     esac
+    # Deliberately only the selected one. The others hold their own installs and
+    # their own authorisations, and an uninstall that removed them without ever
+    # naming them would be the single destructive surprise in a script whose job
+    # is to be reversible. Name them instead.
+    others="$(works_plug_names 2>/dev/null | grep -vxF "${pfx##*/}" || true)"
+    if [ -n "$others" ]; then
+        echo ""
+        echo "These Plugs are still here, each with whatever is installed in it:"
+        printf '%s\n' "$others" | sed 's/^/     works plug rm /'
+    fi
 fi
 
 # Link setup wrote these as root, so this script cannot remove them. The

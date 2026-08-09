@@ -7,7 +7,7 @@ from the files, and the *Guards* column from `# guards:` annotations above a
 test. Run `./tests/catalogue.sh` after adding or renaming a test;
 `tests/repo-hygiene.bats` fails when this file is stale.
 
-402 tests across 16 suites. See [README.md](README.md) for how to run
+413 tests across 17 suites. See [README.md](README.md) for how to run
 them and [../.github/workflows/ci-checks.yml](../.github/workflows/ci-checks.yml)
 for which run on a PR.
 
@@ -20,6 +20,7 @@ for which run on a PR.
 - [tests/unit/detect-theme.bats](#detect-theme) — 22 test(s)
 - [tests/unit/launcher.bats](#launcher) — 20 test(s)
 - [tests/unit/install-runs.bats](#install-runs) — 20 test(s)
+- [tests/unit/run-header.bats](#run-header) — 11 test(s)
 - [tests/unit/manifest.bats](#manifest) — 21 test(s)
 - [tests/unit/migrate-layout.bats](#migrate-layout) — 42 test(s)
 - [tests/unit/works.bats](#works) — 12 test(s)
@@ -293,6 +294,41 @@ tree ships.
 | 18 | the launcher lives with the application, and PATH holds a link to it | the app directory must contain the app — a launcher that lives only on |
 | 19 | installing leaves no dated launcher copies behind | one dated copy per install, on the PATH, pruned by nothing — the |
 | 20 | the works command lives outside any application, with its verbs beside the library | — |
+
+<a id="run-header"></a>
+
+## tests/unit/run-header.bats
+
+
+scripts/setup-run-header.sh — which mode the .run picks before it does anything.
+
+This file exists because nothing tested the header at all. 402 tests, twelve
+unit files, and the one script every user actually executes had coverage only
+for "does it exist and may it carry a version literal". Four of the ten defects
+found on 2026-08-09 were in here, and the worst of them — that no unmigrated
+machine was ever offered an update, because the existing-install test looked
+only at ~/works/plugs/studio — would have been caught by the third test below.
+
+The header is a template with a payload appended, so testing it means building
+one: substitute the placeholders, tar a stub kit, concatenate. The stubs echo
+instead of installing, which is the point — what is under test is the decision,
+not what the decision runs.
+
+  ./tests/run.sh tests/unit/run-header.bats
+
+| # | Test | Guards |
+| --- | --- | --- |
+| 1 | a genuinely fresh machine is a full install | — |
+| 2 | a machine on the ~/works layout is offered an update | — |
+| 3 | an unmigrated machine is offered an update, not a fresh install | THE defect. Every existing user is on the legacy layout on the day the |
+| 4 | with no terminal the update is taken, not the install | with no terminal nobody can answer, and the header takes the update |
+| 5 | --runtime-only stops before the prefix, on any machine | — |
+| 6 | --update goes to the prefix refresh without asking | — |
+| 7 | --extract writes the kit and does nothing else | — |
+| 8 | --uninstall runs the kit's uninstaller and stops | — |
+| 9 | a damaged payload is refused before anything runs | — |
+| 10 | help ends on an option, not on prose about the payload | --help sliced lines 2-18 of this file's own header comment, and line 18 |
+| 11 | help names every mode the argument parser accepts | — |
 
 <a id="manifest"></a>
 
@@ -602,7 +638,7 @@ file:// URL, which is the same code path a real channel takes.
 | 18 | it refuses while something is running from the runtime | replacing the tree under a running Live is how a session is lost |
 | 19 | with no terminal to ask on it stops rather than assuming yes | an unattended run must not hang waiting on a prompt nobody can answer |
 | 20 | a checksum mismatch stops the install | the checksum is the only thing making the manifest's URL trustworthy |
-| 21 | a matching checksum reaches the installer | — |
+| 21 | a matching checksum reaches the installer, through the update door | which door of the installer this opens, which is not a detail. Both |
 | 22 | the installer is fetched from beside the manifest | releases move, and the manifest must stay the thing that locates the |
 | 23 | a downgrade is named as one | — |
 | 24 | a machine with nothing installed is offered the build | — |
@@ -743,12 +779,14 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | --- | --- |
 | `--check is a question, and asking it must not answer it` | works-update: --check does not move a channel even when the build is present |
 | `--check is a question, not an action, so it reports the base change` | works-update: --check reports a base change instead of refusing |
+| `--help sliced lines 2-18 of this file's own header comment, and line 18` | run-header: help ends on an option, not on prose about the payload |
 | `-y was parsed by cmd_stop but never reached it. The dispatch called` | works-runtime: stop -y stops a running Live without asking |
 | `.bats-core is a full clone of another project; run.sh's comment said it` | repo-hygiene: the vendored bats clone is ignored |
 | `/proc/PID/exe reports resolved paths, so a channel-path root matches no` | runtime-env: runtime root: resolves to the build, not to the channel link |
 | `/releases/latest/ excludes prereleases, which is what keeps the nightly` | manifest: stable resolves through latest, nightly through its own tag |
 | `11.11 and 11.14 trees coexist on the development machine and are not` | migrate-layout: runtimes from other Wine bases are left alone |
 | `2026.07.29.1 appears four times on the dev machine under two patch stacks` | runtime-env: two builds of one version under different patch stacks get different ids |
+| `THE defect. Every existing user is on the legacy layout on the day the` | run-header: an unmigrated machine is offered an update, not a fresh install |
 | ``default` is the selection link itself, so a Plug by that name could` | works-plug: default is refused as a Plug name |
 | ``stat -f` reads statfs.f_type, and ext2, ext3 and ext4 all share magic` | works-plug: the clone names the filesystem the mount table reports |
 | ``wineboot -u` rewriting the registry under a live wineserver` | install-runs: setup-prefix refuses while something runs from the runtime |
@@ -892,4 +930,6 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `two builds can share a timestamp -- the same build published on two` | works-update: a build with the same timestamp is not called older |
 | `two installs of one build collapse to one entry, and the loser is set` | migrate-layout: two rollbacks holding one build keep one and set the rest aside |
 | `two prefixes can hold different Lives and different authorisations` | migrate-layout: plug: a prefix at both paths refuses, naming both |
+| `which door of the installer this opens, which is not a detail. Both` | works-update: a matching checksum reaches the installer, through the update door |
+| `with no terminal nobody can answer, and the header takes the update` | run-header: with no terminal the update is taken, not the install |
 | `works_manifest_write emits the key unconditionally but writes whatever` | manifest: a manifest with an empty wine field is refused |

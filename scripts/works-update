@@ -21,7 +21,7 @@ for _l in "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh" \
     [ -r "$_l" ] && . "$_l" && break
 done
 command -v works_manifest_url >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/lib" >&2; exit 1; }
 
 CHECK=0; ASSUME_YES=0; WANT_CHANNEL=""
 while [ $# -gt 0 ]; do
@@ -197,5 +197,11 @@ got="$(sha256sum "$tmp/$installer" | cut -d' ' -f1)"
     exit 1; }
 echo "   ok"
 
+# --update, not --runtime-only. Both install the runtime, the launcher, the verbs
+# and the toolkit; only --update goes on to configure Link and re-run the prefix
+# setup, which is where a kit's registry policy and DLL healing live. Ending here
+# on --runtime-only meant updating by command and updating by installer left two
+# different machines, and neither said so - a user who only ever ran `works
+# update` never received a prefix-policy change and had no way to find out.
 echo "== installing =="
-sh "$tmp/$installer" --runtime-only
+sh "$tmp/$installer" --update

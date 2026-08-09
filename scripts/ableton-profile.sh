@@ -10,10 +10,22 @@
 #   ableton_profile_detect EXE_PATH    — validate a discovered exe against the matrix
 #   ableton_profile_list               — print "MAJOR EDITION<TAB>EXE_PATH" per install
 # Detection refuses layouts outside the matrix (unknown majors/editions, renamed exes)
-# instead of guessing; WINEPREFIX (default ~/works/plugs/studio) locates paths and icons.
+# instead of guessing; WINEPREFIX, else the selected Plug, locates paths and icons.
 
 ABLETON_LIVE_VERSIONS="11 12"
 ABLETON_LIVE_EDITIONS="Suite Standard Intro Lite Trial"
+
+# The prefix these paths hang off. WINEPREFIX when a caller has already bound
+# one, else the resolver's answer — which honours WORKS_PLUG and then the
+# `default` symlink `works plug use` writes. This was a literal
+# ~/works/plugs/studio in both functions below, so the profiler described a Plug
+# the launcher was not running whenever the machine had selected another. The
+# last fallback is for the sourced-in-isolation case; nothing shipped hits it.
+ableton_profile_prefix() {
+    if [ -n "${WINEPREFIX:-}" ]; then printf '%s\n' "$WINEPREFIX"; return; fi
+    if command -v works_plug_path >/dev/null 2>&1; then works_plug_path; return; fi
+    printf '%s\n' "$HOME/works/plugs/studio"
+}
 
 # ableton_profile_for MAJOR EDITION — set ABLETON_{MAJOR,EDITION,EXE,FOLDER,
 # EXE_PATH,WM_CLASS,ICON} for one matrix product. Returns 1 off the matrix.
@@ -25,7 +37,7 @@ ableton_profile_for() {
         done
     done
     [ "$known" -eq 0 ] || return 1
-    local prefix="${WINEPREFIX:-$HOME/works/plugs/studio}"
+    local prefix; prefix="$(ableton_profile_prefix)"
     ABLETON_MAJOR="$major"
     ABLETON_EDITION="$edition"
     ABLETON_EXE="Ableton Live $major $edition.exe"
@@ -82,7 +94,7 @@ ableton_profile_detect() {
 # ableton_profile_list — one "MAJOR EDITION<TAB>EXE_PATH" line per discovered install
 # in the prefix, version-sorted; layouts the matrix rejects are skipped.
 ableton_profile_list() {
-    local prefix="${WINEPREFIX:-$HOME/works/plugs/studio}" f
+    local prefix f; prefix="$(ableton_profile_prefix)"
     ls "$prefix"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe 2>/dev/null \
         | sort -V | while IFS= read -r f; do
             if ableton_profile_detect "$f"; then

@@ -27,34 +27,66 @@ export LC_ALL=C.UTF-8
 
 VERSION="@VERSION@"
 PAYLOAD_SHA="@PAYLOAD_SHA@"
-RUNTIME_NAME="wine-d2d1-nspa-11.13"
-# Resolve the same two paths install.sh does, and for the same reason: this
-# wrapper checks for an existing install and then runs Live's installer through
-# the runtime, so if it looks somewhere other than where install.sh puts things
-# it will offer a fresh install over an existing one, or run the Ableton
-# installer against a runtime that is not the one it just installed.
-# This wrapper is POSIX sh, runtime-env.sh is bash, and the first use is before
-# the kit has even been extracted - so the store lookup is duplicated here, as
-# small as it can be: the channel when there is one, the path installs used to
-# live at when there is not. install.sh owns the real resolution; this only has
-# to recognise an existing install and, afterwards, address the one it just made.
-resolve_runtime() {
-    if [ -L "$HOME/works/runtimes/stable" ]; then
-        printf '%s\n' "$HOME/works/runtimes/$(readlink "$HOME/works/runtimes/stable")"
-    elif [ -x "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" ]; then
-        printf '%s\n' "$HOME/.local/opt/$RUNTIME_NAME"
-    else
-        printf '%s\n' "$HOME/works/runtimes/stable"
-    fi
-}
-WINE_ROOT="${WORKS_RUNTIME:-$(resolve_runtime)}"
-PREFIX_DIR="${WORKS_PLUG:-$HOME/works/plugs/studio}"
+APP="ableton-live"
+
+# This wrapper used to carry a hand-written copy of the resolver, because it is
+# POSIX sh, runtime-env.sh is bash, and the first use came before the kit had
+# been extracted. Every updater defect found on 2026-08-09 was in that copy: it
+# got the runtime's legacy fallback right and the prefix's wrong, so the "is
+# there an install here" test looked only at ~/works/plugs/studio and no
+# unmigrated machine - which is every existing user - was ever offered an
+# update. It hardcoded plugs/studio, so `works plug use` did not reach it. And
+# it honoured WORKS_PLUG but not ABLETON_WINEPREFIX, which install.sh does
+# honour, so on a machine setting the old name the two disagreed about which
+# prefix was being installed into.
+#
+# So there is no resolver here now. Exactly one fact has to be known before the
+# payload is unpacked - has this application been installed on this machine -
+# and a marker answers it without deriving a single path. Everything else is
+# needed only after extraction, by which point bash and the real runtime-env.sh
+# are both on disk and can be asked properly.
+#
+# Two markers because the answer has to be yes on a machine installed by any kit
+# that predates ~/works, which is the population this whole question is about.
+returning=0
+for marker in "$HOME/works/apps/$APP/VERSION" \
+              "$HOME/.local/share/ableton-wine/VERSION"; do
+    if [ -f "$marker" ]; then returning=1; break; fi
+done
 
 self="$(readlink -f -- "$0")"
 stick_dir="$(dirname -- "$self")"
 
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
+
+# Written out, not sliced out of the header comment with `head -18 | sed -n
+# '2,18p'`. That range rots the moment a comment above it is edited, and it had
+# already rotted: line 18 is a note about the payload marker, so --help printed
+# a sentence of internal prose under the options. The same defect the works
+# verbs were rewritten to remove, in the one script they did not cover.
+usage() {
+    cat <<'EOF'
+Ableton-on-Wine single-file installer (self-extracting).
+Usage:  sh ableton-wine-setup-@VERSION@.run [options]
+Options:
+  --runtime-only   install the patched Wine only; skip making the Wine prefix
+  --update         update compatibility files; keep Live, authorization, and projects
+  --no-launch      never run the Ableton installer (zip/exe) automatically
+  --no-link        skip Ableton Link setup (remembered on later runs)
+  --link           configure Ableton Link even if previously skipped or declined
+  --extract DIR    unpack this installer's files into DIR and exit
+  --uninstall      remove the installed Wine, launcher, and menu entries
+  --prefix         with --uninstall: also delete the Wine prefix and Live
+  --help           this text
+Environment:
+  ABLETON_DPI_MODE    auto|preserve|100|fractional|dpi<N> (overrides scale auto-detection)
+  ABLETON_THEME_MODE  auto|dark|light|preserve (overrides the light/dark sync)
+  ABLETON_LIVE_VERSION  11|12 (prepare the prefix for this Live version; default 12)
+  WORKS_PLUG          install into this Plug instead of the selected one
+  WORKS_RUNTIME       use this runtime tree instead of the store's
+EOF
+}
 
 mode=install
 do_launch=1
@@ -64,7 +96,7 @@ extract_dir=""
 drop_prefix=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --help|-h)      head -18 "$self" | sed -n '2,18{s/^# \{0,1\}//;p}'; exit 0 ;;
+        --help|-h)      usage; exit 0 ;;
         --runtime-only) mode=runtime ;;
         --update)       mode=update ;;
         --no-launch)    do_launch=0 ;;
@@ -90,9 +122,9 @@ say "== Ableton-on-Wine installer $VERSION =="
 # runtime, launcher, and prefix policy to this kit's version. It preserves the
 # Live installation, authorization, and projects; compatibility settings may
 # change.
-if [ "$mode" = install ] && [ -x "$WINE_ROOT/bin/wine" ] \
-   && [ -f "$PREFIX_DIR/system.reg" ]; then
-    installed_ver="$(cat "$HOME/works/apps/ableton-live/VERSION" 2>/dev/null || true)"
+if [ "$mode" = install ] && [ "$returning" = 1 ]; then
+    installed_ver="$(cat "$HOME/works/apps/$APP/VERSION" 2>/dev/null \
+                  || cat "$HOME/.local/share/ableton-wine/VERSION" 2>/dev/null || true)"
     say ""
     say "An existing installation was found${installed_ver:+ (version $installed_ver)}."
     if [ -t 0 ]; then
@@ -322,10 +354,20 @@ fi
 # --- install the runtime ------------------------------------------------------
 say "-- installing the patched Wine (goes to ~/works, touches nothing else)"
 bash "$kit/scripts/install.sh"
-# The store may have just been created and the migration may have just moved
-# things, so the path resolved before any of that is stale from here on.
-[ -n "${WORKS_RUNTIME:-}" ] || WINE_ROOT="$(resolve_runtime)"
 [ "$mode" = runtime ] && { say "OK: the patched Wine is installed (--runtime-only: stopped before creating the Wine prefix)"; exit 0; }
+# From here the real resolver answers, and nothing in this file guesses a path
+# again. Line 19 re-execs into bash, so sourcing it is available the moment the
+# kit is on disk - the POSIX-sh constraint only ever applied to that one line.
+# It has to be read *after* install.sh, not before: the store may have just been
+# created and the migration may have just moved both the runtime and the Plug.
+#
+# works_plug_path, not a literal: it honours WORKS_PLUG, then the `default`
+# symlink `works plug use` writes, then studio. Hardcoding the last of those is
+# why Live's installer would run into studio on a machine whose selected Plug
+# was something else.
+. "$kit/scripts/runtime-env.sh"
+WINE_ROOT="$(works_runtime_path)"
+PREFIX_DIR="$(works_plug_path)"
 configure_link
 
 # --- create the prefix --------------------------------------------------------
@@ -349,7 +391,7 @@ if [ -z "${ABLETON_DPI_MODE:-}" ]; then
         say "   (the launcher re-checks your display on every start, so this corrects itself)"
     fi
 fi
-say "-- creating the Wine prefix, Live's private 'C: drive' at ~/works/plugs/studio"
+say "-- creating the Wine prefix, Live's private 'C: drive' at ${PREFIX_DIR/#$HOME/\~}"
 say "   (fonts and runtime pieces install now; this takes a few minutes)"
 bash "$kit/scripts/setup-prefix.sh"
 

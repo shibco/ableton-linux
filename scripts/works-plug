@@ -285,7 +285,7 @@ cmd_new() {
     [ -n "$from" ] || cat <<EOF
 
 Nothing is installed in it yet. To set the prefix up and install into it:
-  WORKS_PLUG=$plugs/$want ~/works/lib/setup-prefix.sh
+  WORKS_PLUG=$plugs/$want ~/works/apps/ableton-live/setup-prefix.sh
 EOF
 }
 

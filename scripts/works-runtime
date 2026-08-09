@@ -17,7 +17,7 @@ for _l in "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh" \
     [ -r "$_l" ] && . "$_l" && break
 done
 command -v works_runtime_path >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/lib" >&2; exit 1; }
 
 container="$(works_runtime_store)"
 channel="$container/$(works_channel)"
