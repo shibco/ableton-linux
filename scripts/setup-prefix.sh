@@ -158,10 +158,9 @@ if pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
 fi
 "$WINESERVER" -k 2>/dev/null || true
 
-# Host tools winetricks needs to unpack the redistributables.
-for t in cabextract; do
-    command -v "$t" >/dev/null || echo "!! missing host tool '$t' (needed by winetricks): install it (e.g. 'pacman -S cabextract' / 'apt install cabextract')"
-done
+# Host tool winetricks needs to unpack the redistributables.
+command -v cabextract >/dev/null \
+    || echo "!! missing host tool 'cabextract' (needed by winetricks): install it (e.g. 'pacman -S cabextract' / 'apt install cabextract')"
 
 # DPI blocks: a detected scale maps to a calibrated set by compositor family (see
 # detect-scale.sh): GNOME gets the upscaled-framebuffer matched set (LogPixels =
