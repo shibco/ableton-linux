@@ -1,89 +1,97 @@
-diff --git a/src/config.c b/src/config.c
---- a/src/config.c
-+++ b/src/config.c
-@@ -127,10 +127,25 @@
-     if (c->outputs < 0 || c->outputs > PIPEASIO_MAX_CHANNELS)
-         c->outputs = PIPEASIO_DEFAULT_OUTPUTS;
- 
-+    /* Any size inside the range passes through as-is: Live accepts sizes
-+     * that are not powers of two, and rejecting them here replaced the
-+     * user's value in silence (issue #49). Every adjustment is logged. */
-     const int b = c->buffer_size;
--    if (!(b > 0 && (b & (b - 1)) == 0 && b >= PIPEASIO_MIN_BUFFER_SIZE
--          && b <= PIPEASIO_MAX_BUFFER_SIZE))
-+    if (b <= 0)
-+    {
-         c->buffer_size = PIPEASIO_DEFAULT_BUFFER_SIZE;
-+        fprintf(stderr, "pipeasio: config buffer_size missing or unreadable; "
-+                "using %d\n", PIPEASIO_DEFAULT_BUFFER_SIZE);
-+    }
-+    else if (b < PIPEASIO_MIN_BUFFER_SIZE || b > PIPEASIO_MAX_BUFFER_SIZE)
-+    {
-+        c->buffer_size = b < PIPEASIO_MIN_BUFFER_SIZE ? PIPEASIO_MIN_BUFFER_SIZE
-+                                                      : PIPEASIO_MAX_BUFFER_SIZE;
-+        fprintf(stderr, "pipeasio: config buffer_size %d out of range [%d, %d]; "
-+                "clamped to %d (pipeasio-any-buffer-size)\n", b,
-+                PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE,
-+                c->buffer_size);
-+    }
- 
-     if (c->sample_rate < 0)
-         c->sample_rate = 0;
+From 61fd6eb9d18ab374f6a51346fed39bf6527492d2 Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Sun, 9 Aug 2026 01:52:01 +0200
+Subject: [PATCH 3/6] config: accept any buffer size in range, log every
+ adjustment
+
+Live accepts non-power-of-two ASIO buffer sizes (it runs 882 and 960
+against FlexASIO), and both the INI loader and the environment override
+silently replaced such values (issue #49 made that a 4x-worse mismatch).
+Any size in [MIN, MAX] now passes through; out-of-range clamps with a
+log line.
+---
+ src/asio.c   | 27 +++++++++++++++++++++------
+ src/config.c | 22 +++++++++++++++++++---
+ 2 files changed, 40 insertions(+), 9 deletions(-)
+
 diff --git a/src/asio.c b/src/asio.c
+index a504f16..aa2e748 100644
 --- a/src/asio.c
 +++ b/src/asio.c
-@@ -1289,12 +1289,16 @@
-         TRACE("Buffersize fixed at %d\n", (int)This->host_current_buffersize);
+@@ -2014,7 +2014,7 @@ apply_pending_config(IPipeASIOImpl *This)
+         This->pipeasio_fixed_buffersize     = cfg.fixed_buffer_size ? TRUE : FALSE;
+         This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
+         This->pipeasio_realtime             = cfg.realtime ? TRUE : FALSE;
+-        This->pipeasio_preferred_buffersize = cfg.buffer_size; /* loader pow2-validated */
++        This->pipeasio_preferred_buffersize = cfg.buffer_size; /* loader range-validated */
+         This->pipeasio_sample_rate          = cfg.sample_rate;
+         lstrcpynA(This->pipeasio_output_device, cfg.output_device,
+                   sizeof This->pipeasio_output_device);
+@@ -2750,11 +2750,26 @@ configure_driver(IPipeASIOImpl *This)
+         && pipeasio_parse_bool(environment_variable, &flag))
+         This->pipeasio_follow_device_clock = flag ? TRUE : FALSE;
+     if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
+-                         sizeof(environment_variable))
+-        && pipeasio_parse_int(environment_variable, PIPEASIO_MIN_BUFFER_SIZE,
+-                              PIPEASIO_MAX_BUFFER_SIZE, &parsed)
+-        && !(parsed & (parsed - 1)))
+-        This->pipeasio_preferred_buffersize = parsed;
++                         sizeof(environment_variable)))
++    {
++        /* Any size inside the range passes through as-is: Live accepts sizes
++         * that are not powers of two, and substituting the config value here
++         * replaced the user's request in silence (issue #49). */
++        if (pipeasio_parse_int(environment_variable, 1, INT_MAX, &parsed))
++        {
++            LONG clamped = parsed < PIPEASIO_MIN_BUFFER_SIZE   ? PIPEASIO_MIN_BUFFER_SIZE
++                           : parsed > PIPEASIO_MAX_BUFFER_SIZE ? PIPEASIO_MAX_BUFFER_SIZE
++                                                               : parsed;
++            if (clamped != parsed)
++                WARN("PIPEASIO_PREFERRED_BUFFERSIZE %d out of range [%d, %d]; "
++                     "clamped to %d (pipeasio-any-buffer-size)\n",
++                     parsed, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE, (int)clamped);
++            This->pipeasio_preferred_buffersize = clamped;
++        }
++        else
++            WARN("PIPEASIO_PREFERRED_BUFFERSIZE unreadable; keeping %d\n",
++                 (int)This->pipeasio_preferred_buffersize);
++    }
+     if (read_environment("PIPEASIO_SAMPLE_RATE", environment_variable, sizeof(environment_variable))
+         && pipeasio_parse_int(environment_variable, 0, INT_MAX, &parsed))
+         This->pipeasio_sample_rate = parsed;
+diff --git a/src/config.c b/src/config.c
+index ca08166..09a0cdc 100644
+--- a/src/config.c
++++ b/src/config.c
+@@ -113,9 +113,25 @@ apply_kv(struct pipeasio_config *config, const char *key, const char *value)
      }
-     else
--    { /* fail if not a power of two and if out of range */
--        if (!(bufferSize > 0 && !(bufferSize & (bufferSize - 1))
--              && bufferSize >= PIPEASIO_MINIMUM_BUFFERSIZE
-+    { /* fail only if out of range: any size in [min, max] is accepted, the
-+       * same rule config.c and the environment path already follow.
-+       * Rejecting a non-power-of-two here refused a size GetBufferSize had
-+       * just offered (issue #49: quantum 192 gave CreateBuffers=-997). */
-+        if (!(bufferSize >= PIPEASIO_MINIMUM_BUFFERSIZE
-               && bufferSize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
-         {
--            WARN("Invalid buffersize %d requested\n", (int)bufferSize);
-+            WARN("Invalid buffersize %d requested; outside [%d, %d]\n",
-+                 (int)bufferSize, PIPEASIO_MINIMUM_BUFFERSIZE,
-+                 PIPEASIO_MAXIMUM_BUFFERSIZE);
-             return -997;
-         }
-         else
-@@ -1977,13 +1981,27 @@
-     if (n > 0 && n < sizeof name_env)
-         lstrcpynA(This->client_name, name_env, PIPEASIO_MAX_NAME_LENGTH);
- 
--    /* if pipeasio_preferred_buffersize is not a power of two or out of range,
--     * fall back to PIPEASIO_PREFERRED_BUFFERSIZE */
--    if (!(This->pipeasio_preferred_buffersize > 0
--          && !(This->pipeasio_preferred_buffersize & (This->pipeasio_preferred_buffersize - 1))
--          && This->pipeasio_preferred_buffersize >= PIPEASIO_MINIMUM_BUFFERSIZE
--          && This->pipeasio_preferred_buffersize <= PIPEASIO_MAXIMUM_BUFFERSIZE))
-+    /* Any size inside the range passes through as-is: Live accepts sizes
-+     * that are not powers of two, and substituting the compile-time default
-+     * here replaced the user's request in silence (issue #49). */
-+    if (This->pipeasio_preferred_buffersize <= 0)
-+    {
-+        if (This->pipeasio_preferred_buffersize < 0)
-+            WARN("preferred buffersize %d unusable; using default %d\n",
-+                 (int)This->pipeasio_preferred_buffersize, PIPEASIO_PREFERRED_BUFFERSIZE);
-         This->pipeasio_preferred_buffersize = PIPEASIO_PREFERRED_BUFFERSIZE;
-+    }
-+    else if (This->pipeasio_preferred_buffersize < PIPEASIO_MINIMUM_BUFFERSIZE
-+             || This->pipeasio_preferred_buffersize > PIPEASIO_MAXIMUM_BUFFERSIZE)
-+    {
-+        LONG requested = This->pipeasio_preferred_buffersize;
-+        This->pipeasio_preferred_buffersize =
-+            requested < PIPEASIO_MINIMUM_BUFFERSIZE ? PIPEASIO_MINIMUM_BUFFERSIZE
-+                                                    : PIPEASIO_MAXIMUM_BUFFERSIZE;
-+        WARN("preferred buffersize %d out of range [%d, %d]; clamped to %d\n",
-+             (int)requested, PIPEASIO_MINIMUM_BUFFERSIZE, PIPEASIO_MAXIMUM_BUFFERSIZE,
-+             (int)This->pipeasio_preferred_buffersize);
-+    }
- 
-     return;
- }
+     else if (!strcmp(key, PIPEASIO_KEY_BUFFER_SIZE))
+     {
+-        if (pipeasio_parse_int(value, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE, &parsed)
+-            && !(parsed & (parsed - 1)))
+-            config->buffer_size = parsed;
++        /* Any size inside the range passes through as-is: Live accepts sizes
++         * that are not powers of two, and rejecting them here replaced the
++         * user's value in silence (issue #49).  Out-of-range values clamp,
++         * and every adjustment is logged (pipeasio-any-buffer-size). */
++        if (pipeasio_parse_int(value, 1, INT_MAX, &parsed))
++        {
++            int clamped = parsed < PIPEASIO_MIN_BUFFER_SIZE   ? PIPEASIO_MIN_BUFFER_SIZE
++                          : parsed > PIPEASIO_MAX_BUFFER_SIZE ? PIPEASIO_MAX_BUFFER_SIZE
++                                                              : parsed;
++            if (clamped != parsed)
++                fprintf(stderr,
++                        "pipeasio: config buffer_size %d out of range [%d, %d]; "
++                        "clamped to %d (pipeasio-any-buffer-size)\n",
++                        parsed, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE, clamped);
++            config->buffer_size = clamped;
++        }
++        else
++            fprintf(stderr, "pipeasio: config buffer_size unreadable; keeping %d\n",
++                    config->buffer_size);
+     }
+     else if (!strcmp(key, PIPEASIO_KEY_FIXED_BUFFER_SIZE))
+     {
+-- 
+2.55.0
+

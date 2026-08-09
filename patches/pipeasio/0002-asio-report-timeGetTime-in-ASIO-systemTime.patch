@@ -1,36 +1,53 @@
+From fecd7136a9a61a8f940c3a24399ec69179a960fe Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Sun, 9 Aug 2026 01:50:53 +0200
+Subject: [PATCH 2/6] asio: report timeGetTime in ASIO systemTime
+
+Live timestamps incoming MIDI with timeGetTime and windows them against
+systemTime; the graph-clock origin made every live-played note miss the
+window (issue 19 in the ableton-linux tracker). WineASIO reported
+timeGetTime; do the same.
+---
+ src/asio.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/src/asio.c b/src/asio.c
+index 423483f..a504f16 100644
 --- a/src/asio.c
 +++ b/src/asio.c
-@@ -890,6 +890,7 @@
-     This->host_buffer_index = This->host_buffer_index ? 0 : 1;
+@@ -739,14 +739,21 @@ pipeasio_host_call_process(pipeasio_host_call_token *token, int32_t buffer_index
+     Callbacks     *cb      = token->callbacks;
+     uint64_t       samples = atomic_load_explicit(&This->host_num_samples, memory_order_relaxed);
  
-     This->host_driver_state = Running;
-+    TRACE("ASIO systemTime uses the timeGetTime timebase (pipeasio-midi-timebase)\n");
-     TRACE("PipeASIO successfully loaded\n");
-     return 0;
- }
-@@ -1703,15 +1704,22 @@
-     uint64_t samples
-             = atomic_load_explicit(&impl->host_num_samples, memory_order_relaxed) + add_samples;
-     atomic_store_explicit(&impl->host_num_samples, samples, memory_order_relaxed);
--    atomic_store_explicit(&impl->host_time_stamp, time_nsec, memory_order_relaxed);
-+
+-    atomic_store_explicit(&This->host_time_stamp, time_nsec, memory_order_relaxed);
 +    /* Live timestamps incoming MIDI with timeGetTime and compares those
-+     * stamps against systemTime. The PipeWire graph clock has a different
++     * stamps against systemTime.  The PipeWire graph clock has a different
 +     * origin, so every live-played event is dropped as out of window.
-+     * Report timeGetTime, as WineASIO did. */
++     * Report timeGetTime, as WineASIO did (pipeasio-midi-timebase). */
 +    uint64_t sys_nsec = (uint64_t)timeGetTime() * 1000000u;
 +    (void)time_nsec;
-+    atomic_store_explicit(&impl->host_time_stamp, sys_nsec, memory_order_relaxed);
- 
-     if (impl->host_time_info_mode)
++
++    atomic_store_explicit(&This->host_time_stamp, sys_nsec, memory_order_relaxed);
+     if (This->host_time_info_mode)
      {
-         impl->host_time._2            = 1.0;
-         impl->host_time.numSamples.lo = (ULONG)(samples & 0xFFFFFFFFu);
-         impl->host_time.numSamples.hi = (ULONG)(samples >> 32);
--        impl->host_time.timeStamp.lo  = (ULONG)(time_nsec & 0xFFFFFFFFu);
--        impl->host_time.timeStamp.hi  = (ULONG)(time_nsec >> 32);
-+        impl->host_time.timeStamp.lo  = (ULONG)(sys_nsec & 0xFFFFFFFFu);
-+        impl->host_time.timeStamp.hi  = (ULONG)(sys_nsec >> 32);
-         impl->host_time.sampleRate    = impl->host_sample_rate;
-         impl->host_time.flags         = 0x7;
- 
+         This->host_time._2            = 1.0;
+         This->host_time.numSamples.lo = (ULONG)(samples & 0xFFFFFFFFu);
+         This->host_time.numSamples.hi = (ULONG)(samples >> 32);
+-        This->host_time.timeStamp.lo  = (ULONG)(time_nsec & 0xFFFFFFFFu);
+-        This->host_time.timeStamp.hi  = (ULONG)(time_nsec >> 32);
++        This->host_time.timeStamp.lo  = (ULONG)(sys_nsec & 0xFFFFFFFFu);
++        This->host_time.timeStamp.hi  = (ULONG)(sys_nsec >> 32);
+         This->host_time.sampleRate
+                 = (double)atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+         This->host_time.flags = 0x7;
+@@ -1505,6 +1512,7 @@ Start(LPPIPEASIO iface)
+     This->host_buffer_index = 0;
+     atomic_store_explicit(&This->host_num_samples, 0, memory_order_relaxed);
+     atomic_store_explicit(&This->host_time_stamp, 0, memory_order_relaxed);
++    TRACE("ASIO systemTime uses the timeGetTime timebase (pipeasio-midi-timebase)\n");
+ #ifdef PIPEASIO_WOW64_PE
+     {
+         bool in_active[PIPEASIO_MAX_CHANNELS]  = { false };
+-- 
+2.55.0
+

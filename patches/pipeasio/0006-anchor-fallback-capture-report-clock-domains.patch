@@ -1,11 +1,27 @@
+From 8019c79ad5d0b1c13e7fde0643fc14598d53e492 Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Sun, 9 Aug 2026 02:01:29 +0200
+Subject: [PATCH 5/6] audio: anchor the capture fallback, report clock domains
+
+Two devices in one graph mean PipeWire resamples one to match clocks;
+normal and meant to be inaudible, audible resync is a headroom fault
+(C8/C9 in the ableton-linux crackle note). When no capture default is
+configured, prefer a source on the playback card over the lowest-id
+one so tie-breaking never adds a second hardware clock. When capture
+and playback do resolve to different cards, log the pair once
+(pipeasio-clock-domains) so the topology is in the capture.
+---
+ src/audio.c | 132 +++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 130 insertions(+), 2 deletions(-)
+
 diff --git a/src/audio.c b/src/audio.c
+index 02535ec..3d0a225 100644
 --- a/src/audio.c
 +++ b/src/audio.c
-@@ -346,11 +346,20 @@
-     audio_port_t **discovered;
-     uint32_t       n_discovered;
-     uint32_t       cap_discovered;
-+
+@@ -360,6 +360,14 @@ struct audio_client
+     uint32_t                 cap_nodes;
+     bool                     node_limit_warned;
+ 
 +    /* Hardware node each direction last resolved to ([0] capture,
 +     * [1] playback) and the pair already reported, for the clock-domain
 +     * report.  Two devices in one graph mean PipeWire resamples one to
@@ -13,8 +29,11 @@ diff --git a/src/audio.c b/src/audio.c
 +     * puts the clock topology in the log for when it is not (C8). */
 +    uint32_t chosen_node[2];
 +    uint32_t warned_clock_pair[2];
- };
- 
++
+     /* Discovered remote ports.  Each entry is a heap audio_port_t with
+      * pw_node_id / pw_port_id / name / type / flags filled in. The
+      * filter-side fields stay zero. */
+@@ -375,6 +383,7 @@ struct audio_client
  struct audio_node_info
  {
      uint32_t id;
@@ -22,17 +41,17 @@ diff --git a/src/audio.c b/src/audio.c
      char    *node_name;
      char    *display_name;
      char    *media_class;
-@@ -443,6 +452,8 @@
-     c->sample_rate = AUDIO_DEFAULT_SAMPLE_RATE;
-     c->buffer_size = AUDIO_DEFAULT_BUFFER_SIZE;
-     c->our_node_id = SPA_ID_INVALID;
+@@ -488,6 +497,8 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+     c->debug_enabled        = getenv("PIPEASIO_DEBUG") != NULL;
+     c->buffer_size          = PIPEASIO_DEFAULT_BUFFER_SIZE;
+     c->our_node_id          = SPA_ID_INVALID;
 +    c->chosen_node[0] = c->chosen_node[1] = SPA_ID_INVALID;
 +    c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
+     c->default_metadata_id  = SPA_ID_INVALID;
+     c->settings_metadata_id = SPA_ID_INVALID;
  #ifndef PIPEASIO_AUDIO_UNIXLIB
-     atomic_init(&c->rt.ready, false);
- #endif
-@@ -1049,6 +1060,16 @@
-     return NULL;
+@@ -1213,6 +1224,73 @@ audio_find_node_id(audio_client_t *client, const char *node_name)
+     return SPA_ID_INVALID;
  }
  
 +static struct audio_node_info *audio_find_node(audio_client_t *c, uint32_t id);
@@ -45,29 +64,22 @@ diff --git a/src/audio.c b/src/audio.c
 +    return n ? n->device_id : SPA_ID_INVALID;
 +}
 +
- /* Resolve the PipeWire default node only when it has a matching port. */
- static uint32_t
- audio_preferred_default_node(audio_client_t *c, uint64_t flags)
-@@ -1082,6 +1103,63 @@
-     return SPA_ID_INVALID;
- }
- 
-+/* What audio_get_ports resolves for FLAGS with no explicit device: the
-+ * default node when it has matching ports, else the first discovered match.
-+ * Kept in step with the selection loop in audio_get_ports. */
++/* What a FLAGS query with no explicit device resolves to: the configured
++ * PipeWire default when it is cached, else the lowest-id discovered match.
++ * Kept in step with the selection in audio_collect_device_port_objects. */
 +static uint32_t
-+audio_resolve_target_node(audio_client_t *c, uint64_t flags)
++audio_resolve_default_node(audio_client_t *client, uint64_t flags)
 +{
-+    uint32_t id = audio_preferred_default_node(c, flags);
-+    if (id != SPA_ID_INVALID)
-+        return id;
-+    for (uint32_t i = 0; i < c->n_discovered; i++)
-+    {
-+        audio_port_t *p = c->discovered[i];
-+        if ((p->flags & flags) == flags)
-+            return p->pw_node_id;
-+    }
-+    return SPA_ID_INVALID;
++    const char *default_name = flags & AUDIO_PORT_IS_INPUT ? client->default_sink_name
++                                                           : client->default_source_name;
++    uint32_t    target       = SPA_ID_INVALID;
++    if (default_name[0])
++        return audio_find_node_id(client, default_name);
++    for (uint32_t i = 0; i < client->n_discovered; ++i)
++        if ((client->discovered[i]->flags & flags) == flags
++            && (target == SPA_ID_INVALID || client->discovered[i]->pw_node_id < target))
++            target = client->discovered[i]->pw_node_id;
++    return target;
 +}
 +
 +/* Record the hardware node a direction resolved to and report, once per
@@ -109,84 +121,78 @@ diff --git a/src/audio.c b/src/audio.c
 +         cn ? cn->node_name : "?", pn ? pn->node_name : "?");
 +}
 +
- const char **
- audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *type_name_pattern,
-                 uint64_t flags)
-@@ -1100,6 +1178,47 @@
- 
-     /* Use one hardware node per direction to avoid async links across devices. */
-     uint32_t target_node = audio_preferred_default_node(c, flags);
-+
-+    /* No usable capture default: prefer a source on the playback card over
-+     * the first-discovered one, so the driver's own tie-breaking never puts
-+     * a second hardware clock in the graph.  A default the user set is
-+     * honored above; when it is other hardware, that is reported instead of
-+     * overridden (recording from a device the user did not pick is worse
-+     * than resampling). */
-+    if (target_node == SPA_ID_INVALID && (flags & AUDIO_PORT_IS_OUTPUT))
-+    {
-+        uint64_t pb_flags = (flags & ~(uint64_t)AUDIO_PORT_IS_OUTPUT)
-+                            | AUDIO_PORT_IS_INPUT | AUDIO_PORT_IS_PHYSICAL;
-+        uint32_t pb_dev = audio_node_device(c, audio_resolve_target_node(c, pb_flags));
-+        uint32_t first  = SPA_ID_INVALID;
-+        if (pb_dev != SPA_ID_INVALID)
+ static audio_port_t **
+ audio_collect_device_port_objects(audio_client_t *client, const char *node_name, uint64_t flags,
+                                   uint32_t *count_out)
+@@ -1230,13 +1308,57 @@ audio_collect_device_port_objects(audio_client_t *client, const char *node_name,
+         if (default_name[0])
+             target = audio_find_node_id(client, default_name);
+         else
 +        {
-+            uint64_t want = flags | AUDIO_PORT_IS_PHYSICAL;
-+            for (uint32_t i = 0; i < c->n_discovered; i++)
++            /* No configured default for this direction: the lowest-id match
++             * is the baseline.  For capture, prefer a source on the playback
++             * card over it, so the driver's own tie-breaking never puts a
++             * second hardware clock in the graph (C9).  A default the user
++             * set is honored above; when it is other hardware, that is
++             * reported instead of overridden (recording from a device the
++             * user did not pick is worse than resampling). */
++            uint32_t first = SPA_ID_INVALID;
+             for (uint32_t i = 0; i < client->n_discovered; ++i)
+                 if ((client->discovered[i]->flags & flags) == flags
+-                    && (target == SPA_ID_INVALID || client->discovered[i]->pw_node_id < target))
+-                    target = client->discovered[i]->pw_node_id;
++                    && (first == SPA_ID_INVALID || client->discovered[i]->pw_node_id < first))
++                    first = client->discovered[i]->pw_node_id;
++            target = first;
++            if (flags & AUDIO_PORT_IS_OUTPUT)
 +            {
-+                audio_port_t *p = c->discovered[i];
-+                if ((p->flags & want) != want)
-+                    continue;
-+                if (first == SPA_ID_INVALID)
-+                    first = p->pw_node_id;
-+                if (audio_node_device(c, p->pw_node_id) == pb_dev)
++                uint64_t pb_flags = (flags & ~(uint64_t)AUDIO_PORT_IS_OUTPUT)
++                                    | AUDIO_PORT_IS_INPUT | AUDIO_PORT_IS_PHYSICAL;
++                uint32_t pb_dev = audio_node_device(
++                        client, audio_resolve_default_node(client, pb_flags));
++                if (pb_dev != SPA_ID_INVALID)
 +                {
-+                    target_node = p->pw_node_id;
-+                    break;
++                    uint64_t want = flags | AUDIO_PORT_IS_PHYSICAL;
++                    for (uint32_t i = 0; i < client->n_discovered; ++i)
++                    {
++                        audio_port_t *p = client->discovered[i];
++                        if ((p->flags & want) != want)
++                            continue;
++                        if (audio_node_device(client, p->pw_node_id) == pb_dev)
++                        {
++                            target = p->pw_node_id;
++                            break;
++                        }
++                    }
++                }
++                if (target != SPA_ID_INVALID && first != SPA_ID_INVALID && target != first)
++                {
++                    struct audio_node_info *tn = audio_find_node(client, target);
++                    struct audio_node_info *fn = audio_find_node(client, first);
++                    WARN("no capture default: using \"%s\" on the playback card "
++                         "(pipeasio-clock-domains); lowest-id candidate was \"%s\". "
++                         "Set input_device in config.ini to override.\n",
++                         tn ? tn->node_name : "?", fn ? fn->node_name : "?");
 +                }
 +            }
 +        }
-+        if (target_node != SPA_ID_INVALID && first != SPA_ID_INVALID && target_node != first)
-+        {
-+            struct audio_node_info *tn = audio_find_node(c, target_node);
-+            struct audio_node_info *fn = audio_find_node(c, first);
-+            WARN("no capture default: using \"%s\" on the playback card "
-+                 "(pipeasio-clock-domains); first discovered was \"%s\". Set "
-+                 "input_device in config.ini to override.\n",
-+                 tn ? tn->node_name : "?", fn ? fn->node_name : "?");
-+        }
-+    }
-+
-     for (uint32_t i = 0; i < c->n_discovered; i++)
-     {
-         audio_port_t *p = c->discovered[i];
-@@ -1125,6 +1244,8 @@
-         match_idx[n_match++] = i;
      }
- 
-+    audio_report_clock_domains(c, flags, target_node);
+     if (target == SPA_ID_INVALID)
+         return NULL;
 +
-     /* Allocate the NULL-terminated array.  We strdup each name so the caller
-      * does not hold pointers into the discovered cache (the registry
-      * callbacks free/realloc it on hotplug); free with audio_free_ports. */
-@@ -1179,6 +1300,8 @@
-         return audio_get_ports(c, NULL, NULL, flags);
-     }
- 
-+    audio_report_clock_domains(c, flags, target);
-+
-     uint32_t *idx = NULL, n = 0, cap = 0;
-     for (uint32_t i = 0; i < c->n_discovered; i++)
-     {
-@@ -1636,6 +1759,7 @@
++    audio_report_clock_domains(client, flags, target);
+     for (uint32_t i = 0; i < client->n_discovered; ++i)
+         if (client->discovered[i]->pw_node_id == target
+             && (client->discovered[i]->flags & flags) == flags)
+@@ -1825,6 +1947,7 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
      const char *media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
      const char *description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
      const char *nick        = spa_dict_lookup(props, PW_KEY_NODE_NICK);
 +    const char *device_id_s = spa_dict_lookup(props, PW_KEY_DEVICE_ID);
-     if (!node_name)
-         return;
- 
-@@ -1661,6 +1785,7 @@
+     if (!node_name || !audio_registry_property_valid(node_name)
+         || !audio_registry_property_valid(media_class)
+         || !audio_registry_property_valid(description) || !audio_registry_property_valid(nick))
+@@ -1862,6 +1985,7 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
      if (!n)
          return;
      n->id           = id;
@@ -194,14 +200,17 @@ diff --git a/src/audio.c b/src/audio.c
      n->node_name    = strdup(node_name);
      n->media_class  = audio_dup_or_null(media_class);
      n->display_name = strdup(description ? description : (nick ? nick : node_name));
-@@ -1933,6 +2058,10 @@
-             free(n);
-             memmove(&c->nodes[i], &c->nodes[i + 1], (c->n_nodes - i - 1) * sizeof(*c->nodes));
-             c->n_nodes--;
-+            if (c->chosen_node[0] == id)
-+                c->chosen_node[0] = SPA_ID_INVALID;
-+            if (c->chosen_node[1] == id)
-+                c->chosen_node[1] = SPA_ID_INVALID;
+@@ -2230,6 +2354,10 @@ audio_on_registry_global_remove(void *userdata, uint32_t id)
+             memmove(&client->nodes[i], &client->nodes[i + 1],
+                     (size_t)(client->n_nodes - i - 1) * sizeof(*client->nodes));
+             --client->n_nodes;
++            if (client->chosen_node[0] == id)
++                client->chosen_node[0] = SPA_ID_INVALID;
++            if (client->chosen_node[1] == id)
++                client->chosen_node[1] = SPA_ID_INVALID;
+             audio_refresh_defaults(client);
              return;
          }
-     }
+-- 
+2.55.0
+

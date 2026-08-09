@@ -1,0 +1,53 @@
+From a8f83800712103f8f223987eae833be7e588c6f1 Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Sun, 9 Aug 2026 01:50:31 +0200
+Subject: [PATCH 1/6] asio: clamp unavailable sample-rate requests instead of
+ ASE_NoClock
+
+Live treats a SetSampleRate refusal as fatal (uncaught exception in its
+OSetSampleRate handler) and dies before Preferences exists, so a pinned
+config rate must never bounce the host. Keep the current rate, report
+success, let GetSampleRate tell the host the truth.
+
+Narrowed from the 1.2.2-era patch 0001: since 1.4.1/1.5.0 the driver
+follows and can set real graph rates, so this path only fires with a
+config.ini sample_rate pin or follow_device_clock.
+---
+ src/asio.c | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/src/asio.c b/src/asio.c
+index 7eb4c2d..423483f 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -1825,8 +1825,26 @@ SetSampleRate(LPPIPEASIO iface, double sampleRate)
+         return -1000;
+     if (!rate_is_available(This, sampleRate))
+     {
++        /* Returning ASE_NoClock here is what the ASIO spec suggests, but
++         * Ableton Live treats the refusal as fatal: it throws out of its
++         * OSetSampleRate message handler, the exception goes uncaught, and
++         * Live dies during startup -- before its Preferences dialog exists,
++         * so the user can never reach the control that would fix the rate.
++         * A fresh install lands in a permanent crash loop.  With the 1.5
++         * defaults this path needs a config.ini sample_rate pin or
++         * follow_device_clock to be reachable at all.
++         *
++         * Stay at the current rate and report success instead.  Hosts read
++         * the effective rate back with GetSampleRate -- Live does exactly
++         * that, and logs "Open: Used SampleRate: 48000" -- so the engine
++         * runs at the rate the graph is really using, at the correct
++         * pitch. */
++        WARN("host asked for %.0f Hz; the configured pin keeps the graph "
++             "where it is -- keeping the current rate "
++             "(pipeasio-clamp-sample-rate)\n",
++             sampleRate);
+         method_end(&token);
+-        return -995;
++        return 0;
+     }
+ 
+     uint32_t current   = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+-- 
+2.55.0
+

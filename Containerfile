@@ -56,6 +56,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # driver. PipeASIO builds against the vendored PipeWire SDK below, not a
       # jammy package (jammy's 0.3.48 predates the thread-utils API it needs).
       libasound2-dev libpulse-dev \
+      # pipeasio-settings (the native Qt panel shipped with the runtime, issue
+      # #60). Built against jammy's Qt 6.2 so the binary runs on any host
+      # Qt >= 6.2; qt6-base-dev-tools carries moc.
+      qt6-base-dev qt6-base-dev-tools \
       # media import: without these, configure silently drops winegstreamer
       # and mp3/mp4/wma import just fails (issue #44). Actual codec plugins
       # still come from the user's host GStreamer install at runtime.

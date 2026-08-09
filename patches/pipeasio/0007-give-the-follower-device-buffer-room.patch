@@ -1,10 +1,27 @@
+From df07e2775f01ff567a24c4f8dc98c14c26511d11 Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Sun, 9 Aug 2026 02:07:26 +0200
+Subject: [PATCH 6/6] audio: give the follower device buffer room
+
+Two-device sessions: PipeWire keeps the follower device in step by
+continuous rate adjustment, silent while the follower has spare buffer
+room and audibly resyncing when it runs out (C8). While a two-device
+session plays, raise api.alsa.headroom on the device not setting the
+timing (Props param on the live node, restored afterwards).
+PIPEASIO_FOLLOWER_HEADROOM picks the amount (default 512) or turns it
+off. Single-device sessions are never touched.
+---
+ src/audio.c | 372 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 372 insertions(+)
+
 diff --git a/src/audio.c b/src/audio.c
+index 3d0a225..6757b7b 100644
 --- a/src/audio.c
 +++ b/src/audio.c
-@@ -70,16 +70,21 @@
- #include <pipewire/extensions/metadata.h>
+@@ -42,8 +42,12 @@
  #include <spa/utils/json.h>
  #include <spa/param/audio/format-utils.h>
+ #include <spa/param/latency-utils.h>
 +#include <spa/param/props.h>
  #include <spa/pod/builder.h>
 +#include <spa/pod/iter.h>
@@ -14,8 +31,7 @@ diff --git a/src/audio.c b/src/audio.c
  #include <errno.h>
  #include <pthread.h>
  #include <sched.h>
- #include <stdatomic.h>
- #include <stdint.h>
+@@ -52,6 +56,7 @@
  #include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
@@ -23,7 +39,7 @@ diff --git a/src/audio.c b/src/audio.c
  #include <sys/mman.h>
  #include <sys/resource.h>
  #include <unistd.h>
-@@ -269,6 +274,20 @@
+@@ -257,6 +262,19 @@ static const struct spa_thread_utils_methods audio_rt_methods = {
  
  /* Opaque types backing audio.h. */
  
@@ -37,18 +53,16 @@ diff --git a/src/audio.c b/src/audio.c
 +    int32_t          cur_headroom;
 +    bool             probed;
 +    bool             raised;
-+    bool             warned_unprobed; /* one-shot: clock name never arrived */
 +    int32_t          prev;
 +};
 +
  struct audio_client
  {
-     char            *name;
-@@ -354,6 +373,20 @@
-      * puts the clock topology in the log for when it is not (C8). */
+     char                   *name;
+@@ -368,6 +386,20 @@ struct audio_client
      uint32_t chosen_node[2];
      uint32_t warned_clock_pair[2];
-+
+ 
 +    /* Extra buffer room for two-device sessions.  When input and output
 +     * are separate devices, one device sets the timing and PipeWire
 +     * continuously adjusts the other to keep up.  That adjustment is
@@ -62,11 +76,12 @@ diff --git a/src/audio.c b/src/audio.c
 +    _Atomic uint32_t     hr_clock_gen;
 +    uint64_t             hr_last_seen_nsec;
 +    struct audio_hr_slot hr_slot[2];
- };
- 
- struct audio_node_info
-@@ -407,6 +440,10 @@
-     .process = audio_on_process,
++
+     /* Discovered remote ports.  Each entry is a heap audio_port_t with
+      * pw_node_id / pw_port_id / name / type / flags filled in. The
+      * filter-side fields stay zero. */
+@@ -431,6 +463,10 @@ static const struct pw_filter_events audio_filter_events = {
+     .process       = audio_on_process,
  };
  
 +/* Follower headroom (definitions after audio_report_clock_domains). */
@@ -76,11 +91,12 @@ diff --git a/src/audio.c b/src/audio.c
  /* Core and registry event forward declarations. */
  
  static void audio_on_core_done(void *userdata, uint32_t id, int seq);
-@@ -454,6 +491,68 @@
-     c->our_node_id = SPA_ID_INVALID;
+@@ -499,6 +535,67 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+     c->our_node_id          = SPA_ID_INVALID;
      c->chosen_node[0] = c->chosen_node[1] = SPA_ID_INVALID;
      c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
 +    c->hr_slot[0].node = c->hr_slot[1].node = SPA_ID_INVALID;
++    atomic_init(&c->hr_clock_gen, 0);
 +
 +    /* How many frames of buffer room the second device of a two-device
 +     * session is guaranteed.  Unset: 512.  "off", "0", values below 1,
@@ -128,24 +144,22 @@ diff --git a/src/audio.c b/src/audio.c
 +            {
 +                if (v < 16)
 +                {
-+                    WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is below 16; using 16\n",
-+                         hr_env);
++                    WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is below 16; using 16\n", hr_env);
 +                    v = 16;
 +                }
 +                else if (errno == ERANGE || v > 8192)
 +                {
-+                    WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is above 8192; using 8192\n",
-+                         hr_env);
++                    WARN("PIPEASIO_FOLLOWER_HEADROOM=%s is above 8192; using 8192\n", hr_env);
 +                    v = 8192;
 +                }
 +                c->hr_target = (int32_t)v;
 +            }
 +        }
 +    }
+     c->default_metadata_id  = SPA_ID_INVALID;
+     c->settings_metadata_id = SPA_ID_INVALID;
  #ifndef PIPEASIO_AUDIO_UNIXLIB
-     atomic_init(&c->rt.ready, false);
- #endif
-@@ -514,6 +613,19 @@
+@@ -568,6 +665,19 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
      if (c->registry)
          pw_registry_add_listener(c->registry, &c->registry_listener, &audio_registry_events, c);
  
@@ -164,8 +178,8 @@ diff --git a/src/audio.c b/src/audio.c
 +
      pw_thread_loop_unlock(c->loop);
      audio_sync(c);
-     /* A second sync drains the "default" metadata's initial property burst:
-@@ -551,6 +663,19 @@
+     /* A second sync drains the initial property burst of the "default" and
+@@ -611,6 +721,19 @@ audio_close(audio_client_t *c)
      if (c->active)
          audio_teardown_filter(c);
  
@@ -185,7 +199,7 @@ diff --git a/src/audio.c b/src/audio.c
      if (c->loop)
      {
          pw_thread_loop_lock(c->loop);
-@@ -1160,6 +1285,255 @@
+@@ -1291,6 +1414,240 @@ audio_report_clock_domains(audio_client_t *c, uint64_t flags, uint32_t node_id)
           cn ? cn->node_name : "?", pn ? pn->node_name : "?");
  }
  
@@ -298,8 +312,8 @@ diff --git a/src/audio.c b/src/audio.c
 +
 +    /* A stopped stream keeps its last clock timestamp; audio is only
 +     * really running when the timestamp moved since the previous tick. */
-+    uint64_t nsec    = c->last_clock_nsec;
-+    bool     running = nsec != 0 && nsec != c->hr_last_seen_nsec;
++    uint64_t nsec = atomic_load_explicit(&c->last_clock_nsec, memory_order_acquire);
++    bool     running     = nsec != 0 && nsec != c->hr_last_seen_nsec;
 +    c->hr_last_seen_nsec = nsec;
 +
 +    uint32_t                cap = c->chosen_node[0], pb = c->chosen_node[1];
@@ -376,23 +390,8 @@ diff --git a/src/audio.c b/src/audio.c
 +    for (int i = 0; i < 2; i++)
 +    {
 +        struct audio_hr_slot *s = &c->hr_slot[i];
-+        /* Skip a device whose Props carried no clock name rather than
-+         * returning: one device that cannot be probed would otherwise stop
-+         * the genuine follower from ever being raised, and silently. The
-+         * raise loop below already skips the same slots. */
 +        if (s->node == SPA_ID_INVALID || !s->probed || !s->clock_name[0])
-+        {
-+            if (s->node != SPA_ID_INVALID && !s->warned_unprobed)
-+            {
-+                struct audio_node_info *n = audio_find_node(c, s->node);
-+                s->warned_unprobed        = true;
-+                WARN("could not read a clock name for \"%s\"; it keeps its "
-+                     "current buffer room and the other device is considered "
-+                     "on its own (pipeasio-follower-headroom)\n",
-+                     n ? n->node_name : "?");
-+            }
-+            continue;
-+        }
++            return;
 +        if (!strcmp(s->clock_name, gclock))
 +            any_sets_timing = true;
 +    }
@@ -438,11 +437,11 @@ diff --git a/src/audio.c b/src/audio.c
 +    }
 +}
 +
- const char **
- audio_get_ports(audio_client_t *c, const char *port_name_pattern, const char *type_name_pattern,
-                 uint64_t flags)
-@@ -1569,6 +1943,18 @@
-     if (quantum)
+ static audio_port_t **
+ audio_collect_device_port_objects(audio_client_t *client, const char *node_name, uint64_t flags,
+                                   uint32_t *count_out)
+@@ -1752,6 +2109,18 @@ audio_on_process(void *userdata, struct spa_io_position *position)
+     if (pipeasio_buffer_size_supported(quantum))
          atomic_store(&c->observed_quantum, quantum);
  
 +    /* Remember the name of the clock that is setting the timing (the
@@ -458,15 +457,18 @@ diff --git a/src/audio.c b/src/audio.c
 +    }
 +
      /* bufferSwitch and PipeWire must run at the same quantum.  While they
-      * disagree, mute: publish silence and zero the input, so the audible
-      * fault is silence plus one log line per episode instead of wrong-speed
-@@ -2062,6 +2448,9 @@
-                 c->chosen_node[0] = SPA_ID_INVALID;
-             if (c->chosen_node[1] == id)
-                 c->chosen_node[1] = SPA_ID_INVALID;
+      * disagree, mute: the ASIO side reads audio_quantum_muted and swaps both
+      * directions for silence, so the audible fault is silence plus one log
+@@ -2358,6 +2727,9 @@ audio_on_registry_global_remove(void *userdata, uint32_t id)
+                 client->chosen_node[0] = SPA_ID_INVALID;
+             if (client->chosen_node[1] == id)
+                 client->chosen_node[1] = SPA_ID_INVALID;
 +            for (int j = 0; j < 2; j++)
-+                if (c->hr_slot[j].node == id)
-+                    audio_hr_release(c, j, false); /* device gone; nothing to restore */
++                if (client->hr_slot[j].node == id)
++                    audio_hr_release(client, j, false); /* device gone; nothing to restore */
+             audio_refresh_defaults(client);
              return;
          }
-     }
+-- 
+2.55.0
+

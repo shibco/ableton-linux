@@ -107,7 +107,7 @@ for f in $(awk '{print $2}' "$SERIES" | grep '^performance/' | sort); do
     perf_expect=$((perf_expect+1))
 done
 declare -A PIPEASIO_GAPS=(
-    [0000]="no retired pipeasio numbers yet; entries take the same form as SERIES_GAPS"
+    [0003]="warning-text fix superseded by the 1.5.0 diagnostic relay; the corrected text lives in 0005's quantum diagnostic (both arbitration and converge wordings)"
 )
 asio_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep '^pipeasio/' | sort); do
@@ -187,9 +187,9 @@ performance/0004|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH queue ma
 performance/0005|ascii|lib/wine/x86_64-unix/win32u.so|WINE_MSG_FASTPATH known-clean GetUpdateRect
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
-pipeasio/0003|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
 pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-converge
+pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
 pipeasio/0006|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clock-domains
 pipeasio/0007|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-follower-headroom
 '
@@ -298,6 +298,8 @@ must lib/wine/x86_64-windows/pipeasio64.dll
 must lib/wine/x86_64-unix/pipeasio64.dll.so
 must lib/wine/x86_64-windows/pipeasio.dll
 must lib/wine/x86_64-unix/pipeasio.dll.so
+must bin/pipeasio-settings
+must share/applications/pipeasio-settings.desktop
 must lib/wine/x86_64-windows/libusb-1.0.dll
 must lib/wine/x86_64-unix/libusb-1.0.so
 for absent in lib/wine/i386-windows/libusb-1.0.dll lib/wine/i386-unix/libusb-1.0.so; do

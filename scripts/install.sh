@@ -246,6 +246,30 @@ if [ -e "$BIN/ableton-live" ]; then
 fi
 install -m755 "$here/ableton-live" "$BIN/ableton-live"
 
+# pipeasio-settings ships inside the runtime (issue #60: Live's Hardware Setup
+# dialog points at it, but nothing put it on PATH). The symlink tracks the
+# runtime the launcher uses, so a runtime upgrade updates the panel with it.
+if [ -x "$OPT/$NAME/bin/pipeasio-settings" ]; then
+    echo "== install settings panel -> $BIN/pipeasio-settings =="
+    ln -sf "$OPT/$NAME/bin/pipeasio-settings" "$BIN/pipeasio-settings"
+    if command -v ldd >/dev/null 2>&1 \
+       && ldd "$OPT/$NAME/bin/pipeasio-settings" 2>/dev/null | grep -q "not found"; then
+        echo "   pipeasio-settings needs the Qt 6 base libraries to start:"
+        echo "   Debian/Ubuntu: sudo apt install libqt6widgets6   Fedora: sudo dnf install qt6-qtbase"
+        echo "   Arch: sudo pacman -S qt6-base"
+    fi
+    panel_apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    panel_icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+    if [ -f "$OPT/$NAME/share/applications/pipeasio-settings.desktop" ]; then
+        mkdir -p "$panel_apps" "$panel_icons"
+        sed "s|^Exec=pipeasio-settings|Exec=$BIN/pipeasio-settings|" \
+            "$OPT/$NAME/share/applications/pipeasio-settings.desktop" \
+            > "$panel_apps/pipeasio-settings.desktop"
+        install -m644 "$OPT/$NAME/share/icons/hicolor/scalable/apps/pipeasio.svg" \
+            "$panel_icons/pipeasio.svg" 2>/dev/null || true
+    fi
+fi
+
 echo "== install detection libs -> ~/.local/share/ableton-wine =="
 # The launcher sources these on every start (DPI auto-calibration, light/dark theme sync).
 mkdir -p "$HOME/.local/share/ableton-wine"

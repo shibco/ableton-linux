@@ -129,9 +129,9 @@ bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
 echo "   libusb bridge: PE $bridge_pe_sha / Unix $bridge_unix_sha"
 
-echo "== [4/8] build PipeASIO 1.2.2 against THIS Wine (ABI-matched) =="
+echo "== [4/8] build PipeASIO 1.5.0 against THIS Wine (ABI-matched) =="
 mkdir -p "$WORK/pipeasio"
-tar xzf "$SRC/vendor/pipeasio-1.2.2.tar.gz" -C "$WORK/pipeasio" --strip-components=1
+tar xzf "$SRC/vendor/pipeasio-1.5.0.tar.gz" -C "$WORK/pipeasio" --strip-components=1
 cd "$WORK/pipeasio"
 # Apply the pipeasio patch series (patches/pipeasio/).
 nasio="$(ls "$SRC"/patches/pipeasio/*.patch 2>/dev/null | wc -l)"
@@ -145,7 +145,8 @@ export PATH="$PREFIX_ROOT/bin:$PATH"          # this Wine's winegcc/winebuild ta
 # same five-object build directly, against this Wine's headers and the vendored
 # PipeWire SDK (Containerfile). The SDK is link-time only: the .so records
 # DT_NEEDED libpipewire-0.3.so.0 and resolves against the host PipeWire at
-# runtime (floor 0.3.56 for the thread-utils API).
+# runtime (declared floor 1.4.2, upstream's tested minimum since 1.3.0; the
+# vendored SDK is 1.6.2).
 PW_SDK=/opt/pipewire-sdk
 mkdir -p build64
 for f in asio audio config main regsvr; do
@@ -159,9 +160,10 @@ for f in asio audio config main regsvr; do
         -fPIC -O2 -DNDEBUG -fvisibility=hidden
 done
 winebuild -m64 --dll --fake-module -E pipeasio.dll.spec build64/*.o -o build64/pipeasio64.dll
+# kernelbase: 1.3.0's generation-based Stop uses WaitOnAddress/WakeByAddressAll.
 winegcc -shared pipeasio.dll.spec build64/*.o \
     -L"$PW_SDK/usr/lib/x86_64-linux-gnu" \
-    -lodbc32 -lole32 -luuid -lwinmm -luser32 -lpipewire-0.3 \
+    -lodbc32 -lole32 -luuid -lwinmm -luser32 -lkernelbase -lpipewire-0.3 \
     -o build64/pipeasio64.dll.so
 # Must link the host's PipeWire by soname, no SDK path baked in.
 readelf -d build64/pipeasio64.dll.so | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
@@ -175,6 +177,34 @@ install -m644 build64/pipeasio64.dll.so "$PREFIX_ROOT/lib/wine/x86_64-unix/pipea
 # unix half under that name: install both names or LoadLibrary fails with STATUS_DLL_NOT_FOUND.
 install -m644 build64/pipeasio64.dll    "$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio.dll"
 install -m644 build64/pipeasio64.dll.so "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio.dll.so"
+
+# pipeasio-settings: the native Qt panel the Hardware Setup dialog points at
+# (issue #60). Upstream builds it with CMake AUTOMOC; this drives moc + g++
+# directly. It links the container's Qt 6.2 by soname, so it runs against any
+# host Qt >= 6.2; a host without Qt6 gets a load error from this one binary
+# and nothing else is affected (install.sh checks and says which package to
+# add). config.c is shared with the driver, so the panel writes exactly what
+# the driver reads.
+gui_moc=/usr/lib/qt6/libexec/moc
+mkdir -p build-gui
+for h in gui/*.hpp; do
+    grep -q Q_OBJECT "$h" && "$gui_moc" "$h" -o "build-gui/moc_$(basename "${h%.hpp}").cpp"
+done
+gcc -c -o build-gui/config.o src/config.c -Iinclude -O2 -DNDEBUG -fPIC -Wall
+g++ -std=c++17 -O2 -DNDEBUG -Wall -fPIC \
+    gui/*.cpp build-gui/moc_*.cpp build-gui/config.o \
+    -Iinclude $(pkg-config --cflags Qt6Widgets) \
+    $(pkg-config --libs Qt6Widgets) \
+    -o build-gui/pipeasio-settings
+if readelf -d build-gui/pipeasio-settings | grep -qE 'RPATH|RUNPATH'; then
+    echo "!! pipeasio-settings carries an rpath into the build container" >&2
+    exit 1
+fi
+install -m755 build-gui/pipeasio-settings "$PREFIX_ROOT/bin/pipeasio-settings"
+install -D -m644 gui/pipeasio-settings.desktop \
+    "$PREFIX_ROOT/share/applications/pipeasio-settings.desktop"
+install -D -m644 docs/icon.svg \
+    "$PREFIX_ROOT/share/icons/hicolor/scalable/apps/pipeasio.svg"
 
 echo "== [5/8] strip + prune (dev files served their purpose in [4/8]; nothing below runs on user machines) =="
 # Debug info is ~3/4 of every PE builtin and ~5/6 of the unix halves. Exports,
@@ -221,8 +251,9 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "pipeasio-patches: $nasio"
     echo "patch-head:   $patch_head"
     echo "patch-stack:  $stack_sha"
-    echo "pipeasio:     1.2.2"
-    echo "pipewire-floor: 0.3.56 (pw_context_get_data_loop, pw_data_loop_set_thread_utils)"
+    echo "pipeasio:     1.5.0"
+    echo "pipewire-floor: 1.4.2 (upstream's tested minimum since 1.3.0; Ubuntu 24.04's 1.0.5 is below it)"
+    echo "pipeasio-settings: $(sha256sum "$PREFIX_ROOT/bin/pipeasio-settings" | awk '{print $1}') (Qt 6.2 link)"
     echo "ntsync:       yes (vendored linux/ntsync.h $ntsync_hdr_sha)"
     echo "libusb-pe:    $bridge_pe_sha"
     echo "libusb-unix:  $bridge_unix_sha"
