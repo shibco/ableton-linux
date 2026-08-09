@@ -316,14 +316,25 @@ echo "== [1/5] initialise prefix at $WINEPREFIX =="
 # A prefix that *declares* #arch=win32 is a different object - genuinely 32-bit,
 # and not ours to convert. The absence of the line is what is unambiguous.
 if [ -e "$WINEPREFIX/system.reg" ] && ! works_is_prefix "$WINEPREFIX"; then
-    if grep -qm1 '^#arch=' "$WINEPREFIX/system.reg" 2>/dev/null; then
-        echo "!! the prefix at $WINEPREFIX declares itself 32-bit, and Live is 64-bit." >&2
-        echo "   Point WORKS_PLUG at another Plug, or make a new one with \`works plug new\`." >&2
+    _arch="$(works_prefix_arch "$WINEPREFIX" 2>/dev/null || true)"
+    if [ -n "$_arch" ]; then
+        # It says what it is. A 32-bit prefix cannot be converted in place and
+        # is not ours to replace - Live is 64-bit, so this one cannot be used.
+        echo "!! the prefix at $WINEPREFIX is a $_arch installation, and Live is 64-bit." >&2
+        echo "   Wine cannot convert one in place and nothing here will delete it." >&2
+        echo "   Make a Plug for this install and point at it:" >&2
+        echo "     works plug new studio64 && works plug use studio64" >&2
+        echo "   or set WORKS_PLUG to a prefix you want to use." >&2
         exit 1
     fi
-    echo "   the prefix here was never finished, so Wine reads it as 32-bit. Writing"
-    echo "   the missing marker and letting wineboot complete it; nothing is removed."
-    sed -i '1a #arch=win64' "$WINEPREFIX/system.reg"
+    # Nothing declares an architecture anywhere, so wineboot never finished.
+    # Write the marker so it can. Written with printf rather than `sed 1a`,
+    # which appends nothing when the file is empty - and an empty system.reg is
+    # exactly the shape this arrives in.
+    echo "   the prefix here was never finished: no registry file declares an"
+    echo "   architecture. Writing the marker so wineboot can complete it in place."
+    printf 'WINE REGISTRY Version 2\n;; All keys relative to \\\\Machine\n\n#arch=win64\n' \
+        > "$WINEPREFIX/system.reg"
 fi
 
 WINEDLLOVERRIDES="mscoree,mshtml=" wineboot -u

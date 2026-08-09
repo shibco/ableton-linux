@@ -83,6 +83,24 @@ setup() {
 # skeleton without one, and Wine then reads the missing marker as win32 and
 # refuses every 64-bit application - reporting a "32-bit installation" that was
 # never 32-bit, only unfinished. system.reg on its own cannot tell them apart.
+# guards: found on a VM after a fix that did not work. The architecture is
+# declared in whichever of the three registry files says so, and they do not
+# always agree - this prefix had an *empty* system.reg with #arch=win32 in
+# user.reg and userdef.reg. Reading system.reg alone reported "no marker", so a
+# genuinely 32-bit prefix was classified as unfinished and an attempt made to
+# repair it. It is not repairable and it is not a stub.
+@test "a 32-bit prefix declared only in user.reg is not mistaken for unfinished" {
+    p="$BATS_TEST_TMPDIR/win32"
+    mkdir -p "$p/drive_c/windows/system32"
+    : > "$p/system.reg"                       # empty, as found in the field
+    printf 'WINE REGISTRY Version 2\n\n#arch=win32\n' > "$p/user.reg"
+    printf 'WINE REGISTRY Version 2\n\n#arch=win32\n' > "$p/userdef.reg"
+
+    [ "$(works_prefix_arch "$p")" = win32 ]
+    ! works_is_prefix "$p"     || { echo "a win32 prefix passed as usable" >&2; false; }
+    ! works_is_stub_prefix "$p" || { echo "a declared win32 prefix was called a stub" >&2; false; }
+}
+
 @test "a finished prefix and an unfinished one are told apart" {
     mk_prefix() {   # path, arch(y/n), extra dir
         mkdir -p "$1/drive_c/users" "$1/drive_c/windows" "$1/dosdevices"

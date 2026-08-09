@@ -200,29 +200,36 @@ works_plug_path() {
     printf '%s\n' "$_d/studio"
 }
 
-# Is this a prefix Wine will actually open? system.reg alone is not the test.
-# Wine writes an #arch= line into it when it *finishes* creating a prefix; a
-# wineboot that starts and does not finish leaves the skeleton without one -
-# dosdevices, drive_c/users, drive_c/windows and the .reg files, a few tens of
-# kilobytes. Wine reads the missing marker as win32 and then refuses every
-# 64-bit application, reporting a "32-bit installation" that was never 32-bit,
-# only unfinished. Found on two VMs where that message stopped setup-prefix
-# with no hint that the answer was to delete the directory.
-works_is_prefix() {
-    local _p="${1%/}"
-    [ -f "$_p/system.reg" ] || return 1
-    grep -qm1 '^#arch' "$_p/system.reg" 2>/dev/null
+# Which architecture a prefix declares, from whichever registry file says so.
+# All three carry the marker and they do not always agree: a prefix has been
+# seen with an empty system.reg and #arch=win32 in user.reg and userdef.reg,
+# which reading system.reg alone reports as "no marker" and so as unfinished.
+# It was not unfinished; it was 32-bit, and Wine refused it accordingly.
+works_prefix_arch() {
+    local _p="${1%/}" _f _a
+    for _f in system.reg user.reg userdef.reg; do
+        _a="$(grep -m1 '^#arch=' "$_p/$_f" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
+        [ -n "$_a" ] && { printf '%s\n' "$_a"; return 0; }
+    done
+    return 1
 }
 
-# The unfinished shape above, *and* empty enough to remove without asking. The
-# test is regular files, not directory names: wineboot's skeleton is directories
-# only, so a single file anywhere under drive_c means someone put it there. An
-# earlier version of this checked only the top-level names and would have
+# A prefix Wine will open for a 64-bit application. Anything else - a declared
+# win32 prefix, or one so incomplete that nothing declares an architecture at
+# all - is not one, and the two are not the same problem.
+works_is_prefix() {
+    [ "$(works_prefix_arch "${1%/}" 2>/dev/null)" = win64 ]
+}
+
+# Never finished: no registry file declares an architecture, and nothing of
+# anyone's is in it. The test is regular files, not directory names - wineboot's
+# skeleton is directories only, so one file anywhere under drive_c means someone
+# put it there. An earlier version keyed on the top-level names and would have
 # deleted a set sitting in drive_c/users.
 works_is_stub_prefix() {
     local _p="${1%/}"
     [ -d "$_p" ] || return 1
-    works_is_prefix "$_p" && return 1
+    works_prefix_arch "$_p" >/dev/null 2>&1 && return 1
     [ -e "$_p/system.reg" ] || return 1
     [ -z "$(find "$_p/drive_c" -type f -print -quit 2>/dev/null)" ]
 }
