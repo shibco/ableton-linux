@@ -1,0 +1,14 @@
+eDP-1 (disabled)
+  Make: BOE
+  Model: 0x0a2b
+  Position: 0,0
+  Scale: 200%
+  Modes:
+    2880x1800@90.001Hz (preferred)
+DP-2 (enabled)
+  Make: Dell Inc.
+  Model: U2723QE
+  Position: 0,0
+  Scale: 125%
+  Modes:
+    3840x2160@59.997Hz (current) (preferred)

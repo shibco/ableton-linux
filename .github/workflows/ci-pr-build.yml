@@ -1,4 +1,4 @@
-# Wine build for PRs/pushes that touch the Wine build itself, plus a manual
+# Wine build for pushes to main that touch the Wine build itself, plus a manual
 # trigger for checking any other ref on demand:
 #
 #   gh workflow run ci-pr-build.yml --repo <owner>/ableton-linux --ref <branch>
@@ -23,16 +23,6 @@ name: ci-pr-build
 # YAML anchor: GitHub's workflow parser doesn't support them, so this stays
 # boring and duplicated on purpose.
 on:
-  pull_request:
-    paths:
-      - patches/**
-      - Containerfile
-      - build.sh
-      - scripts/container-build.sh
-      - scripts/build-ableton-linkd.sh
-      - tools/**
-      - vendor/**
-      - .github/workflows/ci-pr-build.yml
   push:
     branches: [main]
     paths:
@@ -50,7 +40,7 @@ on:
 # now-stale build pointless; cancel it instead of burning runner minutes on
 # both.
 concurrency:
-  group: ci-pr-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-pr-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

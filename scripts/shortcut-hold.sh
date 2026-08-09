@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # ableton_shortcuts_active is read by the launcher that sources this
 # Session-scoped GNOME shortcut hold for scripts/ableton-live.
 #
 # This file is sourced by the launcher and intentionally has no top-level side

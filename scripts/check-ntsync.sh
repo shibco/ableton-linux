@@ -55,6 +55,7 @@ timeout "$TIMEOUT" "$WINE_ROOT/bin/wine" "$PROBE"
 rc=$?
 t1=$(date +%s%N)
 c1=$(awk '/ctxt/{s+=$2}END{print s}' "/proc/$sp/status" 2>/dev/null || echo "$c0")
+# shellcheck disable=SC2010  # matching on symlink targets, which a glob cannot see
 fds=$(ls -l "/proc/$sp/fd" 2>/dev/null | grep -c '/dev/ntsync')
 
 echo "-- probe results:"

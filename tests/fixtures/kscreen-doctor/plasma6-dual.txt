@@ -1,0 +1,26 @@
+Output: 1 eDP-1
+	enabled
+	connected
+	priority 2
+	Panel
+	Modes: 1:2880x1800@90*! 2:1920x1200@60
+	Geometry: 3840,0 1440x900
+	Scale: 2
+	Rotation: 1
+	Overscan: 0
+	Vrr: incapable
+	RgbRange: unknown
+	HDR: incapable
+Output: 2 DP-2
+	enabled
+	connected
+	priority 1
+	DisplayPort
+	Modes: 1:3840x2160@60*!
+	Geometry: 0,0 3072x1728
+	Scale: 1.25
+	Rotation: 1
+	Overscan: 0
+	Vrr: incapable
+	RgbRange: unknown
+	HDR: incapable

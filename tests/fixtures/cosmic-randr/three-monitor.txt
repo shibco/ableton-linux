@@ -1,0 +1,24 @@
+DP-1 (enabled)
+  Make: LG Electronics
+  Model: LG HDR 4K
+  Position: 0,0
+  Scale: 100%
+  Xwayland primary: false
+  Modes:
+    3840x2160@59.997Hz (current) (preferred)
+DP-2 (enabled)
+  Make: Dell Inc.
+  Model: U2723QE
+  Position: 3840,0
+  Scale: 125%
+  Xwayland primary: true
+  Modes:
+    3840x2160@59.997Hz (current) (preferred)
+eDP-1 (enabled)
+  Make: BOE
+  Model: 0x0a2b
+  Position: 7680,0
+  Scale: 200%
+  Xwayland primary: false
+  Modes:
+    2880x1800@90.001Hz (current) (preferred)

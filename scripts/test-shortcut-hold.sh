@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # every ableton_shortcuts_* read here is set by shortcut-hold.sh, sourced below
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -12,7 +13,13 @@ mkdir -m 700 -- "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
 declare -A values writable fail_set
 gsettings()
 {
-    local op="$1" schema="$2" key="$3" id="$schema|$key" value
+    local op="$1" schema="$2" key="$3" value
+    # Its own statement: `local` expands its arguments before it runs, so an id
+    # built in the same statement reads whatever schema/key held in the caller's
+    # scope - empty here, or the previous case's values - and never the ones
+    # just passed in. Every lookup below then misses and the mock answers with
+    # its default, which is a test that passes without testing.
+    local id="$schema|$key"
     case "$op" in
         get) printf '%s\n' "${values[$id]:-@as []}" ;;
         writable) printf '%s\n' "${writable[$id]:-true}" ;;

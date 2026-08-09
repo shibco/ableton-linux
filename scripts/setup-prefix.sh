@@ -95,6 +95,7 @@ for required in \
 done
 
 # Host tools winetricks needs to unpack the redistributables.
+# shellcheck disable=SC2043  # deliberately a list: more host tools get added here
 for t in cabextract; do
     command -v "$t" >/dev/null || echo "!! missing host tool '$t' (needed by winetricks): install it (e.g. 'pacman -S cabextract' / 'apt install cabextract')"
 done

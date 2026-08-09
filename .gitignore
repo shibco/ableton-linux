@@ -41,3 +41,8 @@ m4l-hang-*/
 # bytecode from tools/m4l-font-audit.py
 __pycache__/
 *.pyc
+
+# pinned bats-core, cloned by tests/run.sh (see BATS_VERSION there). No
+# trailing slash: a directory-only pattern cannot match before the clone
+# exists, and the ignore has to hold on a fresh checkout too.
+/.bats-core

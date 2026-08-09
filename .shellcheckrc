@@ -1,0 +1,6 @@
+# ShellCheck cannot follow a source whose path is a variable, and every source
+# in this repo is: the shared libs resolve from either the installed kit or a
+# checkout, so the path is only known at runtime. Suppressing it here rather
+# than with a directive above each of thirteen call sites — the sourced files
+# are checked directly in their own right, so nothing goes unexamined.
+disable=SC1090

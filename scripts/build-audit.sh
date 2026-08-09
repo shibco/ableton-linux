@@ -64,6 +64,7 @@ while read -r sum file; do
         sha_ok["$file"]=0
     fi
 done < "$SERIES"
+# shellcheck disable=SC2010  # patch filenames are ASCII by construction (series numbering)
 extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
 # Retired numbers stay retired (renumbering would break cross-references in patch

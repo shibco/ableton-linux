@@ -1,0 +1,86 @@
+# Fast checks: shell unit tests, repo invariants, kit completeness, and a full
+# patch-stack apply against the vendored Wine base.
+#
+# Deliberately NOT path-filtered, unlike ci-pr-build.yml. Every check here is
+# cheap enough to run on everything, and the failures they catch (a stale
+# patch, an unstaged kit file, a version literal left behind by a rename) are
+# introduced by commits that touch none of the paths that workflow watches.
+#
+# Nothing here compiles Wine. This does not replace ci-pr-build.yml — it fails
+# in the first minute of a PR for the mistakes that otherwise surface in its
+# fortieth, or after release.
+name: ci-checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install check tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+              shellcheck desktop-file-utils libxml2-utils zstd dash busybox
+
+      # The same bats the developer runs. apt's version is whatever the runner
+      # image happens to carry, so CI and a checkout were two different runners
+      # reporting the same number -- above the floor every suite declares, but
+      # by luck rather than by design. tests/run.sh owns the pin; this reads it
+      # rather than repeating it, so they cannot drift.
+      - name: bats, pinned to what tests/run.sh clones
+        run: |
+          set -euo pipefail
+          ver="$(sed -n 's/^BATS_VERSION="\(.*\)"$/\1/p' tests/run.sh)"
+          [ -n "$ver" ] || { echo "!! no BATS_VERSION in tests/run.sh" >&2; exit 1; }
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$ver" \
+              https://github.com/bats-core/bats-core.git "$RUNNER_TEMP/bats"
+          echo "$RUNNER_TEMP/bats/bin" >> "$GITHUB_PATH"
+          echo "pinned $ver"
+
+      # Split into steps rather than one `tests/run.sh` so a red build names the
+      # tier that broke without anyone opening the log.
+      - name: Repo invariants (lint, versions, desktop integration)
+        run: bats --print-output-on-failure tests/repo-hygiene.bats
+
+      - name: Kit completeness (does the installer carry what it runs?)
+        run: bats --print-output-on-failure tests/packaging.bats
+
+      - name: Launcher contract (which Live starts, and how documents route)
+        run: bats --print-output-on-failure tests/launcher-cli.bats
+
+      - name: Shell unit tests
+        env:
+          ABLETON_TEST_TARBALL: ${{ steps.fixture.outputs.tarball }}
+        run: bats --recursive --print-output-on-failure tests/unit
+
+      # A skip reads as a pass, so say plainly what did not run. Not a failure:
+      # the CPU-topology tests legitimately skip on a 4-core runner, and the
+      # fixture step is allowed to come back empty after a Wine base bump.
+      - name: Say what skipped
+        if: always()
+        env:
+          ABLETON_TEST_TARBALL: ${{ steps.fixture.outputs.tarball }}
+        run: |
+          bats --recursive tests/unit 2>/dev/null | grep -E '# skip' \
+              | sed 's/^ok [0-9]* //' > /tmp/skips.txt || true
+          if [ -s /tmp/skips.txt ]; then
+              echo "### Skipped: $(wc -l < /tmp/skips.txt)" >> "$GITHUB_STEP_SUMMARY"
+              sed 's/^/- /' /tmp/skips.txt >> "$GITHUB_STEP_SUMMARY"
+              cat /tmp/skips.txt
+          else
+              echo "### Nothing skipped" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Patch stack applies to the pinned Wine base
+        run: bats --print-output-on-failure tests/patch-stack.bats
