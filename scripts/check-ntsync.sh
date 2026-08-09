@@ -54,7 +54,13 @@ timeout "$TIMEOUT" "$WINE_ROOT/bin/wine" "$PROBE"
 rc=$?
 t1=$(date +%s%N)
 c1=$(awk '/ctxt/{s+=$2}END{print s}' "/proc/$sp/status" 2>/dev/null || echo "$c0")
-fds=$(ls -l "/proc/$sp/fd" 2>/dev/null | grep -c '/dev/ntsync')
+# Count the server's /dev/ntsync descriptors by resolving each one, not by
+# matching `ls -l` text: the target is an exact string, and the listing's other
+# columns (and any oddly named target) have no business matching it.
+fds=0
+for fd in "/proc/$sp/fd"/*; do
+    [ "$(readlink "$fd" 2>/dev/null)" = /dev/ntsync ] && fds=$((fds + 1))
+done
 
 echo "-- probe results:"
 sed 's/^/   /' ntsyncprobe.txt 2>/dev/null || echo "   (no ntsyncprobe.txt written)"
