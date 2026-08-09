@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourceable display-scale detection. ableton_detect_scale prints the primary monitor's scale
 # ("1", "1.25", ...) or returns 1 when no probe answers (probes: GNOME, KDE, sway, Hyprland,
 # COSMIC, Xft.dpi). ableton_detect_scale_ex also prints which probe answered (the compositor

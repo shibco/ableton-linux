@@ -1,3 +1,7 @@
+# shellcheck shell=bash
+# Sourced, so every ABLETON_* assignment below is an output for the sourcing
+# script, never read in this file:
+# shellcheck disable=SC2034
 # Ableton product matrix: the ten supported Live products (Live 11/12 x Suite/
 # Standard/Intro/Lite/Trial) and the metadata derived mechanically from the exe:
 #   folder   = exe minus 'Ableton ' and '.exe'      ("Live 12 Suite")
