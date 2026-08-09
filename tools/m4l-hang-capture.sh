@@ -11,20 +11,20 @@ set -uo pipefail
 
 OUT="${1:-$PWD/m4l-hang-$(date +%Y%m%dT%H%M%S)}"
 GAP="${GAP:-10}"
-for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
     # shellcheck source=scripts/runtime-env.sh
     [ -r "$_l" ] && . "$_l" && break
 done
-command -v ableton_wine_root >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
-WINE_ROOT="$(ableton_wine_root)"
-export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+command -v works_runtime_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+WINE_ROOT="$(works_runtime_path)"
+export WINEPREFIX="${WORKS_PLUG:-$HOME/works/plugs/studio}"
 WINEDBG="$WINE_ROOT/bin/winedbg"
 
 mkdir -p "$OUT" || exit 1
 echo "==> output: $OUT"
 
-[ -x "$WINEDBG" ] || { echo "!! no winedbg at $WINEDBG (set ABLETON_WINE_ROOT)"; exit 1; }
+[ -x "$WINEDBG" ] || { echo "!! no winedbg at $WINEDBG (set WORKS_RUNTIME)"; exit 1; }
 
 # --- locate the hung process ------------------------------------------------
 PID="$(pgrep -f 'Ableton Live [0-9]+ .*\.exe' | head -1)"

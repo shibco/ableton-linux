@@ -15,7 +15,7 @@ From the root of this repository:
 ./beta/tester-kit/run-session
 ```
 
-1. Prepares an empty Wine prefix at `~/.wine-ableton`. A non-empty prefix
+1. Prepares an empty Wine prefix at `~/works/plugs/studio`. A non-empty prefix
    requires `--reuse-prefix`.
 2. Collects the redacted Linux system report.
 3. Downloads the installer from `config/installer-url` and verifies its
@@ -38,7 +38,7 @@ file one issue per failure and attach the unchanged session file.
 | Option | Effect |
 | --- | --- |
 | `--output-dir DIR` | Directory for the final session text file |
-| `--prefix DIR` | Test prefix; default `~/.wine-ableton` |
+| `--prefix DIR` | Test prefix; default `~/works/plugs/studio` |
 | `--reuse-prefix` | Permit a non-empty existing prefix |
 | `--installer-url URL` | Override the URL in `config/installer-url` |
 | `--installer-sha256 SHA256` | Expected installer hash |
@@ -53,7 +53,7 @@ file one issue per failure and attach the unchanged session file.
 | `--keep-work` | Keep the private temporary evidence directory |
 | `--list` | List the test set without changing anything |
 
-The kit checks known paths under `~/.local/opt` and
+The kit checks known paths under `~/works` and
 `~/.config/ableton-wine/runtime-path` after any path supplied with `--wine`.
 
 ## Test set
@@ -103,7 +103,7 @@ Do not share that report, even after removing the data.
 The maintainer script rebuilds six PE artifacts against a Wine build tree:
 
 ```bash
-ABLETON_WINE_SOURCE=/path/to/wine-d2d1-nspa-src \
+WORKS_RUNTIME_SOURCE=/path/to/wine-d2d1-nspa-src \
   ./beta/tester-kit/probes/build-maintainer-probes.sh
 ```
 

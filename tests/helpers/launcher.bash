@@ -5,7 +5,7 @@
 # two ways in, and the tests use both.
 #
 #   launcher_sandbox / run_launcher — run the whole thing for real against a
-#     throwaway $HOME and prefix, with a fake runtime tree at ABLETON_WINE_ROOT.
+#     throwaway $HOME and prefix, with a fake runtime tree at WORKS_RUNTIME.
 #     Every wine call (wineboot, reg add, and the final exec) lands in a log
 #     instead of touching a real prefix, so a test can assert on what the
 #     launcher *would* have run. This is the contract users actually see.
@@ -54,8 +54,8 @@ EOF
 
     export HOME="$FAKE_HOME"
     unset XDG_DATA_HOME XDG_CONFIG_HOME
-    export ABLETON_WINE_ROOT="$WINEROOT"
-    export ABLETON_WINEPREFIX="$PREFIX"
+    export WORKS_RUNTIME="$WINEROOT"
+    export WORKS_PLUG="$PREFIX"
     # Off by default so the exec line is deterministic; the one test that cares
     # about realtime scheduling turns it back on with a stubbed chrt.
     export ABLETON_RT=off

@@ -9,7 +9,7 @@
 # install over, and guessing wrong swaps a runtime out from under a running
 # Live.
 #
-# Nothing here touches a real install: ABLETON_OPT_DIR points the resolvers at
+# Nothing here touches a real install: WORKS_HOME points the resolvers at
 # a throwaway tree.
 #
 #   ./tests/run.sh tests/unit/migrate-layout.bats
@@ -20,15 +20,15 @@ load ../helpers/common
 
 setup() {
     HOME="$BATS_TEST_TMPDIR/home"
-    export ABLETON_OPT_DIR="$BATS_TEST_TMPDIR/opt"
-    unset ABLETON_WINE_ROOT
-    mkdir -p "$HOME" "$ABLETON_OPT_DIR"
+    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
+    unset WORKS_RUNTIME
+    mkdir -p "$HOME" "$WORKS_HOME"
     . "$REPO/scripts/runtime-env.sh"
     # Derived, never spelled out: a literal here would be a second place the
     # runtime name lives, which repo-hygiene rightly refuses.
     LEGACY="$(works_legacy_root)"
     NAME="${LEGACY##*/}"
-    CONTAINER="$(ableton_container_root)"
+    CONTAINER="$(works_runtime_store)"
 }
 
 # A runtime is recognisable by shape, so the tests plant one rather than an
@@ -47,7 +47,7 @@ plant() {
 
 @test "a flat install moves into the store under its own name" {
     plant "$LEGACY" 2026.08.01.1 b4d2f10aaaa
-    run ableton_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 0 ]
     [ -f "$CONTAINER/2026.08.01.1+b4d2f10/bin/wine" ]
     [ -L "$CONTAINER/stable" ]
@@ -65,7 +65,7 @@ plant() {
     plant "$CONTAINER/2026.08.01.1+b4d2f10" 2026.08.01.1 b4d2f10aaaa
     [ ! -e "$CONTAINER/stable" ]          # absent, not dangling
 
-    run ableton_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
     [ ! -e "$CONTAINER/2026.08.01.1+b4d2f10/$NAME" ] \
         || { echo "the legacy tree was nested inside the entry" >&2; false; }
@@ -79,7 +79,7 @@ plant() {
 @test "a collision says the tree was set aside, not that it was moved" {
     plant "$LEGACY" 2026.08.01.1 b4d2f10aaaa
     plant "$CONTAINER/2026.08.01.1+b4d2f10" 2026.08.01.1 b4d2f10aaaa
-    run ableton_migrate_layout
+    run works_migrate_layout
     [[ "$output" == *"set aside"* ]] || { echo "$output" >&2; false; }
     [[ "$output" != *"moved the runtime to"* ]]
 }
@@ -88,7 +88,7 @@ plant() {
 # install ends in the same shape a fresh one does
 @test "nothing remains at the legacy path" {
     plant "$LEGACY"
-    ableton_migrate_layout
+    works_migrate_layout
     [ ! -e "$LEGACY" ] && [ ! -L "$LEGACY" ]
 }
 
@@ -96,8 +96,8 @@ plant() {
 # directory nothing is looking at
 @test "the resolver follows the runtime to its new name" {
     plant "$LEGACY" 2026.08.01.1 b4d2f10aaaa
-    ableton_migrate_layout
-    [ "$(ableton_wine_root)" = "$CONTAINER/2026.08.01.1+b4d2f10" ]
+    works_migrate_layout
+    [ "$(works_runtime_path)" = "$CONTAINER/2026.08.01.1+b4d2f10" ]
 }
 
 # guards: dated rollbacks are the reason the store exists — a timestamp records
@@ -106,10 +106,10 @@ plant() {
     plant "$LEGACY"                            2026.08.01.1 b4d2f10aaaa
     plant "$LEGACY-rollback-20260802T194734Z"  2026.07.29.1 9614003ccc
     plant "$LEGACY-rollback-20260804T113605Z"  2026.07.23.1 237e53cddd
-    ableton_migrate_layout
+    works_migrate_layout
     [ -f "$CONTAINER/2026.07.29.1+9614003/bin/wine" ]
     [ -f "$CONTAINER/2026.07.23.1+237e53c/bin/wine" ]
-    [ -z "$(find "$ABLETON_OPT_DIR" -maxdepth 1 -name "$NAME-rollback-*")" ]
+    [ -z "$(find "$WORKS_HOME" -maxdepth 1 -name "$NAME-rollback-*")" ]
 }
 
 # guards: two installs of one build collapse to one entry, and the loser is set
@@ -118,7 +118,7 @@ plant() {
     plant "$LEGACY"                            2026.08.01.1 b4d2f10aaaa
     plant "$LEGACY-rollback-20260802T194734Z"  2026.07.29.1 9614003ccc
     plant "$LEGACY-rollback-20260804T113605Z"  2026.07.29.1 9614003ccc
-    ableton_migrate_layout
+    works_migrate_layout
     [ -f "$CONTAINER/2026.07.29.1+9614003/bin/wine" ]
     [ -n "$(find "$CONTAINER" -maxdepth 1 -name 'superseded-*' -type d)" ]
     [ -n "$(find "$CONTAINER"/superseded-* -name 'bin' -type d)" ]
@@ -131,7 +131,7 @@ plant() {
     plant "$LEGACY"
     mkdir -p "$LEGACY-rollback-20260804T130806Z/bin"
     : > "$LEGACY-rollback-20260804T130806Z/bin/wine"
-    run ableton_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 0 ]
     [ -n "$(find "$CONTAINER" -maxdepth 1 -name 'failed-*' -type d)" ]
 }
@@ -139,32 +139,32 @@ plant() {
 @test "failed-install debris travels too, so uninstall still finds it" {
     plant "$LEGACY"
     mkdir -p "$LEGACY.failed-20260801T101010Z/bin"
-    ableton_migrate_layout
-    [ -z "$(find "$ABLETON_OPT_DIR" -maxdepth 1 -name "$NAME.failed-*")" ]
+    works_migrate_layout
+    [ -z "$(find "$WORKS_HOME" -maxdepth 1 -name "$NAME.failed-*")" ]
 }
 
 # guards: 11.11 and 11.14 trees coexist on the development machine and are not
 # this installer's to move
 @test "runtimes from other Wine bases are left alone" {
     plant "$LEGACY"
-    other="$ABLETON_OPT_DIR/${NAME%.*}.11"
+    other="$WORKS_HOME/${NAME%.*}.11"
     plant "$other"
-    ableton_migrate_layout
+    works_migrate_layout
     [ -f "$other/bin/wine" ]
 }
 
 # --- the no-op rows -----------------------------------------------------------
 
 @test "a fresh install migrates nothing and creates nothing" {
-    run ableton_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 0 ]
     [ ! -e "$CONTAINER" ]
 }
 
 @test "running it twice is a no-op, not a second move" {
     plant "$LEGACY" 2026.08.01.1 b4d2f10aaaa
-    ableton_migrate_layout
-    run ableton_migrate_layout
+    works_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 0 ]
     [ -f "$CONTAINER/2026.08.01.1+b4d2f10/bin/wine" ]
     [ ! -e "$CONTAINER/2026.08.01.1+b4d2f10/ableton-wine" ]
@@ -172,8 +172,8 @@ plant() {
 
 @test "an overridden runtime root is left exactly where the user pinned it" {
     plant "$LEGACY"
-    ABLETON_WINE_ROOT="$BATS_TEST_TMPDIR/pinned"
-    run ableton_migrate_layout
+    WORKS_RUNTIME="$BATS_TEST_TMPDIR/pinned"
+    run works_migrate_layout
     [ "$status" -eq 0 ]
     [ -d "$LEGACY" ]
     [ ! -e "$CONTAINER" ]
@@ -189,7 +189,7 @@ plant() {
     plant "$CONTAINER/2026.07.29.1+9614003" 2026.07.29.1 9614003ccc 2026-07-29T10:00:00Z
     ln -s "2026.07.29.1+9614003" "$CONTAINER/stable"
     plant "$LEGACY" 2026.08.04.1 b4d2f10aaaa 2026-08-04T10:00:00Z
-    run ableton_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 0 ]
     [ "$(readlink "$CONTAINER/stable")" = "2026.08.04.1+b4d2f10" ]
     [ -f "$CONTAINER/2026.07.29.1+9614003/bin/wine" ]   # the older one is kept
@@ -200,7 +200,7 @@ plant() {
     plant "$CONTAINER/2026.08.04.1+b4d2f10" 2026.08.04.1 b4d2f10aaaa 2026-08-04T10:00:00Z
     ln -s "2026.08.04.1+b4d2f10" "$CONTAINER/stable"
     plant "$LEGACY" 2026.07.29.1 9614003ccc 2026-07-29T10:00:00Z
-    ableton_migrate_layout
+    works_migrate_layout
     [ "$(readlink "$CONTAINER/stable")" = "2026.08.04.1+b4d2f10" ]
     [ -f "$CONTAINER/2026.07.29.1+9614003/bin/wine" ]
     [ ! -e "$LEGACY" ]
@@ -213,7 +213,7 @@ plant() {
 @test "a live tree that cannot be named refuses, and moves nothing" {
     mkdir -p "$LEGACY/bin"
     : > "$LEGACY/bin/wine"
-    run ableton_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 1 ]
     [[ "$stderr$output" == *"cannot be named"* ]]
     [ -f "$LEGACY/bin/wine" ]
@@ -224,7 +224,7 @@ plant() {
     mkdir -p "$CONTAINER/anon/bin"
     ln -s "anon" "$CONTAINER/stable"
     mkdir -p "$LEGACY/bin"
-    run ableton_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 1 ]
     [[ "$stderr$output" == *"neither"* ]]
     [ -d "$LEGACY" ]
@@ -233,7 +233,7 @@ plant() {
 @test "a symlink left by an earlier layout refuses instead of migrating" {
     mkdir -p "$(dirname "$LEGACY")"
     ln -s "runtimes/stable" "$LEGACY"
-    run ableton_migrate_layout
+    run works_migrate_layout
     [ "$status" -eq 1 ]
     [[ "$stderr$output" == *"symlink"* ]]
 }
@@ -248,7 +248,7 @@ plant_at() { plant "$1" "$2" "$3" "$4"; }
     plant_at "$CONTAINER/2026.02.01.1+bbbbbbb" 2026.02.01.1 bbbbbbbxxx 2026-02-01T00:00:00Z
     plant_at "$CONTAINER/2026.03.01.1+ccccccc" 2026.03.01.1 cccccccxxx 2026-03-01T00:00:00Z
     ln -s "2026.03.01.1+ccccccc" "$CONTAINER/stable"
-    ABLETON_RUNTIME_KEEP=2 ableton_prune_runtimes
+    WORKS_RUNTIME_KEEP=2 works_prune_runtimes
     [ ! -e "$CONTAINER/2026.01.01.1+aaaaaaa" ]      # oldest went
     [ -d "$CONTAINER/2026.02.01.1+bbbbbbb" ]
     [ -d "$CONTAINER/2026.03.01.1+ccccccc" ]
@@ -262,7 +262,7 @@ plant_at() { plant "$1" "$2" "$3" "$4"; }
     plant_at "$CONTAINER/2026.08.04.1+zzzzzzz" 2026.08.04.1 zzzzzzzxxx 2026-08-04T01:00:00Z
     plant_at "$CONTAINER/2026.08.04.1+aaaaaaa" 2026.08.04.1 aaaaaaaxxx 2026-08-04T09:00:00Z
     ln -s "2026.08.04.1+aaaaaaa" "$CONTAINER/stable"
-    ABLETON_RUNTIME_KEEP=1 ableton_prune_runtimes
+    WORKS_RUNTIME_KEEP=1 works_prune_runtimes
     [ ! -e "$CONTAINER/2026.08.04.1+zzzzzzz" ]      # older by built-at
     [ -d "$CONTAINER/2026.08.04.1+aaaaaaa" ]
 }
@@ -274,7 +274,7 @@ plant_at() { plant "$1" "$2" "$3" "$4"; }
     mkdir -p "$CONTAINER/superseded-20260805T000000Z/old" "$CONTAINER"
     plant_at "$CONTAINER/2026.01.01.1+aaaaaaa" 2026.01.01.1 aaaaaaaxxx 2026-01-01T00:00:00Z
     ln -s "2026.01.01.1+aaaaaaa" "$CONTAINER/stable"
-    ABLETON_RUNTIME_KEEP=1 ableton_prune_runtimes
+    WORKS_RUNTIME_KEEP=1 works_prune_runtimes
     [ -d "$CONTAINER/superseded-20260805T000000Z/old" ]
 }
 
@@ -282,7 +282,7 @@ plant_at() { plant "$1" "$2" "$3" "$4"; }
     mkdir -p "$CONTAINER"
     plant_at "$CONTAINER/2026.01.01.1+aaaaaaa" 2026.01.01.1 aaaaaaaxxx 2026-01-01T00:00:00Z
     ln -s "2026.01.01.1+aaaaaaa" "$CONTAINER/stable"
-    ABLETON_RUNTIME_KEEP="lots" ableton_prune_runtimes
+    WORKS_RUNTIME_KEEP="lots" works_prune_runtimes
     [ -d "$CONTAINER/2026.01.01.1+aaaaaaa" ]
 }
 
@@ -292,31 +292,31 @@ plant_at() { plant "$1" "$2" "$3" "$4"; }
     plant "$CONTAINER/2026.01.01.1+aaaaaaa"
     mkdir -p "$CONTAINER/superseded-20260805T000000Z"
     ln -s "2026.01.01.1+aaaaaaa" "$CONTAINER/stable"
-    ableton_remove_runtimes
+    works_remove_runtimes
     [ ! -e "$CONTAINER" ]
 }
 
 @test "removal handles a flat install that never migrated" {
     plant "$LEGACY"
     plant "$LEGACY-rollback-20260802T194734Z"
-    ableton_remove_runtimes
-    [ -z "$(find "$ABLETON_OPT_DIR" -maxdepth 1 -name "$NAME*")" ]
+    works_remove_runtimes
+    [ -z "$(find "$WORKS_HOME" -maxdepth 1 -name "$NAME*")" ]
 }
 
-# guards: a stale exported ABLETON_WINE_ROOT from a test session would otherwise
+# guards: a stale exported WORKS_RUNTIME from a test session would otherwise
 # have this run rm -rf on whatever it names
 @test "removal refuses a pinned root that is not a runtime" {
     target="$BATS_TEST_TMPDIR/not-a-runtime"
     mkdir -p "$target/documents"
-    run env ABLETON_WINE_ROOT="$target" bash -c \
-        ". '$REPO/scripts/runtime-env.sh'; ableton_remove_runtimes"
+    run env WORKS_RUNTIME="$target" bash -c \
+        ". '$REPO/scripts/runtime-env.sh'; works_remove_runtimes"
     [ "$status" -ne 0 ]
     [ -d "$target/documents" ]
 }
 
 @test "removal refuses a pinned root of \$HOME" {
-    run env ABLETON_WINE_ROOT="$HOME" bash -c \
-        ". '$REPO/scripts/runtime-env.sh'; ableton_remove_runtimes"
+    run env WORKS_RUNTIME="$HOME" bash -c \
+        ". '$REPO/scripts/runtime-env.sh'; works_remove_runtimes"
     [ "$status" -ne 0 ]
     [ -d "$HOME" ]
 }
@@ -326,8 +326,8 @@ plant_at() { plant "$1" "$2" "$3" "$4"; }
 # the user's settings, and cannot. Every branch that is not certain refuses.
 
 plug_setup() {
-    LEGACY_PLUG="$HOME/.wine-ableton"
-    DEST_PLUG="$(ableton_wine_prefix)"
+    LEGACY_PLUG="$HOME/works/plugs/studio"
+    DEST_PLUG="$(works_plug_path)"
 }
 
 a_prefix() {   # a_prefix <dir>
@@ -348,3 +348,146 @@ a_prefix() {   # a_prefix <dir>
 # where the read still fails — and the shell prints its own redirection error
 # before tr can suppress it. A scan that noisy is a scan nobody reads.
 
+# --- the prefix becomes a Plug -------------------------------------------------
+# A runtime can be downloaded again; a prefix holds Live, its authorisation and
+# the user's settings, and cannot. Every branch that is not certain refuses.
+
+plug_setup() {
+    LEGACY_PLUG="$HOME/.wine-ableton"
+    DEST_PLUG="$(works_plug_path)"
+}
+
+a_prefix() {   # a_prefix <dir>
+    mkdir -p "$1/drive_c/users" "$1/dosdevices"
+    : > "$1/system.reg"
+    ln -sfn ../drive_c "$1/dosdevices/c:"
+    printf 'a set\n' > "$1/drive_c/users/mine.als"
+}
+
+@test "plug: a flat prefix moves into the store" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    run works_migrate_plug
+    [ "$status" -eq 0 ]
+    [ -d "$DEST_PLUG" ] && [ ! -e "$LEGACY_PLUG" ]
+}
+
+# guards: the prefix is the one thing here that cannot be re-downloaded
+@test "plug: the contents survive the move intact" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    works_migrate_plug >/dev/null
+    [ "$(cat "$DEST_PLUG/drive_c/users/mine.als")" = "a set" ]
+    [ -L "$DEST_PLUG/dosdevices/c:" ]
+    [ "$(readlink "$DEST_PLUG/dosdevices/c:")" = "../drive_c" ]
+}
+
+@test "plug: re-running after a successful move is a no-op" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    works_migrate_plug >/dev/null
+    run works_migrate_plug
+    [ "$status" -eq 0 ]
+    [ -f "$DEST_PLUG/drive_c/users/mine.als" ]
+}
+
+@test "plug: nothing installed is not an error" {
+    plug_setup
+    run works_migrate_plug
+    [ "$status" -eq 0 ]
+    [ ! -e "$DEST_PLUG" ]
+}
+
+# guards: two prefixes can hold different Lives and different authorisations —
+# picking one silently loses the other's work
+@test "plug: a prefix at both paths refuses, naming both" {
+    plug_setup; a_prefix "$LEGACY_PLUG"; a_prefix "$DEST_PLUG"
+    run works_migrate_plug
+    [ "$status" -eq 1 ]
+    [[ "$stderr$output" == *"$LEGACY_PLUG"* ]]
+    [[ "$stderr$output" == *"$DEST_PLUG"* ]]
+    [ -d "$LEGACY_PLUG" ]
+}
+
+@test "plug: a symlink where the prefix belongs refuses" {
+    plug_setup; mkdir -p "$HOME/elsewhere"
+    ln -s "$HOME/elsewhere" "$LEGACY_PLUG"
+    run works_migrate_plug
+    [ "$status" -eq 1 ]
+    [[ "$stderr$output" == *"symlink"* ]]
+}
+
+# guards: a pinned prefix is a deliberate choice — the VM harness runs two
+@test "plug: an explicit WORKS_PLUG is left alone" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    WORKS_PLUG="$HOME/pinned" run works_migrate_plug
+    [ "$status" -eq 0 ]
+    [ -d "$LEGACY_PLUG" ]
+}
+
+# guards: renaming a prefix out from under a live wineserver corrupts its
+# registry, and install.sh's stop is scoped to the runtime, which is a
+# different set of processes
+@test "plug: a prefix something is running from is not moved" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    export WORKS_PROC_ROOT="$BATS_TEST_TMPDIR/proc"
+    mkdir -p "$WORKS_PROC_ROOT/4242"
+    printf 'PATH=/usr/bin\0WINEPREFIX=%s\0HOME=%s\0' "$LEGACY_PLUG" "$HOME" \
+        > "$WORKS_PROC_ROOT/4242/environ"
+    run works_migrate_plug
+    [ "$status" -eq 1 ]
+    [[ "$stderr$output" == *"still running"* ]]
+    [ -d "$LEGACY_PLUG" ]
+}
+
+@test "plug: a process holding a different prefix does not block the move" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    export WORKS_PROC_ROOT="$BATS_TEST_TMPDIR/proc"
+    mkdir -p "$WORKS_PROC_ROOT/4242"
+    printf 'WINEPREFIX=%s\0' "$HOME/.wine-somethingelse" > "$WORKS_PROC_ROOT/4242/environ"
+    run works_migrate_plug
+    [ "$status" -eq 0 ]
+    [ -d "$DEST_PLUG" ]
+}
+
+@test "plug: an unreadable process entry is skipped, not fatal" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    export WORKS_PROC_ROOT="$BATS_TEST_TMPDIR/proc"
+    mkdir -p "$WORKS_PROC_ROOT/4242" "$WORKS_PROC_ROOT/self"
+    : > "$WORKS_PROC_ROOT/4242/environ"; chmod 000 "$WORKS_PROC_ROOT/4242/environ"
+    run works_migrate_plug
+    chmod 644 "$WORKS_PROC_ROOT/4242/environ" 2>/dev/null || true
+    [ "$status" -eq 0 ]
+}
+
+# guards: environ is mode 400 and gated by ptrace_may_access, so `[ -r ]` passes
+# where the read still fails — and the shell prints its own redirection error
+# before tr can suppress it. A scan that noisy is a scan nobody reads.
+@test "plug: an unreadable process entry says nothing on stderr" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    export WORKS_PROC_ROOT="$BATS_TEST_TMPDIR/proc"
+    mkdir -p "$WORKS_PROC_ROOT/4242"
+    : > "$WORKS_PROC_ROOT/4242/environ"; chmod 000 "$WORKS_PROC_ROOT/4242/environ"
+    run works_migrate_plug
+    chmod 644 "$WORKS_PROC_ROOT/4242/environ" 2>/dev/null || true
+    [[ "$stderr" != *"Permission denied"* ]] || { echo "leaked: $stderr" >&2; false; }
+}
+
+@test "plug: the refusal names what is holding the prefix" {
+    plug_setup; a_prefix "$LEGACY_PLUG"
+    export WORKS_PROC_ROOT="$BATS_TEST_TMPDIR/proc"
+    mkdir -p "$WORKS_PROC_ROOT/4242"
+    printf 'WINEPREFIX=%s\0' "$LEGACY_PLUG" > "$WORKS_PROC_ROOT/4242/environ"
+    printf 'wineserver\0' > "$WORKS_PROC_ROOT/4242/cmdline"
+    run works_migrate_plug
+    [ "$status" -eq 1 ]
+    [[ "$stderr$output" == *"4242"* ]] && [[ "$stderr$output" == *"wineserver"* ]]
+}
+
+# guards: the migration's source is a fact about the past. Derived from
+# works_home() it points inside ~/works, finds nothing, and every existing
+# install is orphaned rather than moved - silently, because "nothing to
+# migrate" and "migrated" look identical from the outside.
+@test "the legacy root names where installs actually are, not where they are going" {
+    [ "$(works_legacy_root)" = "$HOME/.local/opt/$(works_runtime_name)" ]
+    case "$(works_legacy_root)" in
+        "$(works_home)"/*) echo "legacy root moved with the store: $(works_legacy_root)" >&2; false ;;
+    esac
+}

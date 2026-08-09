@@ -39,16 +39,16 @@ RUNTIME_NAME="wine-d2d1-nspa-11.13"
 # live at when there is not. install.sh owns the real resolution; this only has
 # to recognise an existing install and, afterwards, address the one it just made.
 resolve_runtime() {
-    if [ -L "$HOME/.local/opt/ableton-wine/stable" ]; then
-        printf '%s\n' "$HOME/.local/opt/ableton-wine/$(readlink "$HOME/.local/opt/ableton-wine/stable")"
-    elif [ -x "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" ]; then
-        printf '%s\n' "$HOME/.local/opt/$RUNTIME_NAME"
+    if [ -L "$HOME/works/runtimes/stable" ]; then
+        printf '%s\n' "$HOME/works/runtimes/$(readlink "$HOME/works/runtimes/stable")"
+    elif [ -x "$HOME/works/$RUNTIME_NAME/bin/wine" ]; then
+        printf '%s\n' "$HOME/works/$RUNTIME_NAME"
     else
-        printf '%s\n' "$HOME/.local/opt/ableton-wine/stable"
+        printf '%s\n' "$HOME/works/runtimes/stable"
     fi
 }
-WINE_ROOT="${ABLETON_WINE_ROOT:-$(resolve_runtime)}"
-PREFIX_DIR="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+WINE_ROOT="${WORKS_RUNTIME:-$(resolve_runtime)}"
+PREFIX_DIR="${WORKS_PLUG:-$HOME/works/plugs/studio}"
 
 self="$(readlink -f -- "$0")"
 stick_dir="$(dirname -- "$self")"
@@ -92,7 +92,7 @@ say "== Ableton-on-Wine installer $VERSION =="
 # change.
 if [ "$mode" = install ] && [ -x "$WINE_ROOT/bin/wine" ] \
    && [ -f "$PREFIX_DIR/system.reg" ]; then
-    installed_ver="$(cat "$HOME/.local/share/ableton-wine/VERSION" 2>/dev/null || true)"
+    installed_ver="$(cat "$HOME/works/apps/ableton-live/VERSION" 2>/dev/null || true)"
     say ""
     say "An existing installation was found${installed_ver:+ (version $installed_ver)}."
     if [ -t 0 ]; then
@@ -209,7 +209,7 @@ warn_stale_link_hook() {
 }
 
 configure_link() {
-    local marker="$HOME/.local/share/ableton-wine/link-configured"
+    local marker="$HOME/works/apps/ableton-live/link-configured"
     # The version is owned by setup-link.sh; a marker recording anything else
     # forces one re-run so existing installs pick up changed behavior.
     local required_version
@@ -260,7 +260,7 @@ configure_link() {
     fi
 
     say "!! Ableton Link was not configured; Live installation will continue."
-    say "!! Close Live and run ~/.local/share/ableton-wine/setup-link.sh to retry."
+    say "!! Close Live and run ~/works/apps/ableton-live/setup-link.sh to retry."
     return 0
 }
 
@@ -324,7 +324,7 @@ say "-- installing the patched Wine (goes to ~/works, touches nothing else)"
 bash "$kit/scripts/install.sh"
 # The store may have just been created and the migration may have just moved
 # things, so the path resolved before any of that is stale from here on.
-[ -n "${ABLETON_WINE_ROOT:-}" ] || WINE_ROOT="$(resolve_runtime)"
+[ -n "${WORKS_RUNTIME:-}" ] || WINE_ROOT="$(resolve_runtime)"
 [ "$mode" = runtime ] && { say "OK: the patched Wine is installed (--runtime-only: stopped before creating the Wine prefix)"; exit 0; }
 configure_link
 
@@ -349,7 +349,7 @@ if [ -z "${ABLETON_DPI_MODE:-}" ]; then
         say "   (the launcher re-checks your display on every start, so this corrects itself)"
     fi
 fi
-say "-- creating the Wine prefix, Live's private 'C: drive' at ~/.wine-ableton"
+say "-- creating the Wine prefix, Live's private 'C: drive' at ~/works/plugs/studio"
 say "   (fonts and runtime pieces install now; this takes a few minutes)"
 bash "$kit/scripts/setup-prefix.sh"
 

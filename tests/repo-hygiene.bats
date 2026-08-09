@@ -15,9 +15,13 @@ SOURCED="scripts/detect-scale.sh scripts/detect-theme.sh scripts/ableton-profile
 # into bash on line 19; shellcheck reads the shebang and not the re-exec.
 BASH_DIALECT="scripts/setup-run-header.sh"
 
+# scripts/works* are shipped commands carrying no .sh, so the glob above never
+# reached them: four executables that make-installer.sh packs into the kit went
+# both unchecked and unparsed, and a warning in one was found by hand instead.
 all_shell_files() {
     (cd "$REPO" && git ls-files \
         'build.sh' 'scripts/*.sh' 'scripts/ableton-live' 'scripts/max9' \
+        'scripts/works*' \
         'bin/ableton-live-beta' 'bin/ableton-live-portal' \
         'bin/ableton-wine-portal' 'bin/set-file-portal-policy' \
         'tests/run.sh' 'tests/catalogue.sh')

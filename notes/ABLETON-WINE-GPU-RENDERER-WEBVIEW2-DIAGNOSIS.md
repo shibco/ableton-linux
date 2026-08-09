@@ -25,8 +25,8 @@ steps did not run.
 
 ## Production state
 
-- Launcher: `~/.local/bin/ableton-live`, prefix `~/.wine-ableton`.
-- Runtime: `~/.local/opt/wine-d2d1-nspa-11.11`, dist 2026.07.22.1,
+- Launcher: `~/.local/bin/ableton-live`, prefix `~/works/plugs/studio`.
+- Runtime: `~/works/wine-d2d1-nspa-11.11`, dist 2026.07.22.1,
   wine 11.11 base, patches 0001 through 0043 plus pipeasio.
 - `learnheal.exe` is staged and launched. It does not resolve the
   artifact on this setup.

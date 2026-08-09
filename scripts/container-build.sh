@@ -12,11 +12,11 @@ JOBS="${JOBS:-$(nproc)}"
 # is the question a user asks of a runtime directory and nothing else in the name
 # answers it. VERSION itself is never touched: it is committed and asserted
 # against CHANGELOG and BUILD-INFO.
-VERSION="${ABLETON_DIST_VERSION:-$(cat "$SRC/VERSION")}"
-# Releases have no kind. A nightly says so, and ableton_runtime_id folds it into
+VERSION="${WORKS_DIST_VERSION:-$(cat "$SRC/VERSION")}"
+# Releases have no kind. A nightly says so, and works_runtime_id folds it into
 # the discriminator -- so the directory is 2026.08.06.1+nightly.badafaf: the date
 # it was built, that it is a nightly, and which commit. Once each, one separator.
-BUILD_KIND="${ABLETON_BUILD_KIND:-}"
+BUILD_KIND="${WORKS_BUILD_KIND:-}"
 NAME="wine-d2d1-nspa-11.13"
 CONFIGURE_PREFIX="${INSTALL_PREFIX:?build.sh must pass INSTALL_PREFIX}"
 [ "$(basename "$CONFIGURE_PREFIX")" = "$NAME" ] || {

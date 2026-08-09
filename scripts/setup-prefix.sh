@@ -15,7 +15,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 #   <kit>/scripts/setup-prefix.sh        -> vendor at $here/../vendor (repo, extracted .run kit)
 #   <dir>/setup-prefix.sh + <dir>/vendor -> vendor at $here/vendor
 # Resolved lazily so --refresh (which skips the winetricks pass) never trips this;
-# install.sh deliberately does not install vendor/ into ~/.local/share/ableton-wine.
+# install.sh deliberately does not install vendor/ into ~/works/apps/ableton-live.
 root=""
 kit_root() {
     [ -n "$root" ] && return 0
@@ -54,12 +54,12 @@ case "${ABLETON_LIVE_VERSION:-12}" in
 esac
 
 # Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
-for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
     [ -r "$_l" ] && . "$_l" && break
 done
-command -v ableton_wine_root >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
-ableton_bind_runtime
+command -v works_runtime_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+works_bind_runtime
 # Only this script clears the sync backends: folding them into the shared
 # binder would start dropping a user's WINEESYNC on every launch.
 unset WINEESYNC WINEFSYNC
@@ -80,8 +80,8 @@ export WINEDEBUG=-all
 # only safe version of "yes" is "close it first", so that is what it says.
 # ABLETON_SKIP_BUSY_CHECK exists for the automation that has already stopped
 # things itself, and is not documented for users.
-if [ "${ABLETON_SKIP_BUSY_CHECK:-0}" != "1" ] && ableton_runtime_busy; then
-    echo "!! $(ableton_runtime_pids | wc -l) process(es) are running from this runtime." >&2
+if [ "${ABLETON_SKIP_BUSY_CHECK:-0}" != "1" ] && works_runtime_busy; then
+    echo "!! $(works_runtime_pids | wc -l) process(es) are running from this runtime." >&2
     echo "   Close Live (and Max) before setting up the prefix -- this rewrites it." >&2
     echo "   The installer stops them for you; running this script on its own does not." >&2
     exit 1

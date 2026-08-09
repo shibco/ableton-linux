@@ -59,9 +59,57 @@ jobs:
       - name: Launcher contract (which Live starts, and how documents route)
         run: bats --print-output-on-failure tests/launcher-cli.bats
 
+      # Without a runtime tarball, every test that actually executes install.sh
+      # skips -- eleven of them, and they are the ones that matter. bats reports
+      # a skip as `ok`, so the summary line and the exit status are identical to
+      # a run that covered everything. That is the exact shape of the defect this
+      # suite was written for: install.sh could not run at all for thirteen
+      # commits while 172 tests passed, because nothing executed it.
+      #
+      # The released runtime is the honest fixture -- it is what every user has,
+      # and its BUILD-INFO carries neither of the fields added since, which is
+      # the state a migration has to handle. Deep ELF checks in install.sh mean
+      # no hand-made tree can stand in.
+      #
+      # Fetched from upstream rather than this repo: a fork has no releases of
+      # its own, and this is the same artifact either way.
+      - name: Fetch the released runtime, so the integration tests are not skipped
+        id: fixture
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          name="$(bash -c '. scripts/runtime-env.sh; works_runtime_name')"
+          mkdir -p .fixture
+          if gh release download --repo shibco/ableton-linux \
+                 --pattern "${name}-*.tar.zst*" --dir .fixture 2>/dev/null; then
+              t="$(bash -c '. scripts/runtime-env.sh; works_pick_tarball .fixture')"
+              if [ -n "$t" ]; then
+                  ( cd .fixture && sha256sum -c "$(basename "$t").sha256" ) \
+                      || { echo "!! the released tarball failed its own checksum" >&2; exit 1; }
+                  echo "tarball=$PWD/$t" >> "$GITHUB_OUTPUT"
+                  echo "got $(basename "$t")"
+              else
+                  echo "downloaded nothing the selector accepts; integration tests will skip"
+              fi
+          else
+              echo "no matching asset on the latest release; integration tests will skip"
+          fi
+
+      # install.sh refuses a package with no ableton-linkd, and building the
+      # real one needs the Podman build image - the exact cost this workflow
+      # exists to avoid. This checkout is disposable, install.sh only checks
+      # presence, and nothing here executes linkd, so a stub lets the install
+      # tests run; the real binary is exercised by every kit install.
+      - name: Stub ableton-linkd, which only the container build produces
+        run: |
+          mkdir -p dist
+          [ -f dist/ableton-linkd ] || printf 'int main(void){return 0;}\n' | cc -x c -o dist/ableton-linkd -
+          readelf -h dist/ableton-linkd >/dev/null
+
       - name: Shell unit tests
         env:
-          ABLETON_TEST_TARBALL: ${{ steps.fixture.outputs.tarball }}
+          WORKS_TEST_TARBALL: ${{ steps.fixture.outputs.tarball }}
         run: bats --recursive --print-output-on-failure tests/unit
 
       # A skip reads as a pass, so say plainly what did not run. Not a failure:
@@ -70,7 +118,7 @@ jobs:
       - name: Say what skipped
         if: always()
         env:
-          ABLETON_TEST_TARBALL: ${{ steps.fixture.outputs.tarball }}
+          WORKS_TEST_TARBALL: ${{ steps.fixture.outputs.tarball }}
         run: |
           bats --recursive tests/unit 2>/dev/null | grep -E '# skip' \
               | sed 's/^ok [0-9]* //' > /tmp/skips.txt || true

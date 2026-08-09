@@ -44,7 +44,7 @@ going to fix it, and why it reproduced identically on an unrelated build.
 
 The UI thread is parked, not spinning. Offsets resolved against the matching
 build's PE exports under
-`~/.local/opt/wine-d2d1-nspa-11.13/lib/wine/x86_64-windows/`; every hit landed
+`$(works runtime path)/lib/wine/x86_64-windows/`; every hit landed
 at `+0x14` into a syscall stub or within a few hundred bytes of an export, so
 resolution is exact:
 

@@ -14,7 +14,7 @@ same Wine prefix:
 3. The desktop MIME system runs `~/.local/bin/ableton-live` for either
    response.
 4. The launcher forwards the response through the packaged Wine runtime and
-   `~/.wine-ableton`. The prefix registry then dispatches it to Live.
+   `~/works/plugs/studio`. The prefix registry then dispatches it to Live.
 
 Authorization is bound to the prefix's `MachineGuid`. A response sent to
 another prefix cannot authorize this installation.
@@ -43,7 +43,7 @@ Four gaps broke the return path:
 
 - `scripts/install.sh` replaces a handler entry that does not route through
   `~/.local/bin/ableton-live` instead of preserving it, and stages canonical
-  copies of both handler entries in `~/.local/share/ableton-wine/`.
+  copies of both handler entries in `~/works/apps/ableton-live/`.
 - It registers the user MIME type `application/x-wine-extension-auz` with
   the `*.auz` glob and installs
   [desktop/wine-extension-auz.desktop.in](../desktop/wine-extension-auz.desktop.in)

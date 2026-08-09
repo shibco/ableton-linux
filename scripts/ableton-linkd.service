@@ -9,7 +9,7 @@ Description=Ableton Link session anchor (ableton-linkd)
 After=default.target
 
 [Service]
-ExecStart=%h/.local/share/ableton-wine/ableton-linkd --linger 0
+ExecStart=%h/works/apps/ableton-live/ableton-linkd --linger 0
 Restart=on-failure
 RestartSec=5
 

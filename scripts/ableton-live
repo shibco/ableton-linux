@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Ableton Live launcher for the patched Wine stack. Runs whichever Live edition
 # (Intro/Lite/Standard/Suite/Trial, any major version) is installed in the prefix.
-# Overrides: ABLETON_WINE_ROOT=/usr (stock wine), ABLETON_VDESK=2560x1600 (virtual desktop),
+# Overrides: WORKS_RUNTIME=/usr (stock wine), ABLETON_VDESK=2560x1600 (virtual desktop),
 #            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
 #            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
 #            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
@@ -36,12 +36,12 @@ fi
 
 # Clear inherited Wine variables so this launch uses only the patched build.
 # Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
-for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
     [ -r "$_l" ] && . "$_l" && break
 done
-command -v ableton_wine_root >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
-ableton_bind_runtime
+command -v works_runtime_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+works_bind_runtime
 # Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
 # Keep the winediag channel on: it carries only rare one-line notices that a
 # person should read, such as the present-fallback warning from patch 0071.
@@ -87,7 +87,7 @@ repair_handler_entries() {
     local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
     local staged d repaired=0
     for d in wine-protocol-ableton wine-extension-auz; do
-        staged="$HOME/.local/share/ableton-wine/$d.desktop"
+        staged="$HOME/works/apps/ableton-live/$d.desktop"
         [ -f "$staged" ] || continue
         if [ ! -f "$apps/$d.desktop" ] \
             || grep -qE '^Exec=env .*WINEPREFIX=.* wine start ' "$apps/$d.desktop"; then
@@ -266,7 +266,7 @@ fi
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
     dpi_mode="${ABLETON_DPI_MODE:-auto}"
     dpi_family=""; dpi_scale=""
-    dpi_lib="$HOME/.local/share/ableton-wine/detect-scale.sh"
+    dpi_lib="$HOME/works/lib/detect-scale.sh"
     [ -r "$dpi_lib" ] && . "$dpi_lib"
     if ! declare -F ableton_dpi_block_values >/dev/null 2>&1; then
         # no (or an older) detect-scale.sh: the two legacy blocks still resolve inline
@@ -498,7 +498,7 @@ theme_watch_prefs_cfg() {
     [ -n "$dir" ] && printf '%s\n' "$dir/Preferences.cfg"
 }
 theme_watch_loop() {
-    local apply="$HOME/.local/share/ableton-wine/setsyscolors.exe"
+    local apply="$HOME/works/apps/ableton-live/setsyscolors.exe"
     local lock="$WINEPREFIX/.ableton-theme-watch.lock" cfg last="" cur bar_bg bar_fg
     local applied=""    # last color set actually broadcast; skip re-firing when unchanged
     local major have_inotify=0 f
@@ -811,7 +811,7 @@ sync_ui_font() {
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
     # Sourced outside the auto branch: the topbar color detection below wants the lib
     # even when ABLETON_THEME_MODE pins the scheme.
-    theme_lib="$HOME/.local/share/ableton-wine/detect-theme.sh"
+    theme_lib="$HOME/works/lib/detect-theme.sh"
     [ -r "$theme_lib" ] && . "$theme_lib"
     theme_mode="${ABLETON_THEME_MODE:-auto}"
     if [ "$theme_mode" = auto ]; then
@@ -866,7 +866,7 @@ fi
 # edit made while Live runs.  Opt-in: the held keys are unavailable to every
 # other window until the last opted-in Live exits.  See the shortcut support note.
 shortcut_lib=""
-for f in "$HOME/.local/share/ableton-wine/shortcut-hold.sh" \
+for f in "$HOME/works/apps/ableton-live/shortcut-hold.sh" \
          "${BASH_SOURCE[0]%/*}/shortcut-hold.sh"; do
     if [ -r "$f" ]; then shortcut_lib="$f"; break; fi
 done
@@ -940,7 +940,7 @@ fi
 # peers (ABLETON_LINKD_LINGER overrides; the user unit runs --linger 0 for an
 # always-on anchor). Daemon mode logs to ~/.log/ableton-linkd/.
 # ABLETON_LINKD overrides the binary path. See notes/ABLETON-WINE-LINK.md.
-LINKD="${ABLETON_LINKD:-$HOME/.local/share/ableton-wine/ableton-linkd}"
+LINKD="${ABLETON_LINKD:-$HOME/works/apps/ableton-live/ableton-linkd}"
 if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
     "$LINKD" --daemon || echo "ableton-live: ableton-linkd failed to start" >&2
 fi
@@ -959,7 +959,7 @@ fi
 # a pane to hold a stable rect before poking (bind-time pokes leave Chromium
 # resize-deaf) and exits on its own after Live is gone. No-op when the helper
 # is not installed.
-learnheal="$HOME/.local/share/ableton-wine/learnheal.exe"
+learnheal="$HOME/works/apps/ableton-live/learnheal.exe"
 if [ -n "$EXE" ] && [ -f "$learnheal" ]; then
     ( "$WINE_ROOT/bin/wine" "$learnheal" ) </dev/null >/dev/null 2>&1 &
     disown

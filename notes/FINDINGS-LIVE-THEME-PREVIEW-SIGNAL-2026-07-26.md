@@ -23,7 +23,7 @@ inotifywait -m -r --timefmt '%H:%M:%S' --format '%T %w%f %e' \
 ```
 
 covering the whole per-version AppData tree, not just `Preferences.cfg`.
-Also checked `~/.wine-ableton/{system,user}.reg` mtimes before/after, in case
+Also checked `~/works/plugs/studio/{system,user}.reg` mtimes before/after, in case
 a registry write wasn't reflected in a file event.
 
 ## Result

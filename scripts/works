@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Works: the runtime, the store, and the Plugs an application runs in.
+#
+# One command because there is one thing here to talk to. The verbs live in
+# their own files beside the shared library rather than on PATH: `works` is the
+# interface, and what implements it is not something to be called directly.
+set -euo pipefail
+# Resolved, not just dirname'd: PATH holds a link to this file, and $0 is then
+# the link's own path - ~/.local/bin - whose ../lib is somewhere else entirely.
+# The verbs sit beside the real file, so the real file is what has to be found.
+self="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+here="$(cd "$(dirname "$self")" && pwd)"
+
+# Installed, works lives in ~/works/bin and the verbs in ~/works/lib; from a
+# checkout both sit in scripts/. Neither layout is special-cased beyond this.
+for _d in "$here/../lib" "$here"; do
+    [ -x "$_d/works-runtime" ] && { verbs="$_d"; break; }
+done
+[ -n "${verbs:-}" ] || { echo "!! works cannot find its verbs (looked beside $here and in ../lib)" >&2; exit 1; }
+
+# Two usages, and they answer different questions. Someone who typed `works` to
+# see what it does wants the shape - one line per command, alternatives inline
+# in the {a|b|c} form every other CLI uses. Someone who asked for help wants to
+# know what each one does.
+#
+# Written out rather than sliced out of the header comment with a line range:
+# ranges rot the moment a comment is edited, which is how two of these ended up
+# printing a sentence and a half of the prose underneath them.
+short_usage() {
+    cat <<'EOF'
+usage: works <command> [options]          `works help` for what each one does
+
+  works runtime {list|path|use}   the builds in the store, and which one is live
+  works stop [-y]                 stop everything running from the runtime or a Plug
+EOF
+}
+
+long_usage() {
+    cat <<'EOF'
+Works: the runtime, the store, and the Plugs an application runs in.
+
+  works runtime list              every installed build, newest first
+  works runtime path              the runtime root, for scripts and docs
+  works runtime use [id]          switch the channel to another build
+  works stop [-y]                 stop everything running from the runtime or a Plug
+EOF
+}
+
+cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+    runtime)             exec "$verbs/works-runtime" "$@" ;;
+    stop)                exec "$verbs/works-runtime" stop "$@" ;;
+    "")                  short_usage ;;
+    help|-h|--help)      long_usage ;;
+    -*)                  echo "!! works takes a command first: try 'works help'" >&2
+                         short_usage >&2; exit 1 ;;
+    *)                   echo "!! no such command: $cmd" >&2
+                         short_usage >&2; exit 1 ;;
+esac

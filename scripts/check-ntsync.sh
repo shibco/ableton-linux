@@ -7,13 +7,13 @@
 set -uo pipefail
 
 # Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
-for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
     [ -r "$_l" ] && . "$_l" && break
 done
-command -v ableton_wine_root >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
-WINE_ROOT="$(ableton_wine_root)"
-WINEPREFIX="$(ableton_wine_prefix)"; export WINEPREFIX
+command -v works_runtime_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+WINE_ROOT="$(works_runtime_path)"
+WINEPREFIX="$(works_plug_path)"; export WINEPREFIX
 export WINEDEBUG=-all
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROBE="${ABLETON_NTSYNC_PROBE:-$here/../beta/tester-kit/probes/windows/ntsyncprobe.exe}"
@@ -24,7 +24,7 @@ TIMEOUT="${ABLETON_CHECK_TIMEOUT:-120}"
 
 for pid in $(pgrep -x wineserver); do
     if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX"; then
-        echo "!! wineserver $pid already serves $WINEPREFIX; close Live or set ABLETON_WINEPREFIX to a clone" >&2
+        echo "!! wineserver $pid already serves $WINEPREFIX; close Live or set WORKS_PLUG to a clone" >&2
         exit 1
     fi
 done

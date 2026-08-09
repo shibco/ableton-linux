@@ -33,7 +33,7 @@ Builds through 2026-07-10 contained both halves.
 `beta/tester-kit/probes/src/ntsyncprobe.c` checks semaphore, mutex, event,
 wait, APC, cross-process, and timeout semantics. It also measures event
 ping-pong and semaphore churn as proxies for Live's worker wakeups. Each run
-used a reflink clone of `~/.wine-ableton` with its own wineserver.
+used a reflink clone of `~/works/plugs/studio` with its own wineserver.
 
 | run | runtime | ntsync | assertions | pingpong rt/s | sem pairs/s |
 |-----|---------|--------|-----------|---------------|-------------|
@@ -72,11 +72,11 @@ without `/dev/ntsync` uses Wine's supported fallback path.
 Use a clone of the Live prefix:
 
 ```bash
-cp -a --reflink=auto "$HOME/.wine-ableton" "$HOME/.wine-ableton-ntsync-test"
-ABLETON_WINEPREFIX="$HOME/.wine-ableton-ntsync-test" \
-  ABLETON_WINE_ROOT="/path/to/runtime" \
+cp -a --reflink=auto "$HOME/works/plugs/studio" "$HOME/works/plugs/studio-ntsync-test"
+WORKS_PLUG="$HOME/works/plugs/studio-ntsync-test" \
+  WORKS_RUNTIME="/path/to/runtime" \
   ./scripts/check-ntsync.sh
-rm -rf -- "$HOME/.wine-ableton-ntsync-test"
+rm -rf -- "$HOME/works/plugs/studio-ntsync-test"
 ```
 
 Do not run the probe against a prefix that Live is using. The script refuses

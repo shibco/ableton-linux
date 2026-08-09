@@ -2,17 +2,17 @@
 # Max 9 launcher for the patched Wine stack: same runtime and prefix as
 # ableton-live, so standalone Max, Max for Live editing and PipeASIO all
 # share one wineserver. Args: Max documents as unix paths, or c74max: URLs.
-# Overrides: ABLETON_WINE_ROOT, ABLETON_WINEPREFIX, ABLETON_RT=off,
+# Overrides: WORKS_RUNTIME, WORKS_PLUG, ABLETON_RT=off,
 #            ABLETON_POWER=off (skip the session performance power-profile hold),
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor).
 set -u
 # Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
-for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
     [ -r "$_l" ] && . "$_l" && break
 done
-command -v ableton_wine_root >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
-ableton_bind_runtime
+command -v works_runtime_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+works_bind_runtime
 # Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
 # Keep the winediag channel on: it carries only rare one-line notices that a
 # person should read, such as the present-fallback warning from patch 0071.
@@ -57,7 +57,7 @@ done
 # Ableton Link session anchor (optional): same auto-start as the ableton-live
 # launcher. Start ableton-linkd if installed but not running, so the Link
 # session is anchored before Max launches. ABLETON_LINKD overrides the path.
-LINKD="${ABLETON_LINKD:-$HOME/.local/share/ableton-wine/ableton-linkd}"
+LINKD="${ABLETON_LINKD:-$HOME/works/apps/ableton-live/ableton-linkd}"
 if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
     "$LINKD" --daemon || echo "max9: ableton-linkd failed to start" >&2
 fi

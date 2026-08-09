@@ -10,7 +10,7 @@
 #   ableton_profile_detect EXE_PATH    — validate a discovered exe against the matrix
 #   ableton_profile_list               — print "MAJOR EDITION<TAB>EXE_PATH" per install
 # Detection refuses layouts outside the matrix (unknown majors/editions, renamed exes)
-# instead of guessing; WINEPREFIX (default ~/.wine-ableton) locates paths and icons.
+# instead of guessing; WINEPREFIX (default ~/works/plugs/studio) locates paths and icons.
 
 ABLETON_LIVE_VERSIONS="11 12"
 ABLETON_LIVE_EDITIONS="Suite Standard Intro Lite Trial"
@@ -25,7 +25,7 @@ ableton_profile_for() {
         done
     done
     [ "$known" -eq 0 ] || return 1
-    local prefix="${WINEPREFIX:-$HOME/.wine-ableton}"
+    local prefix="${WINEPREFIX:-$HOME/works/plugs/studio}"
     ABLETON_MAJOR="$major"
     ABLETON_EDITION="$edition"
     ABLETON_EXE="Ableton Live $major $edition.exe"
@@ -82,7 +82,7 @@ ableton_profile_detect() {
 # ableton_profile_list — one "MAJOR EDITION<TAB>EXE_PATH" line per discovered install
 # in the prefix, version-sorted; layouts the matrix rejects are skipped.
 ableton_profile_list() {
-    local prefix="${WINEPREFIX:-$HOME/.wine-ableton}" f
+    local prefix="${WINEPREFIX:-$HOME/works/plugs/studio}" f
     ls "$prefix"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe 2>/dev/null \
         | sort -V | while IFS= read -r f; do
             if ableton_profile_detect "$f"; then

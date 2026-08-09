@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# Which build of the runtime is in use, and switching between them.
+#
+# The store makes rollback possible - one directory per build, a channel symlink
+# at the live one - and until this existed nothing exposed it. Rolling back was
+# `ln -sfn` against a name you had to go and look up.
+#
+# Switching does not disturb a running Live. The resolver returns the build the
+# channel names rather than the channel itself, so a session that has already
+# started keeps the build it started with; the next launch picks up the new one.
+set -uo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+for _l in "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh" \
+          "$here/../scripts/runtime-env.sh"; do
+    # shellcheck source=scripts/runtime-env.sh
+    [ -r "$_l" ] && . "$_l" && break
+done
+command -v works_runtime_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+
+container="$(works_runtime_store)"
+channel="$container/stable"
+
+# Entries only: a directory the id reader can name. Quarantined trees
+# (superseded-*, failed-*) and the channel link are not builds you can choose.
+entries() {
+    local d
+    [ -d "$container" ] || return 0
+    for d in "$container"/*; do
+        [ -d "$d" ] && [ ! -L "$d" ] || continue
+        works_is_quarantine "$d" && continue
+        [ -n "$(works_runtime_id "$d")" ] || continue
+        printf '%s\n' "${d##*/}"
+    done
+}
+
+# Newest first, by built-at where present. Entries built before that field
+# existed have only their version, which ties across every nightly between two
+# releases - so they sort as a group rather than pretending to an order.
+sorted() {
+    local e at ver
+    while read -r e; do
+        [ -n "$e" ] || continue
+        at="$(works_buildinfo_field "$container/$e/ABLETON-WINE-BUILD-INFO.txt" built-at)"
+        ver="$(works_buildinfo_field "$container/$e/ABLETON-WINE-BUILD-INFO.txt" dist-version)"
+        if [ -n "$at" ]; then printf '1 %s\t%s\n' "$at" "$e"
+        else                  printf '0 %s\t%s\n' "$ver" "$e"; fi
+    done < <(entries) | sort -rV | cut -f2
+}
+
+# Ask a yes/no on the controlling terminal, or fail. Deliberately the pattern
+# install.sh already uses: `[ -t 0 ]` answers "is stdin a tty", which is not the
+# question - a test harness run from a terminal inherits one and takes the
+# interactive branch by accident. Opening /dev/tty is the honest test. The
+# timeout matches install.sh's: a prompt nobody answers must not wedge anything.
+ask_tty() {
+    local prompt="$1" ans=""
+    { : >/dev/tty; } 2>/dev/null || return 2      # 2 = no terminal to ask on
+    printf '%s' "$prompt" > /dev/tty
+    read -r -t 60 ans < /dev/tty || { printf '\n' > /dev/tty 2>/dev/null || true; return 1; }
+    case "$ans" in y|Y|yes|Yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+cmd_path() {
+    local r; r="$(works_runtime_path)"
+    [ -n "$r" ] || { echo "!! no runtime resolved" >&2; return 1; }
+    printf '%s\n' "$r"
+}
+
+# The Wine base is not in the entry name and should not be - it is derivable,
+# and one runtime release is built on one base. But it is the fact that decides
+# whether switching is safe for a Plug, so it belongs in front of anyone
+# choosing.
+base_of() { works_buildinfo_field "$container/$1/ABLETON-WINE-BUILD-INFO.txt" wine; }
+
+cmd_list() {
+    local live e at base path n=0
+    live="$(readlink -f "$channel" 2>/dev/null || true)"
+    if [ ! -d "$container" ]; then
+        echo "No version store yet — this install predates it."
+        echo "  runtime: $(works_runtime_path)"
+        return 0
+    fi
+    # The path is spelled out per build rather than left implied by the store
+    # root: it is the thing people copy - into a script, a bug report, a `cd` -
+    # and reconstructing it by hand from a header and an id invites the typo.
+    # $HOME is abbreviated because these are always under it and the width is
+    # better spent on the build.
+    printf '  %-32s %-12s %-22s %s\n' "BUILD" "WINE" "BUILT" "PATH"
+    while read -r e; do
+        [ -n "$e" ] || continue
+        n=$((n+1))
+        at="$(works_buildinfo_field "$container/$e/ABLETON-WINE-BUILD-INFO.txt" built-at)"
+        base="$(base_of "$e")"
+        path="$container/$e"
+        case "$path" in "$HOME"/*) path="~${path#"$HOME"}" ;; esac
+        if [ "$container/$e" = "$live" ]; then printf '* %-32.32s %-12s %-22s %s\n' "$e" "${base:-?}" "${at:-—}" "$path"
+        else                                   printf '  %-32.32s %-12s %-22s %s\n' "$e" "${base:-?}" "${at:-—}" "$path"; fi
+    done < <(sorted)
+    [ "$n" -gt 0 ] || echo "No installed builds found in $container"
+    local aside e
+    aside=0
+    for e in "$container"/*; do
+        [ -d "$e" ] && [ ! -L "$e" ] || continue
+        works_is_quarantine "$e" && aside=$((aside+1))
+    done
+    [ "$aside" -eq 0 ] || echo "  ($aside set-aside director$([ "$aside" = 1 ] && echo y || echo ies) not shown; nothing was deleted)"
+}
+
+# Stop everything Works is running. install.sh does this internally before it
+# replaces a runtime; this is the same thing a person can reach, because the
+# refusals that send them here say "close it" about processes with no window to
+# close - Wine's services.exe and rpcss.exe outlive Live and hold the prefix.
+cmd_stop() {
+    local pids n ans
+    pids="$(works_all_pids | sort -un)"
+    [ -n "$pids" ] || { echo "Nothing is running from the runtime or any Plug."; return 0; }
+    n="$(printf '%s\n' "$pids" | grep -c .)"
+
+    # Live is the one thing here with unsaved work to lose, so it is the one
+    # thing worth asking about - the same consent install.sh takes before it
+    # force-closes, for the same reason. Everything else is Wine's own services,
+    # which have nothing to save. No terminal means nobody can answer, so stop
+    # rather than assume; -y is how a script says it meant it.
+    if [ -n "$(ableton_live_pids 2>/dev/null)" ] && [ "${1:-}" != "-y" ] && [ "${1:-}" != "--yes" ]; then
+        if { : >/dev/tty; } 2>/dev/null; then
+            echo "!! Ableton Live is running. Stopping it discards unsaved work." >&2
+            printf "Stop it anyway? [y/N] " > /dev/tty
+            ans=""
+            read -r ans < /dev/tty || true
+            case "$ans" in [yY]|[yY][eE][sS]) ;; *) echo "Nothing was stopped."; return 1 ;; esac
+        else
+            echo "!! Live is running and there is no terminal to confirm on; pass -y if you mean it" >&2
+            return 1
+        fi
+    fi
+    echo "Stopping $n process(es)."
+    printf '%s\n' "$pids" | xargs -r kill 2>/dev/null || true
+    for _ in $(seq 1 10); do
+        [ -n "$(works_all_pids | sort -un)" ] || { echo "Stopped."; return 0; }
+        sleep 0.5
+    done
+    # Wine's own services do not answer TERM once their server is gone.
+    works_all_pids | sort -un | xargs -r kill -9 2>/dev/null || true
+    sleep 1
+    if [ -n "$(works_all_pids | sort -un)" ]; then
+        echo "!! still running after SIGKILL:" >&2
+        works_all_pids | sort -un | sed 's/^/     /' >&2
+        return 1
+    fi
+    echo "Stopped."
+}
+
+# Pick from a numbered list. Only when there is a terminal to ask on - a script
+# that runs `use` with no argument should fail loudly, not block forever.
+cmd_pick() {
+    local -a names=(); local e i=0 live cur
+    [ -d "$container" ] || { echo "!! no version store; nothing to switch between" >&2; return 1; }
+    live="$(readlink -f "$channel" 2>/dev/null || true)"
+    while read -r e; do [ -n "$e" ] && names+=("$e"); done < <(sorted)
+    [ "${#names[@]}" -gt 0 ] || { echo "!! no installed builds" >&2; return 1; }
+    if ! { : >/dev/tty; } 2>/dev/null; then
+        echo "!! no terminal to ask on; name a build instead:" >&2
+        for e in "${names[@]}"; do echo "     works runtime use $e" >&2; done
+        return 1
+    fi
+    for e in "${names[@]}"; do
+        i=$((i+1))
+        cur=""; [ "$container/$e" = "$live" ] && cur="  (current)"
+        printf '  %2d) %-32s %-12s %s%s\n' "$i" "$e" "$(base_of "$e")" \
+            "$(works_buildinfo_field "$container/$e/ABLETON-WINE-BUILD-INFO.txt" built-at)" "$cur"
+    done
+    local ans=""
+    printf 'Which build? [1-%d, or q to cancel] ' "${#names[@]}" > /dev/tty
+    read -r -t 120 ans < /dev/tty || ans=q
+    case "$ans" in
+        q|Q|"")      echo "cancelled"; return 0 ;;
+        *[!0-9]*)    echo "!! not a number: $ans" >&2; return 1 ;;
+    esac
+    [ "$ans" -ge 1 ] && [ "$ans" -le "${#names[@]}" ] || { echo "!! out of range: $ans" >&2; return 1; }
+    cmd_use "${names[$((ans-1))]}"
+}
+
+cmd_use() {
+    local want="${1:-}" force="${2:-}" live cur from to
+    [ -n "$want" ] || { echo "!! usage: works runtime use <name>|--previous" >&2; return 1; }
+    [ -d "$container" ] || { echo "!! no version store; nothing to switch between" >&2; return 1; }
+
+    if [ "$want" = "--previous" ]; then
+        cur="$(readlink "$channel" 2>/dev/null || true)"
+        want="$(sorted | grep -vxF "$cur" | head -1)"
+        [ -n "$want" ] || { echo "!! only one build is installed" >&2; return 1; }
+    fi
+
+    [ -d "$container/$want" ] || {
+        echo "!! no such build: $want" >&2
+        echo "   installed:" >&2; sorted | sed 's/^/     /' >&2
+        return 1; }
+    [ -n "$(works_runtime_id "$container/$want")" ] || {
+        echo "!! $want has no readable BUILD-INFO and is not a runtime you can select" >&2
+        return 1; }
+    [ -x "$container/$want/bin/wine" ] || {
+        echo "!! $want has no bin/wine; refusing to point the channel at it" >&2
+        return 1; }
+
+    # A Plug is bound to a Wine base: Wine compares the prefix's
+    # .update-timestamp against the runtime's share/wine/wine.inf and runs
+    # wineboot --update when they differ. Forward it does; back it does not
+    # support. Switching between bases is therefore a one-way door for every
+    # Plug using this channel, and nothing said so until now.
+    from="$(base_of "$(readlink "$channel" 2>/dev/null)")"
+    to="$(base_of "$want")"
+    if [ -n "$from" ] && [ -n "$to" ] && [ "$from" != "$to" ]; then
+        echo "This build is on a different Wine base: $from -> $to"
+        if [ "$(printf '%s\n%s\n' "$from" "$to" | sort -V | tail -1)" = "$from" ]; then
+            echo "  That is a DOWNGRADE. Wine does not support it: your Plug was"
+            echo "  bootstrapped against $from and cannot be taken back to $to."
+            echo "  Expect breakage, and keep a copy of the Plug first."
+        else
+            echo "  Your Plug will be re-bootstrapped against $to on next launch,"
+            echo "  and cannot be taken back to $from afterwards."
+        fi
+        if [ "$force" = "--force" ]; then
+            echo "  (--force given)"
+        else
+            ask_tty "  Continue? [y/N] "
+            case "$?" in
+                0) ;;
+                2) echo "!! refusing a base change without a terminal; pass --force if you mean it" >&2
+                   return 1 ;;
+                *) echo "cancelled"; return 1 ;;
+            esac
+        fi
+    fi
+
+    # Before the retarget. works_runtime_busy resolves through the channel, so
+    # asking afterwards asks whether anything is running from the build being
+    # switched *to* — while the note is about the one being switched from.
+    local was_busy=""
+    works_runtime_busy && was_busy=1
+    ln -sfn "$want" "$channel"
+    echo "channel -> $want"
+    if [ -n "$was_busy" ]; then
+        echo "note: something is still running from the previous build. It keeps"
+        echo "      the build it started with; this takes effect on the next launch."
+    fi
+}
+
+# The shape, then the detail. Written out rather than sliced from the header
+# with a line range, which rots the moment the comment above it is edited.
+short_usage() {
+    cat <<'EOF'
+usage: works runtime {list|path|use|stop}     `works runtime help` for detail
+
+  works runtime list              every installed build, newest first
+  works runtime path              the runtime root, for scripts and docs
+  works runtime use [id]          switch the channel to another build
+  works runtime stop [-y]         stop everything running from the runtime or a Plug
+EOF
+}
+
+long_usage() {
+    cat <<'EOF'
+Which build of the runtime is in use, and switching between them.
+
+  works runtime list              every installed build, newest first
+  works runtime path              the runtime root, for scripts and docs
+  works runtime use               choose from a numbered list
+  works runtime use <id>          point the channel at a different build
+  works runtime use --previous    the last build that is not the current one
+  works runtime use <id> --force  accept a Wine base change unattended
+  works runtime stop [-y]         stop everything running from the runtime or a Plug
+EOF
+}
+
+case "${1:-list}" in
+    list|ls)        cmd_list ;;
+    stop)           shift; cmd_stop "$@" ;;
+    path|root)      cmd_path ;;
+    use|switch)     shift
+                    if [ -z "${1:-}" ]; then cmd_pick
+                    else cmd_use "$1" "${2:-}"; fi ;;
+    -h|--help|help) long_usage ;;
+    *) echo "!! unknown command: $1" >&2; short_usage >&2; exit 1 ;;
+esac

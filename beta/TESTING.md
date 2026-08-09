@@ -6,7 +6,7 @@ Test one Ableton Wine build across x86-64 Linux systems and record the result.
 
 A build passes on a system only when a tester can:
 
-1. start with an empty Wine prefix at `~/.wine-ableton`;
+1. start with an empty Wine prefix at `~/works/plugs/studio`;
 2. follow the published instructions without extra commands;
 3. install, authorise, and use Ableton Live 12;
 4. complete the tests assigned to that machine;

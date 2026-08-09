@@ -139,7 +139,7 @@ kit_script_names() {
     # it. The installer's name is built from a label that defaults to VERSION,
     # so grepping for a source literal fails on a refactor that changed nothing
     # about the output — which is a test reporting on itself, not on the code.
-    unset ABLETON_DIST_LABEL
+    unset WORKS_DIST_LABEL
     eval "$(grep -m1 '^VERSION=' "$MK")"
     eval "$(grep -m1 '^LABEL=' "$MK")"
     eval "produced=$(grep -m1 '^out=' "$MK" | cut -d= -f2-)"
@@ -181,12 +181,12 @@ kit_script_names() {
         printf '%s' "$missing" >&2; false; }
 }
 
-# guards: make-installer accepted ABLETON_RUNTIME_TARBALL with only an -f check,
+# guards: make-installer accepted WORKS_RUNTIME_TARBALL with only an -f check,
 # packed a 1.6G kit, and the kit's own install.sh then selected nothing from its
 # own payload — observed 2026-08-05
 @test "make-installer refuses a tarball the kit's installer cannot select" {
     cd "$REPO"
-    grep -qF 'ableton_is_runtime_tarball "$tarball"' "$MK" || {
+    grep -qF 'works_is_runtime_tarball "$tarball"' "$MK" || {
         echo "make-installer.sh no longer checks the tarball it packs against the selector" >&2
         false; }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-runtime="${ABLETON_PORTAL_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13-portal}"
+runtime="${ABLETON_PORTAL_WINE_ROOT:-$HOME/works/wine-d2d1-nspa-11.13-portal}"
 stable_launcher="${ABLETON_STABLE_LAUNCHER:-$HOME/.local/bin/ableton-live}"
 
 if [[ ! -x "$runtime/bin/wine" || ! -x "$runtime/bin/wineserver" ]]; then
@@ -22,7 +22,7 @@ if pgrep -af 'Ableton Live 12 Suite[.]exe' 2>/dev/null | grep -q 'ProgramData'; 
 fi
 
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH WINEESYNC WINEFSYNC WINE_FORCE_PORTAL
-export ABLETON_WINE_ROOT="$runtime"
+export WORKS_RUNTIME="$runtime"
 
 # Force mode bypasses compatibility checks for hooks and custom templates. The
 # prefix's FileDialogPortal=auto policy is the safe default.

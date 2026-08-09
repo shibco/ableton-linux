@@ -38,7 +38,7 @@ network access. It downloads SDK 1.0.2903.40 into `tools/webview2-sdk/`.
 Build the tool from the repository root:
 
 ```bash
-ABLETON_WINE_SOURCE=/path/to/wine-d2d1-nspa-src \
+WORKS_RUNTIME_SOURCE=/path/to/wine-d2d1-nspa-src \
   ./tools/build_webviewclose.sh
 ```
 
@@ -46,8 +46,8 @@ The script writes `tools/webviewclose.exe`. Run variant `e` with the project's
 Wine runtime and prefix:
 
 ```bash
-WINEPREFIX="$HOME/.wine-ableton" \
-  "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine" \
+WINEPREFIX="$HOME/works/plugs/studio" \
+  "$(works runtime path)/bin/wine" \
   ./tools/webviewclose.exe e \
   'C:\ProgramData\Ableton\Live 12 Suite\Program\WebView2Loader.dll'
 ```

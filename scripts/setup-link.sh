@@ -2,7 +2,7 @@
 # Ableton Link setup: firewall allowance plus the ableton-linkd session
 # anchor. The main installer runs this once. It remains safe to re-run.
 # The daemon ships in the .run installer (installed to
-# ~/.local/share/ableton-wine/ableton-linkd); this script never builds software.
+# ~/works/apps/ableton-live/ableton-linkd); this script never builds software.
 #
 # Link needs no multicast route: the Link SDK binds every discovery socket to
 # its interface with IP_MULTICAST_IF, which bypasses the routing-table lookup
@@ -84,8 +84,8 @@ echo "== [3/3] Ableton Link service =="
 # the version-5 migration below. Version 4 only existed in pre-release
 # testing, where this marker could be written without the migration running,
 # so a marker reading 4 cannot be trusted as a deliberate choice.
-linkd="${ABLETON_LINKD:-$HOME/.local/share/ableton-wine/ableton-linkd}"
-marker="$HOME/.local/share/ableton-wine/link-configured"
+linkd="${ABLETON_LINKD:-$HOME/works/apps/ableton-live/ableton-linkd}"
+marker="$HOME/works/apps/ableton-live/link-configured"
 prior_version="$(sed -n 2p "$marker" 2>/dev/null || true)"
 case "$prior_version" in ''|*[!0-9]*) prior_version=0 ;; esac
 anchor=skipped
@@ -123,7 +123,7 @@ else
                 else
                     echo "!! could not disable the earlier always-on ableton-linkd service" >&2
                     echo "!! run: systemctl --user disable --now ableton-linkd.service" >&2
-                    echo "!! then re-run ~/.local/share/ableton-wine/setup-link.sh" >&2
+                    echo "!! then re-run ~/works/apps/ableton-live/setup-link.sh" >&2
                     exit 1
                 fi
             fi
@@ -134,7 +134,7 @@ else
             # session bus is usually what is missing (an SSH session), so
             # point at a real login.
             echo "!! could not check the Link background service from this session" >&2
-            echo "!! log in on the machine itself and run ~/.local/share/ableton-wine/setup-link.sh again" >&2
+            echo "!! log in on the machine itself and run ~/works/apps/ableton-live/setup-link.sh again" >&2
             exit 1
         fi
     fi
@@ -157,6 +157,6 @@ fi
 # Record the version only when the anchor step ran to completion: that alone
 # proves the unit registration and the migration check above really happened.
 if [ "$anchor" = session ] && [ "$service_checked" -eq 1 ]; then
-    mkdir -p "$HOME/.local/share/ableton-wine"
+    mkdir -p "$HOME/works/apps/ableton-live"
     printf 'configured\n%s\n' "$LINK_SETUP_VERSION" > "$marker"
 fi

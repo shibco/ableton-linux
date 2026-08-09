@@ -4,7 +4,7 @@
 #
 # The launcher runs for real here: discovery, the single-instance lock, registry
 # sync, argument routing, right up to the exec. What it would have exec'd is
-# captured instead of run, because ABLETON_WINE_ROOT points at a fake runtime
+# captured instead of run, because WORKS_RUNTIME points at a fake runtime
 # tree whose `wine` logs its argv and exits (see helpers/launcher.bash).
 #
 # This is the half that users actually experience — which Live starts, what

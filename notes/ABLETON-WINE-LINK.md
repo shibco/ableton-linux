@@ -8,7 +8,7 @@ NetworkManager hook that earlier setup versions installed. If the step was
 skipped or could not complete, close Live and retry it as your normal user:
 
 ```bash
-"$HOME/.local/share/ableton-wine/setup-link.sh"
+"$HOME/works/apps/ableton-live/setup-link.sh"
 ```
 
 From a repository checkout, run:
@@ -68,7 +68,7 @@ The installer ships `ableton-linkd`, built from the vendored Ableton Link 4.0
 SDK, and installs it at:
 
 ```text
-~/.local/share/ableton-wine/ableton-linkd
+~/works/apps/ableton-live/ableton-linkd
 ```
 
 It joins the Link session as a native peer and holds the shared tempo and
@@ -158,8 +158,8 @@ To check that native peers can join each other, start the daemon, then run
 the probe against it:
 
 ```bash
-"$HOME/.local/share/ableton-wine/ableton-linkd" --daemon
-"$HOME/.local/share/ableton-wine/ableton-linkd" --probe 10
+"$HOME/works/apps/ableton-live/ableton-linkd" --daemon
+"$HOME/works/apps/ableton-live/ableton-linkd" --probe 10
 ```
 
 The probe prints `peers: 1` or more and exits zero. The started daemon
@@ -169,8 +169,8 @@ two native SDK instances can join. It does not identify Live as the peer.
 From a checkout, test Wine's local multicast socket behavior:
 
 ```bash
-env WINEPREFIX="$HOME/.wine-ableton" \
-  "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine" tools/linkprobe.exe
+env WINEPREFIX="$HOME/works/plugs/studio" \
+  "$(works runtime path)/bin/wine" tools/linkprobe.exe
 ```
 
 Require `LINKPROBE TX OK` and `LINKPROBE RX-LOOPBACK OK`. To require

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 runtime="${ABLETON_PORTAL_WINE_ROOT:-$HOME/works/wine-d2d1-nspa-11.13-portal}"
-prefix="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+prefix="${WORKS_PLUG:-$HOME/works/plugs/studio}"
 
 if [[ ! -x "$runtime/bin/wine" || ! -x "$runtime/bin/wineserver" ]]; then
     echo "Portal-enabled Ableton Wine runtime is missing: $runtime" >&2

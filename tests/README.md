@@ -24,7 +24,7 @@
 
 ## Conventions
 
-**The launcher is run, not sourced.** `scripts/ableton-live` does discovery, locking and registry sync at top level and ends in `exec wine`. `helpers/launcher.bash` runs the whole thing against a throwaway `$HOME` and prefix with `ABLETON_WINE_ROOT` pointed at a fake runtime whose `wine` logs its argv and exits — so a test asserts on the command line the launcher *would* have run. Its pure functions are extracted by name and evaluated separately, since a full launch says nothing about colour arithmetic.
+**The launcher is run, not sourced.** `scripts/ableton-live` does discovery, locking and registry sync at top level and ends in `exec wine`. `helpers/launcher.bash` runs the whole thing against a throwaway `$HOME` and prefix with `WORKS_RUNTIME` pointed at a fake runtime whose `wine` logs its argv and exits — so a test asserts on the command line the launcher *would* have run. Its pure functions are extracted by name and evaluated separately, since a full launch says nothing about colour arithmetic.
 
 **Probes are tested against fixtures, not against the machine.** `tests/fixtures/` holds recorded `cosmic-randr`, `kscreen-doctor` and `gdbus` output. `helpers/common.bash` puts a stub first on `PATH`, so results do not depend on which compositor the developer or the runner happens to be using. Adding a compositor means adding a fixture, not finding a machine.
 

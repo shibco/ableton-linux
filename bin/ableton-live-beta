@@ -2,12 +2,12 @@
 # Ableton Live 12 Beta launcher: isolated prefix, existing patched Wine stack.
 set -u
 
-for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
     # shellcheck source=scripts/runtime-env.sh
     [ -r "$_l" ] && . "$_l" && break
 done
-command -v ableton_wine_root >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
+command -v works_runtime_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
 
 # Same diagnostic capture as scripts/ableton-live, at its own path so a beta
 # session never overwrites a stable one. This launcher ships a desktop entry
@@ -26,7 +26,7 @@ else
     echo "ableton-live-beta: cannot write diagnostics to $diagnostic_dir/live-beta.log" >&2
 fi
 
-WINE_ROOT="$(ableton_wine_root)"
+WINE_ROOT="$(works_runtime_path)"
 export WINEPREFIX="${ABLETON_BETA_WINEPREFIX:-$HOME/works/plugs/beta}"
 export PATH="$WINE_ROOT/bin:$PATH"
 # -all silences Wine's debug spam; +winediag keeps the rare one-line user
@@ -62,7 +62,7 @@ fi
 # Ableton Link session anchor (optional): same auto-start as the main launcher.
 # Start ableton-linkd if installed but not running, so the Link session is
 # anchored before Live launches. ABLETON_LINKD overrides the binary path.
-LINKD="${ABLETON_LINKD:-$HOME/.local/share/ableton-wine/ableton-linkd}"
+LINKD="${ABLETON_LINKD:-$HOME/works/apps/ableton-live/ableton-linkd}"
 if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
     "$LINKD" --daemon || echo "ableton-live-beta: ableton-linkd failed to start" >&2
 fi

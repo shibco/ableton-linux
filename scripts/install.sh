@@ -17,16 +17,16 @@ for _l in "$(dirname "$0")/runtime-env.sh" "$root/scripts/runtime-env.sh"; do
     # shellcheck source=scripts/runtime-env.sh
     [ -r "$_l" ] && . "$_l" && break
 done
-command -v ableton_wine_root >/dev/null 2>&1 || {
+command -v works_runtime_path >/dev/null 2>&1 || {
     echo "!! runtime-env.sh not found next to $0" >&2; exit 1; }
-NAME="$(ableton_runtime_name)"
+NAME="$(works_runtime_name)"
 # Where this install lands. scripts/ableton-live and scripts/setup-prefix.sh
-# already honour ABLETON_WINE_ROOT; install.sh and uninstall.sh hardcoded it,
+# already honour WORKS_RUNTIME; install.sh and uninstall.sh hardcoded it,
 # which is the only reason two runtimes could not sit side by side. Staging,
 # the dated rollbacks, and — since PR #120 — the runtime pid scan and the
 # wineserver stop all follow the target, so an overridden root is guarded by
 # the same gate as the default one rather than silently unprotected.
-WINE_ROOT="$(ableton_wine_root)"
+WINE_ROOT="$(works_runtime_path)"
 WINE_ROOT_DIR="$(dirname "$WINE_ROOT")"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 stage=""
@@ -79,12 +79,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # tarball: prefer dist/ (freshly built), else a release tarball dropped in root
-if [ -n "${ABLETON_RUNTIME_TARBALL:-}" ]; then
-    tarball="$ABLETON_RUNTIME_TARBALL"
-    [ -f "$tarball" ] || { echo "!! ABLETON_RUNTIME_TARBALL is not a file: $tarball" >&2; exit 1; }
+if [ -n "${WORKS_RUNTIME_TARBALL:-}" ]; then
+    tarball="$WORKS_RUNTIME_TARBALL"
+    [ -f "$tarball" ] || { echo "!! WORKS_RUNTIME_TARBALL is not a file: $tarball" >&2; exit 1; }
 else
-    tarball="$(ableton_pick_tarball "$root/dist")"
-    [ -n "$tarball" ] || tarball="$(ableton_pick_tarball "$root")"
+    tarball="$(works_pick_tarball "$root/dist")"
+    [ -n "$tarball" ] || tarball="$(works_pick_tarball "$root")"
 fi
 [ -n "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst found: run ./build.sh first, or drop a release tarball in $root/dist/"; exit 1; }
 
@@ -111,9 +111,9 @@ fi
 # Live under an unrelated Wine install is neither prompted for nor killed.
 live_up=0
 [ -z "$(ableton_live_pids)" ] || live_up=1
-if ableton_runtime_busy; then
+if works_runtime_busy; then
     echo "== stop processes using the installed runtime =="
-    echo "   $(ableton_runtime_pids | wc -l) found"
+    echo "   $(works_runtime_pids | wc -l) found"
     # Closing Live discards unsaved work, so require an explicit yes.
     # -r and -w cannot ask that: they stat a 0666 device node and pass
     # even with no controlling terminal, and the printf would then fail
@@ -138,21 +138,31 @@ if ableton_runtime_busy; then
         fi
     fi
     if [ -x "$WINE_ROOT/bin/wineserver" ]; then
-        WINEPREFIX="$(ableton_wine_prefix)" \
+        # The prefix as it is now, not where the migration below will put it:
+        # this runs before works_migrate_plug, so on an unmigrated machine the
+        # real prefix is still at the legacy path and the container path does
+        # not exist yet.
+        WINEPREFIX="$(works_plug_path_live)" \
             "$WINE_ROOT/bin/wineserver" -k 2>/dev/null || true
         for _ in $(seq 1 20); do
-            ableton_runtime_busy || break
+            works_anything_busy || break
             sleep 0.5
         done
     fi
-    if ableton_runtime_busy; then
-        ableton_runtime_pids | xargs -r kill 2>/dev/null || true
+    # works_all_pids, not works_runtime_pids. The runtime scan resolves
+    # /proc/PID/exe under the runtime tree; works_migrate_plug's guard matches
+    # WINEPREFIX= in /proc/PID/environ, and that set is strictly larger. A
+    # process that inherited the prefix without executing from the runtime -
+    # ableton-linkd is exactly that - is invisible to the narrower kill and
+    # visible to the guard, so the install stops cleanly and then refuses.
+    if works_anything_busy; then
+        works_all_pids | sort -un | xargs -r kill 2>/dev/null || true
         pkill -f '[A]bleton Live.*\.exe|[P]ush2DisplayProcess.exe' 2>/dev/null || true
         for _ in $(seq 1 10); do
-            ableton_runtime_busy || break
+            works_anything_busy || break
             sleep 0.5
         done
-        ableton_runtime_pids | xargs -r kill -9 2>/dev/null || true
+        works_all_pids | sort -un | xargs -r kill -9 2>/dev/null || true
         pkill -9 -f '[A]bleton Live.*\.exe|[P]ush2DisplayProcess.exe' 2>/dev/null || true
     fi
 fi
@@ -165,18 +175,18 @@ fi
 #
 # A later failure does not undo it and does not need to: it only moves trees
 # that stay valid, and re-running is a no-op.
-ableton_migrate_layout
+works_migrate_layout
 works_migrate_plug
 
 # Where this install lands. Unpinned, that is always the store - including on a
 # fresh machine, so a new user never sees the flat layout and never becomes a
 # later migration. Pinned, it is exactly the path the user named, flat, because
 # the pin exists for tests, regression VMs and bisecting a build.
-if [ -n "${ABLETON_WINE_ROOT:-}" ]; then
+if [ -n "${WORKS_RUNTIME:-}" ]; then
     STORE=""
-    WINE_ROOT="$ABLETON_WINE_ROOT"
+    WINE_ROOT="$WORKS_RUNTIME"
 else
-    STORE="$(ableton_container_root)"
+    STORE="$(works_runtime_store)"
     mkdir -p "$STORE"
 fi
 
@@ -270,7 +280,7 @@ fi
 # Reproduced 2026-08-05 before this was written.
 if [ -n "$STORE" ]; then
     echo "== promote runtime into the store =="
-    id="$(ableton_runtime_id "$candidate")"
+    id="$(works_runtime_id "$candidate")"
     [ -n "$id" ] || { echo "!! the staged runtime carries no readable BUILD-INFO, so it cannot be named" >&2; exit 1; }
     if [ -e "$STORE/$id" ]; then
         # Same build already present. Set it aside rather than writing over it,
@@ -287,7 +297,7 @@ if [ -n "$STORE" ]; then
     echo "   $id"
     # After the promote, never before: a failure earlier must not leave a user
     # with neither the new runtime nor the old one.
-    ableton_prune_runtimes
+    works_prune_runtimes
 else
     echo "== promote runtime with dated rollback =="
     if [ -e "$WINE_ROOT" ]; then
@@ -300,14 +310,14 @@ else
 fi
 "$WINE_ROOT/bin/wine" --version
 
-echo "== install launcher -> ~/.local/share/ableton-wine =="
-mkdir -p "$BIN" "$HOME/.local/share/ableton-wine" "$HOME/works/bin" "$HOME/works/lib"
+echo "== install launcher -> ~/works/apps/ableton-live =="
+mkdir -p "$BIN" "$HOME/works/apps/ableton-live" "$HOME/works/bin" "$HOME/works/lib"
 # The launcher belongs to the application, so it lives with it and ~/.local/bin
 # holds a link. Anything else means the app's directory does not contain the app:
 # backing up ~/works would miss its entry point, and removing the app directory
 # would leave a working command behind pointing at nothing.
-install -m755 "$here/ableton-live" "$HOME/.local/share/ableton-wine/ableton-live"
-ln -sfn "$HOME/.local/share/ableton-wine/ableton-live" "$BIN/ableton-live"
+install -m755 "$here/ableton-live" "$HOME/works/apps/ableton-live/ableton-live"
+ln -sfn "$HOME/works/apps/ableton-live/ableton-live" "$BIN/ableton-live"
 
 
 # Dated copies of the launcher accumulated here on every install, one per run,
@@ -316,25 +326,33 @@ ln -sfn "$HOME/.local/share/ableton-wine/ableton-live" "$BIN/ableton-live"
 # from the kit, so the copies bought nothing. Clear out any left behind.
 rm -f "$BIN"/ableton-live.rollback-* 2>/dev/null || true
 
-echo "== install the shared toolkit -> ~/.local/share/ableton-wine =="
+# `works` acts on the runtime and the store, which no application owns, so it
+# sits in works/bin rather than in any app's directory. Its verbs go beside the
+# shared library: they implement the command, they are not commands themselves.
+mkdir -p "$HOME/works/bin"
+install -m755 "$here/works" "$HOME/works/bin/works"
+install -m755 "$here/works-runtime" "$HOME/works/lib/works-runtime"
+ln -sfn "$HOME/works/bin/works" "$BIN/works"
+
+echo "== install the shared toolkit -> ~/works/apps/ableton-live =="
 # The launcher sources these on every start (DPI auto-calibration, light/dark
 # theme sync, and crash-safe GNOME shortcut holding).
 # Two directories because they hold two different things: the toolkit any
 # application sources, and this application's own payload.
-mkdir -p "$HOME/works/lib" "$HOME/.local/share/ableton-wine"
+mkdir -p "$HOME/works/lib" "$HOME/works/apps/ableton-live"
 # The launchers live in ~/.local/bin with no sibling lib, so the shared
 # resolver has to be here for them to source. Without it ableton-live exits
 # on its own first lines and Live never starts.
-install -m644 "$here/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"
-install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
-install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
-install -m644 "$here/shortcut-hold.sh" "$HOME/.local/share/ableton-wine/shortcut-hold.sh"
+install -m644 "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"
+install -m644 "$here/detect-scale.sh" "$HOME/works/lib/detect-scale.sh"
+install -m644 "$here/detect-theme.sh" "$HOME/works/lib/detect-theme.sh"
+install -m644 "$here/shortcut-hold.sh" "$HOME/works/apps/ableton-live/shortcut-hold.sh"
 # setsyscolors.exe repaints the top bar mid-session when the Live theme changes;
 # without it the colors still apply on the next launch. Kit stages it next to
 # these scripts; a repo checkout carries it in tools/.
 for f in "$here/setsyscolors.exe" "$root/tools/setsyscolors.exe"; do
     if [ -f "$f" ]; then
-        install -m644 "$f" "$HOME/.local/share/ableton-wine/setsyscolors.exe"
+        install -m644 "$f" "$HOME/works/apps/ableton-live/setsyscolors.exe"
         break
     fi
 done
@@ -343,7 +361,7 @@ done
 # manual splitter nudge once per session.
 for f in "$here/learnheal.exe" "$root/tools/learnheal.exe"; do
     if [ -f "$f" ]; then
-        install -m644 "$f" "$HOME/.local/share/ableton-wine/learnheal.exe"
+        install -m644 "$f" "$HOME/works/apps/ableton-live/learnheal.exe"
         break
     fi
 done
@@ -361,19 +379,19 @@ if systemctl --user is-active --quiet ableton-linkd.service 2>/dev/null; then
     systemctl --user stop ableton-linkd.service 2>/dev/null || true
 fi
 pkill -x ableton-linkd 2>/dev/null || true   # launcher-started instance, no unit
-install -m755 "$linkd" "$HOME/.local/share/ableton-wine/ableton-linkd"
-install -m644 "$linkd_unit" "$HOME/.local/share/ableton-wine/ableton-linkd.service"
+install -m755 "$linkd" "$HOME/works/apps/ableton-live/ableton-linkd"
+install -m644 "$linkd_unit" "$HOME/works/apps/ableton-live/ableton-linkd.service"
 if [ "$linkd_active" -eq 1 ]; then
     systemctl --user start ableton-linkd.service 2>/dev/null || true
 fi
 # Keep the setup command installed for retries after a firewall or
 # hook-removal failure.
-install -m755 "$here/setup-link.sh" "$HOME/.local/share/ableton-wine/setup-link.sh"
+install -m755 "$here/setup-link.sh" "$HOME/works/apps/ableton-live/setup-link.sh"
 
 # Record the kit version so a later installer can tell what it is updating
 # (the kit and the repo both carry VERSION at the root).
 printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" \
-    > "$HOME/.local/share/ableton-wine/VERSION"
+    > "$HOME/works/apps/ableton-live/VERSION"
 
 echo "== install desktop entries -> $APPS =="
 mkdir -p "$APPS"
@@ -384,7 +402,7 @@ mkdir -p "$APPS"
 live_name="Ableton Live"
 live_icon="live-suite"
 live_wmclass=""
-live_prefix="$(ableton_wine_prefix)"
+live_prefix="$(works_plug_path)"
 newest=""
 for exe in "$live_prefix"/drive_c/ProgramData/Ableton/Live*/Program/Ableton\ Live*.exe; do
     [ -e "$exe" ] || continue
@@ -419,12 +437,12 @@ fi
 # copies are staged for the launcher's start-time repair.
 # See notes/ABLETON-WINE-ONLINE-AUTH.md.
 for d in wine-protocol-ableton wine-extension-auz; do
-    sed "s#@HOME@#$HOME#g" "$root/desktop/$d.desktop.in" > "$HOME/.local/share/ableton-wine/$d.desktop"
+    sed "s#@HOME@#$HOME#g" "$root/desktop/$d.desktop.in" > "$HOME/works/apps/ableton-live/$d.desktop"
     if [ -e "$APPS/$d.desktop" ] && grep -qF "$BIN/ableton-live" "$APPS/$d.desktop"; then
         echo "   preserving existing $APPS/$d.desktop"
     else
         [ ! -e "$APPS/$d.desktop" ] || echo "   replacing $APPS/$d.desktop (it does not route through the launcher)"
-        cp "$HOME/.local/share/ableton-wine/$d.desktop" "$APPS/$d.desktop"
+        cp "$HOME/works/apps/ableton-live/$d.desktop" "$APPS/$d.desktop"
     fi
 done
 update-desktop-database "$APPS" 2>/dev/null || true

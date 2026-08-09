@@ -17,7 +17,7 @@
 # with a warning; the row is always appended and the script never fails mid-run.
 #
 # Rows land in bench/results.csv (created with a header on first use).
-# Overrides: ABLETON_WINE_ROOT (wineserver location), BENCH_RESULTS_CSV (output
+# Overrides: WORKS_RUNTIME (wineserver location), BENCH_RESULTS_CSV (output
 # file), BENCH_WS_STATUS (wineserver /proc status file — testing only).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -44,12 +44,12 @@ for v in "$xruns" "$dsp"; do
 done
 
 # Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
-for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
     [ -r "$_l" ] && . "$_l" && break
 done
-command -v ableton_wine_root >/dev/null 2>&1 || {
-    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
-WINE_ROOT="$(ableton_wine_root)"
+command -v works_runtime_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+WINE_ROOT="$(works_runtime_path)"
 
 # The xruns figure is operator-entered from pw-top's ERR delta over the reference
 # playback; without pw-top there is no sanctioned way to have measured it.

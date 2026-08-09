@@ -6,7 +6,7 @@
  * leaves Chromium unable to handle later resizes, so a pane must hold a
  * stable rect across scans first and is nudged once; a material size
  * change re-arms one nudge.  Exits after Live has been gone for 60 s.
- * build: tools/build_learnheal.sh; install: ~/.local/share/ableton-wine/ */
+ * build: tools/build_learnheal.sh; install: ~/works/apps/ableton-live/ */
 #include <windows.h>
 
 #define MAX_TRACK 32

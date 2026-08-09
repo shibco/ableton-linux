@@ -165,7 +165,7 @@
 - Moved the Wine base from 11.11 to 11.13 (giang17/wine `d2d1-dcomp-11.13` at
   `5c23dd1c`). Wine patches 0046 to 0048 fix the series against 11.13's
   frame-latency, fractional-DPI, and libusb detection changes. The runtime now
-  installs to `~/.local/opt/wine-d2d1-nspa-11.13`; the 11.11 directory from
+  installs to `~/works/wine-d2d1-nspa-11.13`; the 11.11 directory from
   earlier releases stays on disk and can be deleted, about 380 MB. See
   [the base bump note](notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md).
 - The installer now configures Ableton Link during installation. Setup no

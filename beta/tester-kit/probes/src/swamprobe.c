@@ -6,7 +6,7 @@
  * No msvcrt: output via wsprintfA + WriteFile to swamprobe.txt in the cwd.
  *
  * MUST run in the SAME prefix/wineserver as the running Ableton Live
- * (WINEPREFIX=~/.wine-ableton + the patched wine binary), otherwise it sees a
+ * (WINEPREFIX=~/works/plugs/studio + the patched wine binary), otherwise it sees a
  * fresh empty desktop and the dump is empty. Use run_probe.sh.
  *
  * The probe sets itself per-monitor-v2 so ALL coordinates it reports are

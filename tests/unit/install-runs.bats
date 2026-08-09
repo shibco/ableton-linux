@@ -5,7 +5,7 @@
 # This file exists because nothing executed install.sh. The suite sourced
 # runtime-env.sh directly and checked the resolvers, which is worth doing and
 # says nothing about whether the script that uses them starts. On 2026-08-05 a
-# merge reordered install.sh's head so it called ableton_runtime_name eight
+# merge reordered install.sh's head so it called works_runtime_name eight
 # lines before sourcing the file that defines it; under `set -euo pipefail` it
 # aborted on that line. 172 tests passed for thirteen commits.
 #
@@ -21,7 +21,7 @@
 # tree ships.
 #
 #   ./tests/run.sh tests/unit/install-runs.bats
-#   ABLETON_TEST_TARBALL=/path/to/runtime.tar.zst ./tests/run.sh tests/unit/install-runs.bats
+#   WORKS_TEST_TARBALL=/path/to/runtime.tar.zst ./tests/run.sh tests/unit/install-runs.bats
 
 bats_require_minimum_version 1.5.0
 
@@ -36,7 +36,7 @@ setup() {
 # guards: install.sh aborting on its own first lines, which no resolver test can
 # see because the resolvers themselves are fine
 @test "install.sh gets past its own initialisation" {
-    run env ABLETON_WINE_ROOT="$BATS_TEST_TMPDIR/rt" \
+    run env WORKS_RUNTIME="$BATS_TEST_TMPDIR/rt" \
         bash "$REPO/scripts/install.sh" --runtime-only
     # Deliberately indifferent to whether it succeeded: whether dist/ happens to
     # hold a tarball is not what this is about, and an earlier draft that
@@ -52,43 +52,43 @@ setup() {
 @test "install.sh resolves its roots from the shared lib, not from its own copy" {
     # The pin has to reach the script, not just the library: install.sh snapshots
     # WINE_ROOT once and every later step follows it.
-    run env ABLETON_WINE_ROOT="$BATS_TEST_TMPDIR/pinned-root" \
+    run env WORKS_RUNTIME="$BATS_TEST_TMPDIR/pinned-root" \
         bash "$REPO/scripts/install.sh" --runtime-only
     [[ "$output" != *"command not found"* ]] || { echo "$output" >&2; false; }
     # whatever it did, it did not do it at the default location
-    [ ! -e "$HOME/works/$(ableton_runtime_name)" ]
+    [ ! -e "$HOME/works/$(works_runtime_name)" ]
 }
 
 # guards: the whole install path — staging, the required-file gate, promote,
 # the launcher, and the shared lib landing where the launcher can source it
 @test "a real tarball installs, and the tree identifies itself" {
     tarball="$(sandbox_tarball)"
-    [ -n "$tarball" ] || skip "no runtime tarball; set ABLETON_TEST_TARBALL to run this"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
 
     root="$BATS_TEST_TMPDIR/rt"
-    run env ABLETON_WINE_ROOT="$root" ABLETON_RUNTIME_TARBALL="$tarball" \
+    run env WORKS_RUNTIME="$root" WORKS_RUNTIME_TARBALL="$tarball" \
         bash "$REPO/scripts/install.sh" --runtime-only
     [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
 
     [ -x "$root/bin/wine" ]
-    [ -n "$(ableton_runtime_id "$root")" ]
+    [ -n "$(works_runtime_id "$root")" ]
     # the launcher and the resolver it sources both land
     [ -x "$HOME/.local/bin/ableton-live" ]
-    [ -f "$HOME/.local/share/ableton-wine/runtime-env.sh" ]
+    [ -f "$HOME/works/lib/runtime-env.sh" ]
     # and nothing was written to the default location
-    [ ! -e "$HOME/works/$(ableton_runtime_name)" ]
+    [ ! -e "$HOME/works/$(works_runtime_name)" ]
 }
 
 # guards: the promote step and its dated rollback, which is where the store's
 # layout will later be maintained or broken
 @test "a second install promotes and leaves the previous runtime behind" {
     tarball="$(sandbox_tarball)"
-    [ -n "$tarball" ] || skip "no runtime tarball; set ABLETON_TEST_TARBALL to run this"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
 
     root="$BATS_TEST_TMPDIR/rt"
-    env ABLETON_WINE_ROOT="$root" ABLETON_RUNTIME_TARBALL="$tarball" \
+    env WORKS_RUNTIME="$root" WORKS_RUNTIME_TARBALL="$tarball" \
         bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
-    run env ABLETON_WINE_ROOT="$root" ABLETON_RUNTIME_TARBALL="$tarball" \
+    run env WORKS_RUNTIME="$root" WORKS_RUNTIME_TARBALL="$tarball" \
         bash "$REPO/scripts/install.sh" --runtime-only
     [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
 
@@ -107,16 +107,16 @@ setup() {
 
 @test "a fresh install lands in the store, not the flat path" {
     tarball="$(sandbox_tarball)"
-    [ -n "$tarball" ] || skip "no runtime tarball; set ABLETON_TEST_TARBALL to run this"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
 
-    run env ABLETON_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
     [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
 
-    container="$(ableton_container_root)"
+    container="$(works_runtime_store)"
     [ -L "$container/stable" ]
     id="$(readlink "$container/stable")"
     [ -f "$container/$id/bin/wine" ]
-    [ "$id" = "$(ableton_runtime_id "$container/$id")" ]
+    [ "$id" = "$(works_runtime_id "$container/$id")" ]
     # a new user never sees the flat layout
     [ ! -e "$(works_legacy_root)" ]
 }
@@ -125,19 +125,19 @@ setup() {
 # tree, which is what /proc/PID/exe reporting resolved paths makes non-obvious
 @test "after installing, the resolver points at a real build directory" {
     tarball="$(sandbox_tarball)"
-    [ -n "$tarball" ] || skip "no runtime tarball; set ABLETON_TEST_TARBALL to run this"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
 
-    env ABLETON_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
-    root="$(ableton_wine_root)"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    root="$(works_runtime_path)"
     [ -d "$root" ] && [ ! -L "$root" ]
     [ -x "$root/bin/wine" ]
-    [ "$root" = "$(readlink -f "$(ableton_container_root)/stable")" ]
+    [ "$root" = "$(readlink -f "$(works_runtime_store)/stable")" ]
 }
 
 # guards: an existing flat install is what nearly every user has
 @test "a flat install is migrated by the installer, not just by the library" {
     tarball="$(sandbox_tarball)"
-    [ -n "$tarball" ] || skip "no runtime tarball; set ABLETON_TEST_TARBALL to run this"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
 
     legacy="$(works_legacy_root)"
     mkdir -p "$legacy/bin"
@@ -145,10 +145,10 @@ setup() {
     printf 'dist-version: 2026.01.01.1\npatch-stack:  0ldbui1daaa\n' \
         > "$legacy/ABLETON-WINE-BUILD-INFO.txt"
 
-    run env ABLETON_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
     [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
 
-    container="$(ableton_container_root)"
+    container="$(works_runtime_store)"
     [ ! -e "$legacy" ]
     [ -d "$container/2026.01.01.1+0ldbui1" ]   # the old build, now readable
     [ -L "$container/stable" ]
@@ -176,7 +176,7 @@ setup() {
 # guards: `wineboot -u` rewriting the registry under a live wineserver
 @test "setup-prefix refuses while something runs from the runtime" {
     root="$BATS_TEST_TMPDIR/rt"; mkdir -p "$root/bin"
-    export ABLETON_WINE_ROOT="$root"
+    export WORKS_RUNTIME="$root"
     cp "$(command -v sleep)" "$root/bin/wineserver"
     "$root/bin/wineserver" 30 &
     local pid=$!
@@ -190,7 +190,7 @@ setup() {
 # exactly when nobody notices the prefix being rewritten
 @test "setup-prefix refuses with no terminal too" {
     root="$BATS_TEST_TMPDIR/rt"; mkdir -p "$root/bin"
-    export ABLETON_WINE_ROOT="$root"
+    export WORKS_RUNTIME="$root"
     cp "$(command -v sleep)" "$root/bin/wineserver"
     "$root/bin/wineserver" 30 &
     local pid=$!
@@ -203,7 +203,7 @@ setup() {
 # stopped everything -- getting past it is the whole requirement
 @test "setup-prefix gets past the guard when nothing is running" {
     root="$BATS_TEST_TMPDIR/rt"; mkdir -p "$root/bin"
-    export ABLETON_WINE_ROOT="$root"
+    export WORKS_RUNTIME="$root"
     run bash "$REPO/scripts/setup-prefix.sh"
     [[ "$output" != *"Close Live"* ]]
 }

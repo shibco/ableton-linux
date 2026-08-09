@@ -86,7 +86,7 @@ portal-backend checks.
 The installer includes the vendored SDK archive and its GPLv2-or-later
 license as corresponding source for `ableton-linkd`. It installs the daemon,
 the systemd user unit, and `setup-link.sh` under
-`~/.local/share/ableton-wine/`.
+`~/works/apps/ableton-live/`.
 
 ## Host and launcher integration
 
