@@ -121,6 +121,21 @@ setup() {
     [ ! -e "$(works_legacy_root)" ]
 }
 
+@test "the channel stays a symlink across a second install" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+
+    container="$(works_runtime_store)"
+    [ -L "$container/stable" ] || { echo "the channel is no longer a symlink" >&2; false; }
+    # and no rollback symlink was left pointing into the store
+    [ -z "$(find "$container" -maxdepth 1 -name 'stable-rollback-*')" ]
+    [ -z "$(find "$container" -maxdepth 1 -name '.replaced-*')" ]
+}
+
 # guards: the resolver, the process scan and the install must all name the same
 # tree, which is what /proc/PID/exe reporting resolved paths makes non-obvious
 @test "after installing, the resolver points at a real build directory" {
@@ -160,13 +175,86 @@ setup() {
 # not the machine: installing a nightly while configured for stable would
 # otherwise point `stable` at a nightly build.
 
+@test "a kit declares its channel and the installer promotes into it" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    export XDG_CONFIG_HOME="$HOME/.config"
+    printf 'stable\n' > "$BATS_TEST_TMPDIR/pretend-stable"
+
+    # a checkout stands in for a kit: dist/channel is the same marker
+    mkdir -p "$BATS_TEST_TMPDIR/dist" && printf 'nightly\n' > "$REPO/dist/channel"
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    rm -f "$REPO/dist/channel"
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+
+    container="$(works_runtime_store)"
+    [ -L "$container/nightly" ] || { echo "no nightly channel: $(ls -1 "$container")" >&2; false; }
+    [ ! -e "$container/stable" ] || { echo "stable was pointed at a nightly build" >&2; false; }
+}
+
+@test "installing records the channel, so the updater follows it" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    export XDG_CONFIG_HOME="$HOME/.config"
+    printf 'nightly\n' > "$REPO/dist/channel"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    rm -f "$REPO/dist/channel"
+    [ "$(cat "$HOME/works/runtimes/.channel")" = "nightly" ]
+}
+
+@test "a kit with no channel marker is stable, as every older kit was" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    export XDG_CONFIG_HOME="$HOME/.config"
+    rm -f "$REPO/dist/channel"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    [ -L "$(works_runtime_store)/stable" ]
+}
+
 # guards: install.sh writes the channel file, so "removed everything install.sh
 # added" has to include it — left behind, a later install is followed by an
 # `works-update` pointed at a channel nothing on the machine chose
+@test "uninstalling takes the recorded channel back" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    export XDG_CONFIG_HOME="$HOME/.config"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    [ -r "$HOME/works/runtimes/.channel" ]
+
+    run setsid --wait bash "$REPO/scripts/uninstall.sh" --yes
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [ ! -e "$HOME/works/runtimes/.channel" ]
+}
 
 # guards: the config directory is not ours to clear out — only the one file is
 # guards: the Plug holds Live, its authorisation and the user's sets — the one
 # thing here that cannot be reinstalled, so removal must be asked for
+@test "uninstalling keeps the Plug, and the work inside it" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    plug="$HOME/works/plugs/studio"
+    mkdir -p "$plug/drive_c"
+    printf 'my set\n' > "$plug/drive_c/mine.als"
+
+    setsid --wait bash "$REPO/scripts/uninstall.sh" --yes >/dev/null 2>&1
+    [ "$(cat "$plug/drive_c/mine.als")" = "my set" ]
+}
+
+@test "uninstalling takes the shared toolkit only when no application is left" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    [ -r "$HOME/works/lib/runtime-env.sh" ]
+
+    mkdir -p "$HOME/works/apps/another-app"      # a second tenant, mid-uninstall
+    setsid --wait bash "$REPO/scripts/uninstall.sh" --yes >/dev/null 2>&1
+    [ -r "$HOME/works/lib/runtime-env.sh" ] || { echo "the toolkit went while another app still needs it" >&2; false; }
+
+    rmdir "$HOME/works/apps/another-app"
+    setsid --wait bash "$REPO/scripts/uninstall.sh" --yes >/dev/null 2>&1
+    [ ! -e "$HOME/works/lib" ]
+}
 
 # --- setup-prefix.sh's own guard ----------------------------------------------
 # Through the .run this never fires, because install.sh stops everything first.
@@ -211,69 +299,40 @@ setup() {
 # guards: the app directory must contain the app — a launcher that lives only on
 # PATH means backing up ~/works misses the entry point, and removing the app
 # leaves a working command pointing at nothing
+@test "the launcher lives with the application, and PATH holds a link to it" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    [ -x "$HOME/works/apps/ableton-live/ableton-live" ]
+    [ -L "$HOME/.local/bin/ableton-live" ]
+    [ "$(readlink "$HOME/.local/bin/ableton-live")" = "$HOME/works/apps/ableton-live/ableton-live" ]
+}
 
 # guards: one dated copy per install, on the PATH, pruned by nothing — the
 # defect the version store exists to end, in a second place
-
-@test "the channel stays a symlink across a second install" {
+@test "installing leaves no dated launcher copies behind" {
     tarball="$(sandbox_tarball)"
     [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
-
+    mkdir -p "$HOME/.local/bin"
+    : > "$HOME/.local/bin/ableton-live.rollback-20260101T000000Z"   # litter from an older installer
     env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
-    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
-    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
-
-    container="$(works_runtime_store)"
-    [ -L "$container/stable" ] || { echo "the channel is no longer a symlink" >&2; false; }
-    # and no rollback symlink was left pointing into the store
-    [ -z "$(find "$container" -maxdepth 1 -name 'stable-rollback-*')" ]
-    [ -z "$(find "$container" -maxdepth 1 -name '.replaced-*')" ]
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    n=$(find "$HOME/.local/bin" -name 'ableton-live.rollback-*' | wc -l)
+    [ "$n" = 0 ] || { echo "$n dated launcher copies survived" >&2; false; }
 }
 
-@test "a kit declares its channel and the installer promotes into it" {
+@test "the works command lives outside any application, with its verbs beside the library" {
     tarball="$(sandbox_tarball)"
     [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
-    export XDG_CONFIG_HOME="$HOME/.config"
-    printf 'stable\n' > "$BATS_TEST_TMPDIR/pretend-stable"
-
-    # a checkout stands in for a kit: dist/channel is the same marker
-    mkdir -p "$BATS_TEST_TMPDIR/dist" && printf 'nightly\n' > "$REPO/dist/channel"
-    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
-    rm -f "$REPO/dist/channel"
-    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
-
-    container="$(works_runtime_store)"
-    [ -L "$container/nightly" ] || { echo "no nightly channel: $(ls -1 "$container")" >&2; false; }
-    [ ! -e "$container/stable" ] || { echo "stable was pointed at a nightly build" >&2; false; }
-}
-
-@test "installing records the channel, so the updater follows it" {
-    tarball="$(sandbox_tarball)"
-    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
-    export XDG_CONFIG_HOME="$HOME/.config"
-    printf 'nightly\n' > "$REPO/dist/channel"
     env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
-    rm -f "$REPO/dist/channel"
-    [ "$(cat "$HOME/works/runtimes/.channel")" = "nightly" ]
-}
-
-@test "a kit with no channel marker is stable, as every older kit was" {
-    tarball="$(sandbox_tarball)"
-    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
-    export XDG_CONFIG_HOME="$HOME/.config"
-    rm -f "$REPO/dist/channel"
-    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
-    [ -L "$(works_runtime_store)/stable" ]
-}
-
-@test "uninstalling takes the recorded channel back" {
-    tarball="$(sandbox_tarball)"
-    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
-    export XDG_CONFIG_HOME="$HOME/.config"
-    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
-    [ -r "$HOME/works/runtimes/.channel" ]
-
-    run setsid --wait bash "$REPO/scripts/uninstall.sh" --yes
-    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
-    [ ! -e "$HOME/works/runtimes/.channel" ]
+    [ -x "$HOME/works/bin/works" ]
+    [ -x "$HOME/works/lib/works-runtime" ]
+    [ ! -e "$HOME/works/apps/ableton-live/works" ]
+    [ -L "$HOME/.local/bin/works" ]
+    # the verbs implement the command; they are not commands
+    [ ! -e "$HOME/.local/bin/works-runtime" ]
+    # Through the link, which is the only way a person invokes it: $0 is then
+    # the link's path, and ../lib from there is not where the verbs live.
+    "$HOME/.local/bin/works" runtime path >/dev/null
+    "$HOME/works/bin/works" runtime path >/dev/null
 }

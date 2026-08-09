@@ -1,0 +1,272 @@
+# A release, built by CI and held as a draft until a human has run it.
+#
+# Two ways in, one button each:
+#
+#   gh workflow run release-build.yml -f mode=build             # full container build of main
+#   gh workflow run release-build.yml -f mode=promote-nightly   # bless the published nightly's bits
+#
+# Both end the same way: assets, checksums and the stable manifest attached to a
+# DRAFT release for v<VERSION>. Nothing users can reach changes until the draft
+# is published — that is the human step, and it is deliberate: CI cannot launch
+# Ableton Live, so the one verification that matters (install the draft kit,
+# start Live) stays on a person's machine. Publish with
+#
+#   gh release edit v<VERSION> --draft=false
+#
+# and release.yml's verify job re-downloads and checks every asset, exactly as
+# it does for a locally built release.
+#
+# The version is decided before this runs, by a normal PR that bumps VERSION and
+# CHANGELOG — the same committed pair release.bats asserts at the tag. This
+# workflow refuses to run past a mismatch, an existing tag, or an existing
+# release, so re-running it is safe.
+#
+# It commits dist/BUILD-INFO-<VERSION>.txt and pushes the v<VERSION> tag itself.
+# That tag push does NOT trigger release.yml's draft job — pushes made with the
+# workflow token never start workflows — so the draft is created here, and
+# release.yml continues to serve the local release.sh path unchanged.
+#
+# promote-nightly does no Wine build at all: it downloads what the nightly
+# channel published, verifies it against the nightly's own manifest and
+# checksums, checks the commit is on main, restamps the identity with
+# scripts/promote-nightly.sh (source-commit and built-at survive; that is what
+# ties the release to the build that soaked), re-audits every patch fingerprint
+# in the binaries, and repacks the kit. Minutes, not forty.
+name: release-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "build = full container build of this ref; promote-nightly = restamp the published nightly"
+        type: choice
+        options: [build, promote-nightly]
+        default: build
+      expected_commit:
+        description: "promote-nightly only: refuse unless the nightly's source-commit starts with this"
+        type: string
+        default: ""
+
+# A release run is never cancelled by a newer one; refuse the overlap instead.
+concurrency:
+  group: release-build
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # the ancestry check and the tag push need real history
+
+      - name: Refuse anything but a clean, undecided VERSION
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(cat VERSION)"
+          [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] \
+              || { echo "!! VERSION is not a dated release string: $VERSION" >&2; exit 1; }
+          # The same pairing release.bats asserts: the newest CHANGELOG entry is
+          # this release. A mismatch means the version-bump PR has not landed.
+          top="$(grep -m1 '^## ' CHANGELOG.md | sed 's/^## //')"
+          [ "$top" = "$VERSION" ] \
+              || { echo "!! VERSION is $VERSION but the newest CHANGELOG entry is '$top'" >&2; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+              echo "!! v$VERSION is already tagged; bump VERSION first" >&2; exit 1; fi
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "!! a release v$VERSION already exists" >&2; exit 1; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # --- mode: build — the same container path the nightly runs ------------
+
+      - name: Restore ccache
+        if: inputs.mode == 'build'
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('patches/**', 'Containerfile') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Set up Docker Buildx
+        if: inputs.mode == 'build'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build container image (Buildx, GHA layer cache)
+        if: inputs.mode == 'build'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          tags: ableton-wine-build:22.04
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # WORKS_DIST_VERSION pins the runtime's own BUILD-INFO to the committed
+      # VERSION — for a release they are the same thing, and the guard above has
+      # already said which. No WORKS_BUILD_KIND: absent is what release means.
+      - name: Build Wine + PipeASIO + ableton-linkd
+        if: inputs.mode == 'build'
+        run: |
+          ENGINE=docker JOBS="$(nproc)" \
+          WORKS_DIST_VERSION="${{ steps.v.outputs.version }}" \
+          ./build.sh
+
+      - name: Fix ownership of container output
+        if: inputs.mode == 'build' && always()
+        run: sudo chown -R "$(id -u):$(id -g)" dist .ccache 2>/dev/null || true
+
+      # --- mode: promote-nightly — the soaked bits, renamed -------------------
+
+      - name: Fetch what the nightly channel published
+        if: inputs.mode == 'promote-nightly'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends zstd >/dev/null
+          name="$(bash -c '. scripts/runtime-env.sh; works_runtime_name')"
+          mkdir -p nightly-in
+          gh release download nightly --repo "$GITHUB_REPOSITORY" --dir nightly-in \
+              -p "${name}-*+nightly.*.tar.zst" -p "${name}-*+nightly.*.tar.zst.sha256" \
+              -p manifest.txt -p install-ableton-nightly.run
+          ( cd nightly-in && sha256sum -c ./*.tar.zst.sha256 )
+
+      - name: The nightly's commit is real, expected, and on main
+        if: inputs.mode == 'promote-nightly'
+        run: |
+          set -euo pipefail
+          commit="$(awk '$1 == "source-commit:" {print $2}' nightly-in/manifest.txt)"
+          [ -n "$commit" ] || { echo "!! the nightly manifest names no source-commit" >&2; exit 1; }
+          want="${{ inputs.expected_commit }}"
+          if [ -n "$want" ]; then
+              case "$commit" in "$want"*) ;; *)
+                  echo "!! nightly is at $commit, dispatch expected $want" >&2; exit 1 ;;
+              esac
+          fi
+          git merge-base --is-ancestor "$commit" HEAD \
+              || { echo "!! $commit is not an ancestor of this branch; refuse to promote it" >&2; exit 1; }
+
+      # install.sh refuses a package with no ableton-linkd. The nightly kit
+      # carries the one built alongside these exact bits — take that, never a
+      # stub: this kit ships to users.
+      - name: Take ableton-linkd from the nightly kit
+        if: inputs.mode == 'promote-nightly'
+        run: |
+          set -euo pipefail
+          sh nightly-in/install-ableton-nightly.run --extract kit-x
+          mkdir -p dist
+          install -m755 kit-x/bin/ableton-linkd dist/ableton-linkd
+          rm -rf kit-x
+
+      - name: Promote the tarball to release form
+        if: inputs.mode == 'promote-nightly'
+        run: ./scripts/promote-nightly.sh nightly-in/*.tar.zst "${{ steps.v.outputs.version }}"
+
+      # --- both modes ----------------------------------------------------------
+
+      - name: Build audit (every patch verified in the shipped binaries)
+        run: |
+          name="$(bash -c '. scripts/runtime-env.sh; works_runtime_name')"
+          ./scripts/build-audit.sh "dist/${name}-${{ steps.v.outputs.version }}.tar.zst"
+
+      - name: Assemble the installer
+        run: |
+          name="$(bash -c '. scripts/runtime-env.sh; works_runtime_name')"
+          ENGINE=docker \
+          WORKS_RUNTIME_TARBALL="dist/${name}-${{ steps.v.outputs.version }}.tar.zst" \
+          WORKS_PUBLISH_AS=install-ableton-latest.run \
+          ./scripts/make-installer.sh
+
+      - name: The manifest agrees with the assets beside it
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          run="dist/ableton-wine-setup-${VERSION}.run"
+          [ -f "$run" ] || { echo "!! make-installer.sh produced no $run" >&2; exit 1; }
+          cp "$run" dist/install-ableton-latest.run
+          ( cd dist && sha256sum install-ableton-latest.run > install-ableton-latest.run.sha256 )
+          grep -q '^channel: *stable$' dist/manifest.txt \
+              || { echo "!! the manifest is not stamped for the stable channel" >&2; cat dist/manifest.txt >&2; exit 1; }
+          grep -q '^installer: *install-ableton-latest.run$' dist/manifest.txt \
+              || { echo "!! the manifest does not name install-ableton-latest.run" >&2; cat dist/manifest.txt >&2; exit 1; }
+          want="$(awk '$1 == "sha256:" {print $2}' dist/manifest.txt)"
+          got="$(awk '{print $1}' dist/install-ableton-latest.run.sha256)"
+          [ "$want" = "$got" ] || {
+              echo "!! manifest checksum does not match the installer" >&2
+              echo "   manifest $want" >&2; echo "   asset    $got" >&2; exit 1; }
+
+      # No kit publishes without installing: the kit's own installer, against a
+      # throwaway HOME, runtime-only, and the installed wine must execute.
+      - name: The kit installs on this runner before it becomes a draft
+        run: ./scripts/check-kit-installs.sh "dist/ableton-wine-setup-${{ steps.v.outputs.version }}.run" stable
+
+      # The committed BUILD-INFO is what release.bats and release.yml's local
+      # path expect at the tag. If main has moved since this run checked out,
+      # the push fails and the whole run is re-dispatched — never force.
+      - name: Commit BUILD-INFO, tag, and push
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "dist/BUILD-INFO-${VERSION}.txt"
+          git commit -m "release: record BUILD-INFO for ${VERSION}"
+          git tag -a "v${VERSION}" -m "${VERSION}"
+          git push origin "HEAD:${GITHUB_REF_NAME}" "v${VERSION}"
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.v.outputs.version }}"
+          name="$(bash -c '. scripts/runtime-env.sh; works_runtime_name')"
+          run="dist/ableton-wine-setup-${VERSION}.run"
+          tarball="dist/${name}-${VERSION}.tar.zst"
+          {
+              if grep -q '^promoted-from:' dist/BUILD-INFO.txt; then
+                  echo "Promoted from the nightly channel — the same bits, re-audited, under the release name: \`$(awk '$1 == "promoted-from:" {print $2}' dist/BUILD-INFO.txt)\`."
+                  echo
+              fi
+              echo "Download \`install-ableton-latest.run\`, put it next to your Ableton"
+              echo "Live installer, and run:"
+              echo
+              echo '```'
+              echo "sh ~/Downloads/install-ableton-latest.run"
+              echo '```'
+              echo
+              echo "Build provenance:"
+              echo
+              echo '```'
+              cat dist/BUILD-INFO.txt
+              echo '```'
+          } > /tmp/notes.md
+          gh release create "v${VERSION}" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "$VERSION" --notes-file /tmp/notes.md \
+              "$run" "$run.sha256" \
+              "$tarball" "$tarball.sha256" \
+              dist/install-ableton-latest.run dist/install-ableton-latest.run.sha256 \
+              dist/manifest.txt \
+              dist/BUILD-INFO.txt
+
+      - name: What happens next
+        run: |
+          VERSION="${{ steps.v.outputs.version }}"
+          {
+              echo "### Draft v${VERSION} is ready"
+              echo
+              echo "1. Download the draft's \`install-ableton-latest.run\`"
+              echo "2. Install it and start Ableton Live — the one check CI cannot run"
+              echo "3. Publish: \`gh release edit v${VERSION} --draft=false --repo ${GITHUB_REPOSITORY}\`"
+              echo
+              echo "Publishing flips /releases/latest and the stable manifest, and runs"
+              echo "release.yml's verify job over every asset."
+          } >> "$GITHUB_STEP_SUMMARY"

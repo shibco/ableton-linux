@@ -21,17 +21,13 @@ APPS="$HOME/.local/share/applications"
 # container, so `rm -rf` on it would take one entry and leave the rest orphaned
 # behind a dangling channel.
 works_remove_runtimes
-rm -f "$(works_channel_file)" 2>/dev/null || true
 rm -f  "$BIN"        && echo "removed $BIN"
 rm -f  "$BIN".rollback-*
-# The command lives in works/bin; ~/.local/bin holds only a link.
+# The commands themselves live in works/bin; ~/.local/bin holds only links.
 rm -f  "$HOME/works/bin/works" "$HOME/works/lib/works-runtime" "$HOME/works/lib/works-update"
 rmdir  "$HOME/works/bin" 2>/dev/null || true
-# The command lives in works/bin; ~/.local/bin holds only a link. The two
-# commands this replaced are removed too, from an installer that predates it.
-rm -f  "$HOME/.local/bin/works" "$HOME/.local/bin/ableton-runtime" \
-       "$HOME/.local/bin/ableton-update"
-rmdir  "$HOME/works/bin" 2>/dev/null || true
+rm -f  "$HOME/.local/bin/works" "$HOME/.local/bin/works-runtime" "$HOME/.local/bin/works-update" \
+       "$HOME/.local/bin/ableton-runtime" "$HOME/.local/bin/ableton-update"
 # Stop and drop the Ableton Link session anchor's user unit (setup-link.sh
 # installs it under ~/.config); the daemon binary goes with ~/works/apps/ableton-live.
 systemctl --user disable --now ableton-linkd.service 2>/dev/null || true
@@ -44,14 +40,16 @@ rm -rf "$HOME/works/apps/ableton-live" && echo "removed ~/works/apps/ableton-liv
 # uninstall runs this same line and gets the right answer without either
 # knowing about the other.
 if [ -d "$HOME/works/apps" ] && [ -z "$(ls -A "$HOME/works/apps" 2>/dev/null)" ]; then
-    rm -rf "$HOME/works/lib" "$HOME/works/apps" && echo "removed ~/works/apps/ableton-live (no application left to source it)"
+    rm -rf "$HOME/works/lib" "$HOME/works/apps" && echo "removed ~/works/lib (no application left to source it)"
 fi
 # Leave no empty shell behind, but never take a Plug with it: rmdir refuses a
 # directory that still holds anything.
 rmdir "$HOME/works" 2>/dev/null && echo "removed ~/works" || true
 # The channel install.sh recorded. Not prompted for, unlike the prefix: this is
 # one word of preference, not data, and leaving it behind means a later install
+# is followed by an `works-update` pointed at a channel nothing here chose.
 # The directory goes only if it is empty, so anything else under it survives.
+rm -f  "$(works_runtime_store)/.channel"
 rmdir  "${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine" 2>/dev/null \
     && echo "removed ~/.config/ableton-wine" || true
 rm -f  "$APPS/ableton-live.desktop" "$APPS/wine-protocol-ableton.desktop" "$APPS/wine-extension-auz.desktop"

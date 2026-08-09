@@ -1,13 +1,15 @@
-# Wine build for pushes to main that touch the Wine build itself, plus a manual
-# trigger for checking any other ref on demand:
+# Wine build for pushes to main that touch the Wine build itself, plus a
+# manual trigger for checking any other ref on demand:
 #
 #   gh workflow run ci-pr-build.yml --repo <owner>/ableton-linux --ref <branch>
 #
-# Relies on this repo's existing "require approval for first-time
-# contributors" setting (Settings -> Actions -> General) to gate runs from
-# unfamiliar forks - a maintainer approves before it executes, same as any
-# other workflow here. Runs with the default pull_request token (read-only,
-# no secrets) regardless.
+# Pull requests deliberately do not build here. ci-checks.yml applies the full
+# patch stack to the vendored base in its first minute on every PR, which is
+# what a review-time build was catching; a change that compiles wrong is caught
+# by this workflow on the merge to main, and a maintainer can dispatch it
+# against any PR branch on demand. This trigger set went dispatch-only once
+# before (463b5bb) and came back (a2a98a0) because nothing faster existed to
+# stand in - ci-checks is that stand-in.
 #
 # ccache (actions/cache) and a Docker Buildx layer cache (GHA backend) keep
 # repeat runs fast - compiled objects and the image's apt/toolchain install,
@@ -19,9 +21,6 @@
 #   gh run download <run-id> --repo <owner>/ableton-linux --name wine-build
 name: ci-pr-build
 
-# The same path list appears twice (pull_request and push) rather than via a
-# YAML anchor: GitHub's workflow parser doesn't support them, so this stays
-# boring and duplicated on purpose.
 on:
   push:
     branches: [main]
@@ -36,9 +35,8 @@ on:
       - .github/workflows/ci-pr-build.yml
   workflow_dispatch: {}
 
-# A new push to the same PR (or a re-run against main) makes the previous,
-# now-stale build pointless; cancel it instead of burning runner minutes on
-# both.
+# A re-run against the same ref makes the previous, now-stale build pointless;
+# cancel it instead of burning runner minutes on both.
 concurrency:
   group: ci-pr-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

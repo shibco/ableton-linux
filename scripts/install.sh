@@ -28,10 +28,10 @@ NAME="$(works_runtime_name)"
 # the same gate as the default one rather than silently unprotected.
 WINE_ROOT="$(works_runtime_path)"
 WINE_ROOT_DIR="$(dirname "$WINE_ROOT")"
-CHANNEL="stable"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 stage=""
 backup=""
+CHANNEL="stable"
 replaced=""
 replaced_orig=""
 STORE=""
@@ -309,12 +309,12 @@ if [ -n "$STORE" ]; then
     ln -sfn "$id" "$STORE/$CHANNEL"
     [ -z "$replaced" ] || { rm -rf "$replaced"; replaced=""; replaced_orig=""; }
     echo "   $id  [$CHANNEL]"
-    # After the promote, never before: a failure earlier must not leave a user
-    # with neither the new runtime nor the old one.
     # Follow what was last installed. Downloading the nightly installer is the
     # choice; nobody should have to also edit a file to make it stick.
     _cf="$(works_channel_file)"
     mkdir -p "$(dirname "$_cf")" && printf '%s\n' "$CHANNEL" > "$_cf"
+    # After the promote, never before: a failure earlier must not leave a user
+    # with neither the new runtime nor the old one.
     works_prune_runtimes
 else
     echo "== promote runtime with dated rollback =="
@@ -337,6 +337,15 @@ mkdir -p "$BIN" "$HOME/works/apps/ableton-live" "$HOME/works/bin" "$HOME/works/l
 install -m755 "$here/ableton-live" "$HOME/works/apps/ableton-live/ableton-live"
 ln -sfn "$HOME/works/apps/ableton-live/ableton-live" "$BIN/ableton-live"
 
+# `works` acts on the runtime and the store, which no application owns, so it
+# sits in works/bin rather than in any app's directory. Its verbs go beside the
+# shared library: they implement the command, they are not commands themselves.
+install -m755 "$here/works" "$HOME/works/bin/works"
+install -m755 "$here/works-runtime" "$HOME/works/lib/works-runtime"
+install -m755 "$here/works-update" "$HOME/works/lib/works-update"
+ln -sfn "$HOME/works/bin/works" "$BIN/works"
+# The two commands this replaced, from an installer that predates it.
+rm -f "$BIN/ableton-runtime" "$BIN/ableton-update" "$BIN/works-runtime" "$BIN/works-update" 2>/dev/null || true
 
 # Dated copies of the launcher accumulated here on every install, one per run,
 # with nothing to prune them - the same defect the version store exists to end,
@@ -344,16 +353,7 @@ ln -sfn "$HOME/works/apps/ableton-live/ableton-live" "$BIN/ableton-live"
 # from the kit, so the copies bought nothing. Clear out any left behind.
 rm -f "$BIN"/ableton-live.rollback-* 2>/dev/null || true
 
-# `works` acts on the runtime and the store, which no application owns, so it
-# sits in works/bin rather than in any app's directory. Its verbs go beside the
-# shared library: they implement the command, they are not commands themselves.
-mkdir -p "$HOME/works/bin"
-install -m755 "$here/works" "$HOME/works/bin/works"
-install -m755 "$here/works-runtime" "$HOME/works/lib/works-runtime"
-install -m755 "$here/works-update" "$HOME/works/lib/works-update"
-ln -sfn "$HOME/works/bin/works" "$BIN/works"
-
-echo "== install the shared toolkit -> ~/works/apps/ableton-live =="
+echo "== install the shared toolkit -> ~/works/lib =="
 # The launcher sources these on every start (DPI auto-calibration, light/dark
 # theme sync, and crash-safe GNOME shortcut holding).
 # Two directories because they hold two different things: the toolkit any
@@ -365,7 +365,7 @@ mkdir -p "$HOME/works/lib" "$HOME/works/apps/ableton-live"
 install -m644 "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"
 install -m644 "$here/detect-scale.sh" "$HOME/works/lib/detect-scale.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/works/lib/detect-theme.sh"
-install -m644 "$here/shortcut-hold.sh" "$HOME/works/apps/ableton-live/shortcut-hold.sh"
+install -m644 "$here/shortcut-hold.sh" "$HOME/works/lib/shortcut-hold.sh"
 # setsyscolors.exe repaints the top bar mid-session when the Live theme changes;
 # without it the colors still apply on the next launch. Kit stages it next to
 # these scripts; a repo checkout carries it in tools/.

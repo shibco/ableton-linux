@@ -41,8 +41,8 @@ RUNTIME_NAME="wine-d2d1-nspa-11.13"
 resolve_runtime() {
     if [ -L "$HOME/works/runtimes/stable" ]; then
         printf '%s\n' "$HOME/works/runtimes/$(readlink "$HOME/works/runtimes/stable")"
-    elif [ -x "$HOME/works/$RUNTIME_NAME/bin/wine" ]; then
-        printf '%s\n' "$HOME/works/$RUNTIME_NAME"
+    elif [ -x "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" ]; then
+        printf '%s\n' "$HOME/.local/opt/$RUNTIME_NAME"
     else
         printf '%s\n' "$HOME/works/runtimes/stable"
     fi

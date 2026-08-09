@@ -269,6 +269,15 @@ plant_at() { plant "$1" "$2" "$3" "$4"; }
 
 # guards: a channel pointing at a pruned entry is a broken install produced by
 # housekeeping
+@test "retention never removes what the channel points at" {
+    mkdir -p "$CONTAINER"
+    plant_at "$CONTAINER/2026.01.01.1+aaaaaaa" 2026.01.01.1 aaaaaaaxxx 2026-01-01T00:00:00Z
+    plant_at "$CONTAINER/2026.02.01.1+bbbbbbb" 2026.02.01.1 bbbbbbbxxx 2026-02-01T00:00:00Z
+    ln -s "2026.01.01.1+aaaaaaa" "$CONTAINER/stable"   # channel at the OLDEST
+    WORKS_RUNTIME_KEEP=1 works_prune_runtimes
+    [ -d "$CONTAINER/2026.01.01.1+aaaaaaa" ]
+    [ -n "$(works_runtime_path)" ]
+}
 
 @test "retention leaves set-aside trees alone; they are not entries" {
     mkdir -p "$CONTAINER/superseded-20260805T000000Z/old" "$CONTAINER"
@@ -320,33 +329,6 @@ plant_at() { plant "$1" "$2" "$3" "$4"; }
     [ "$status" -ne 0 ]
     [ -d "$HOME" ]
 }
-
-# --- the prefix becomes a Plug -------------------------------------------------
-# A runtime can be downloaded again; a prefix holds Live, its authorisation and
-# the user's settings, and cannot. Every branch that is not certain refuses.
-
-plug_setup() {
-    LEGACY_PLUG="$HOME/works/plugs/studio"
-    DEST_PLUG="$(works_plug_path)"
-}
-
-a_prefix() {   # a_prefix <dir>
-    mkdir -p "$1/drive_c/users" "$1/dosdevices"
-    : > "$1/system.reg"
-    ln -sfn ../drive_c "$1/dosdevices/c:"
-    printf 'a set\n' > "$1/drive_c/users/mine.als"
-}
-
-# guards: two prefixes can hold different Lives and different authorisations —
-# picking one silently loses the other's work
-
-# guards: renaming a prefix out from under a live wineserver corrupts its
-# registry, and install.sh's stop is scoped to the runtime, which is a
-# different set of processes
-
-# guards: environ is mode 400 and gated by ptrace_may_access, so `[ -r ]` passes
-# where the read still fails — and the shell prints its own redirection error
-# before tr can suppress it. A scan that noisy is a scan nobody reads.
 
 # --- the prefix becomes a Plug -------------------------------------------------
 # A runtime can be downloaded again; a prefix holds Live, its authorisation and
@@ -479,15 +461,4 @@ a_prefix() {   # a_prefix <dir>
     run works_migrate_plug
     [ "$status" -eq 1 ]
     [[ "$stderr$output" == *"4242"* ]] && [[ "$stderr$output" == *"wineserver"* ]]
-}
-
-# guards: the migration's source is a fact about the past. Derived from
-# works_home() it points inside ~/works, finds nothing, and every existing
-# install is orphaned rather than moved - silently, because "nothing to
-# migrate" and "migrated" look identical from the outside.
-@test "the legacy root names where installs actually are, not where they are going" {
-    [ "$(works_legacy_root)" = "$HOME/.local/opt/$(works_runtime_name)" ]
-    case "$(works_legacy_root)" in
-        "$(works_home)"/*) echo "legacy root moved with the store: $(works_legacy_root)" >&2; false ;;
-    esac
 }

@@ -193,6 +193,9 @@ proc_setup() {
 # resolver has to answer correctly on both sides of that move, because an
 # install that has not migrated yet still has to launch.
 
+
+
+
 @test "runtime root: an explicit pin beats the container" {
     export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
     mkdir -p "$WORKS_HOME/runtimes/stable"
@@ -264,6 +267,7 @@ setup_dist() {
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
+
 
 # --- naming an installed runtime ---------------------------------------------
 
@@ -346,6 +350,14 @@ make_tree() {
 
 # guards: /proc/PID/exe reports resolved paths, so a channel-path root matches no
 # process and the busy guard fails open while install.sh renames the directory
+@test "runtime root: resolves to the build, not to the channel link" {
+    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
+    entry="$WORKS_HOME/runtimes/2026.08.05.1+abc1234"
+    mkdir -p "$entry"
+    ln -s "2026.08.05.1+abc1234" "$WORKS_HOME/runtimes/stable"
+    [ "$(works_runtime_path)" = "$entry" ] || {
+        echo "resolved to $(works_runtime_path), wanted $entry" >&2; false; }
+}
 
 # guards: the same resolution a running process reports, so the two can be
 # compared at all
@@ -370,6 +382,15 @@ make_tree() {
     mkdir -p "$entry" "$(works_legacy_root)"
     ln -s "2026.08.05.1+abc1234" "$WORKS_HOME/runtimes/stable"
     [ "$(works_runtime_path)" = "$entry" ]
+}
+
+# guards: a dangling channel must not resolve to nothing and strand the launcher
+@test "runtime root: a dangling channel falls back rather than resolving empty" {
+    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
+    mkdir -p "$WORKS_HOME/runtimes"
+    ln -s "gone" "$WORKS_HOME/runtimes/stable"
+    [ -n "$(works_runtime_path)" ]
+    [ "$(works_runtime_path)" = "$(works_legacy_root)" ]
 }
 
 # One test is still held back with the version store: the migration's own
@@ -452,72 +473,6 @@ make_tree() {
 # One channel was assumed throughout: `stable` was hardcoded in six places and
 # retention protected only that one. A second channel needs both generalised.
 
-# guards: the value names a symlink and, for the updater, part of a URL —
-# configuration the build does not control must not shape a request
-
-# --- how a nightly is named ---------------------------------------------------
-# dist-version is the date the build happened, for every build. `nightly` rides
-# in the discriminator, so the date is written once and the id keeps its single
-# separator. Putting the kind in dist-version instead would need either a second
-# date or a second `+`, and the id is <version>+<discriminator>.
-
-id_of() {   # id_of <build-info lines...>
-    local d="$BATS_TEST_TMPDIR/rt"; mkdir -p "$d"
-    printf '%s\n' "$@" > "$d/ABLETON-WINE-BUILD-INFO.txt"
-    works_runtime_id "$d"
-}
-
-@test "runtime id: a nightly says so, once, after the date" {
-    [ "$(id_of 'dist-version: 2026.08.06.1' 'source-commit: badafaf995572b26' 'build-kind:   nightly')" \
-      = "2026.08.06.1+nightly.badafaf" ]
-}
-
-@test "runtime id: a release carries no kind at all" {
-    [ "$(id_of 'dist-version: 2026.08.04.1' 'source-commit: b0d847af6fcc7ab9')" \
-      = "2026.08.04.1+b0d847a" ]
-}
-
-# guards: every runtime installed anywhere today predates source-commit
-@test "runtime id: the patch-stack fallback still works with a kind" {
-    [ "$(id_of 'dist-version: 2026.07.29.1' 'patch-stack:  9614003aabb' 'build-kind:   nightly')" \
-      = "2026.07.29.1+nightly.9614003" ]
-}
-
-# guards: build-kind becomes a directory name like everything else in the id
-@test "runtime id: a kind with a path separator is refused, not sanitised" {
-    [ -z "$(id_of 'dist-version: 2026.08.06.1' 'source-commit: badafaf9' 'build-kind:   ../evil')" ]
-}
-
-@test "tarball predicate: the nightly artifact name is accepted" {
-    works_is_runtime_tarball "wine-d2d1-nspa-11.13-2026.08.06.1+nightly.badafaf.tar.zst"
-}
-
-# --- the names this library used to answer to ---------------------------------
-# The rename arrives with a migration that moves every path as well; honouring
-# the old names for a release means a person adjusts once, not twice. The VM
-# harness alone sets WORKS_PLUG in seven places.
-
-# guards: someone with both set has already migrated and left the old one in a
-# shell profile — the new name is the deliberate one
-
-@test "runtime root: resolves to the build, not to the channel link" {
-    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
-    entry="$WORKS_HOME/runtimes/2026.08.05.1+abc1234"
-    mkdir -p "$entry"
-    ln -s "2026.08.05.1+abc1234" "$WORKS_HOME/runtimes/stable"
-    [ "$(works_runtime_path)" = "$entry" ] || {
-        echo "resolved to $(works_runtime_path), wanted $entry" >&2; false; }
-}
-
-# guards: a dangling channel must not resolve to nothing and strand the launcher
-@test "runtime root: a dangling channel falls back rather than resolving empty" {
-    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
-    mkdir -p "$WORKS_HOME/runtimes"
-    ln -s "gone" "$WORKS_HOME/runtimes/stable"
-    [ -n "$(works_runtime_path)" ]
-    [ "$(works_runtime_path)" = "$(works_legacy_root)" ]
-}
-
 @test "channel: defaults to stable with nothing configured" {
     export WORKS_CHANNEL_FILE="$BATS_TEST_TMPDIR/none"
     [ "$(works_channel)" = "stable" ]
@@ -535,6 +490,8 @@ id_of() {   # id_of <build-info lines...>
     [ "$(works_channel)" = "nightly" ]
 }
 
+# guards: the value names a symlink and, for the updater, part of a URL —
+# configuration the build does not control must not shape a request
 @test "channel: an unknown value falls back to stable and says so" {
     export WORKS_CHANNEL_FILE="$BATS_TEST_TMPDIR/chan"
     printf 'https://evil.example/x\n' > "$WORKS_CHANNEL_FILE"
@@ -576,8 +533,79 @@ id_of() {   # id_of <build-info lines...>
     [ ! -e "$C/2026.02.01.1+aaaaaaa" ]           # the unpinned one goes
 }
 
+
+# --- how a nightly is named ---------------------------------------------------
+# dist-version is the date the build happened, for every build. `nightly` rides
+# in the discriminator, so the date is written once and the id keeps its single
+# separator. Putting the kind in dist-version instead would need either a second
+# date or a second `+`, and the id is <version>+<discriminator>.
+
+id_of() {   # id_of <build-info lines...>
+    local d="$BATS_TEST_TMPDIR/rt"; mkdir -p "$d"
+    printf '%s\n' "$@" > "$d/ABLETON-WINE-BUILD-INFO.txt"
+    works_runtime_id "$d"
+}
+
+@test "runtime id: a nightly says so, once, after the date" {
+    [ "$(id_of 'dist-version: 2026.08.06.1' 'source-commit: badafaf995572b26' 'build-kind:   nightly')" \
+      = "2026.08.06.1+nightly.badafaf" ]
+}
+
+@test "runtime id: a release carries no kind at all" {
+    [ "$(id_of 'dist-version: 2026.08.04.1' 'source-commit: b0d847af6fcc7ab9')" \
+      = "2026.08.04.1+b0d847a" ]
+}
+
+# guards: every runtime installed anywhere today predates source-commit
+@test "runtime id: the patch-stack fallback still works with a kind" {
+    [ "$(id_of 'dist-version: 2026.07.29.1' 'patch-stack:  9614003aabb' 'build-kind:   nightly')" \
+      = "2026.07.29.1+nightly.9614003" ]
+}
+
+# guards: build-kind becomes a directory name like everything else in the id
+@test "runtime id: a kind with a path separator is refused, not sanitised" {
+    [ -z "$(id_of 'dist-version: 2026.08.06.1' 'source-commit: badafaf9' 'build-kind:   ../evil')" ]
+}
+
 # guards: this is the whole point -- the directory name answers "when"
 @test "runtime id: dates order correctly across both channels" {
     run bash -c "printf '%s\n' '2026.08.04.1+b0d847a' '2026.08.06.1+nightly.badafaf' '2026.08.09.1+ddddddd' | sort -V | tail -1"
     [ "$output" = "2026.08.09.1+ddddddd" ]
+}
+
+@test "tarball predicate: the nightly artifact name is accepted" {
+    works_is_runtime_tarball "wine-d2d1-nspa-11.13-2026.08.06.1+nightly.badafaf.tar.zst"
+}
+
+# --- the names this library used to answer to ---------------------------------
+# The rename arrives with a migration that moves every path as well; honouring
+# the old names for a release means a person adjusts once, not twice. The VM
+# harness alone sets ABLETON_WINEPREFIX in seven places.
+
+@test "compat: an old infrastructure name is honoured, and says so once" {
+    run env -u WORKS_PLUG ABLETON_WINEPREFIX=/tmp/oldpfx bash -c \
+        '. "$REPO/scripts/runtime-env.sh"; works_plug_path'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"/tmp/oldpfx"* ]]
+    [[ "$stderr$output" == *"now WORKS_PLUG"* ]]
+}
+
+# guards: someone with both set has already migrated and left the old one in a
+# shell profile — the new name is the deliberate one
+@test "compat: the new name wins when both are set" {
+    run env ABLETON_WINEPREFIX=/tmp/oldpfx WORKS_PLUG=/tmp/newpfx bash -c \
+        '. "$REPO/scripts/runtime-env.sh"; works_plug_path'
+    [ "$output" = "/tmp/newpfx" ] || [[ "$output" == *"/tmp/newpfx"* ]]
+}
+
+@test "compat: an application's own settings are not renamed" {
+    run env ABLETON_DPI_MODE=dpi120 bash -c \
+        '. "$REPO/scripts/runtime-env.sh"; printf "%s|%s\n" "${ABLETON_DPI_MODE:-}" "${WORKS_DPI_MODE:-unset}"'
+    [[ "$output" == *"dpi120|unset"* ]]
+}
+
+@test "compat: nothing is said when no old name is set" {
+    run env -u ABLETON_WINEPREFIX -u ABLETON_WINE_ROOT bash -c \
+        '. "$REPO/scripts/runtime-env.sh"; works_plug_path >/dev/null'
+    [ -z "$stderr" ] || [[ "$stderr" != *"will stop being read"* ]]
 }

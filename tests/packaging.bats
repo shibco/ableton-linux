@@ -117,6 +117,31 @@ kit_script_names() {
         false; }
 }
 
+@test "only the shared lib and the build side spell the runtime name" {
+    cd "$REPO"
+    # install.sh and make-installer.sh used to hardcode it and were compared
+    # against each other; they now derive it from works_runtime_name, so they
+    # cannot disagree. What is left to check is that nobody reintroduces a
+    # second spelling on the install side.
+    #
+    # build.sh and container-build.sh legitimately keep a literal: it is the
+    # configure prefix and the artifact name, which is the one place the Wine
+    # version genuinely belongs. setup-run-header.sh keeps one because it runs
+    # before anything is installed and cannot source the lib.
+    allowed="scripts/runtime-env.sh build.sh scripts/container-build.sh scripts/build-audit.sh scripts/release.sh scripts/setup-run-header.sh"
+    offenders=""
+    while read -r f; do
+        case " $allowed " in *" $f "*) continue ;; esac
+        grep -qE 'wine-d2d1-nspa-[0-9]+\.[0-9]+' "$f" && offenders="$offenders $f"
+    done < <(git ls-files 'scripts/*' 'build.sh')
+    [ -z "$offenders" ] || {
+        echo "these spell the runtime name instead of deriving it:$offenders" >&2; false; }
+
+    lib="$(grep -oE 'wine-d2d1-nspa-[0-9]+\.[0-9]+' scripts/runtime-env.sh | head -1)"
+    bs="$(grep -oE 'wine-d2d1-nspa-[0-9]+\.[0-9]+' build.sh | head -1)"
+    [ "$lib" = "$bs" ] || {
+        echo "lib says '$lib', build.sh says '$bs'" >&2; false; }
+}
 
 # guards: licence GPLv2+ — Ableton Link has no linking exception, so the source must travel with the binary
 @test "the kit ships the GPL source and licence Ableton Link requires" {

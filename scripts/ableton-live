@@ -866,7 +866,7 @@ fi
 # edit made while Live runs.  Opt-in: the held keys are unavailable to every
 # other window until the last opted-in Live exits.  See the shortcut support note.
 shortcut_lib=""
-for f in "$HOME/works/apps/ableton-live/shortcut-hold.sh" \
+for f in "$HOME/works/lib/shortcut-hold.sh" \
          "${BASH_SOURCE[0]%/*}/shortcut-hold.sh"; do
     if [ -r "$f" ]; then shortcut_lib="$f"; break; fi
 done

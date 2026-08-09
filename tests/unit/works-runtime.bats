@@ -65,6 +65,13 @@ store() {
     [ "$output" = "$LEGACY" ]
 }
 
+@test "path answers on the store, with the build rather than the channel" {
+    store
+    run RT path
+    [ "$status" -eq 0 ]
+    [ "$output" = "$C/2026.06.01.1+bbbbbbb" ]
+}
+
 @test "path honours an explicit pin" {
     store
     WORKS_RUNTIME="$BATS_TEST_TMPDIR/pinned" run RT path
@@ -121,6 +128,14 @@ store() {
 
 # --- use ----------------------------------------------------------------------
 
+@test "use retargets the channel" {
+    store
+    run RT use 2026.01.01.1+aaaaaaa
+    [ "$status" -eq 0 ]
+    [ "$(readlink "$C/stable")" = "2026.01.01.1+aaaaaaa" ]
+    [ "$(RT path)" = "$C/2026.01.01.1+aaaaaaa" ]
+}
+
 @test "use --previous picks the other build" {
     store
     run RT use --previous
@@ -169,6 +184,7 @@ store() {
     run RT use anything
     [ "$status" -ne 0 ]
 }
+
 
 # --- the Wine base ------------------------------------------------------------
 # A Plug is bound to a base: Wine re-bootstraps the prefix when the runtime's
@@ -229,6 +245,12 @@ store() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"no terminal"* ]]
     [[ "$output" == *"works runtime use 2026"* ]]
+}
+
+@test "use with no argument leaves the channel alone" {
+    store
+    setsid bash "$REPO/scripts/works-runtime" use || true
+    [ "$(readlink "$C/stable")" = "2026.06.01.1+bbbbbbb" ]
 }
 
 # --- a nightly's longer name --------------------------------------------------
@@ -366,23 +388,3 @@ fake_live() {
     [[ "$output" == *"works runtime list"* ]]
 }
 
-@test "path answers on the store, with the build rather than the channel" {
-    store
-    run RT path
-    [ "$status" -eq 0 ]
-    [ "$output" = "$C/2026.06.01.1+bbbbbbb" ]
-}
-
-@test "use retargets the channel" {
-    store
-    run RT use 2026.01.01.1+aaaaaaa
-    [ "$status" -eq 0 ]
-    [ "$(readlink "$C/stable")" = "2026.01.01.1+aaaaaaa" ]
-    [ "$(RT path)" = "$C/2026.01.01.1+aaaaaaa" ]
-}
-
-@test "use with no argument leaves the channel alone" {
-    store
-    setsid bash "$REPO/scripts/works-runtime" use || true
-    [ "$(readlink "$C/stable")" = "2026.06.01.1+bbbbbbb" ]
-}

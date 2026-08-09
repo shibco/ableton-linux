@@ -30,14 +30,14 @@
 works_env_compat() {
     local _pair _old _new
     for _pair in \
-        WORKS_RUNTIME:WORKS_RUNTIME \
-        WORKS_PLUG:WORKS_PLUG \
-        WORKS_HOME:WORKS_HOME \
-        WORKS_RUNTIME_KEEP:WORKS_RUNTIME_KEEP \
-        WORKS_RUNTIME_TARBALL:WORKS_RUNTIME_TARBALL \
-        WORKS_CHANNEL:WORKS_CHANNEL \
-        WORKS_CHANNEL_FILE:WORKS_CHANNEL_FILE \
-        WORKS_MANIFEST_URL:WORKS_MANIFEST_URL
+        ABLETON_WINE_ROOT:WORKS_RUNTIME \
+        ABLETON_WINEPREFIX:WORKS_PLUG \
+        ABLETON_OPT_DIR:WORKS_HOME \
+        ABLETON_RUNTIME_KEEP:WORKS_RUNTIME_KEEP \
+        ABLETON_RUNTIME_TARBALL:WORKS_RUNTIME_TARBALL \
+        ABLETON_CHANNEL:WORKS_CHANNEL \
+        ABLETON_CHANNEL_FILE:WORKS_CHANNEL_FILE \
+        ABLETON_MANIFEST_URL:WORKS_MANIFEST_URL
     do
         _old="${_pair%%:*}"; _new="${_pair##*:}"
         # The new name always wins: someone setting both has migrated and left
@@ -128,6 +128,34 @@ works_channel() {
     esac
 }
 
+# The directory holding every installed runtime, one per build.
+works_runtime_store() {
+    printf '%s\n' "$(works_home)/runtimes"
+}
+
+# The pre-container install path. Carries the Wine version, which is exactly why
+# it is being retired: a base bump moved every user's directory.
+works_legacy_root() {
+    printf '%s\n' "$HOME/.local/opt/$(works_runtime_name)"
+}
+
+# The installed runtime. WORKS_RUNTIME overrides it — the tests, the
+# regression VMs and anyone bisecting a build rely on that, so it stays the
+# outermost say.
+#
+# Returns what the channel points at, never the channel path itself. Two things
+# turn on that, and both were measured rather than argued:
+#
+# /proc/PID/exe reports a path with symlinks already resolved, so a process
+# launched through <container>/stable/bin/wine appears under the build's own
+# name. Compare against the channel and works_runtime_pids matches nothing:
+# the confirmation before force-closing Live never fires, the targeted kills
+# reach nothing, and only the pgrep fallback PR #120 added the scan to replace
+# still works — while install.sh goes on to rename the directory.
+#
+# And a caller that resolved once keeps the build it resolved. A channel switch
+# part-way through a session cannot move the runtime under a process already
+# executing from it.
 works_runtime_path() {
     local _chan _target
     if [ -n "${WORKS_RUNTIME:-}" ]; then
@@ -439,17 +467,6 @@ works_all_pids() {
 
 
 # What is holding it, for a refusal that can be acted on rather than puzzled at.
-works_plug_holders() {
-    local _plug _p _cmd
-    _plug="${1:-$(works_plug_path)}"
-    _plug="${_plug%/}"
-    for _p in "$(works_proc_root)"/[0-9]*; do
-        { tr '\0' '\n' < "$_p/environ" | grep -qxF "WINEPREFIX=$_plug"; } 2>/dev/null || continue
-        _cmd="$( { tr -s '\0' ' ' < "$_p/cmdline"; } 2>/dev/null )" || continue
-        printf '%s  %s\n' "${_p##*/}" "${_cmd:0:70}"
-    done
-}
-
 # Migrate, or explain why not. Idempotent, and refuses rather than guessing when
 # the live tree cannot be identified — installing over an unidentifiable runtime
 # is the ambiguous case the store exists to prevent.
@@ -490,6 +507,17 @@ works_plug_busy() {
             && return 0
     done
     return 1
+}
+
+works_plug_holders() {
+    local _plug _p _cmd
+    _plug="${1:-$(works_plug_path)}"
+    _plug="${_plug%/}"
+    for _p in "$(works_proc_root)"/[0-9]*; do
+        { tr '\0' '\n' < "$_p/environ" | grep -qxF "WINEPREFIX=$_plug"; } 2>/dev/null || continue
+        _cmd="$( { tr -s '\0' ' ' < "$_p/cmdline"; } 2>/dev/null )" || continue
+        printf '%s  %s\n' "${_p##*/}" "${_cmd:0:70}"
+    done
 }
 
 works_migrate_plug() {
@@ -561,7 +589,7 @@ works_migrate_layout() {
     local legacy container chan stamp id other d absorbed
     legacy="$(works_legacy_root)"
     container="$(works_runtime_store)"
-    chan="$container/stable"
+    chan="$container/$(works_channel)"
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 
     if [ -n "${WORKS_RUNTIME:-}" ]; then
@@ -855,4 +883,3 @@ works_manifest_valid() {
     esac
     return 0
 }
-
