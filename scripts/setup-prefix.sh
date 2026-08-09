@@ -4,9 +4,9 @@
 # own ableton_live*.zip download (~/Proprietary by default) — strictly opt-in
 # via ABLETON_LIVE_AUTOINSTALL=1, otherwise the manual steps are printed.
 # --refresh: maintenance pass on an EXISTING prefix (used by the .run's update
-# mode) — re-applies registry policy and heals runtime DLLs, but skips the slow
+# mode): re-applies registry policy and heals runtime DLLs, but skips the slow
 # winetricks pass; the fonts/runtimes it installs are already in the prefix.
-# --post-first-run: standalone fixup to run after Live's first launch — moves
+# --post-first-run: standalone fixup to run after Live's first launch: moves
 # Max for Live 8's preferences aside (never deletes) so its second start stops
 # crashing. Needs no wine and skips every other step.
 # ABLETON_LIVE_VERSION=11|12 pins the winetricks recipe; unpinned, an opted-in
@@ -34,7 +34,7 @@ kit_root() {
 kit_root_or_die() {
     kit_root && return 0
     echo "!! cannot locate vendor/winetricks (looked in $here/.. and $here)" >&2
-    echo "!! prefix maintenance must run from the installer kit — either:" >&2
+    echo "!! prefix maintenance must run from the installer kit: either:" >&2
     echo "!!     sh install-ableton-latest.run --update" >&2
     echo "!!   or extract the kit and run it from there:" >&2
     echo "!!     sh install-ableton-latest.run --extract /tmp/ableton-kit" >&2
@@ -57,7 +57,7 @@ case "${ABLETON_LIVE_VERSION:-12}" in
 esac
 
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH WINEESYNC WINEFSYNC
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG=-all
@@ -69,6 +69,9 @@ export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
 # "$WINESERVER" -w with narration: name the processes still holding the
 # session open instead of blocking silently — a stray autostart like
 # MicrosoftEdgeUpdate.exe can pin the session for minutes.
+# settle [seconds]: bounded when given a limit, and it then returns the wait's
+# own status (124 on timeout) for the caller to act on. Unbounded otherwise,
+# for the barriers whose only holder is work this script just started.
 settle_procs() {   # basenames of windows processes still running under this runtime
     local p cmd out=""
     for p in $(pgrep -f '\.exe' 2>/dev/null || true); do
@@ -84,8 +87,13 @@ settle_procs() {   # basenames of windows processes still running under this run
     printf '%s\n' "${out# }"
 }
 settle() {
-    "$WINESERVER" -w &
-    local w=$! t=0 tick now last="(unset)"   # sentinel: the first tick past 15s always narrates
+    local limit="${1:-}"
+    if [ -n "$limit" ]; then
+        timeout "$limit" "$WINESERVER" -w &
+    else
+        "$WINESERVER" -w &
+    fi
+    local w=$! t=0 tick now last="(unset)" rc=0   # sentinel: the first tick past 15s always narrates
     while kill -0 "$w" 2>/dev/null; do
         # 1s ticks while a fast settle can still finish (they add latency, not
         # noise); 5s once we are narrating anyway.
@@ -99,15 +107,20 @@ settle() {
             last="$now"
         fi
     done
-    wait "$w" 2>/dev/null || true
+    wait "$w" 2>/dev/null || rc=$?
+    # Only a bounded caller is asking for the status - it needs 124 to tell a
+    # timeout from a clean settle. Unbounded barriers wait on work this script
+    # just started and have always ignored it; keep that under `set -e`.
+    [ -n "$limit" ] || rc=0
+    return "$rc"
 }
 
 # --post-first-run: Max for Live 8 (ships with Live 11) crashes on its SECOND start
-# with a stale preferences file. Move it aside — never delete — so Max regenerates
+# with a stale preferences file. Move it aside: never delete: so Max regenerates
 # it; idempotent, and a missing file only means Max has not run yet. Needs no wine,
 # so it runs before the runtime checks above matter.
 if [ "$post_first_run" -eq 1 ]; then
-    [ -f "$WINEPREFIX/system.reg" ] || { echo "!! no prefix at $WINEPREFIX — nothing to run --post-first-run against" >&2; exit 2; }
+    [ -f "$WINEPREFIX/system.reg" ] || { echo "!! no prefix at $WINEPREFIX: nothing to run --post-first-run against" >&2; exit 2; }
     moved=0
     for maxpref in "$WINEPREFIX"/drive_c/users/*/"AppData/Roaming/Cycling '74/Max 8/Settings/maxpreferences.maxpref"; do
         [ -f "$maxpref" ] || continue
@@ -117,14 +130,14 @@ if [ "$post_first_run" -eq 1 ]; then
         moved=1
     done
     if [ "$moved" -eq 1 ]; then
-        echo "OK: Max preferences moved aside — Max regenerates them on next start"
+        echo "OK: Max preferences moved aside; Max regenerates them on next start"
     else
-        echo "OK: no maxpreferences.maxpref under $WINEPREFIX — nothing to do (Max not run yet?)"
+        echo "OK: no maxpreferences.maxpref under $WINEPREFIX: nothing to do (Max not run yet?)"
     fi
     exit 0
 fi
 
-[ -x "$WINE_ROOT/bin/wine" ] || { echo "!! patched wine not at $WINE_ROOT — run ./scripts/install.sh first"; exit 1; }
+[ -x "$WINE_ROOT/bin/wine" ] || { echo "!! patched wine not at $WINE_ROOT: run ./scripts/install.sh first"; exit 1; }
 for required in \
     lib/wine/x86_64-unix/comdlg32.so \
     lib/wine/x86_64-windows/libusb-1.0.dll \
@@ -147,7 +160,7 @@ fi
 
 # Host tools winetricks needs to unpack the redistributables.
 for t in cabextract; do
-    command -v "$t" >/dev/null || echo "!! missing host tool '$t' (needed by winetricks) — install it (e.g. 'pacman -S cabextract' / 'apt install cabextract')"
+    command -v "$t" >/dev/null || echo "!! missing host tool '$t' (needed by winetricks): install it (e.g. 'pacman -S cabextract' / 'apt install cabextract')"
 done
 
 # DPI blocks: a detected scale maps to a calibrated set by compositor family (see
@@ -156,7 +169,7 @@ done
 # LogPixels = round(96 x scale) with no IFEO. auto applies the detected block on a
 # fresh prefix, preserves an existing one, refuses scales outside 100-250%.
 # The dpiAwareness IFEO is keyed on the exe name, so it is applied per installed Live (any edition);
-# on a fresh prefix Live isn't installed yet — the launcher applies it on every start.
+# on a fresh prefix Live isn't installed yet: the launcher applies it on every start.
 ifeo_root='HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
 live_exe_names() {   # basenames of every Live exe installed in this prefix
     ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe 2>/dev/null \
@@ -230,11 +243,11 @@ check_mutter_knob() {  # warn when mutter's xwayland-native-scaling disagrees wi
 # 2026.07.18.1 seeded -DontCombineAPCs into Options.txt to cut a 30-40% idle CPU
 # thread. Under playback the uncoalesced APCs flood the wineserver and starve the
 # PipeASIO callback: choppy, slowed-down audio (issue #29). Strip the line from
-# every prefs copy — including hand-added ones, since the old changelog entry
+# every prefs copy: including hand-added ones, since the old changelog entry
 # advertised it. The idle CPU cost is back until the Wine-side fix lands; see
 # notes/ABLETON-WINE-APC-COALESCING.md.
 strip_options_txt() {
-    local line="-DontCombineAPCs" prefs f tmp
+    local line="$1" prefs f tmp
     shopt -s nullglob
     for prefs in "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/Ableton/Live*/Preferences; do
         f="$prefs/Options.txt"
@@ -249,7 +262,7 @@ strip_options_txt() {
             rm -f "$tmp"
             echo "   removed $line from $f"
         else
-            # The seed's touch created the file; nothing else in it — undo fully.
+            # The seed's touch created the file; nothing else in it: undo fully.
             rm -f "$tmp" "$f"
             echo "   removed $f (held only $line)"
         fi
@@ -260,7 +273,7 @@ strip_options_txt() {
 fresh_prefix=0
 [ -f "$WINEPREFIX/system.reg" ] || fresh_prefix=1
 if [ "$refresh" -eq 1 ] && [ "$fresh_prefix" -eq 1 ]; then
-    echo "!! --refresh needs an existing prefix at $WINEPREFIX — run without it to create one" >&2
+    echo "!! --refresh needs an existing prefix at $WINEPREFIX: run without it to create one" >&2
     exit 2
 fi
 
@@ -296,7 +309,7 @@ case "$dpi_mode" in
                     echo "   display scale $scale detected; existing prefix already holds the '$block' block"
                 else
                     echo "!! display scale $scale wants the '$block' DPI block, but this existing prefix holds '$have'"
-                    echo "!! preserving it — rerun with ABLETON_DPI_MODE=$block to recalibrate deliberately"
+                    echo "!! preserving it: rerun with ABLETON_DPI_MODE=$block to recalibrate deliberately"
                 fi
             fi
         elif [ "$fresh_prefix" -eq 1 ]; then
@@ -304,7 +317,7 @@ case "$dpi_mode" in
             echo "!! rerun with an explicit ABLETON_DPI_MODE=100 or =dpi<N> (LogPixels N in 72..384)" >&2
             exit 2
         else
-            echo "!! display scale $scale is outside the calibrated 100-250% range — preserving existing prefix values"
+            echo "!! display scale $scale is outside the calibrated 100-250% range: preserving existing prefix values"
         fi
     elif [ "$fresh_prefix" -eq 1 ]; then
         echo "!! cannot detect the display scale (non-GNOME desktop or headless session?)" >&2
@@ -321,7 +334,7 @@ case "$dpi_mode" in
 esac
 
 # Ableton Live auto-install candidate (run by step [6/6]) and the Live major
-# the winetricks/redist recipes target — resolved together, up front, so an
+# the winetricks/redist recipes target: resolved together, up front, so an
 # opted-in auto-install can never put a Live 11 zip into a prefix prepared
 # with the Live 12 recipe. Major precedence: ABLETON_LIVE_VERSION pin >
 # the major parsed from the chosen zip > 12.
@@ -348,7 +361,7 @@ newest_installer() {   # <-iname glob> -> highest-versioned match, empty if none
 live_zip=""
 if [ -d "$installer_dir" ]; then
     if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
-        # An explicit major pin only accepts a matching installer — never
+        # An explicit major pin only accepts a matching installer: never
         # silently install another major into a prefix prepared for this one.
         live_zip="$(newest_installer "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip")"
     else
@@ -365,37 +378,88 @@ if [ -z "${ABLETON_LIVE_VERSION:-}" ] && [ "${ABLETON_LIVE_AUTOINSTALL:-0}" = 1 
         11|12)
             live_major="$zip_major"
             if [ "$live_major" != 12 ]; then
-                echo ":: $(basename "$live_zip") is Live $live_major — using the Live $live_major recipe (ABLETON_LIVE_VERSION overrides)"
+                echo ":: $(basename "$live_zip") is Live $live_major: using the Live $live_major recipe (ABLETON_LIVE_VERSION overrides)"
             fi
             ;;
         "")
-            echo ":: cannot read a Live version from $(basename "$live_zip") — using the Live 12 recipe (set ABLETON_LIVE_VERSION if that is wrong)"
+            echo ":: cannot read a Live version from $(basename "$live_zip"): using the Live 12 recipe (set ABLETON_LIVE_VERSION if that is wrong)"
             ;;
         *)
-            echo "!! $(basename "$live_zip") looks like Live $zip_major — no recipe for that major (11|12); set ABLETON_LIVE_VERSION or remove the zip" >&2
+            echo "!! $(basename "$live_zip") looks like Live $zip_major: no recipe for that major (11|12); set ABLETON_LIVE_VERSION or remove the zip" >&2
             exit 2
             ;;
     esac
 fi
 
-echo "== [1/6] initialize prefix at $WINEPREFIX =="
+echo "== [1/6] initialise prefix at $WINEPREFIX =="
 # Live's Learn View brings in WebView2; its MicrosoftEdgeUpdate.exe autostart
 # is useless under Wine and holds the boot session open for minutes (the
 # settle below waits on it). Disable it up front, like winemenubuilder (step 5).
 # On a fresh prefix this reg add also performs the initial prefix creation.
 # Headless (no DISPLAY/WAYLAND): prefix creation needs no display and the
-# wineboot update banner is the only UI it produces — the nix build gate
+# wineboot update banner is the only UI it produces: the nix build gate
 # creates prefixes with no display at all, so this is a proven-safe path.
-DISPLAY='' WAYLAND_DISPLAY='' wine reg add 'HKCU\Software\Wine\DllOverrides' /v MicrosoftEdgeUpdate.exe /t REG_SZ /d '' /f >/dev/null
-DISPLAY='' WAYLAND_DISPLAY='' wineboot -u
-settle
+# While updating the prefix, wineboot also offers Wine's Mono and Gecko
+# installers. This runtime vendors neither, so on a machine with no cached
+# package it opens a modal "Wine Mono Installer" prompt; nothing answers it in
+# an unattended run and the settle below then never returns. Live needs neither
+# - ableton-live and max9 already disable both on every launch - so disable them
+# here. Both calls: on a fresh prefix the reg add is what creates it, so it gets
+# the same prompt.
+WINEDLLOVERRIDES="mscoree,mshtml=" DISPLAY='' WAYLAND_DISPLAY='' \
+    wine reg add 'HKCU\Software\Wine\DllOverrides' /v MicrosoftEdgeUpdate.exe /t REG_SZ /d '' /f >/dev/null
+WINEDLLOVERRIDES="mscoree,mshtml=" DISPLAY='' WAYLAND_DISPLAY='' wineboot -u
+# A prefix that got Ableton's USB audio driver carries the driver's tray agent, and
+# wineboot's startup pass relaunches it on every boot. The agent never exits by itself and
+# does not always have a window: Live 11's driver MSI (v5.57 File table) installs
+# AbletonPushCpl.exe under Ableton\Push Driver with a Startup shortcut; a field capture of
+# a hung update shows Live 12's agent as ABLE~OCJ.EXE -hide under Ableton\USB Audio Driver,
+# an Ableton*.exe started through its 8.3 path whose long name is not yet confirmed (issue
+# #111). Stop the known images, then delete the autostart entries so later boots come up
+# clean. wineboot runs the HKLM Run key (64-bit and Wow6432Node views), the HKCU Run key,
+# and the Startup folders, so the scrub covers exactly those. Entries are matched by what
+# they point at - an Ableton\USB or Ableton\Push path, long or 8.3 form - not by image
+# name, because the names vary by driver generation.
+for tray_image in AbletonPushCpl.exe tusbaudiocplapp.exe; do
+    wine taskkill /f /im "$tray_image" >/dev/null 2>&1 || true
+done
+for run_key in 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' \
+               'HKLM\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run' \
+               'HKCU\Software\Microsoft\Windows\CurrentVersion\Run'; do
+    (wine reg query "$run_key" 2>/dev/null || true) | \
+        sed -n 's/^    \(.*\)    REG_[A-Z_]*    .*\(ableton\\usb\|ableton\\push\|tusbaudio\).*/\1/Ip' | \
+        while IFS= read -r run_value; do
+            wine reg delete "$run_key" /v "$run_value" /f >/dev/null 2>&1 || true
+        done
+done
+for startup_root in "$WINEPREFIX/drive_c/users" "$WINEPREFIX/drive_c/ProgramData"; do
+    [ -d "$startup_root" ] || continue
+    find "$startup_root" -ipath '*Start Menu/Programs/Startup/*' \
+        \( -iname '*ableton*' -o -iname '*push*' -o -iname '*tusbaudio*' \) -delete 2>/dev/null || true
+done
+# Bounded, because any resident wineboot started parks this barrier forever: the agent
+# under a name the scrub above missed (it matches known image names, and those vary by
+# driver generation), or WebView2's MicrosoftEdgeUpdate.exe, whose scheduled task fires
+# about two minutes after a boot and has no window (the --update half of issue #111 is
+# exactly this wait). On timeout, end every process in the prefix and continue - the
+# boot's registry writes are persisted when the server exits. The second wait stays
+# bounded too, in case a straggler survives even SIGKILL.
+boot_wait_rc=0
+settle 30 || boot_wait_rc=$?
+if [ "$boot_wait_rc" -eq 124 ]; then
+    echo "-- a leftover background program is holding the prefix open; stopping it"
+    "$WINESERVER" -k 2>/dev/null || true
+    settle 30 || true
+elif [ "$boot_wait_rc" -ne 0 ]; then
+    exit "$boot_wait_rc"
+fi
 
 if [ "$refresh" -eq 1 ]; then
     echo "== [2/6] winetricks: skipped (--refresh keeps the installed fonts/runtimes) =="
 else
     # Verb set per Live major: Live 12 needs vcrun2022 + mfc42; Live 11 needs
     # vcrun2019 + gdiplus (the Ableton forum Live-on-Linux guide). vcrun2019/gdiplus
-    # payloads are not vendored yet — Live 11 setup downloads them on first run.
+    # payloads are not vendored yet: Live 11 setup downloads them on first run.
     case "$live_major" in
         11) verbs="corefonts vcrun2019 gdiplus" ;;
         12) verbs="corefonts vcrun2022 mfc42" ;;
@@ -405,11 +469,16 @@ else
     kit_root_or_die
     export W_CACHE_OVERRIDE=""            # unused
     export WINETRICKS_LATEST_VERSION_CHECK=disabled
+    # Never set WINETRICKS_SUPER_QUIET: it silences w_die, so a fatal
+    # winetricks error exits with no message at all (issue #28).
     # Use the bundled payload cache if present (mfc42 downloads if not vendored).
+    # Per-verb symlinks, not one dir link: the vendored cache may be read-only
+    # (nix store), and verbs missing from it must still be able to download.
     tmpc=""
     if [ -d "$root/vendor/winetricks-cache" ]; then
         tmpc="$(mktemp -d)"
-        ln -s "$root/vendor/winetricks-cache" "$tmpc/winetricks"
+        mkdir "$tmpc/winetricks"
+        ln -s "$root/vendor/winetricks-cache"/* "$tmpc/winetricks/"
         export XDG_CACHE_HOME="$tmpc"
         echo "   using bundled winetricks cache ($root/vendor/winetricks-cache)"
     fi
@@ -430,8 +499,122 @@ else
     settle
 fi
 
+# Repair Max for Live's font fallback chain.
+#
+# M4L devices are authored on macOS and name faces absent here (Geneva, Menlo,
+# Lucida Grande, Helvetica Neue, Consolas). Windows' font mapper substitutes
+# silently; Wine reports the failure honestly, so MaxPlug walks its own chain,
+# which terminates at Bitstream Vera - shipped by neither Wine nor Live, and
+# superseded on modern distros by DejaVu. The chain runs out and MaxPlug parks
+# Live's UI thread on a condition variable that is never signalled: window
+# frozen at zero CPU, audio still playing.
+#
+# Both halves below are needed. A FontSubstitutes alias only redirects
+# CreateFontIndirect and never enters EnumFontFamilies, which is what Max
+# matches against; and copied-in files stay invisible until registered, Wine's
+# font list being registry-driven. Idempotent, and runs under --refresh too.
+# See notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md.
+install_maxplug_fallback_fonts() {
+    local winfonts="$WINEPREFIX/drive_c/windows/Fonts"
+    local src="" d n entry missing=0
+    # face name -> filename. Upstream Vera names are fixed, so no runtime probing.
+    local faces=(
+        "Bitstream Vera Sans:Vera.ttf"
+        "Bitstream Vera Sans Bold:VeraBd.ttf"
+        "Bitstream Vera Sans Oblique:VeraIt.ttf"
+        "Bitstream Vera Sans Bold Oblique:VeraBI.ttf"
+        "Bitstream Vera Sans Mono:VeraMono.ttf"
+        "Bitstream Vera Sans Mono Bold:VeraMoBd.ttf"
+        "Bitstream Vera Sans Mono Oblique:VeraMoIt.ttf"
+        "Bitstream Vera Sans Mono Bold Oblique:VeraMoBI.ttf"
+        "Bitstream Vera Serif:VeraSe.ttf"
+        "Bitstream Vera Serif Bold:VeraSeBd.ttf"
+    )
+
+    # Prefer the vendored copy so no host font package is needed; fall back to a
+    # system install if the kit was trimmed. kit_root sets $root as a side
+    # effect, so it is called as a statement rather than substituted.
+    if kit_root && [ -f "$root/vendor/fonts/bitstream-vera/Vera.ttf" ]; then
+        src="$root/vendor/fonts/bitstream-vera"
+    else
+        for d in /usr/share/fonts/truetype/ttf-bitstream-vera \
+                 /usr/share/fonts/bitstream-vera \
+                 /usr/share/fonts/TTF; do
+            [ -f "$d/Vera.ttf" ] && { src="$d"; break; }
+        done
+    fi
+
+    if [ -z "$src" ]; then
+        echo "!! Bitstream Vera fonts not found - Max for Live devices that request"
+        echo "   a missing typeface WILL hang Live (frozen window, audio still"
+        echo "   playing). Vendor them into vendor/fonts/bitstream-vera/ or install"
+        echo "   your distro's package (Debian/Ubuntu: ttf-bitstream-vera,"
+        echo "   Fedora: bitstream-vera-fonts, Arch: ttf-bitstream-vera)."
+        return 0                      # non-fatal: everything else still works
+    fi
+
+    # Non-fatal throughout, deliberately: under `set -e` a failed step here
+    # would abort the whole setup and leave the prefix half-configured, which is
+    # worse than a working prefix plus a loud warning. check-m4l-fonts.sh
+    # catches the not-installed state later.
+    if ! mkdir -p "$winfonts"; then
+        echo "!! cannot create $winfonts; skipping the M4L font fallback repair"
+        return 0
+    fi
+
+    local copied=0 registered=0
+    for entry in "${faces[@]}"; do
+        n="${entry##*:}"
+        [ -f "$src/$n" ] || { missing=1; continue; }
+        # -u to skip identical files on a refresh; not every cp has it.
+        if cp -u "$src/$n" "$winfonts/$n" 2>/dev/null || cp "$src/$n" "$winfonts/$n"; then
+            copied=$((copied + 1))
+        else
+            echo "!! failed to copy $n into $winfonts"
+        fi
+    done
+    [ "$missing" -eq 1 ] && echo "   (some Vera faces absent from $src; registering what is present)"
+
+    # One import rather than ten `wine reg add` calls: each spawns a wine
+    # process, and this runs on every setup and every --refresh. Backslashes are
+    # doubled and lines are CRLF because that is what .reg format wants; the
+    # values land byte-identical to what reg add wrote.
+    local reg_file fonts_key='HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Fonts'
+    reg_file="$(mktemp)" || { echo "!! cannot write a temporary .reg; skipping registration"; return 0; }
+    {
+        printf 'REGEDIT4\r\n\r\n'
+        printf '[%s]\r\n' "$fonts_key"
+        for entry in "${faces[@]}"; do
+            n="${entry##*:}"
+            [ -f "$winfonts/$n" ] || continue
+            printf '"%s (TrueType)"="%s"\r\n' "${entry%%:*}" 'C:\\windows\\Fonts\\'"$n"
+            registered=$((registered + 1))
+        done
+        printf '\r\n'
+    } > "$reg_file"
+
+    if [ "$registered" -gt 0 ] && ! wine reg import "$reg_file" >/dev/null 2>&1; then
+        registered=0                  # import failed: nothing landed
+    fi
+    rm -f "$reg_file"
+    "$WINESERVER" -w || true
+
+    if [ "$registered" -eq 0 ]; then
+        echo "!! MaxPlug font fallback NOT registered ($copied file(s) copied)."
+        echo "   M4L devices requesting a missing typeface will hang Live."
+        echo "   Re-run this script with Live closed, then verify with:"
+        echo "     scripts/check-m4l-fonts.sh"
+    elif [ "$registered" -lt "${#faces[@]}" ]; then
+        echo "   MaxPlug font fallback partially registered ($registered/${#faces[@]}); verify with scripts/check-m4l-fonts.sh"
+    else
+        echo "   MaxPlug font fallback installed and registered (source: $src)"
+    fi
+}
+echo "== fonts: Max for Live fallback chain =="
+install_maxplug_fallback_fonts
+
 # Live bundles the exact VC++ redistributable it was built against in its own
-# Redist folder (<Live folder>/Redist, next to Program/) — present only after
+# Redist folder (<Live folder>/Redist, next to Program/): present only after
 # Live's installer has run, so fresh prefixes never match here.
 find_live_redist() {  # -> path of the VC++ redist installer bundled with an installed Live
     local d name
@@ -477,7 +660,7 @@ install_live_redist() {
 # Live aborts on. Prefer the redist bundled in Live's own Redist folder; the vendored payload
 # stays as the fallback and as the final gate (it also covers syswow64, which vc_redist.x64
 # doesn't touch). The redist comes from the same source winetricks used: vcrun2022 (Live 12)
-# or vcrun2019 (Live 11) — both ship the vc_redist.x64/x86.exe pair with the same cab layout.
+# or vcrun2019 (Live 11): both ship the vc_redist.x64/x86.exe pair with the same cab layout.
 redist_verb=vcrun2022
 [ "$live_major" = 11 ] && redist_verb=vcrun2019
 echo "== [2b/6] force native VC++ runtime over wine's builtin stubs ($redist_verb) =="
@@ -497,9 +680,9 @@ for d in "$root/vendor/winetricks-cache/$redist_verb" \
 done
 if [ -z "$redist_dir" ]; then
     if vc_runtime_ready; then
-        echo "   no vendored vc_redist.x64.exe — relying on the runtime verified above"
+        echo "   no vendored vc_redist.x64.exe: relying on the runtime verified above"
     else
-        echo "!! vc_redist.x64.exe not found (vendor or winetricks cache) — cannot assert a native VC runtime" >&2; exit 1
+        echo "!! vc_redist.x64.exe not found (vendor or winetricks cache): cannot assert a native VC runtime" >&2; exit 1
     fi
 else
     vc_tmp="$(mktemp -d)"
@@ -557,7 +740,7 @@ case "$dpi_block" in
         fi
     done < <(live_exe_names)
     if [ "$ifeo_set" -eq 0 ] && [ "$dpi_ifeo" = 2 ]; then
-        echo "   (Live not installed yet — the launcher sets its per-app DPI flag on first start)"
+        echo "   (Live not installed yet: the launcher sets its per-app DPI flag on first start)"
     fi
     check_mutter_knob "$dpi_block" "$dpi_family"
     ;;
@@ -573,10 +756,31 @@ if host_scheme="$(ableton_detect_theme)"; then
     echo "   host scheme: $host_scheme"
     wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$light_val" /f
 else
-    echo "   host scheme not detectable — leaving the theme key as-is (the launcher retries on every start)"
+    echo "   host scheme not detectable: leaving the theme key as-is (the launcher retries on every start)"
 fi
 wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f
 settle
+
+echo "== [3c/6] text: subpixel antialiasing =="
+# Wine takes the antialiasing mode from the host's Xft resources, so a desktop
+# set to grayscale renders every Win32 menu, dialog and control grayscale
+# whatever the prefix asks for. Patch 0084 lets an explicit FontSmoothingType
+# in the prefix outrank that, and this is what sets it. Without these values
+# the patch has nothing to act on and text stays grayscale.
+#
+# The subpixel order follows the host where it states one: a BGR panel
+# rendered as RGB fringes the wrong way.
+smoothing_order=1   # FE_FONTSMOOTHINGORIENTATIONRGB
+if command -v gsettings >/dev/null 2>&1; then
+    case "$(gsettings get org.gnome.desktop.interface font-rgba-order 2>/dev/null | tr -d "'")" in
+        bgr) smoothing_order=0 ;;
+    esac
+fi
+case "$smoothing_order" in 0) echo "   subpixel order: BGR" ;; *) echo "   subpixel order: RGB" ;; esac
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d 2 /f
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d 2 /f
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$smoothing_order" /f
+"$WINESERVER" -w
 
 echo "== [4/6] register packaged PipeASIO =="
 # The driver's unix half must resolve libpipewire-0.3.so.0 — the tarball build
@@ -619,7 +823,7 @@ EOF
 fi
 
 echo "== [5/6] set portal policy and scope Push 2 bridge to its helper =="
-# Default only — a policy the user set with set-file-portal-policy survives re-runs.
+# Default only: a policy the user set with set-file-portal-policy survives re-runs.
 if ! wine reg query 'HKCU\Software\Wine\X11 Driver' /v FileDialogPortal >/dev/null 2>&1; then
   wine reg add 'HKCU\Software\Wine\X11 Driver' \
     /v FileDialogPortal /t REG_SZ /d auto /f
@@ -629,7 +833,23 @@ wine reg add "$push2_key" /v libusb-1.0 /t REG_SZ /d builtin /f
 wine reg query "$push2_key" /v libusb-1.0
 
 # Ableton's tlsetupfx.exe (kernel USB driver installer) faults under Wine and pops a winedbg
-# dialog mid-install; this runtime has no IFEO Debugger hook to neuter it, so nothing is set here.
+# dialog mid-install - twice, on every Live 11 install. The fault is harmless: the installer
+# records it (0x80070643), carries on, and Live installs fine (issue 111), but two unexplained
+# "Program Error" boxes make a working install look broken. Suppress the dialog only: winedbg
+# still runs and still writes the backtrace to stderr.
+wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f
+
+# Earlier revisions of this script registered a placeholder Ableton Push USB Audio Driver
+# product (version 99.0.0, invented ProductCode {B0B57A61-11E0-4A2E-9A11-AB1E70201126})
+# here, so Live 11's Burn bundle would plan its driver package out. That only works on the
+# WiX 4 generation of the bundle; the seed now lives in setup-run-header.sh, gated on the
+# bundle's generation. Remove any leftover registration: the ProductCode is ours, so only
+# the placeholder can be under it. This also clears the orphaned InstallProperties key a
+# WiX 3 bundle leaves behind when its RelatedPackage sweep removes the placeholder.
+wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' /v 16A75B0B0E11E2A4A911BAE107021162 /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' /v 16A75B0B0E11E2A4A911BAE107021162 /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162' /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\16A75B0B0E11E2A4A911BAE107021162' /f >/dev/null 2>&1 || true
 
 # winemenubuilder's entries assume `wine` on PATH (never true here) and are dead buttons: disable
 # it and delete entries it already wrote for this prefix (matched by WINEPREFIX=; install.sh's entries can't match).
@@ -647,7 +867,14 @@ update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" 2>/d
 settle
 
 echo "== [5b/6] remove the 2026.07.18.1 Options.txt seed (issue #29) =="
-strip_options_txt
+strip_options_txt "-DontCombineAPCs"
+
+# -_ForceGdiBackend disables Live's GPU renderer. Early prefixes carried it
+# (inherited from pre-repo setups); with the d2d1 base fork Live's GPU
+# renderer works, removes the WebView2 pane flicker, and drops idle CPU.
+# See notes/ABLETON-WINE-GPU-RENDERER.md.
+echo "== [5c/6] remove -_ForceGdiBackend so Live uses its GPU renderer =="
+strip_options_txt "-_ForceGdiBackend"
 
 echo "== [6/6] Ableton Live =="
 # Runs the USER'S OWN Ableton download — this repo ships no Live payload and
@@ -783,9 +1010,14 @@ if [ "$live_ready" -eq 1 ]; then
     step1="  1. Live is installed — nothing more to supply here."
 else
     step1="  1. Install Live (any edition) through THIS wine (plain wine reads
-     WINEPREFIX, not the ABLETON_* launcher variables):
+     WINEPREFIX, not the ABLETON_* launcher variables). For Live 12 the flags
+     let the installer run by itself and skip Ableton's Windows USB audio
+     driver, which does nothing on Linux:
        WINEPREFIX=$WINEPREFIX \\
-       $WINE_ROOT/bin/wine \"/path/to/Ableton Live NN Edition Installer.exe\"
+       $WINE_ROOT/bin/wine \"/path/to/Ableton Live 12 Edition Installer.exe\" \\
+       /SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver'
+     Live 11's installer is a different kind and ignores those flags; run it
+     without them and click through its window.
      Or: drop the official ableton_live*.zip into $installer_dir and rerun this script."
 fi
 cat <<EOF
@@ -797,9 +1029,8 @@ $step1
 
   2. Launch:            ableton-live
   3. Authorize Live with your own account (binds to this prefix's MachineGuid).
-  4. In Live: Options > uncheck "Auto-Scale Plugin Window"
-     (prevents a plugin-window resize loop with DPI-unaware plugin UIs).
-  5. Audio: Preferences > Audio > Driver Type: ASIO > Device: PipeASIO.
-     PipeASIO is a native PipeWire client — no JACK layer involved.
+  4. Audio: Settings/Preferences > Audio > Driver Type: ASIO >
+     Audio Device: PipeASIO.
+     PipeASIO is a native PipeWire client: no JACK layer involved.
 ────────────────────────────────────────────────────────────────────────
 EOF
