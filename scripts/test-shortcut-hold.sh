@@ -12,7 +12,13 @@ mkdir -m 700 -- "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
 declare -A values writable fail_set
 gsettings()
 {
-    local op="$1" schema="$2" key="$3" id="$schema|$key" value
+    # Two 'local's on purpose: assignments in one 'local' are not visible to
+    # the later words in the same statement, so an id built there reads the
+    # CALLER's schema/key instead of this stub's arguments. It only looked
+    # right because shortcut-hold.sh happens to name its loop variables the
+    # same; rename them and every key collapses onto one bucket.
+    local op="$1" schema="$2" key="$3" value
+    local id="$schema|$key"
     case "$op" in
         get) printf '%s\n' "${values[$id]:-@as []}" ;;
         writable) printf '%s\n' "${writable[$id]:-true}" ;;
