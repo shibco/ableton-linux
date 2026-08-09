@@ -44,6 +44,14 @@ check()
     printf 'ok - %s\n' "$label"
 }
 
+# Presence as a word, so the checks below read as what they assert and carry no
+# "$(...; echo $?)" whose $? belongs to the test rather than to a command
+# (SC2319) - and so a failure prints yes/no instead of 0/1.
+exists()
+{
+    if [ -e "$1" ]; then printf 'yes\n'; else printf 'no\n'; fi
+}
+
 check "strip exact Ctrl+Alt+Up and preserve Super" \
     "$(ableton_shortcuts_strip_ctrl_alt "['<Control><Alt>Up', '<Super>Up']" Up)" "['<Super>Up']"
 check "strip exact key with accepted modifier names and order" \
@@ -99,7 +107,7 @@ ableton_shortcuts_restore
 check "restore returns exact Up value" "${values[$up]}" "['<Control><Alt>Up', '<Super>Up']"
 check "restore returns exact Down value" "${values[$down]}" "['<Primary><Alt>Down']"
 check "restore returns exact logout value" "${values[$logout]}" "['<Control><Alt>Delete']"
-check "successful restore removes state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+check "successful restore removes state" "$(exists "$ableton_shortcuts_state")" "no"
 
 # A logout removes XDG_RUNTIME_DIR but not dconf.  A later launch must recover
 # the held bindings from persistent state once the new session has no lease.
@@ -110,7 +118,7 @@ mkdir -m 700 -- "$XDG_RUNTIME_DIR"
 ableton_shortcuts_prepare '' '' 0
 check "relaunch after runtime loss restores Up" "${values[$up]}" "['<Control><Alt>Up', '<Super>Up']"
 check "relaunch after runtime loss restores Down" "${values[$down]}" "['<Primary><Alt>Down']"
-check "runtime-loss recovery removes snapshot" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+check "runtime-loss recovery removes snapshot" "$(exists "$ableton_shortcuts_state")" "no"
 
 # A user edit while Live runs wins over the stale snapshot.
 ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
@@ -127,7 +135,7 @@ if ableton_shortcuts_restore; then
     echo "not ok - failed restore unexpectedly succeeded" >&2
     exit 1
 fi
-check "failed restore retains state" "$([ -f "$ableton_shortcuts_state" ]; echo $?)" "0"
+check "failed restore retains state" "$(exists "$ableton_shortcuts_state")" "yes"
 check "failed key remains held" "${values[$down]}" "[]"
 fail_set[$down]=0
 ableton_shortcuts_restore
@@ -142,7 +150,7 @@ rm -f -- "$ableton_shortcuts_state_dir"/lease.*
 export ABLETON_SHORTCUTS_POLL_SECONDS=0.01
 ableton_shortcuts_watch_loop
 check "watcher restores after last lease exits" "${values[$up]}" "['<Control><Alt>Up']"
-check "watcher removes completed recovery state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+check "watcher removes completed recovery state" "$(exists "$ableton_shortcuts_state")" "no"
 
 # Recovery still runs when discovery did not find a Live executable. It must
 # not start a new hold in this path, even when the opt-in variable is present.
@@ -152,7 +160,7 @@ ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
 rm -f -- "$ableton_shortcuts_state_dir"/lease.*
 ableton_shortcuts_prepare '' '' 0
 check "missing Live still restores stale state" "${values[$down]}" "['<Primary><Alt>Down']"
-check "missing Live does not take a new hold" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+check "missing Live does not take a new hold" "$(exists "$ableton_shortcuts_state")" "no"
 
 # Migrate the feature branch's per-prefix V1 snapshot before taking V2 state.
 legacy="$work/legacy-v1"
@@ -163,7 +171,7 @@ chmod 600 "$legacy"
 values[$up]='[]'
 values[$down]='@as []'
 ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe' "$legacy"
-check "legacy state is removed after migration" "$([ ! -e "$legacy" ]; echo $?)" "0"
+check "legacy state is removed after migration" "$(exists "$legacy")" "no"
 check "legacy value is restored before V2 hold" "$(sed -n '2p' "$ableton_shortcuts_state" | cut -d'|' -f3)" "['<Control><Alt>Up']"
 ableton_shortcuts_restore
 check "migrated state restores normally" "${values[$up]}" "['<Control><Alt>Up']"
@@ -185,7 +193,7 @@ values[$up]="['<Control><Alt>Up']"
 values[$down]="@as []"
 ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
 check "locked key stays untouched" "${values[$up]}" "['<Control><Alt>Up']"
-check "no-op hold creates no state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+check "no-op hold creates no state" "$(exists "$ableton_shortcuts_state")" "no"
 
 # Unknown state is never appended to or deleted.
 printf '%s\n' 'FUTURE_SHORTCUT_STATE' > "$ableton_shortcuts_state"
