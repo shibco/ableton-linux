@@ -175,10 +175,29 @@ works_runtime_path() {
     works_legacy_root
 }
 
+# Where Plugs live. There is no registry: the directory is the list, so a Plug
+# exists because its prefix does and stops existing when it is removed.
+works_plugs_dir() {
+    printf '%s\n' "$(works_home)/plugs"
+}
+
 # The Ableton prefix. Separate from the runtime on purpose: a channel switch
 # would change both, but a test or a clone changes only this one.
+#
+# Selection is WORKS_PLUG, then the `default` symlink, then studio. The symlink
+# is the one thing `works plug use` writes; studio is the name the migration
+# lands on, so an install that predates Plugs still resolves without one.
 works_plug_path() {
-    printf '%s\n' "${WORKS_PLUG:-$(works_home)/plugs/studio}"
+    local _d _t
+    if [ -n "${WORKS_PLUG:-}" ]; then printf '%s\n' "$WORKS_PLUG"; return; fi
+    _d="$(works_plugs_dir)"
+    if [ -L "$_d/default" ]; then
+        _t="$(readlink -f "$_d/default" 2>/dev/null || true)"
+        # A dangling default is a Plug someone removed by hand. Falling back is
+        # better than resolving to nothing, and `plug list` names the danglers.
+        [ -n "$_t" ] && { printf '%s\n' "$_t"; return; }
+    fi
+    printf '%s\n' "$_d/studio"
 }
 
 # The pre-container prefix path, named once rather than spelled out at each use.
@@ -211,6 +230,67 @@ works_anything_busy() {
     [ -n "$(works_all_pids 2>/dev/null | sort -un | head -1)" ]
 }
 
+# What a Plug is bound to. A symlink into the store at either a channel or a
+# build: pointing it at the channel is how a Plug follows `works runtime use`,
+# pointing it at a build is how one stays where it is. Resolving either is the
+# same readlink, which is also what retention walks.
+works_plug_binding() {
+    local _p="${1:-}"
+    [ -n "$_p" ] || _p="$(works_plug_path)"
+    printf '%s\n' "${_p%/}/.works-runtime"
+}
+
+# The build a Plug resolves to, or nothing if it is unbound. Unbound is the
+# normal state for every Plug that predates this, and means "follow the channel".
+works_plug_runtime() {
+    local _b _t
+    _b="$(works_plug_binding "${1:-}")"
+    [ -L "$_b" ] || return 1
+    _t="$(readlink -f "$_b" 2>/dev/null || true)"
+    [ -n "$_t" ] && [ -d "$_t" ] || return 1
+    printf '%s\n' "$_t"
+}
+
+# Every Plug, by name. Two markers, because a Plug exists before Wine has ever
+# run in it: system.reg is Wine's own "this is a prefix", and .works-runtime is
+# ours for one created but not yet booted. Requiring either keeps a stray
+# directory under plugs/ from being offered as a Plug.
+works_plug_names() {
+    local _d _p
+    _d="$(works_plugs_dir)"
+    [ -d "$_d" ] || return 0
+    for _p in "$_d"/*/; do
+        _p="${_p%/}"
+        [ -d "$_p" ] && [ ! -L "$_p" ] || continue     # skips the default link
+        [ -e "$_p/system.reg" ] || [ -L "$_p/.works-runtime" ] || continue
+        printf '%s\n' "${_p##*/}"
+    done
+}
+
+# What is installed in a Plug. Discovered by globbing drive_c rather than
+# recorded anywhere - nothing registers a tenant, so what is on disk is the only
+# honest answer - using the same globs the launchers use to find their own app.
+works_plug_tenants() {
+    local _p _e _d
+    _p="${1:-}"; [ -n "$_p" ] || _p="$(works_plug_path)"
+    {
+        for _e in "$_p"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live "*.exe; do
+            [ -e "$_e" ] || continue
+            _e="${_e##*/Ableton Live }"; _e="${_e%.exe}"
+            printf 'Live %s\n' "${_e%% *}"
+        done
+        # The vendor directory is spelled with a space and an apostrophe, so it
+        # is built once here rather than quoted inline: two adjacent quoted
+        # segments in one glob read as a splicing mistake even when they are not.
+        local _mx="$_p/drive_c/Program Files/Cycling '74"
+        for _d in "$_mx"/Max\ */Max.exe; do
+            [ -e "$_d" ] || continue
+            _d="${_d%/Max.exe}"
+            printf '%s\n' "${_d##*/}"
+        done
+    } | sort -u | awk 'NR>1{printf ", "} {printf "%s", $0} END{if (NR) print ""}'
+}
+
 # Bind this shell to the runtime: drop inherited Wine settings that would reach
 # the wrong build, then export what wine and its helpers read.
 #
@@ -221,8 +301,18 @@ works_anything_busy() {
 # refactor's clothes.
 works_bind_runtime() {
     unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
-    WINE_ROOT="$(works_runtime_path)"
     WINEPREFIX="$(works_plug_path)"
+    # A Plug's own binding wins over the channel: that is what lets two Plugs on
+    # one machine run different builds. WORKS_RUNTIME still wins over both, as
+    # the outermost say the VMs and anyone bisecting depend on. Deliberately
+    # only here and not in works_runtime_path - install.sh resolves the runtime
+    # it is installing *into* through that, and a Plug's binding must not move
+    # it.
+    if [ -n "${WORKS_RUNTIME:-}" ]; then
+        WINE_ROOT="$WORKS_RUNTIME"
+    else
+        WINE_ROOT="$(works_plug_runtime "$WINEPREFIX" 2>/dev/null || works_runtime_path)"
+    fi
     WINESERVER="$WINE_ROOT/bin/wineserver"
     PATH="$WINE_ROOT/bin:$PATH"
     export WINEPREFIX WINESERVER PATH
@@ -705,6 +795,16 @@ works_prune_runtimes() {
         _live="$(readlink -f "$_e" 2>/dev/null || true)"
         [ -n "$_live" ] && _pinned+=("$_live")
     done
+    # And every build a Plug is bound to. A Plug held deliberately on an older
+    # build is precisely what the count prunes first, and removing it breaks that
+    # Plug rather than tidying anything. The binding is a symlink, so this is the
+    # same readlink the channels above get.
+    local _pl
+    while read -r _pl; do
+        [ -n "$_pl" ] || continue
+        _live="$(works_plug_runtime "$(works_plugs_dir)/$_pl" 2>/dev/null || true)"
+        [ -n "$_live" ] && _pinned+=("$_live")
+    done < <(works_plug_names)
 
     local -a _victims=()
     while IFS=$'\t' read -r _key _e; do

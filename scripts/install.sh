@@ -343,6 +343,7 @@ ln -sfn "$HOME/works/apps/ableton-live/ableton-live" "$BIN/ableton-live"
 install -m755 "$here/works" "$HOME/works/bin/works"
 install -m755 "$here/works-runtime" "$HOME/works/lib/works-runtime"
 install -m755 "$here/works-update" "$HOME/works/lib/works-update"
+install -m755 "$here/works-plug" "$HOME/works/lib/works-plug"
 ln -sfn "$HOME/works/bin/works" "$BIN/works"
 # The two commands this replaced, from an installer that predates it.
 rm -f "$BIN/ableton-runtime" "$BIN/ableton-update" "$BIN/works-runtime" "$BIN/works-update" 2>/dev/null || true

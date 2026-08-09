@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+# The Plugs on this machine: the Wine prefixes applications are installed into.
+#
+#   works plug list                     every Plug, what is in it, what it runs
+#   works plug use <name>               make one the default for new launches
+#   works plug new <name> [--from <p>]  a fresh Plug, or a clone of another
+#   works plug new <name> --runtime <id>   pin the clone to one build
+#   works plug rm <name> [-y]           remove a Plug and everything in it
+#
+# A Plug is a directory and nothing else is recorded about it: the name is the
+# directory's name, the tenants are whatever is in drive_c, and the one piece of
+# state is `.works-runtime`, a symlink at the build or channel it runs. Nothing
+# registers a Plug, so nothing can disagree with the filesystem about one.
+#
+# Per-project Plugs are the point. Two Plugs each hold their own Live with their
+# own preferences, plugin paths and templates, because those already live inside
+# a prefix - and they run at the same time, because the launch lock and the
+# wineserver key are both prefix-scoped.
+set -uo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+for _l in "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh" \
+          "$here/../scripts/runtime-env.sh"; do
+    # shellcheck source=scripts/runtime-env.sh
+    [ -r "$_l" ] && . "$_l" && break
+done
+command -v works_plug_path >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/lib" >&2; exit 1; }
+
+plugs="$(works_plugs_dir)"
+store="$(works_runtime_store)"
+
+# Same honest test as the other verbs: `[ -t 0 ]` answers "is stdin a tty",
+# which a harness inherits by accident. 2 = there is no terminal to ask on.
+ask_tty() {
+    local prompt="$1" ans=""
+    { : >/dev/tty; } 2>/dev/null || return 2
+    printf '%s' "$prompt" > /dev/tty
+    read -r -t 60 ans < /dev/tty || { printf '\n' > /dev/tty 2>/dev/null || true; return 1; }
+    case "$ans" in y|Y|yes|Yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+# The name becomes a directory under plugs/ and a symlink target, so it has to
+# be a plain name. `default` is refused because it is the selection link itself:
+# a Plug by that name would be shadowed by it and could never be selected.
+valid_name() {
+    case "${1:-}" in
+        "")            echo "!! a Plug needs a name" >&2; return 1 ;;
+        default)       echo "!! 'default' is the selection link, not a Plug name" >&2; return 1 ;;
+        */*|.*|-*)     echo "!! not a usable Plug name: $1" >&2; return 1 ;;
+        *[![:alnum:]._-]*)
+                       echo "!! a Plug name takes letters, digits, dot, dash and underscore: $1" >&2
+                       return 1 ;;
+    esac
+    return 0
+}
+
+exists() { [ -d "$plugs/$1" ] && [ ! -L "$plugs/$1" ]; }
+
+# The filesystem under a path, by its real name. Not `stat -f -c %T`: that reads
+# statfs.f_type, and ext2, ext3 and ext4 all share magic 0xef53, so it answers
+# "ext2/ext3" on every ext4 filesystem there is. The mount table has the name.
+fs_type() {
+    local _t
+    _t="$(df -PT "$1" 2>/dev/null | awk 'NR==2 {print $2}')"
+    [ -n "$_t" ] || _t="$(stat -f -c %T "$1" 2>/dev/null)"
+    printf '%s\n' "${_t:-unknown}"
+}
+
+# The build a Plug runs, and whether it was told to or is following a channel.
+# Both are worth showing: following is not a weaker answer, it is the one that
+# keeps tracking `works runtime use`.
+#
+# Which of the two it is comes from the store, not from a list of channel names
+# here: a channel is a symlink in the store and a build is a directory, so what
+# the binding points *at* already answers it.
+bound_to() {
+    local _p="$plugs/$1" _raw _t
+    _raw="$(readlink "$_p/.works-runtime" 2>/dev/null || true)"
+    if [ -z "$_raw" ]; then
+        _t="$(works_runtime_path 2>/dev/null || true)"
+        # Naming a channel on a pre-store install would be a fiction: there is no
+        # store for a channel to live in, and what actually resolves is the flat
+        # legacy directory. Say which world this is.
+        if [ -d "$store" ]; then
+            printf '%s (%s)\n' "${_t##*/}" "$(works_channel)"
+        else
+            printf '%s (legacy)\n' "${_t##*/}"
+        fi
+        return
+    fi
+    _t="$(works_plug_runtime "$_p" 2>/dev/null || true)"
+    [ -n "$_t" ] || { printf 'broken -> %s\n' "$_raw"; return; }
+    if [ -L "$store/${_raw##*/}" ]; then
+        printf '%s (%s)\n' "${_t##*/}" "${_raw##*/}"
+    else
+        printf '%s (pinned)\n' "${_t##*/}"
+    fi
+}
+
+cmd_list() {
+    local sel name n=0 mark path
+    sel="$(works_plug_path)"
+    if [ ! -d "$plugs" ]; then
+        echo "No Plugs yet — this install predates them."
+        echo "  prefix: $sel"
+        return 0
+    fi
+    # Same shape as `works runtime list`, path included: it is the string people
+    # copy into a script, a bug report or a `cd`, and rebuilding it by hand from
+    # a root and a name is where the typo comes from. What is true of a build is
+    # true of a Plug.
+    printf '  %-20s %-24s %-30s %s\n' "PLUG" "TENANTS" "BOUND TO" "PATH"
+    while read -r name; do
+        [ -n "$name" ] || continue
+        n=$((n+1))
+        mark="  "; [ "$plugs/$name" = "${sel%/}" ] && mark="* "
+        path="$plugs/$name"
+        case "$path" in "$HOME"/*) path="~${path#"$HOME"}" ;; esac
+        printf '%s%-20.20s %-24.24s %-30.30s %s\n' "$mark" "$name" \
+            "$(works_plug_tenants "$plugs/$name")" "$(bound_to "$name")" "$path"
+    done < <(works_plug_names)
+    [ "$n" -gt 0 ] || echo "  (none)"
+    # A default pointing at a Plug someone removed by hand resolves to nothing,
+    # and every launch quietly falls back to studio. Say so rather than let it
+    # look deliberate.
+    if [ -L "$plugs/default" ] && [ ! -d "$plugs/default" ]; then
+        echo "!! default points at $(readlink "$plugs/default"), which is not there;" \
+             "launches are falling back to studio" >&2
+    fi
+}
+
+# Pick from a numbered list, exactly as `works runtime use` does. Anything one
+# of these commands offers, the other should: a person who has learned that
+# `runtime use` asks should not find that `plug use` refuses.
+cmd_pick() {
+    local -a names=(); local name i=0 sel cur
+    [ -d "$plugs" ] || { echo "!! no Plugs to switch between" >&2; return 1; }
+    sel="$(works_plug_path)"
+    while read -r name; do [ -n "$name" ] && names+=("$name"); done < <(works_plug_names)
+    [ "${#names[@]}" -gt 0 ] || { echo "!! no Plugs installed" >&2; return 1; }
+    # No terminal means a script ran this; fail loudly with the exact lines to
+    # copy rather than block on a prompt nobody can answer.
+    if ! { : >/dev/tty; } 2>/dev/null; then
+        echo "!! no terminal to ask on; name a Plug instead:" >&2
+        for name in "${names[@]}"; do echo "     works plug use $name" >&2; done
+        return 1
+    fi
+    for name in "${names[@]}"; do
+        i=$((i+1))
+        cur=""; [ "$plugs/$name" = "${sel%/}" ] && cur="  (current)"
+        printf '  %2d) %-20s %-24s %s%s\n' "$i" "$name" \
+            "$(works_plug_tenants "$plugs/$name")" "$(bound_to "$name")" "$cur"
+    done
+    local ans=""
+    printf 'Which Plug? [1-%d, or q to cancel] ' "${#names[@]}" > /dev/tty
+    read -r -t 120 ans < /dev/tty || ans=q
+    case "$ans" in
+        q|Q|"")   echo "cancelled"; return 0 ;;
+        *[!0-9]*) echo "!! not a number: $ans" >&2; return 1 ;;
+    esac
+    [ "$ans" -ge 1 ] && [ "$ans" -le "${#names[@]}" ] || { echo "!! out of range: $ans" >&2; return 1; }
+    cmd_use "${names[$((ans-1))]}"
+}
+
+cmd_use() {
+    local want="${1:-}"
+    valid_name "$want" || return 1
+    exists "$want" || {
+        echo "!! no such Plug: $want" >&2
+        echo "   installed:" >&2; works_plug_names | sed 's/^/     /' >&2
+        return 1; }
+    ln -sfn "$want" "$plugs/default"
+    echo "default -> $want"
+    # Same as a runtime switch: a session that has already started keeps the
+    # prefix it opened, because the launcher resolved it once at startup.
+    if works_plug_busy "$plugs/$want" 2>/dev/null; then
+        echo "note: something is already running from this Plug; this affects the next launch."
+    fi
+}
+
+# Bind a Plug to a build or a channel. Relative, so moving ~/works keeps it
+# resolvable, and a symlink rather than a file so retention can walk it with the
+# same readlink it uses for the channels.
+bind_plug() {
+    local name="$1" target="$2"
+    [ -e "$store/$target" ] || {
+        echo "!! nothing in the store called $target" >&2
+        return 1; }
+    ln -sfn "../../runtimes/$target" "$plugs/$name/.works-runtime"
+}
+
+cmd_new() {
+    local want="" from="" runtime="" fs need free
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --from)     shift; from="${1:-}"
+                        [ -n "$from" ] || { echo "!! --from needs a Plug name" >&2; return 1; } ;;
+            --from=*)   from="${1#--from=}" ;;
+            --runtime)  shift; runtime="${1:-}"
+                        [ -n "$runtime" ] || { echo "!! --runtime needs a build or channel" >&2; return 1; } ;;
+            --runtime=*) runtime="${1#--runtime=}" ;;
+            -*)         echo "!! unknown option: $1" >&2; return 1 ;;
+            *)          [ -z "$want" ] || { echo "!! one name at a time: $1" >&2; return 1; }
+                        want="$1" ;;
+        esac
+        shift
+    done
+    valid_name "$want" || return 1
+    [ ! -e "$plugs/$want" ] || { echo "!! there is already something at $plugs/$want" >&2; return 1; }
+
+    # An explicit binding is checked before anything is copied. Finding out that
+    # the target is not in the store *after* cloning tens of gigabytes is a poor
+    # trade, and it leaves a Plug behind that the command reported as a failure.
+    if [ -n "$runtime" ] && [ ! -e "$store/$runtime" ]; then
+        echo "!! nothing in the store called $runtime" >&2
+        return 1
+    fi
+
+    mkdir -p "$plugs" || return 1
+
+    if [ -n "$from" ]; then
+        valid_name "$from" || return 1
+        exists "$from" || { echo "!! no such Plug to clone: $from" >&2; return 1; }
+        # Cloning a prefix that something is writing to copies a torn registry.
+        if works_plug_busy "$plugs/$from" 2>/dev/null; then
+            echo "!! something is running from $from, and cloning it now would copy a" \
+                 "half-written registry. Close it, or run \`works stop\`, then rerun:" >&2
+            works_plug_holders "$plugs/$from" | sed 's/^/     /' >&2
+            return 1
+        fi
+        # On btrfs and XFS this shares extents and costs almost nothing; anywhere
+        # else --reflink=auto silently falls back to a full copy, and a Live
+        # install is tens of gigabytes. Say which one is about to happen, and on
+        # the copying path check there is room for it first.
+        fs="$(fs_type "$plugs")"
+        case "$fs" in
+            btrfs)
+                echo "   btrfs: copy-on-write, so this shares extents rather than copying" ;;
+            xfs)
+                echo "   xfs: shares extents where reflink is enabled; without it," \
+                     "--reflink=auto falls back to copying the lot" ;;
+            *)
+                need="$(du -sk "$plugs/$from" 2>/dev/null | cut -f1)"
+                free="$(df -Pk "$plugs" 2>/dev/null | awk 'NR==2 {print $4}')"
+                if [ -n "$need" ] && [ -n "$free" ] && [ "$free" -le "$need" ]; then
+                    echo "!! cloning $from needs $((need / 1024)) MB and there is" \
+                         "$((free / 1024)) MB free" >&2
+                    return 1
+                fi
+                echo "   $fs does not do copy-on-write, so this is a full copy of $((${need:-0} / 1024)) MB" ;;
+        esac
+        # -a keeps the symlinks as symlinks: dosdevices holds relative links back
+        # into the Plug and outward ones to the real home, and dereferencing
+        # either would turn the clone into a copy of the user's documents.
+        if ! cp -a --reflink=auto "$plugs/$from" "$plugs/$want"; then
+            rm -rf "${plugs:?}/${want:?}"
+            echo "!! cloning $from failed; nothing was left behind" >&2
+            return 1
+        fi
+        echo "   cloned $from -> $want"
+    else
+        mkdir -p "$plugs/$want" || return 1
+        echo "   created an empty Plug at $plugs/$want"
+    fi
+
+    # An explicit build, else whatever the source Plug already had, else the
+    # channel - which is the binding that keeps following `works runtime use`.
+    if [ -n "$runtime" ]; then
+        bind_plug "$want" "$runtime" || return 1
+        echo "   bound to $runtime"
+    elif [ ! -L "$plugs/$want/.works-runtime" ]; then
+        # An explicit --runtime that is not in the store is a refusal. A *default*
+        # binding on a machine that has no store at all is not: an unbound Plug
+        # already means "follow whatever resolves", which on a pre-store install
+        # is the flat legacy runtime - the right answer, and not a failure to
+        # report after the clone has already succeeded.
+        if bind_plug "$want" "$(works_channel)" 2>/dev/null; then
+            echo "   following the $(works_channel) channel"
+        else
+            echo "   no version store yet, so it follows the installed runtime"
+        fi
+    fi
+
+    [ -n "$from" ] || cat <<EOF
+
+Nothing is installed in it yet. To set the prefix up and install into it:
+  WORKS_PLUG=$plugs/$want ~/works/lib/setup-prefix.sh
+EOF
+}
+
+cmd_rm() {
+    local want="" yes=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -y|--yes) yes=1 ;;
+            -*)       echo "!! unknown option: $1" >&2; return 1 ;;
+            *)        [ -z "$want" ] || { echo "!! one name at a time: $1" >&2; return 1; }
+                      want="$1" ;;
+        esac
+        shift
+    done
+    valid_name "$want" || return 1
+    exists "$want" || { echo "!! no such Plug: $want" >&2; return 1; }
+
+    if works_plug_busy "$plugs/$want" 2>/dev/null; then
+        echo "!! something is still running from $want. Close it, or run" \
+             "\`works stop\`, then rerun:" >&2
+        works_plug_holders "$plugs/$want" | sed 's/^/     /' >&2
+        return 1
+    fi
+
+    # Removing what `default` points at while other Plugs exist would leave the
+    # selection dangling and every launch silently falling back to studio. Make
+    # the choice of successor explicit rather than picking one.
+    local others
+    others="$(works_plug_names | grep -vxF "$want" | grep -c .)"
+    if [ "$(readlink "$plugs/default" 2>/dev/null)" = "$want" ] && [ "$others" -gt 0 ]; then
+        echo "!! $want is the default Plug. Point it somewhere else first:" >&2
+        works_plug_names | grep -vxF "$want" | sed 's/^/     works plug use /' >&2
+        return 1
+    fi
+
+    if [ -z "$yes" ]; then
+        echo "This deletes $plugs/$want and everything installed in it" \
+             "($(works_plug_tenants "$plugs/$want" 2>/dev/null || true))."
+        ask_tty "Remove it? [y/N] "
+        case "$?" in
+            0) ;;
+            2) echo "!! no terminal to confirm on; pass -y if you mean it" >&2; return 1 ;;
+            *) echo "cancelled"; return 1 ;;
+        esac
+    fi
+
+    # :? on both halves because this is an rm -rf on a composed path: an unset
+    # plugs root and an empty name would otherwise compose to /.
+    rm -rf "${plugs:?}/${want:?}" || return 1
+    # Only ever when it pointed here: the guard above means that is the last
+    # Plug going, and a link to a name that no longer exists is worse than none.
+    [ "$(readlink "$plugs/default" 2>/dev/null)" = "$want" ] && rm -f "$plugs/default"
+    echo "removed $want"
+}
+
+short_usage() {
+    cat <<'EOF'
+usage: works plug {list|new|use|rm}        `works plug help` for detail
+
+  works plug list                 every Plug, what is in it, what it runs
+  works plug new <name>           a fresh Plug, or --from a clone of another
+  works plug use [name]           make one the default for new launches
+  works plug rm <name> [-y]       remove a Plug and everything in it
+EOF
+}
+
+long_usage() {
+    cat <<'EOF'
+The Plugs on this machine: the Wine prefixes applications are installed into.
+
+  works plug list                 every Plug, what is in it, what it runs
+  works plug new <name>           a fresh Plug
+  works plug new <n> --from <p>   clone an existing one
+  works plug new <n> --runtime <id>   pin the new Plug to one build
+  works plug use                  choose from a numbered list
+  works plug use <name>           make one the default for new launches
+  works plug rm <name> [-y]       remove a Plug and everything in it
+EOF
+}
+
+case "${1:-list}" in
+    list|ls)   cmd_list ;;
+    use)       shift
+               if [ -z "${1:-}" ]; then cmd_pick; else cmd_use "$1"; fi ;;
+    new|add)   shift; cmd_new "$@" ;;
+    rm|remove) shift; cmd_rm "$@" ;;
+    -h|--help|help) long_usage ;;
+    *) echo "!! unknown command: $1" >&2; short_usage >&2; exit 1 ;;
+esac

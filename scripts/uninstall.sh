@@ -24,7 +24,8 @@ works_remove_runtimes
 rm -f  "$BIN"        && echo "removed $BIN"
 rm -f  "$BIN".rollback-*
 # The commands themselves live in works/bin; ~/.local/bin holds only links.
-rm -f  "$HOME/works/bin/works" "$HOME/works/lib/works-runtime" "$HOME/works/lib/works-update"
+rm -f  "$HOME/works/bin/works" "$HOME/works/lib/works-runtime" "$HOME/works/lib/works-update" \
+       "$HOME/works/lib/works-plug"
 rmdir  "$HOME/works/bin" 2>/dev/null || true
 rm -f  "$HOME/.local/bin/works" "$HOME/.local/bin/works-runtime" "$HOME/.local/bin/works-update" \
        "$HOME/.local/bin/ableton-runtime" "$HOME/.local/bin/ableton-update"
