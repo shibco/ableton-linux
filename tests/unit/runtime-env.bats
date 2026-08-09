@@ -500,3 +500,84 @@ id_of() {   # id_of <build-info lines...>
 # guards: someone with both set has already migrated and left the old one in a
 # shell profile — the new name is the deliberate one
 
+@test "runtime root: resolves to the build, not to the channel link" {
+    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
+    entry="$WORKS_HOME/runtimes/2026.08.05.1+abc1234"
+    mkdir -p "$entry"
+    ln -s "2026.08.05.1+abc1234" "$WORKS_HOME/runtimes/stable"
+    [ "$(works_runtime_path)" = "$entry" ] || {
+        echo "resolved to $(works_runtime_path), wanted $entry" >&2; false; }
+}
+
+# guards: a dangling channel must not resolve to nothing and strand the launcher
+@test "runtime root: a dangling channel falls back rather than resolving empty" {
+    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
+    mkdir -p "$WORKS_HOME/runtimes"
+    ln -s "gone" "$WORKS_HOME/runtimes/stable"
+    [ -n "$(works_runtime_path)" ]
+    [ "$(works_runtime_path)" = "$(works_legacy_root)" ]
+}
+
+@test "channel: defaults to stable with nothing configured" {
+    export WORKS_CHANNEL_FILE="$BATS_TEST_TMPDIR/none"
+    [ "$(works_channel)" = "stable" ]
+}
+
+@test "channel: reads the configured file" {
+    export WORKS_CHANNEL_FILE="$BATS_TEST_TMPDIR/chan"
+    printf 'nightly\n' > "$WORKS_CHANNEL_FILE"
+    [ "$(works_channel)" = "nightly" ]
+}
+
+@test "channel: tolerates trailing whitespace" {
+    export WORKS_CHANNEL_FILE="$BATS_TEST_TMPDIR/chan"
+    printf '  nightly  \n' > "$WORKS_CHANNEL_FILE"
+    [ "$(works_channel)" = "nightly" ]
+}
+
+@test "channel: an unknown value falls back to stable and says so" {
+    export WORKS_CHANNEL_FILE="$BATS_TEST_TMPDIR/chan"
+    printf 'https://evil.example/x\n' > "$WORKS_CHANNEL_FILE"
+    run works_channel
+    [ "$output" != "https://evil.example/x" ]
+    [[ "$output" == *"stable"* ]]
+}
+
+@test "channel: the environment overrides the file" {
+    export WORKS_CHANNEL_FILE="$BATS_TEST_TMPDIR/chan"
+    printf 'stable\n' > "$WORKS_CHANNEL_FILE"
+    WORKS_CHANNEL=nightly
+    export WORKS_CHANNEL
+    [ "$(works_channel)" = "nightly" ]
+}
+
+@test "runtime root: resolves through the configured channel" {
+    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
+    export WORKS_CHANNEL=nightly
+    mkdir -p "$WORKS_HOME/runtimes/2026.08.05.1+abc1234"
+    ln -s "2026.08.05.1+abc1234" "$WORKS_HOME/runtimes/nightly"
+    [ "$(works_runtime_path)" = "$WORKS_HOME/runtimes/2026.08.05.1+abc1234" ]
+}
+
+# guards: pruning on behalf of one channel must not strand another
+@test "retention never removes what a DIFFERENT channel points at" {
+    export WORKS_HOME="$BATS_TEST_TMPDIR/opt"
+    C="$WORKS_HOME/runtimes"
+    for v in 2026.01.01.1 2026.02.01.1 2026.03.01.1; do
+        mkdir -p "$C/$v+aaaaaaa"
+        printf 'dist-version: %s\npatch-stack:  aaaaaaaxx\nbuilt-at:     %sT00:00:00Z\n' \
+            "$v" "${v//./-}" > "$C/$v+aaaaaaa/ABLETON-WINE-BUILD-INFO.txt"
+    done
+    ln -s "2026.03.01.1+aaaaaaa" "$C/stable"
+    ln -s "2026.01.01.1+aaaaaaa" "$C/nightly"    # nightly pinned to the OLDEST
+    WORKS_RUNTIME_KEEP=1 works_prune_runtimes
+    [ -d "$C/2026.03.01.1+aaaaaaa" ] || { echo "stable's target went" >&2; false; }
+    [ -d "$C/2026.01.01.1+aaaaaaa" ] || { echo "nightly's target was pruned" >&2; false; }
+    [ ! -e "$C/2026.02.01.1+aaaaaaa" ]           # the unpinned one goes
+}
+
+# guards: this is the whole point -- the directory name answers "when"
+@test "runtime id: dates order correctly across both channels" {
+    run bash -c "printf '%s\n' '2026.08.04.1+b0d847a' '2026.08.06.1+nightly.badafaf' '2026.08.09.1+ddddddd' | sort -V | tail -1"
+    [ "$output" = "2026.08.09.1+ddddddd" ]
+}

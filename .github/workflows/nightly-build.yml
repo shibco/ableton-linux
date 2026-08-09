@@ -1,0 +1,257 @@
+# Nightly build of main, published as a rolling prerelease.
+#
+#   gh workflow run nightly-build.yml --repo <owner>/ableton-linux
+#   gh workflow run nightly-build.yml --repo <owner>/ableton-linux --ref <branch>
+#
+# Why nightly rather than per-PR: ci-pr-build.yml already builds PRs that touch
+# the build. What neither catches is rot that arrives without a commit — a base
+# image whose apt packages moved, a toolchain bump, a runner image change. That
+# shows up on a clean nightly and nowhere else.
+#
+# The gate is scripts/build-audit.sh, which verifies every patch is present in
+# the shipped binaries by fingerprint rather than merely applied to the source
+# tree. That is the check a runtime artifact needs; ci-checks.yml guards scripts
+# and repo hygiene, which is not what a nightly tarball gets wrong. Gating here
+# on the audit alone is what keeps this workflow independent of the test suite.
+#
+# Publishing to a rolling `nightly` prerelease rather than an Actions artifact
+# is deliberate: /releases/latest/ excludes prereleases, so the stable installer
+# URL is untouched while this gets its own predictable one. It also avoids
+# upload-artifact's zip wrapper around an already-compressed .tar.zst.
+name: nightly-build
+
+on:
+  schedule:
+    # 04:00 UTC. GitHub queues scheduled runs on a best-effort basis and skips
+    # them entirely on repos with no activity for 60 days.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even if the nightly already points at this commit"
+        type: boolean
+        default: false
+
+# A manual run while the nightly is mid-flight should win; two full Wine builds
+# racing each other just burns runner time.
+concurrency:
+  group: nightly-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Deliberately a separate job, and deliberately without a checkout: deciding
+  # whether to spend forty minutes should not first cost a 100MB clone of
+  # vendor/. Both facts it needs come from the API.
+  check:
+    # Scheduled runs only upstream: a fork does not want a nightly 40-minute
+    # build it never asked for. Manual dispatch works everywhere, which is how
+    # a fork exercises this pipeline.
+    if: github.event_name == 'workflow_dispatch' || github.repository == 'shibco/ableton-linux'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      label: ${{ steps.decide.outputs.label }}
+      dist:  ${{ steps.decide.outputs.dist }}
+    steps:
+      - name: Has this commit already been published?
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          # The rolling tag is the record of what was last published: it is
+          # created with --target, so it points at the commit that was built.
+          # BUILD-INFO cannot answer this — its patch-head is the HEAD of the
+          # patched Wine source tree inside the container, not a commit here.
+          published="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" \
+              --jq .object.sha 2>/dev/null || true)"
+          # A build is named for the day it was built. That is the question a
+          # runtime directory has to answer, and for a nightly the committed
+          # VERSION cannot: it names the last release, so a nightly three weeks
+          # into a cycle would announce a date three weeks stale. VERSION itself
+          # is never touched -- it is committed and asserted against CHANGELOG
+          # and BUILD-INFO.
+          #
+          # `nightly` rides in the discriminator rather than the version, so the
+          # date appears once and the id keeps its single separator:
+          #   dist-version  2026.08.06.1
+          #   directory     2026.08.06.1+nightly.badafaf
+          # See works_runtime_id.
+          dist="$(date -u +%Y.%m.%d).1"
+          printf 'dist=%s\n'  "$dist" >> "$GITHUB_OUTPUT"
+          printf 'label=%s+nightly.%s\n' "$dist" "${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+          if [ "${FORCE:-false}" = "true" ]; then
+              echo "forced: building even if nothing changed"
+              echo "build=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$published" ] && [ "$published" = "$GITHUB_SHA" ]; then
+              echo "nightly already points at $GITHUB_SHA; nothing to build"
+              echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+              echo "building ${published:-<no previous nightly>} -> $GITHUB_SHA"
+              echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      LABEL: ${{ needs.check.outputs.label }}
+      DIST:  ${{ needs.check.outputs.dist }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('patches/**', 'Containerfile') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build container image (Buildx, GHA layer cache)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          tags: ableton-wine-build:22.04
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # WORKS_DIST_VERSION and WORKS_BUILD_KIND go to the build, not just to
+      # the packaging: they land in the runtime's own BUILD-INFO, which is what
+      # names the installed directory and what the updater compares against.
+      # Stamping only the installer would leave the tree a user actually runs
+      # claiming the last release's date.
+      - name: Build Wine + PipeASIO + ableton-linkd
+        run: |
+          ENGINE=docker JOBS="$(nproc)" \
+          WORKS_DIST_VERSION="$DIST" WORKS_BUILD_KIND=nightly \
+          ./build.sh
+
+      # container-build.sh writes dist/ and .ccache/ as the container's root
+      # under plain `docker run`; the later steps run as the unprivileged runner.
+      - name: Fix ownership of container output
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" dist .ccache
+
+      - name: Build audit (every patch verified in the built artifact)
+        run: ./scripts/build-audit.sh
+
+      # ENGINE because make-installer.sh defaults to podman and the runner has
+      # docker; WORKS_DIST_LABEL so the installer is named and stamped for
+      # this build without touching the committed VERSION.
+      # WORKS_CHANNEL_PUBLISH stamps the kit's own `channel` marker, so
+      # installing this promotes into `nightly` and leaves `stable` alone.
+      # WORKS_PUBLISH_AS names the fixed asset the manifest must point at:
+      # the labelled .run's URL changes every night, this one does not.
+      - name: Assemble the installer
+        run: |
+          ENGINE=docker WORKS_DIST_LABEL="$LABEL" \
+          WORKS_CHANNEL_PUBLISH=nightly \
+          WORKS_PUBLISH_AS=install-ableton-nightly.run \
+          ./scripts/make-installer.sh
+
+      # The suite executes the checkout's install.sh; nothing executed the
+      # packed kit's own installer until a published kit failed to install.
+      # Runtime-only: the prefix phase needs a display, and what this gate
+      # honestly answers is whether the artifact installs and runs at all.
+      - name: The kit installs on this runner before anyone else gets it
+        run: ./scripts/check-kit-installs.sh "dist/ableton-wine-setup-${LABEL}.run" nightly
+
+      - name: ccache stats
+        if: always()
+        continue-on-error: true
+        run: docker run --rm -v "$PWD/.ccache:/ccache" -e CCACHE_DIR=/ccache ableton-wine-build:22.04 ccache -s
+
+      # Delete and recreate rather than edit: the tag has to move to this
+      # commit, and --cleanup-tag removes the old one so --target can place it.
+      - name: Publish the rolling nightly prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run="dist/ableton-wine-setup-${LABEL}.run"
+          [ -f "$run" ] || { echo "!! make-installer.sh produced no $run" >&2; exit 1; }
+          # A stable name beside the labelled one, so the download URL does not
+          # change every night. Mirrors install-ableton-latest.run for stable.
+          cp "$run" dist/install-ableton-nightly.run
+          ( cd dist && sha256sum install-ableton-nightly.run > install-ableton-nightly.run.sha256 )
+
+          # The manifest is what `works-update` reads to answer "is there a
+          # newer nightly". It has to be checked here rather than trusted:
+          # published without it, or with a checksum that does not match the
+          # asset beside it, the updater refuses every build on this channel and
+          # the failure is invisible until a user runs it.
+          [ -f dist/manifest.txt ] || { echo "!! make-installer.sh wrote no manifest" >&2; exit 1; }
+          want="$(awk '$1 == "sha256:" {print $2}' dist/manifest.txt)"
+          got="$(awk '{print $1}' dist/install-ableton-nightly.run.sha256)"
+          [ "$want" = "$got" ] || {
+              echo "!! manifest checksum does not match the published installer" >&2
+              echo "   manifest $want" >&2; echo "   asset    $got" >&2; exit 1; }
+          grep -q '^installer: *install-ableton-nightly.run$' dist/manifest.txt || {
+              echo "!! the manifest does not name install-ableton-nightly.run" >&2
+              cat dist/manifest.txt >&2; exit 1; }
+          grep -q '^channel: *nightly$' dist/manifest.txt || {
+              echo "!! the manifest is not stamped for the nightly channel" >&2
+              cat dist/manifest.txt >&2; exit 1; }
+
+          # The tarball is stamped with the build date, so a nightly and the
+          # release it follows no longer share a name. One case remains: a
+          # release cut the same day this runs. Anything that fetches a runtime
+          # by filename — run-regression.sh --artifact does — would mix those two
+          # silently, so publish under the full label, with a checksum
+          # regenerated to match the name it is served as.
+          version="${LABEL%%+*}"
+          built="dist/wine-d2d1-nspa-11.13-${version}.tar.zst"
+          [ -f "$built" ] || { echo "!! no runtime tarball at $built" >&2; exit 1; }
+          tarball="dist/wine-d2d1-nspa-11.13-${LABEL}.tar.zst"
+          cp "$built" "$tarball"
+          ( cd dist && sha256sum "$(basename "$tarball")" > "$(basename "$tarball").sha256" )
+
+          {
+              echo "Automated build of \`main\` — **not a release.** Expect breakage."
+              echo
+              echo "| | |"
+              echo "| --- | --- |"
+              echo "| Commit | \`$GITHUB_SHA\` |"
+              echo "| Build | \`$LABEL\` |"
+              echo
+              echo "Download \`install-ableton-nightly.run\`, put it next to your Ableton"
+              echo "Live installer, and run:"
+              echo
+              echo '```'
+              echo "sh ~/Downloads/install-ableton-nightly.run"
+              echo '```'
+              echo
+              echo "The newest nightly is always at:"
+              echo "https://github.com/$GITHUB_REPOSITORY/releases/download/nightly/install-ableton-nightly.run"
+              echo
+              echo "This tracks the same Wine base as the stable release and shares the"
+              echo "same prefix. To go back, install the stable installer over it."
+              echo
+              echo "Build provenance:"
+              echo
+              echo '```'
+              cat dist/BUILD-INFO.txt
+              echo '```'
+          } > /tmp/notes.md
+
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create nightly --repo "$GITHUB_REPOSITORY" \
+              --prerelease --target "$GITHUB_SHA" \
+              --title "Nightly $LABEL" --notes-file /tmp/notes.md \
+              "$run" "$run.sha256" \
+              dist/install-ableton-nightly.run dist/install-ableton-nightly.run.sha256 \
+              "$tarball" "$tarball.sha256" \
+              dist/manifest.txt \
+              dist/BUILD-INFO.txt

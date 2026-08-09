@@ -42,6 +42,7 @@ store() { a_build 2026.06.01.1+bbbbbbb; ln -sfn "2026.06.01.1+bbbbbbb" "$C/stabl
     mkdir -p "$WORKS_HOME/bin" "$WORKS_HOME/lib" "$BATS_TEST_TMPDIR/pathdir"
     install -m755 "$REPO/scripts/works"          "$WORKS_HOME/bin/works"
     install -m755 "$REPO/scripts/works-runtime"  "$WORKS_HOME/lib/works-runtime"
+    install -m755 "$REPO/scripts/works-update"   "$WORKS_HOME/lib/works-update"
     install -m644 "$REPO/scripts/runtime-env.sh" "$WORKS_HOME/lib/runtime-env.sh"
     ln -sfn "$WORKS_HOME/bin/works" "$BATS_TEST_TMPDIR/pathdir/works"
     store
@@ -70,6 +71,12 @@ store() { a_build 2026.06.01.1+bbbbbbb; ln -sfn "2026.06.01.1+bbbbbbb" "$C/stabl
 
 # guards: `works stop` is the documented spelling and has to arrive at the same
 # place as `works runtime stop`, arguments intact
+@test "update is delegated" {
+    run W update --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"works update"* ]]
+}
+
 @test "stop is delegated to the runtime verb" {
     store
     run W stop
@@ -139,7 +146,7 @@ store() { a_build 2026.06.01.1+bbbbbbb; ln -sfn "2026.06.01.1+bbbbbbb" "$C/stabl
 
 @test "help names every command it dispatches" {
     run W --help
-    for c in "works runtime" "works stop"; do
+    for c in "works runtime" "works update" "works stop"; do
         [[ "$output" == *"$c"* ]] || { echo "help omits $c" >&2; false; }
     done
     run W -h

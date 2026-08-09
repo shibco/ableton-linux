@@ -215,3 +215,65 @@ setup() {
 # guards: one dated copy per install, on the PATH, pruned by nothing — the
 # defect the version store exists to end, in a second place
 
+@test "the channel stays a symlink across a second install" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+
+    container="$(works_runtime_store)"
+    [ -L "$container/stable" ] || { echo "the channel is no longer a symlink" >&2; false; }
+    # and no rollback symlink was left pointing into the store
+    [ -z "$(find "$container" -maxdepth 1 -name 'stable-rollback-*')" ]
+    [ -z "$(find "$container" -maxdepth 1 -name '.replaced-*')" ]
+}
+
+@test "a kit declares its channel and the installer promotes into it" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    export XDG_CONFIG_HOME="$HOME/.config"
+    printf 'stable\n' > "$BATS_TEST_TMPDIR/pretend-stable"
+
+    # a checkout stands in for a kit: dist/channel is the same marker
+    mkdir -p "$BATS_TEST_TMPDIR/dist" && printf 'nightly\n' > "$REPO/dist/channel"
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    rm -f "$REPO/dist/channel"
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+
+    container="$(works_runtime_store)"
+    [ -L "$container/nightly" ] || { echo "no nightly channel: $(ls -1 "$container")" >&2; false; }
+    [ ! -e "$container/stable" ] || { echo "stable was pointed at a nightly build" >&2; false; }
+}
+
+@test "installing records the channel, so the updater follows it" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    export XDG_CONFIG_HOME="$HOME/.config"
+    printf 'nightly\n' > "$REPO/dist/channel"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    rm -f "$REPO/dist/channel"
+    [ "$(cat "$HOME/works/runtimes/.channel")" = "nightly" ]
+}
+
+@test "a kit with no channel marker is stable, as every older kit was" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    export XDG_CONFIG_HOME="$HOME/.config"
+    rm -f "$REPO/dist/channel"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    [ -L "$(works_runtime_store)/stable" ]
+}
+
+@test "uninstalling takes the recorded channel back" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    export XDG_CONFIG_HOME="$HOME/.config"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    [ -r "$HOME/works/runtimes/.channel" ]
+
+    run setsid --wait bash "$REPO/scripts/uninstall.sh" --yes
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [ ! -e "$HOME/works/runtimes/.channel" ]
+}

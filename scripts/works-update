@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Is there a newer runtime on this channel, and do you want it?
+#
+#   works update                    check this machine's channel, and offer it
+#   works update --check            say what is available; change nothing
+#   works update --channel nightly  switch channel and update to it
+#   works update --yes              do not ask (still refuses a Wine base change)
+#
+# Nothing checked for updates before this. A user on a daily channel had no way
+# to know a build existed short of opening the releases page, and the install
+# prompt compared two version strings that are identical between releases.
+#
+# Never runs unattended by itself. Swapping the Wine runtime under a licensed
+# Live install is not a background task.
+set -uo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+for _l in "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh" \
+          "$here/../scripts/runtime-env.sh"; do
+    # shellcheck source=scripts/runtime-env.sh
+    [ -r "$_l" ] && . "$_l" && break
+done
+command -v works_manifest_url >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+
+CHECK=0; ASSUME_YES=0; WANT_CHANNEL=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --check)    CHECK=1 ;;
+        --yes|-y)   ASSUME_YES=1 ;;
+        --channel)  shift; WANT_CHANNEL="${1:-}"
+                    [ -n "$WANT_CHANNEL" ] || { echo "!! --channel needs a name" >&2; exit 1; } ;;
+        --channel=*) WANT_CHANNEL="${1#--channel=}" ;;
+        -h|--help)  sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "!! unknown option: $1 (try --help)" >&2; exit 1 ;;
+    esac
+    shift
+done
+
+# A channel names a symlink and selects a URL, so it is checked against the
+# allowlist rather than trusted — the same constraint that ended the source-repo
+# experiment. works_channel does that; asking it is how the value is validated.
+if [ -n "$WANT_CHANNEL" ]; then
+    if [ "$(WORKS_CHANNEL="$WANT_CHANNEL" works_channel 2>/dev/null)" != "$WANT_CHANNEL" ]; then
+        echo "!! not a channel: $WANT_CHANNEL" >&2; exit 1
+    fi
+    CHANNEL="$WANT_CHANNEL"
+else
+    CHANNEL="$(works_channel)"
+fi
+
+url="$(works_manifest_url "$CHANNEL")" || { echo "!! no manifest URL for $CHANNEL" >&2; exit 1; }
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+
+echo "== channel: $CHANNEL =="
+echo "   $url"
+if ! curl -fsSL --retry 2 --max-time 60 -o "$tmp/manifest.txt" "$url"; then
+    echo "!! could not fetch the manifest. Offline, or the channel has published nothing yet." >&2
+    exit 1
+fi
+works_manifest_valid "$tmp/manifest.txt" || {
+    echo "!! the manifest is incomplete; refusing to act on it" >&2
+    sed 's/^/   /' "$tmp/manifest.txt" >&2; exit 1; }
+
+want_commit="$(works_buildinfo_field "$tmp/manifest.txt" source-commit)"
+want_at="$(works_buildinfo_field "$tmp/manifest.txt" built-at)"
+want_wine="$(works_buildinfo_field "$tmp/manifest.txt" wine)"
+want_ver="$(works_buildinfo_field "$tmp/manifest.txt" dist-version)"
+installer="$(works_buildinfo_field "$tmp/manifest.txt" installer)"
+want_sha="$(works_buildinfo_field "$tmp/manifest.txt" sha256)"
+
+root="$(works_runtime_path)"
+have_info="$root/ABLETON-WINE-BUILD-INFO.txt"
+have_commit="$(works_buildinfo_field "$have_info" source-commit)"
+have_at="$(works_buildinfo_field "$have_info" built-at)"
+have_wine="$(works_buildinfo_field "$have_info" wine)"
+
+# Both sides show the same thing: the id a build lands under. Reporting the
+# channel's bare dist-version against the installed id put a version beside an
+# identifier and invited comparing them, when only one of them is a name.
+want_id="$(works_compose_id "$want_ver" "$want_commit" \
+    "$(works_buildinfo_field "$tmp/manifest.txt" build-kind)")"
+# Same columns and same order as `works runtime list`, so the two commands
+# describe a build the same way. Fixed widths because the ids differ in length
+# by design -- a nightly carries its kind -- and unpadded output left the dates
+# and Wine versions on the two rows unalignable against each other.
+printf '   available: %-32s %-12s %s\n' \
+    "${want_id:-$want_ver}" "${want_wine:-?}" "${want_at:-—}"
+printf '   installed: %-32s %-12s %s\n' \
+    "$(works_runtime_id "$root" 2>/dev/null || echo 'none')" "${have_wine:-?}" "${have_at:-—}"
+
+# The case that had no answer at all before: same build, nothing to do. Compared
+# on source-commit rather than the version, which is identical across every
+# nightly between two releases.
+if [ -n "$want_commit" ] && [ "$want_commit" = "$have_commit" ] && [ "$CHANNEL" = "$(works_channel)" ]; then
+    echo
+    echo "You already have this build."
+    exit 0
+fi
+
+# Strictly older, not "not newer". Two builds can share a timestamp -- the same
+# build published on two channels, or a rebuild of one commit -- and sort's
+# tail -1 returns the installed one when they are equal, which read as a
+# downgrade warning on a build that was neither newer nor older.
+if [ -n "$have_at" ] && [ -n "$want_at" ] && [ "$have_at" != "$want_at" ] && \
+   [ "$(printf '%s\n%s\n' "$have_at" "$want_at" | sort | tail -1)" = "$have_at" ]; then
+    echo "   (this is OLDER than what you have)"
+fi
+
+# This refusal sits above every branch that acts, the channel switch included.
+# It used to sit underneath it, so a build already in the store was retargeted
+# straight across a Wine base change reporting success -- the one path where
+# costing no download made the change look harmless.
+#
+# The busy check deliberately does NOT come up here with it. What is running
+# only matters to the branch that replaces the tree; retargeting a channel under
+# a running Live is safe for the same reason `works runtime use` allows it, and
+# says so rather than refusing -- the resolver hands back the build, not the
+# channel, so a session that has already started keeps what it started with.
+#
+# A Plug is bound to a Wine base and cannot be taken back across one. Say it
+# before downloading 113M, not after.
+if [ -n "$have_wine" ] && [ -n "$want_wine" ] && [ "$have_wine" != "$want_wine" ]; then
+    echo
+    echo "!! This changes the Wine base: $have_wine -> $want_wine"
+    echo "   Your Plug will be re-bootstrapped and cannot be taken back."
+    # --check is a question, not an action, so it reports this rather than
+    # failing on it.
+    if [ "$CHECK" -eq 1 ]; then
+        echo "   (--check: nothing was changed)"
+        exit 0
+    fi
+    echo "   Refusing. Install it deliberately with the full installer if you mean it."
+    exit 1
+fi
+
+# Already in the store from an earlier install? Then this is a channel switch,
+# not a download.
+container="$(works_runtime_store)"
+for e in "$container"/*; do
+    [ -d "$e" ] && [ ! -L "$e" ] || continue
+    [ "$(works_buildinfo_field "$e/ABLETON-WINE-BUILD-INFO.txt" source-commit)" = "$want_commit" ] || continue
+    echo
+    echo "That build is already installed as ${e##*/} — no download needed."
+    [ "$CHECK" -eq 0 ] || exit 0
+    # Asked before the retarget, not after: the resolver follows the channel, so
+    # once it has moved this would be asking whether anything runs from the build
+    # being switched *to*. What the note is about is the one being switched from.
+    was_busy=""; works_runtime_busy && was_busy=1
+    ln -sfn "${e##*/}" "$container/$CHANNEL"
+    printf '%s\n' "$CHANNEL" > "$(works_channel_file)"
+    echo "channel $CHANNEL -> ${e##*/}"
+    # Same note `works runtime use` gives, for the same reason.
+    if [ -n "$was_busy" ]; then
+        echo "note: something is still running from the previous build. It keeps"
+        echo "      the build it started with; this takes effect on the next launch."
+    fi
+    exit 0
+done
+
+if [ "$CHECK" -eq 1 ]; then
+    echo; echo "An update is available. Run without --check to install it."
+    exit 0
+fi
+
+# Here rather than higher up: this is the first line past which the tree gets
+# replaced, and replacing a tree under a running Live is what loses a session.
+# Everything above this point either only reports, or moves a symlink.
+if works_runtime_busy; then
+    echo; echo "!! something is running from the runtime. Close Live first." >&2
+    exit 1
+fi
+
+if [ "$ASSUME_YES" -eq 0 ]; then
+    if { : >/dev/tty; } 2>/dev/null; then
+        printf '\nDownload and install it? [y/N] ' > /dev/tty
+        read -r -t 60 ans < /dev/tty || ans=n
+        case "$ans" in y|Y|yes|Yes|YES) ;; *) echo "cancelled"; exit 0 ;; esac
+    else
+        echo; echo "!! no terminal to confirm on; pass --yes if you mean it" >&2
+        exit 1
+    fi
+fi
+
+echo
+echo "== downloading $installer =="
+curl -fL --retry 2 --progress-bar -o "$tmp/$installer" \
+    "$(works_manifest_installer_url "$url" "$installer")" || {
+        echo "!! download failed" >&2; exit 1; }
+
+echo "== verifying =="
+got="$(sha256sum "$tmp/$installer" | cut -d' ' -f1)"
+[ "$got" = "$want_sha" ] || {
+    echo "!! checksum mismatch — refusing to install" >&2
+    echo "   expected $want_sha" >&2
+    echo "   got      $got" >&2
+    exit 1; }
+echo "   ok"
+
+echo "== installing =="
+sh "$tmp/$installer" --runtime-only

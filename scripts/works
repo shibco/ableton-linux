@@ -31,6 +31,7 @@ short_usage() {
 usage: works <command> [options]          `works help` for what each one does
 
   works runtime {list|path|use}   the builds in the store, and which one is live
+  works update [--check]          is there a newer build on this channel?
   works stop [-y]                 stop everything running from the runtime or a Plug
 EOF
 }
@@ -42,6 +43,7 @@ Works: the runtime, the store, and the Plugs an application runs in.
   works runtime list              every installed build, newest first
   works runtime path              the runtime root, for scripts and docs
   works runtime use [id]          switch the channel to another build
+  works update [--check]          is there a newer build on this channel?
   works stop [-y]                 stop everything running from the runtime or a Plug
 EOF
 }
@@ -49,6 +51,7 @@ EOF
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
     runtime)             exec "$verbs/works-runtime" "$@" ;;
+    update)              exec "$verbs/works-update" "$@" ;;
     stop)                exec "$verbs/works-runtime" stop "$@" ;;
     "")                  short_usage ;;
     help|-h|--help)      long_usage ;;

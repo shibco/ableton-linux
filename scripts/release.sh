@@ -32,7 +32,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-NAME="wine-d2d1-nspa-11.13"
+# Runtime naming and the manifest writer resolve in one place; see
+# scripts/runtime-env.sh. Sourced rather than reimplemented so the manifest this
+# publishes is written by the same function the updater's reader round-trips
+# against, and so the runtime name is not spelled out a second time.
+# shellcheck source=scripts/runtime-env.sh
+. "$here/runtime-env.sh"
+NAME="$(works_runtime_name)"
 VERSION="$(cat VERSION)"
 TAG="v$VERSION"
 run="dist/ableton-wine-setup-${VERSION}.run"
@@ -82,6 +88,26 @@ trap 'rm -rf "$stage"' EXIT
 cp "$run" "$stage/install-ableton-latest.run"
 ( cd "$stage" && sha256sum install-ableton-latest.run > install-ableton-latest.run.sha256 )
 
+# The manifest `works-update` reads to answer "is there a newer stable". It
+# names install-ableton-latest.run, not the versioned artifact: the updater
+# resolves the installer against the manifest's own URL, and only the fixed name
+# survives the next release. Written here rather than trusted from
+# make-installer.sh, because that runs before anyone decides this build is the
+# release -- and a manifest whose checksum does not match the asset beside it
+# makes the updater refuse every build on the channel, invisibly, until a user
+# runs it.
+manifest="$stage/manifest.txt"
+# From the runtime being shipped, not from $info: the committed BUILD-INFO is the
+# release's declared provenance and the tarball's is what the updater will compare
+# against on the user's machine. See works_tarball_buildinfo.
+works_tarball_buildinfo "$tarball" > "$stage/runtime-BUILD-INFO.txt" || {
+    echo "!! could not read BUILD-INFO out of $tarball" >&2; exit 1; }
+works_manifest_write stable "$stage/runtime-BUILD-INFO.txt" install-ableton-latest.run \
+    "$(awk '{print $1}' "$stage/install-ableton-latest.run.sha256")" > "$manifest"
+works_manifest_valid "$manifest" || {
+    echo "!! the manifest this would publish is incomplete" >&2; sed 's/^/   /' "$manifest" >&2; exit 1; }
+echo "   manifest -> install-ableton-latest.run"
+
 upload() {
     local f="$1" name old
     name="$(basename "$f")"
@@ -94,7 +120,8 @@ upload() {
         "https://uploads.github.com/repos/$repo/releases/$rid/assets?name=$name" >/dev/null
 }
 for f in "$run" "$run.sha256" "$tarball" "$tarball.sha256" "$info" \
-         "$stage/install-ableton-latest.run" "$stage/install-ableton-latest.run.sha256"; do
+         "$stage/install-ableton-latest.run" "$stage/install-ableton-latest.run.sha256" \
+         "$manifest"; do
     upload "$f"
 done
 

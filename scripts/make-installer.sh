@@ -76,7 +76,7 @@ mkdir -p "$kit/bin" "$kit/dist" "$kit/vendor"
 cp -a "$tarball" "$tarball.sha256" "$kit/dist/"
 cp -a "dist/BUILD-INFO-${VERSION}.txt" "$kit/" 2>/dev/null || true
 mkdir -p "$kit/scripts"
-cp -a scripts/runtime-env.sh scripts/works scripts/works-runtime scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
+cp -a scripts/runtime-env.sh scripts/works scripts/works-runtime scripts/works-update scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
       scripts/ableton-live scripts/max9 scripts/detect-scale.sh \
       scripts/detect-theme.sh scripts/shortcut-hold.sh \
       scripts/check-live-audio.sh scripts/setup-link.sh \
@@ -133,6 +133,16 @@ EOF
 # copy. The fonts here are byte-identical upstream 1.10 files.
 install -m644 vendor/fonts/bitstream-vera/COPYRIGHT.TXT \
               "$kit/licenses/bitstream-vera-COPYRIGHT.txt"
+
+# The kit says which channel it belongs to. Without it install.sh promotes into
+# whatever channel the machine already followed, so installing a nightly while
+# configured for stable would point `stable` at a nightly build.
+#
+# One word rather than the manifest: the manifest carries the sealed kit's own
+# checksum and so cannot exist until after this is packed. They answer different
+# questions anyway - the manifest says what a channel currently points at, for
+# the updater; this says what this kit is, for the installer holding it.
+printf '%s\n' "${WORKS_CHANNEL_PUBLISH:-stable}" > "$kit/channel"
 
 echo "== [4/5] pack + seal =="
 payload="$stage/payload.tar"

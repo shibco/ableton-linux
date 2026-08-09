@@ -60,16 +60,6 @@ works_runtime_name() {
     printf '%s\n' "wine-d2d1-nspa-11.13"
 }
 
-# Which channel this machine follows. One word, validated against an allowlist
-# rather than trusted: it selects a symlink name and, for the updater, part of a
-# URL - and configuration the build does not control must not shape a request.
-# That is the same constraint that ended the source-repo experiment.
-# Where the followed channel is recorded. One function, because a reader and a
-# writer that spell this differently disagree silently until an update goes to
-# the wrong channel.
-works_channel_file() {
-    printf '%s\n' "${WORKS_CHANNEL_FILE:-$(works_runtime_store)/.channel}"
-}
 
 # A tree set aside rather than a build anyone can choose. Three names reach the
 # store and only the first two were ever filtered: works_store_absorb writes
@@ -114,13 +104,37 @@ works_legacy_root() {
 # And a caller that resolved once keeps the build it resolved. A channel switch
 # part-way through a session cannot move the runtime under a process already
 # executing from it.
+# Which channel this machine follows. One word, validated against an allowlist
+# rather than trusted: it selects a symlink name and, for the updater, part of a
+# URL - and configuration the build does not control must not shape a request.
+# That is the same constraint that ended the source-repo experiment.
+# Where the followed channel is recorded. One function, because a reader and a
+# writer that spell this differently disagree silently until an update goes to
+# the wrong channel.
+works_channel_file() {
+    printf '%s\n' "${WORKS_CHANNEL_FILE:-$(works_runtime_store)/.channel}"
+}
+
+works_channel() {
+    local _f _c
+    _f="$(works_channel_file)"
+    _c="${WORKS_CHANNEL:-}"
+    [ -n "$_c" ] || { [ -r "$_f" ] && _c="$(head -1 "$_f" 2>/dev/null | tr -d '[:space:]')"; }
+    case "$_c" in
+        stable|nightly) printf '%s\n' "$_c" ;;
+        "")             printf 'stable\n' ;;
+        *)              echo "!! unknown channel '$_c' in $_f; using stable" >&2
+                        printf 'stable\n' ;;
+    esac
+}
+
 works_runtime_path() {
     local _chan _target
     if [ -n "${WORKS_RUNTIME:-}" ]; then
         printf '%s\n' "$WORKS_RUNTIME"
         return
     fi
-    _chan="$(works_runtime_store)/stable"
+    _chan="$(works_runtime_store)/$(works_channel)"
     if [ -e "$_chan" ]; then
         _target="$(readlink -f "$_chan" 2>/dev/null || true)"
         if [ -n "$_target" ]; then
@@ -754,4 +768,91 @@ works_remove_runtimes() {
 #   source-commit: …
 #   built-at:      2026-08-04T13:49:38Z
 #   wine:          wine-11.13
+
+# Where a channel's manifest lives. A table rather than string-building from the
+# channel name: the value is user configuration, and the one thing it must never
+# do is choose a host. WORKS_MANIFEST_URL overrides it for testing.
+works_manifest_url() {
+    local _c="${1:-$(works_channel)}"
+    [ -z "${WORKS_MANIFEST_URL:-}" ] || { printf '%s\n' "$WORKS_MANIFEST_URL"; return; }
+    # Both point at the project, never at a fork. A fork is where nightlies are
+    # tested, and pointing the shipped default there would send every user's
+    # daily channel to whoever happened to build it. WORKS_MANIFEST_URL is how
+    # a fork tests its own; that override is deliberately not a channel.
+    #
+    # stable resolves through /releases/latest/, which excludes prereleases, so
+    # the nightly prerelease cannot become what a stable machine follows.
+    case "$_c" in
+        stable)  printf '%s\n' "https://github.com/shibco/ableton-linux/releases/latest/download/manifest.txt" ;;
+        nightly) printf '%s\n' "https://github.com/shibco/ableton-linux/releases/download/nightly/manifest.txt" ;;
+        *)       return 1 ;;
+    esac
+}
+
+# The installer a manifest names, resolved against the manifest's own location.
+# Relative, so moving a release does not strand it.
+works_manifest_installer_url() {
+    local _manifest="$1" _name="$2"
+    printf '%s/%s\n' "${_manifest%/*}" "$_name"
+}
+
+# The runtime's own BUILD-INFO, read out of a tarball without unpacking it.
+#
+# This, and not dist/BUILD-INFO-<version>.txt, is what a manifest must be written
+# from. The two are different documents: the committed one is the release's
+# declared provenance, written for release notes, and the tarball's is the file
+# that lands on the user's machine as $root/ABLETON-WINE-BUILD-INFO.txt — which
+# is exactly what the updater compares the manifest against. Writing the manifest
+# from the other one compares two documents and hopes they agree.
+#
+# They do not currently agree: the committed BUILD-INFO for 2026.08.04.1 carries
+# neither source-commit nor built-at, because the release predates both fields.
+# A manifest written from it fails validation, which is the right outcome and the
+# wrong reason.
+#
+# Half a second on a 60 MB tarball, at package time only.
+works_tarball_buildinfo() {
+    local _t="$1"
+    [ -f "$_t" ] || return 1
+    zstd -dc --long=27 "$_t" 2>/dev/null \
+        | tar -xO --wildcards '*/ABLETON-WINE-BUILD-INFO.txt' 2>/dev/null
+}
+
+# Write one. Called by the publish step; kept here so the writer and the reader
+# cannot drift apart.
+works_manifest_write() {
+    local _channel="$1" _info="$2" _installer="$3" _sha="$4" _k
+    [ -r "$_info" ] || { echo "!! no BUILD-INFO at $_info" >&2; return 1; }
+    printf 'channel:       %s\n' "$_channel"
+    printf 'dist-version:  %s\n' "$(works_buildinfo_field "$_info" dist-version)"
+    printf 'installer:     %s\n' "$_installer"
+    printf 'sha256:        %s\n' "$_sha"
+    printf 'source-commit: %s\n' "$(works_buildinfo_field "$_info" source-commit)"
+    printf 'built-at:      %s\n' "$(works_buildinfo_field "$_info" built-at)"
+    # Optional, and absent for a release. Carried so the updater can report the
+    # id a build will land under rather than only its version.
+    _k="$(works_buildinfo_field "$_info" build-kind)"
+    [ -z "$_k" ] || printf 'build-kind:    %s\n' "$_k"
+    printf 'wine:          %s\n' "$(works_buildinfo_field "$_info" wine)"
+}
+
+# Is a manifest usable? Refuses rather than half-applying: a field missing here
+# means the updater cannot answer "is this newer" or "will this change the Wine
+# base", which are the two questions it exists to answer.
+works_manifest_valid() {
+    local _f="$1" _k
+    [ -r "$_f" ] || return 1
+    # `wine` is required because a safety refusal reads it: works-update compares
+    # bases and declines a one-way re-bootstrap, but guards that on the field
+    # being non-empty. A manifest published without it turns that refusal off
+    # rather than tripping it, and this is the gate standing in front of users.
+    for _k in channel dist-version installer sha256 source-commit built-at wine; do
+        [ -n "$(works_buildinfo_field "$_f" "$_k")" ] || return 1
+    done
+    # The installer name reaches a URL and a filename. Nothing else in it.
+    case "$(works_buildinfo_field "$_f" installer)" in
+        */*|*..*|"") return 1 ;;
+    esac
+    return 0
+}
 
