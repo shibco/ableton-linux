@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Remove what install.sh added. The Wine prefix (~/.wine-ableton) is kept unless you pass --prefix.
 set -euo pipefail
-OPT="$HOME/.local/opt/wine-d2d1-nspa-11.13"
+here="$(cd "$(dirname "$0")" && pwd)"
+# Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
+# This script runs `rm -rf` on what it resolves, so the two disagreeing is not
+# cosmetic: it spelled the runtime name a second time, and a base bump would
+# have left this one pointing at a directory nobody was using.
+# shellcheck source=scripts/runtime-env.sh
+. "$here/runtime-env.sh"
+OPT="$(ableton_wine_root)"
 BIN="$HOME/.local/bin/ableton-live"
 APPS="$HOME/.local/share/applications"
 
@@ -40,7 +47,7 @@ sed -i -e '\#^x-scheme-handler/ableton=wine-protocol-ableton\.desktop;\?$#d' \
 echo "removed desktop entries, icons and MIME registrations"
 
 if [ "${1:-}" = "--prefix" ]; then
-    pfx="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+    pfx="$(ableton_wine_prefix)"
     # No terminal means no answer; keep the prefix rather than delete it blind.
     read -rp "Also delete $pfx? This removes your Live installation AND its authorisation. [y/N] " a || a=n
     case "$a" in

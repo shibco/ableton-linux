@@ -53,12 +53,39 @@ case "${ABLETON_LIVE_VERSION:-12}" in
     *) echo "!! ABLETON_LIVE_VERSION must be 11 or 12 (got '$ABLETON_LIVE_VERSION')" >&2; exit 2 ;;
 esac
 
-unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH WINEESYNC WINEFSYNC
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
-export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
-export PATH="$WINE_ROOT/bin:$PATH"
+# Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+    [ -r "$_l" ] && . "$_l" && break
+done
+command -v ableton_wine_root >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
+ableton_bind_runtime
+# Only this script clears the sync backends: folding them into the shared
+# binder would start dropping a user's WINEESYNC on every launch.
+unset WINEESYNC WINEFSYNC
 export WINEDEBUG=-all
-export WINESERVER="$WINE_ROOT/bin/wineserver"
+
+# Nothing may touch this prefix while something is running out of it.
+#
+# Through the .run this never fires: setup-run-header.sh runs install.sh first,
+# and install.sh stops every process using the runtime before this is reached.
+# Standalone it is the whole guard -- and standalone is not a corner case,
+# because install.sh's own last line tells you to run this next. Follow that
+# with Live open and `wineboot -u` rewrites the registry underneath a live
+# wineserver, with --refresh no different.
+#
+# Refuses rather than prompting, which is where it parts company with
+# install.sh. That script's job is to replace the runtime, so force-closing
+# Live is an outcome a user can consent to. Here there is no such answer: the
+# only safe version of "yes" is "close it first", so that is what it says.
+# ABLETON_SKIP_BUSY_CHECK exists for the automation that has already stopped
+# things itself, and is not documented for users.
+if [ "${ABLETON_SKIP_BUSY_CHECK:-0}" != "1" ] && ableton_runtime_busy; then
+    echo "!! $(ableton_runtime_pids | wc -l) process(es) are running from this runtime." >&2
+    echo "   Close Live (and Max) before setting up the prefix -- this rewrites it." >&2
+    echo "   The installer stops them for you; running this script on its own does not." >&2
+    exit 1
+fi
 
 # --post-first-run: Max for Live 8 (ships with Live 11) crashes on its SECOND start
 # with a stale preferences file. Move it aside: never delete: so Max regenerates

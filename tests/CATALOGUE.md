@@ -7,7 +7,7 @@ from the files, and the *Guards* column from `# guards:` annotations above a
 test. Run `./tests/catalogue.sh` after adding or renaming a test;
 `tests/repo-hygiene.bats` fails when this file is stale.
 
-138 tests across 8 suites. See [README.md](README.md) for how to run
+158 tests across 9 suites. See [README.md](README.md) for how to run
 them and [../.github/workflows/ci-checks.yml](../.github/workflows/ci-checks.yml)
 for which run on a PR.
 
@@ -19,7 +19,8 @@ for which run on a PR.
 - [tests/unit/detect-scale.bats](#detect-scale) — 20 test(s)
 - [tests/unit/detect-theme.bats](#detect-theme) — 22 test(s)
 - [tests/unit/launcher.bats](#launcher) — 20 test(s)
-- [tests/unit/runtime-env.bats](#runtime-env) — 19 test(s)
+- [tests/unit/install-runs.bats](#install-runs) — 5 test(s)
+- [tests/unit/runtime-env.bats](#runtime-env) — 34 test(s)
 - [tests/patch-stack.bats](#patch-stack) — 12 test(s)
 
 <a id="repo-hygiene"></a>
@@ -76,11 +77,11 @@ staging list and checks it against what the kit's own scripts reference.
 | 2 | every file make-installer.sh stages into the kit exists in the repo | — |
 | 3 | every script a kit script sources is itself staged into the kit | issue label 'installer' — scripts resolve every path in a checkout, only some in the kit |
 | 4 | every sibling file a kit script executes or installs is staged too | — |
-| 5 | the kit ships the GPL source and licence Ableton Link requires | licence GPLv2+ — Ableton Link has no linking exception, so the source must travel with the binary |
-| 6 | release.yml's asset list matches what make-installer.sh actually produces | — |
-| 7 | every shell function a script calls is actually defined | lifting runtime_pids into the lib renamed it, and a replace that only |
-| 8 | make-installer refuses a tarball the kit's installer cannot select | make-installer accepted ABLETON_RUNTIME_TARBALL with only an -f check, |
-| 9 | kit-relative desktop and vendor paths are staged wholesale | — |
+| 5 | kit-relative desktop and vendor paths are staged wholesale | — |
+| 6 | the kit ships the GPL source and licence Ableton Link requires | licence GPLv2+ — Ableton Link has no linking exception, so the source must travel with the binary |
+| 7 | release.yml's asset list matches what make-installer.sh actually produces | — |
+| 8 | every shell function a script calls is actually defined | lifting runtime_pids into the lib renamed it, and a replace that only |
+| 9 | make-installer refuses a tarball the kit's installer cannot select | make-installer accepted ABLETON_RUNTIME_TARBALL with only an -f check, |
 
 <a id="launcher-cli"></a>
 
@@ -234,6 +235,42 @@ End-to-end launch behaviour is in tests/launcher-cli.bats.
 | 19 | windowmetrics: a value in another section is not picked up | — |
 | 20 | windowmetrics: a missing user.reg is silent, not an error cascade | — |
 
+<a id="install-runs"></a>
+
+## tests/unit/install-runs.bats
+
+
+scripts/install.sh — does it run at all, and does it install what it claims?
+
+This file exists because nothing executed install.sh. The suite sourced
+runtime-env.sh directly and checked the resolvers, which is worth doing and
+says nothing about whether the script that uses them starts. On 2026-08-05 a
+merge reordered install.sh's head so it called ableton_runtime_name eight
+lines before sourcing the file that defines it; under `set -euo pipefail` it
+aborted on that line. 172 tests passed for thirteen commits.
+
+The first test here is deliberately cheap and hermetic: it asserts only that
+the script gets past its own initialisation to the point where it looks for a
+tarball. That is the whole failure mode, and it needs no fixture.
+
+The second does a real install into a throwaway HOME, and skips when there is
+no tarball to install. That is not a gap that can be closed with a fixture:
+install.sh runs `readelf -d` against the packaged libusb and PipeASIO shims
+and greps for real DT_NEEDED entries, so a stand-in tree would either fail
+those checks or force them to be weakened, and weakening them is how a debug
+tree ships.
+
+  ./tests/run.sh tests/unit/install-runs.bats
+  ABLETON_TEST_TARBALL=/path/to/runtime.tar.zst ./tests/run.sh tests/unit/install-runs.bats
+
+| # | Test | Guards |
+| --- | --- | --- |
+| 1 | install.sh gets past its own initialisation | install.sh aborting on its own first lines, which no resolver test can |
+| 2 | install.sh resolves its roots from the shared lib, not from its own copy | — |
+| 3 | setup-prefix refuses while something runs from the runtime | `wineboot -u` rewriting the registry under a live wineserver |
+| 4 | setup-prefix refuses with no terminal too | — |
+| 5 | setup-prefix gets past the guard when nothing is running | — |
+
 <a id="runtime-env"></a>
 
 ## tests/unit/runtime-env.bats
@@ -249,25 +286,40 @@ sandbox, which is the whole reason they echo instead of assigning.
 
 | # | Test | Guards |
 | --- | --- | --- |
-| 1 | the runtime wins over a debug tree sitting beside it | sort -V orders the -debug suffix last, so glob+tail installs a tree with no share/ |
-| 2 | the newest dated runtime wins when several are present | — |
-| 3 | the same-day counter orders numerically, not lexically | — |
-| 4 | a debug tree on its own selects nothing, so the caller fails loudly | — |
-| 5 | an undated or suffixed artifact is not mistaken for the runtime | the beta channel — a nightly artifact must never be taken for the stable runtime |
-| 6 | an empty directory selects nothing rather than erroring | — |
-| 7 | a missing directory selects nothing rather than erroring | — |
-| 8 | tarball predicate: the dated release form is accepted | — |
-| 9 | tarball predicate: a full path is judged by its basename | — |
-| 10 | tarball predicate: a debug tree is refused | — |
-| 11 | tarball predicate: a nightly label is accepted | — |
-| 12 | tarball predicate: a labelled debug tree is still refused | — |
-| 13 | tarball predicate: an empty label is refused | — |
-| 14 | tarball selector: the plain release wins over a labelled one beside it | — |
-| 15 | tarball selector: a labelled build alone is selectable | — |
-| 16 | tarball predicate: another Wine base is refused | — |
-| 17 | tarball predicate: an undated artifact is refused | — |
-| 18 | tarball predicate: a partial download is refused | the same-day counter must not be read as a date component |
-| 19 | tarball predicate: the nightly artifact name is accepted | — |
+| 1 | runtime root: ABLETON_WINE_ROOT wins, so a bisect or VM run can pin one | — |
+| 2 | prefix: defaults to ~/.wine-ableton | — |
+| 3 | prefix: ABLETON_WINEPREFIX wins, which the clone workflow depends on | — |
+| 4 | root and prefix are independent: overriding one leaves the other alone | — |
+| 5 | the resolvers are pure: calling them exports and unsets nothing | — |
+| 6 | binding exports the prefix, the server, and the runtime's bin on PATH | — |
+| 7 | binding clears inherited Wine settings that would reach the wrong build | the four cleared here are the launchers' long-standing set |
+| 8 | binding leaves the sync backends alone, unlike setup-prefix.sh's own unset | setup-prefix.sh clears these two itself; folding them in would drop a |
+| 9 | runtime pids: a process running from the runtime is found | — |
+| 10 | runtime pids: a process from another Wine install is ignored | scoping — a Live under an unrelated Wine is neither counted nor killed |
+| 11 | runtime pids: non-numeric entries in the tree are skipped | — |
+| 12 | live pids: Live is told apart from the support processes around it | — |
+| 13 | a lingering wineserver means busy, but not that Live is running | the launcher's stale-wineserver kill — a lingering server must still |
+| 14 | an idle machine is neither busy nor running Live | — |
+| 15 | live pids: a process that exits mid-scan is skipped, not an error | observed during the first real migration — six "/proc/PID/cmdline: |
+| 16 | the runtime wins over a debug tree sitting beside it | sort -V orders the -debug suffix last, so glob+tail installs a tree with no share/ |
+| 17 | the newest dated runtime wins when several are present | — |
+| 18 | the same-day counter orders numerically, not lexically | — |
+| 19 | a debug tree on its own selects nothing, so the caller fails loudly | — |
+| 20 | an undated or suffixed artifact is not mistaken for the runtime | the beta channel — a nightly artifact must never be taken for the stable runtime |
+| 21 | an empty directory selects nothing rather than erroring | — |
+| 22 | a missing directory selects nothing rather than erroring | — |
+| 23 | tarball predicate: the dated release form is accepted | a kit packed around a name the installer cannot select builds cleanly |
+| 24 | tarball predicate: a full path is judged by its basename | — |
+| 25 | tarball predicate: a debug tree is refused | bin/ and lib/ with no share/ — passes `wine --version`, then fails at |
+| 26 | tarball predicate: a nightly label is accepted | this is the only runtime artifact the nightly channel publishes, so |
+| 27 | tarball predicate: a labelled debug tree is still refused | a label is a suffix on the release form, not a licence to accept any |
+| 28 | tarball predicate: an empty label is refused | — |
+| 29 | tarball selector: the plain release wins over a labelled one beside it | both in one directory is the nightly builder's own dist/, and the |
+| 30 | tarball selector: a labelled build alone is selectable | — |
+| 31 | tarball predicate: another Wine base is refused | — |
+| 32 | tarball predicate: an undated artifact is refused | — |
+| 33 | tarball predicate: a partial download is refused | the same-day counter must not be read as a date component |
+| 34 | tarball predicate: the nightly artifact name is accepted | — |
 
 <a id="patch-stack"></a>
 
@@ -308,10 +360,16 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | Reference | Tests |
 | --- | --- |
 | `.bats-core is a full clone of another project; run.sh's comment said it` | repo-hygiene: the vendored bats clone is ignored |
+| ``wineboot -u` rewriting the registry under a live wineserver` | install-runs: setup-prefix refuses while something runs from the runtime |
 | `a bats on PATH used to beat the pin, so a checkout ran whatever the` | repo-hygiene: CI runs the bats tests/run.sh pins, not one of its own |
+| `a kit packed around a name the installer cannot select builds cleanly` | runtime-env: tarball predicate: the dated release form is accepted |
+| `a label is a suffix on the release form, not a licence to accept any` | runtime-env: tarball predicate: a labelled debug tree is still refused |
+| `bin/ and lib/ with no share/` | runtime-env: tarball predicate: a debug tree is refused |
+| `both in one directory is the nightly builder's own dist/, and the` | runtime-env: tarball selector: the plain release wins over a labelled one beside it |
 | `commit 9cba3b0` | launcher: gray text: the dark fallback lands on classic GrayText |
 | `commit f0fc05e` | detect-scale: cosmic probe: a disabled lid never wins when it is marked non-primary<br>detect-scale: cosmic probe: a disabled lid never wins, even with no primary line |
 | `commit f84eaa4` | repo-hygiene: runtime name: every live file agrees on one wine-d2d1-nspa version |
+| `install.sh aborting on its own first lines, which no resolver test can` | install-runs: install.sh gets past its own initialisation |
 | `issue #106` | repo-hygiene: desktop entries validate after substitution |
 | `issue #32` | launcher: gray text: the blend is 45% towards MenuText, per channel, not symmetric |
 | `issue #38` | launcher-cli: a .als set goes straight to the Live exe, never through start.exe<br>launcher-cli: clips and packs route the same way as sets, case-insensitively |
@@ -319,14 +377,20 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `licence GPLv2+` | packaging: the kit ships the GPL source and licence Ableton Link requires |
 | `lifting runtime_pids into the lib renamed it, and a replace that only` | packaging: every shell function a script calls is actually defined |
 | `make-installer accepted ABLETON_RUNTIME_TARBALL with only an -f check,` | packaging: make-installer refuses a tarball the kit's installer cannot select |
+| `observed during the first real migration` | runtime-env: live pids: a process that exits mid-scan is skipped, not an error |
+| `scoping` | runtime-env: runtime pids: a process from another Wine install is ignored |
 | `scripts/ableton-live` | launcher-cli: a stale wineserver is killed and the session booted before registry writes<br>launcher: windowmetrics: a value wrapped across continuation lines is rejoined |
 | `scripts/build-audit.sh` | patch-stack: audit: every wine patch is registered in FINGERPRINTS or STAMP_ONLY |
 | `scripts/container-build.sh` | patch-stack: no patch needs the 3-way fallback — context drift is worth acting on |
 | `scripts/detect-scale.sh DPI policy` | detect-scale: block map: gnome scales collapse onto the ceil-based matched set<br>detect-scale: block map: non-gnome scales round to plain LogPixels with no IFEO |
 | `scripts/detect-theme.sh` | detect-theme: newest prefs dir: mtime wins, not a version sort<br>detect-theme: newest prefs dir: the sort -V trap case, stated explicitly |
 | `scripts/setup-run-header.sh line 19` | repo-hygiene: the installer header survives being run by a real POSIX sh |
+| `setup-prefix.sh clears these two itself; folding them in would drop a` | runtime-env: binding leaves the sync backends alone, unlike setup-prefix.sh's own unset |
 | `sort -V orders the -debug suffix last, so glob+tail installs a tree with no share/` | runtime-env: the runtime wins over a debug tree sitting beside it |
 | `the beta channel` | runtime-env: an undated or suffixed artifact is not mistaken for the runtime |
 | `the container sees only what build.sh passes with -e, and an unset` | repo-hygiene: build.sh forwards every variable container-build.sh reads from its environment |
+| `the four cleared here are the launchers' long-standing set` | runtime-env: binding clears inherited Wine settings that would reach the wrong build |
+| `the launcher's stale-wineserver kill` | runtime-env: a lingering wineserver means busy, but not that Live is running |
 | `the same-day counter must not be read as a date component` | runtime-env: tarball predicate: a partial download is refused |
 | `the staging list is recovered by anchored sed, so a reformat of` | packaging: the kit staging list is still parseable out of make-installer.sh |
+| `this is the only runtime artifact the nightly channel publishes, so` | runtime-env: tarball predicate: a nightly label is accepted |

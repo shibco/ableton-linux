@@ -12,7 +12,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/runtime-env.sh"
 root="$(cd "$here/.." && pwd)"
 
-OPT="$HOME/.local/opt"
+OPT="$(ableton_opt_dir)"
 BIN="$HOME/.local/bin"
 APPS="$HOME/.local/share/applications"
 NAME="wine-d2d1-nspa-11.13"
@@ -96,7 +96,7 @@ runtime_pids()
 ableton_up()
 {
     [ -n "$(runtime_pids)" ] || \
-        pgrep -f '[A]bleton Live.*\.exe|[P]ush2DisplayProcess.exe' >/dev/null 2>&1
+        [ -n "$(ableton_live_pids)" ]
 }
 # Live itself, as opposed to the support processes: the prompt below is
 # about unsaved work and only Live has any. Scoped to this runtime, so a
@@ -134,7 +134,7 @@ if ableton_up; then
         fi
     fi
     if [ -x "$OPT/$NAME/bin/wineserver" ]; then
-        WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}" \
+        WINEPREFIX="$(ableton_wine_prefix)" \
             "$OPT/$NAME/bin/wineserver" -k 2>/dev/null || true
         for _ in $(seq 1 20); do
             ableton_up || break
@@ -253,6 +253,10 @@ echo "== install detection libs -> ~/.local/share/ableton-wine =="
 # The launcher sources these on every start (DPI auto-calibration, light/dark
 # theme sync, and crash-safe GNOME shortcut holding).
 mkdir -p "$HOME/.local/share/ableton-wine"
+# The launchers live in ~/.local/bin with no sibling lib, so the shared
+# resolver has to be here for them to source. Without it ableton-live exits
+# on its own first lines and Live never starts.
+install -m644 "$here/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
 install -m644 "$here/shortcut-hold.sh" "$HOME/.local/share/ableton-wine/shortcut-hold.sh"
@@ -311,7 +315,7 @@ mkdir -p "$APPS"
 live_name="Ableton Live"
 live_icon="live-suite"
 live_wmclass=""
-live_prefix="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+live_prefix="$(ableton_wine_prefix)"
 newest=""
 for exe in "$live_prefix"/drive_c/ProgramData/Ableton/Live*/Program/Ableton\ Live*.exe; do
     [ -e "$exe" ] || continue

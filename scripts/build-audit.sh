@@ -38,6 +38,9 @@ grep -qP 'x' <<<'x' 2>/dev/null || fail "grep -P not supported on this system (n
 # --- resolve the artifact: tarball (unpack to tmp) or tree --------------------
 target="${1:-}"
 if [ -z "$target" ]; then
+    # Never a bare glob: this gate would otherwise certify the debug tree
+    # instead of the runtime it is vouching for, and CI calls it with no
+    # argument so the fallback is the path that actually runs.
     target="$(ableton_pick_tarball "$root/dist")"
     [ -n "$target" ] || fail "no ${NAME}-*.tar.zst in dist/ and no argument given"
 fi

@@ -17,6 +17,7 @@ requested font is unresolvable, so this works as a CI / post-setup check.
 
 import argparse
 import os
+import subprocess
 import re
 import subprocess
 import sys
@@ -82,7 +83,7 @@ def probe_available(prefix, verbose=False):
     if not os.path.exists(exe):
         return None
     wine = os.path.join(os.path.expanduser(os.environ.get(
-        "ABLETON_WINE_ROOT", "~/.local/opt/wine-d2d1-nspa-11.13")), "bin/wine")
+        "ABLETON_WINE_ROOT", _resolved_root())), "bin/wine")
     if not os.path.exists(wine):
         wine = "wine"
     env = dict(os.environ, WINEPREFIX=prefix, WINEDEBUG="-all")
@@ -379,3 +380,16 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _resolved_root():
+    """Ask the installed resolver where the runtime is.
+
+    The path stopped being a constant when the runtime moved into a store keyed
+    by build; works-runtime answers for both layouts.
+    """
+    try:
+        return subprocess.run(["works-runtime", "path"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+    except Exception:
+        return os.path.expanduser("~/.local/opt/ableton-wine/stable")

@@ -111,7 +111,7 @@ echo "== MaxPlug assumption check =="
 # 7. The fix is only correct while MaxPlug's chain still ends at these names. A
 #    Max update could change them, silently un-fixing every device. Assert the
 #    strings are still in the binary when one is available to inspect.
-MAXPLUG="$(ls -1 "${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"/drive_c/ProgramData/Ableton/*/Resources/Max/resources/support/MaxPlug.dll 2>/dev/null | head -1 || true)"
+MAXPLUG="$(ls -1 "$(ableton_wine_prefix)"/drive_c/ProgramData/Ableton/*/Resources/Max/resources/support/MaxPlug.dll 2>/dev/null | head -1 || true)"
 if [ -n "$MAXPLUG" ] && [ -r "$MAXPLUG" ] && command -v strings >/dev/null 2>&1; then
     # One pass over a 31 MB binary, and deliberately not `| grep -q`: that exits
     # 141 under pipefail (grep closes the pipe, strings takes SIGPIPE), which
@@ -132,8 +132,14 @@ fi
 
 echo "== prefix checks =="
 
-PREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
+# Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+    [ -r "$_l" ] && . "$_l" && break
+done
+command -v ableton_wine_root >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
+PREFIX="$(ableton_wine_prefix)"
+WINE_ROOT="$(ableton_wine_root)"
 WINE="$WINE_ROOT/bin/wine"
 [ -x "$WINE" ] || WINE="$(command -v wine 2>/dev/null || true)"
 PROBE="$ROOT/tools/fontprobe.exe"

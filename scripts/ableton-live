@@ -11,8 +11,7 @@
 #            ABLETON_POWER=off (skip the session performance power-profile hold),
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
 #            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
-#            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
-#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix).
+#            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization).
 set -u
 
 # Keep diagnostics from the current launch at one stable path. Tee preserves
@@ -36,10 +35,13 @@ else
 fi
 
 # Clear inherited Wine variables so this launch uses only the patched build.
-unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
-export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
-export PATH="$WINE_ROOT/bin:$PATH"
+# Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+    [ -r "$_l" ] && . "$_l" && break
+done
+command -v ableton_wine_root >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
+ableton_bind_runtime
 # Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
 # Keep the winediag channel on: it carries only rare one-line notices that a
 # person should read, such as the present-fallback warning from patch 0071.
@@ -54,14 +56,9 @@ export WINE_X11_FORCE_OFFSCREEN_CLASS="${WINE_X11_FORCE_OFFSCREEN_CLASS:-Ableton
 # configure can otherwise delay fullscreen removal on exit. Select only Live's
 # exact top-level class; "off" is a non-matching one-launch A/B override.
 export WINE_WIN32_FULLSCREEN_CLASS="${WINE_WIN32_FULLSCREEN_CLASS:-Ableton Live Window Class}"
-# A captioned Live window may legitimately cover its monitor. Keep that window
-# resizable independently of the fullscreen normalization selector above;
-# "off" is a non-matching one-launch A/B override.
-export WINE_WIN32_RESIZABLE_CLASS="${WINE_WIN32_RESIZABLE_CLASS:-Ableton Live Window Class}"
 # Report host mount points as plain dirs (patch 0033); Live's browser treats
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
-export WINESERVER="$WINE_ROOT/bin/wineserver"
 
 # Keep Wine's Mono/.NET and HTML-help hooks out of Live: nothing in the
 # stack loads them. winemenubuilder.exe is deliberately absent here: setup-prefix.sh

@@ -43,7 +43,13 @@ for v in "$xruns" "$dsp"; do
     esac
 done
 
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
+# Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
+for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/.local/share/ableton-wine/runtime-env.sh"; do
+    [ -r "$_l" ] && . "$_l" && break
+done
+command -v ableton_wine_root >/dev/null 2>&1 || {
+    echo "!! runtime-env.sh not found next to $0 or in ~/.local/share/ableton-wine" >&2; exit 1; }
+WINE_ROOT="$(ableton_wine_root)"
 
 # The xruns figure is operator-entered from pw-top's ERR delta over the reference
 # playback; without pw-top there is no sanctioned way to have measured it.
