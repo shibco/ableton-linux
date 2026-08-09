@@ -462,3 +462,54 @@ a_prefix() {   # a_prefix <dir>
     [ "$status" -eq 1 ]
     [[ "$stderr$output" == *"4242"* ]] && [[ "$stderr$output" == *"wineserver"* ]]
 }
+
+# --- the prefix, when a destination already exists -----------------------------
+
+setup_plug() {   # legacy has a real prefix; $1 decides what is at the destination
+    mkdir -p "$HOME/.wine-ableton/drive_c/users" "$HOME/.wine-ableton/dosdevices"
+    printf 'WINE REGISTRY Version 2\n#arch=win64\n' > "$HOME/.wine-ableton/system.reg"
+    DEST="$(works_plug_path)"
+    case "$1" in
+        prefix) mkdir -p "$DEST/drive_c/users"
+                printf 'WINE REGISTRY Version 2\n#arch=win64\n' > "$DEST/system.reg" ;;
+        stub)   mkdir -p "$DEST/drive_c/users" "$DEST/drive_c/windows"
+                printf 'WINE REGISTRY Version 2\n' > "$DEST/system.reg" ;;
+        empty)  mkdir -p "$DEST" ;;
+        none)   : ;;
+    esac
+}
+
+# guards: refusing here aborted a whole install over a directory nothing reads.
+# If the destination holds a prefix the machine is already on the new layout -
+# works_plug_path resolves there and the launcher opens it - so there is nothing
+# to migrate and the legacy path is leftover, not a decision to make.
+@test "a prefix already at the destination means the move is done, not ambiguous" {
+    setup_plug prefix
+    run works_migrate_plug
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" == *"already at"* ]]
+    [ -d "$HOME/.wine-ableton" ]          # left alone, not deleted behind their back
+}
+
+# guards: an unfinished prefix is not a prefix, and keeping it means Wine
+# refuses every 64-bit application in it forever
+# guards: nothing here deletes a prefix. The store sets a runtime it cannot use
+# aside rather than removing it, and a prefix is worth more than a runtime - one
+# can be downloaded again and the other cannot.
+@test "an unfinished prefix at the destination is set aside, not deleted" {
+    setup_plug stub
+    run works_migrate_plug
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [ ! -e "$HOME/.wine-ableton" ]
+    grep -q '^#arch' "$DEST/system.reg"
+    [ -n "$(find "$(dirname "$DEST")" -maxdepth 1 -name "$(basename "$DEST").unfinished-*")" ] \
+        || { echo "the unfinished prefix was removed rather than set aside" >&2; false; }
+}
+
+@test "an empty directory at the destination does not block the move" {
+    setup_plug empty
+    run works_migrate_plug
+    [ "$status" -eq 0 ]
+    [ ! -e "$HOME/.wine-ableton" ]
+    grep -q '^#arch' "$DEST/system.reg"
+}

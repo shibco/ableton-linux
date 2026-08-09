@@ -200,6 +200,33 @@ works_plug_path() {
     printf '%s\n' "$_d/studio"
 }
 
+# Is this a prefix Wine will actually open? system.reg alone is not the test.
+# Wine writes an #arch= line into it when it *finishes* creating a prefix; a
+# wineboot that starts and does not finish leaves the skeleton without one -
+# dosdevices, drive_c/users, drive_c/windows and the .reg files, a few tens of
+# kilobytes. Wine reads the missing marker as win32 and then refuses every
+# 64-bit application, reporting a "32-bit installation" that was never 32-bit,
+# only unfinished. Found on two VMs where that message stopped setup-prefix
+# with no hint that the answer was to delete the directory.
+works_is_prefix() {
+    local _p="${1%/}"
+    [ -f "$_p/system.reg" ] || return 1
+    grep -qm1 '^#arch' "$_p/system.reg" 2>/dev/null
+}
+
+# The unfinished shape above, *and* empty enough to remove without asking. The
+# test is regular files, not directory names: wineboot's skeleton is directories
+# only, so a single file anywhere under drive_c means someone put it there. An
+# earlier version of this checked only the top-level names and would have
+# deleted a set sitting in drive_c/users.
+works_is_stub_prefix() {
+    local _p="${1%/}"
+    [ -d "$_p" ] || return 1
+    works_is_prefix "$_p" && return 1
+    [ -e "$_p/system.reg" ] || return 1
+    [ -z "$(find "$_p/drive_c" -type f -print -quit 2>/dev/null)" ]
+}
+
 # The pre-container prefix path, named once rather than spelled out at each use.
 works_legacy_plug() {
     printf '%s\n' "$HOME/.wine-ableton"
@@ -638,13 +665,38 @@ works_migrate_plug() {
         return 1
     fi
 
-    # Both present is the one genuinely ambiguous state: two prefixes, each
-    # possibly holding a different Live and different authorisation. Guessing
-    # loses work, so name both and stop.
+    # A prefix already at the destination means this machine is on the new
+    # layout: works_plug_path resolves there, the launcher opens it, and what is
+    # still sitting at the legacy path is not being used by anything. There is
+    # nothing to migrate, so say what is there and carry on - refusing would
+    # abort an install over a directory nothing reads. This matches how the
+    # runtime migration treats the same shape: an older installer writing to the
+    # old path is a normal action on a machine holding an older installer, not
+    # corruption.
+    if works_is_prefix "$dest"; then
+        echo "   plug: already at $dest; $legacy is left over from before the" \
+             "move and is not in use - remove it when you like"
+        return 0
+    fi
+
+    # There is something at the destination that is not a prefix. An empty
+    # directory is mkdir debris and can go; anything else is genuinely ambiguous
+    # and is not ours to delete.
     if [ -e "$dest" ]; then
-        echo "!! a prefix already exists at $dest and another at $legacy;" \
-             "keep the one you want and remove the other, then rerun" >&2
-        return 1
+        if [ -d "$dest" ] && [ -z "$(ls -A "$dest" 2>/dev/null)" ]; then
+            rmdir "$dest" 2>/dev/null || true
+        elif works_is_stub_prefix "$dest"; then
+            # Set aside, never removed. The store does the same with a runtime
+            # it cannot use, and a prefix is worth more than a runtime: one can
+            # be downloaded again and the other cannot.
+            echo "   plug: an unfinished prefix is at $dest; setting it aside as" \
+                 "$dest.unfinished-$(date -u +%Y%m%dT%H%M%SZ) so the one at $legacy can move there"
+            mv "$dest" "$dest.unfinished-$(date -u +%Y%m%dT%H%M%SZ)"
+        else
+            echo "!! $dest already exists and is not a prefix, so the one at" \
+                 "$legacy cannot move there; move or remove it, then rerun" >&2
+            return 1
+        fi
     fi
 
     mkdir -p "$(dirname "$dest")"

@@ -78,6 +78,46 @@ setup() {
     [ "$wide" -eq 0 ] || { echo "the union scan missed the prefix holder" >&2; false; }
 }
 
+# guards: found on two VMs. Wine writes #arch= into system.reg when it finishes
+# creating a prefix; a wineboot that starts and does not finish leaves the
+# skeleton without one, and Wine then reads the missing marker as win32 and
+# refuses every 64-bit application - reporting a "32-bit installation" that was
+# never 32-bit, only unfinished. system.reg on its own cannot tell them apart.
+@test "a finished prefix and an unfinished one are told apart" {
+    mk_prefix() {   # path, arch(y/n), extra dir
+        mkdir -p "$1/drive_c/users" "$1/drive_c/windows" "$1/dosdevices"
+        { echo "WINE REGISTRY Version 2"; [ "$2" = y ] && echo "#arch=win64"; } > "$1/system.reg"
+        [ -z "${3:-}" ] || { mkdir -p "$1/drive_c/$3"; : > "$1/drive_c/$3/thing.dll"; }
+    }
+    mk_prefix "$BATS_TEST_TMPDIR/done" y
+    mk_prefix "$BATS_TEST_TMPDIR/stub" n
+    mk_prefix "$BATS_TEST_TMPDIR/used" n "Program Files"
+    mkdir -p "$BATS_TEST_TMPDIR/bare"
+
+    works_is_prefix "$BATS_TEST_TMPDIR/done"
+    ! works_is_prefix "$BATS_TEST_TMPDIR/stub"
+    ! works_is_prefix "$BATS_TEST_TMPDIR/bare"
+
+    works_is_stub_prefix "$BATS_TEST_TMPDIR/stub"
+    ! works_is_stub_prefix "$BATS_TEST_TMPDIR/done"
+    ! works_is_stub_prefix "$BATS_TEST_TMPDIR/bare"
+    # anything installed in it is somebody's work, whatever the marker says.
+    # An empty directory is not an install: what makes this unsafe to clear is a
+    # file, which is why the predicate counts files rather than directory names.
+    ! works_is_stub_prefix "$BATS_TEST_TMPDIR/used" \
+        || { echo "a prefix with an install in it was called a stub" >&2; false; }
+
+    # guards: the first version of this keyed on the top-level drive_c names, so
+    # a set saved under drive_c/users read as an empty skeleton. The VM that
+    # produced this bug had exactly one file in it, and clearing the directory
+    # would have taken it.
+    mk_prefix "$BATS_TEST_TMPDIR/hasset" n
+    mkdir -p "$BATS_TEST_TMPDIR/hasset/drive_c/users/someone"
+    printf 'a set\n' > "$BATS_TEST_TMPDIR/hasset/drive_c/users/someone/mine.als"
+    ! works_is_stub_prefix "$BATS_TEST_TMPDIR/hasset" \
+        || { echo "a prefix holding a set was called a stub" >&2; false; }
+}
+
 @test "prefix: WORKS_PLUG wins, which the clone workflow depends on" {
     WORKS_PLUG=/tmp/altpfx
     [ "$(works_plug_path)" = "/tmp/altpfx" ]

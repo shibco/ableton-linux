@@ -298,11 +298,34 @@ case "$dpi_mode" in
 esac
 
 echo "== [1/5] initialise prefix at $WINEPREFIX =="
-# While updating the prefix, wineboot offers Wine's Mono and Gecko installers. This runtime
-# vendors neither, so on a machine with no cached package it opens a modal "Wine Mono
-# Installer" prompt; nothing answers it in an unattended run and the wineserver -w below then
-# never returns. Live needs neither - ableton-live and max9 already disable both on every
-# launch - so disable them here and wineboot stops asking.
+# An unfinished prefix is worse than none: Wine reads the missing #arch marker
+# as win32 and refuses every 64-bit application, reporting a "32-bit
+# installation" that was never 32-bit. Nothing downstream can recover from it
+# and the message does not lead anyone to the answer, so clear it and make a
+# real one. Only ever the unfinished shape - drive_c holding nothing but the
+# two directories wineboot lays down first - never a prefix with anything
+# installed in it.
+# An unfinished prefix carries no #arch line at all, and Wine then reads it as
+# win32 and refuses every 64-bit application - reporting a "32-bit installation"
+# that was never 32-bit, only incomplete. It does not have to be thrown away:
+# writing the marker lets the wineboot below finish the job in place, and
+# anything already under drive_c survives. Verified against a stub holding a
+# saved set: the set came through and drive_c gained ProgramData and both
+# Program Files trees.
+#
+# A prefix that *declares* #arch=win32 is a different object - genuinely 32-bit,
+# and not ours to convert. The absence of the line is what is unambiguous.
+if [ -e "$WINEPREFIX/system.reg" ] && ! works_is_prefix "$WINEPREFIX"; then
+    if grep -qm1 '^#arch=' "$WINEPREFIX/system.reg" 2>/dev/null; then
+        echo "!! the prefix at $WINEPREFIX declares itself 32-bit, and Live is 64-bit." >&2
+        echo "   Point WORKS_PLUG at another Plug, or make a new one with \`works plug new\`." >&2
+        exit 1
+    fi
+    echo "   the prefix here was never finished, so Wine reads it as 32-bit. Writing"
+    echo "   the missing marker and letting wineboot complete it; nothing is removed."
+    sed -i '1a #arch=win64' "$WINEPREFIX/system.reg"
+fi
+
 WINEDLLOVERRIDES="mscoree,mshtml=" wineboot -u
 # A prefix that got Ableton's USB audio driver carries the driver's tray agent, and
 # wineboot's startup pass relaunches it on every boot. The agent never exits by itself and
