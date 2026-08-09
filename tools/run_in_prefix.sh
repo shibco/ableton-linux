@@ -7,5 +7,7 @@ export WINEPREFIX="$HOME/.wine-ableton"
 export PATH="$WINE_ROOT/bin:$PATH"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 export WINEDEBUG="${WINEDEBUG:--all}"
-cd "$(dirname "$0")"
+# The probe writes its report to the cwd (see above), so a failed cd would
+# silently scatter output into whatever directory the caller happened to be in.
+cd "$(dirname "$0")" || { echo "!! cannot enter $(dirname "$0")" >&2; exit 1; }
 exec "$WINE_ROOT/bin/wine" "$@"
