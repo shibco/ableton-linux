@@ -37,6 +37,7 @@ replaced_orig=""
 STORE=""
 launcher_backup=""
 promoted=0
+migrated=0
 
 cleanup()
 {
@@ -64,6 +65,15 @@ cleanup()
         fi
         if [ "$promoted" -eq 1 ] || [ -n "$backup" ] || [ -n "$launcher_backup" ]; then
             echo "!! install failed; previous runtime restored" >&2
+        elif [ "$migrated" -eq 1 ]; then
+            # The migration is deliberately not undone - it only moves trees
+            # that stay valid, and rerunning continues from it. But a message
+            # claiming nothing changed after ~/works has appeared is a lie that
+            # sends the person investigating in exactly the wrong direction.
+            # Found live: the base gate aborted after a migration and said
+            # "nothing was changed" over a machine whose layout had just moved.
+            echo "!! install aborted; the layout migration had already completed and" >&2
+            echo "   stands - rerunning will continue from it" >&2
         else
             echo "!! install aborted; nothing was changed" >&2
         fi
@@ -247,6 +257,7 @@ fi
 # that stay valid, and re-running is a no-op.
 works_migrate_layout
 works_migrate_plug
+migrated=1
 
 # Where this install lands. Unpinned, that is always the store - including on a
 # fresh machine, so a new user never sees the flat layout and never becomes a

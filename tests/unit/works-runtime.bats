@@ -287,16 +287,35 @@ store() {
 
 # guards: a booted prefix that cannot say what booted it is the case the old
 # `wine:` comparison passed over in silence — it was guarded on the field being
-# readable, so an unreadable one switched the guard off instead of stopping on it
-@test "a Plug that cannot name its base is a refusal, not a skip" {
+# readable, so an unreadable one switched the guard off instead of stopping on
+# it. "Booted" means a system.reg with content: wineboot writes the registry in
+# its first moments, so content without a stamp is the tampered case.
+@test "a booted Plug that cannot name its base is a refusal, not a skip" {
     store
     a_plug studio wine-11.13
+    printf 'WINE REGISTRY Version 2\n' > "$(works_plugs_dir)/studio/system.reg"
     rm -f "$(works_plugs_dir)/studio/.update-timestamp"
     plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.14
     run setsid bash "$REPO/scripts/works-runtime" use 2026.07.01.1+ddddddd
     [ "$status" -ne 0 ]
     [[ "$output" == *"will not say which Wine base"* ]]
     [ "$(readlink "$C/stable")" = "2026.06.01.1+bbbbbbb" ]
+}
+
+# guards: found live on the arch rig. The migration harness fabricates a legacy
+# prefix as `: > system.reg` with no stamp — a prefix nothing ever booted — and
+# reading that as "booted but will not say" aborted a legacy machine's first
+# install. Empty means wineboot never started, and fresh is the honest answer.
+@test "a Plug with an empty system.reg and no stamp is fresh, not a refusal" {
+    store
+    a_plug studio wine-11.13
+    : > "$(works_plugs_dir)/studio/system.reg"
+    rm -f "$(works_plugs_dir)/studio/.update-timestamp"
+    plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.14
+    run setsid bash "$REPO/scripts/works-runtime" use 2026.07.01.1+ddddddd
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" != *"will not say"* ]]
+    [ "$(readlink "$C/stable")" = "2026.07.01.1+ddddddd" ]
 }
 
 # --- the picker ---------------------------------------------------------------

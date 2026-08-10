@@ -7,7 +7,7 @@ from the files, and the *Guards* column from `# guards:` annotations above a
 test. Run `./tests/catalogue.sh` after adding or renaming a test;
 `tests/repo-hygiene.bats` fails when this file is stale.
 
-435 tests across 17 suites. See [README.md](README.md) for how to run
+436 tests across 17 suites. See [README.md](README.md) for how to run
 them and [../.github/workflows/ci-checks.yml](../.github/workflows/ci-checks.yml)
 for which run on a PR.
 
@@ -25,7 +25,7 @@ for which run on a PR.
 - [tests/unit/migrate-layout.bats](#migrate-layout) — 42 test(s)
 - [tests/unit/works.bats](#works) — 12 test(s)
 - [tests/unit/promote.bats](#promote) — 11 test(s)
-- [tests/unit/works-runtime.bats](#works-runtime) — 37 test(s)
+- [tests/unit/works-runtime.bats](#works-runtime) — 38 test(s)
 - [tests/unit/works-plug.bats](#works-plug) — 42 test(s)
 - [tests/unit/works-update.bats](#works-update) — 37 test(s)
 - [tests/unit/runtime-env.bats](#runtime-env) — 75 test(s)
@@ -536,22 +536,23 @@ resolve through it instead of naming a directory.
 | 19 | use --force accepts a base change deliberately | — |
 | 20 | a downgrade is named as a downgrade | forward Wine supports, backward it does not - the wording has to differ |
 | 21 | a Plug pinned to a build is not warned about | a Plug pinned to a build does not follow the channel, so a retarget |
-| 22 | a Plug that cannot name its base is a refusal, not a skip | a booted prefix that cannot say what booted it is the case the old |
-| 23 | use with no argument refuses when there is no terminal | a script calling `use` with no argument must fail, not block forever |
-| 24 | use with no argument leaves the channel alone | — |
-| 25 | list: a nightly id does not crowd the WINE column | the BUILD column was exactly as wide as a nightly id -- |
-| 26 | use accepts a nightly build by its full name | the id contains dots and a plus, so anything treating it as a pattern |
-| 27 | stop says so when nothing is running | — |
-| 28 | stop refuses a running Live with no terminal to confirm on | stopping Live discards unsaved work, so it is the one process here |
-| 29 | stop -y stops a running Live without asking | -y was parsed by cmd_stop but never reached it. The dispatch called |
-| 30 | stop --yes is the same flag spelled out | — |
-| 31 | works stop -y reaches the flag through the top-level dispatcher | `works stop` is the documented spelling, and it crosses two dispatchers |
-| 32 | runtime help ends on a command, not on prose | every help here is a fixed line range over the file's header comment, |
-| 33 | runtime help names every verb it dispatches | — |
-| 34 | runtime help answers to -h and help as well | — |
-| 35 | a newer build of the same base switches without a question | — |
-| 36 | rollback within the base is noted, never called a DOWNGRADE | — |
-| 37 | a rollback whose booting runtime is gone stays a refusal | the label comparison needs the runtime that booted the Plug, and that |
+| 22 | a booted Plug that cannot name its base is a refusal, not a skip | a booted prefix that cannot say what booted it is the case the old |
+| 23 | a Plug with an empty system.reg and no stamp is fresh, not a refusal | found live on the arch rig. The migration harness fabricates a legacy |
+| 24 | use with no argument refuses when there is no terminal | a script calling `use` with no argument must fail, not block forever |
+| 25 | use with no argument leaves the channel alone | — |
+| 26 | list: a nightly id does not crowd the WINE column | the BUILD column was exactly as wide as a nightly id -- |
+| 27 | use accepts a nightly build by its full name | the id contains dots and a plus, so anything treating it as a pattern |
+| 28 | stop says so when nothing is running | — |
+| 29 | stop refuses a running Live with no terminal to confirm on | stopping Live discards unsaved work, so it is the one process here |
+| 30 | stop -y stops a running Live without asking | -y was parsed by cmd_stop but never reached it. The dispatch called |
+| 31 | stop --yes is the same flag spelled out | — |
+| 32 | works stop -y reaches the flag through the top-level dispatcher | `works stop` is the documented spelling, and it crosses two dispatchers |
+| 33 | runtime help ends on a command, not on prose | every help here is a fixed line range over the file's header comment, |
+| 34 | runtime help names every verb it dispatches | — |
+| 35 | runtime help answers to -h and help as well | — |
+| 36 | a newer build of the same base switches without a question | — |
+| 37 | rollback within the base is noted, never called a DOWNGRADE | — |
+| 38 | a rollback whose booting runtime is gone stays a refusal | the label comparison needs the runtime that booted the Plug, and that |
 
 <a id="works-plug"></a>
 
@@ -822,7 +823,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `a Plug pinned to a build does not follow the channel, so a retarget` | works-runtime: a Plug pinned to a build is not warned about |
 | `a Plug with no prefix in it yet still has to appear, or `new` produces` | works-plug: a Plug created but never booted is still listed |
 | `a bats on PATH used to beat the pin, so a checkout ran whatever the` | repo-hygiene: CI runs the bats tests/run.sh pins, not one of its own |
-| `a booted prefix that cannot say what booted it is the case the old` | works-runtime: a Plug that cannot name its base is a refusal, not a skip |
+| `a booted prefix that cannot say what booted it is the case the old` | works-runtime: a booted Plug that cannot name its base is a refusal, not a skip |
 | `a channel names a symlink and selects a URL; it is user configuration` | works-update: an unknown channel is refused before any fetch |
 | `a channel pointing at a pruned entry is a broken install produced by` | migrate-layout: retention never removes what the channel points at |
 | `a dangling channel must not resolve to nothing and strand the launcher` | runtime-env: runtime root: a dangling channel falls back rather than resolving empty |
@@ -866,6 +867,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `found in review. The "already in the store, just retarget" branch ran` | works-update: a base change that takes a Plug backward is refused from the store |
 | `found in review. install.sh hands this to `wineserver -k` *before*` | runtime-env: live prefix: names the legacy path while the destination is absent |
 | `found in review. works-update guards its Wine-base refusal on the field` | manifest: a manifest with no wine field is refused |
+| `found live on the arch rig. The migration harness fabricates a legacy` | works-runtime: a Plug with an empty system.reg and no stamp is fresh, not a refusal |
 | `found on a VM after a fix that did not work. The architecture is` | runtime-env: a 32-bit prefix declared only in user.reg is not mistaken for unfinished |
 | `install.sh aborting on its own first lines, which no resolver test can` | install-runs: install.sh gets past its own initialisation |
 | `install.sh writes the channel file, so "removed everything install.sh` | install-runs: uninstalling takes the recorded channel back |

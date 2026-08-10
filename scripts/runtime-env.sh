@@ -436,11 +436,15 @@ works_base_move() {
     _rb="$(works_runtime_base "$_r")" || return 1
     if ! _pb="$(works_plug_base "$_p")"; then
         # No stamp. Which of the two that is turns on whether wineboot has ever
-        # run here at all - system.reg is the same marker works_is_stub_prefix
-        # keys on. A prefix that has been booted and still cannot say what booted
-        # it is the case to refuse, and it is exactly the case the wine: field
-        # comparison used to pass over in silence.
-        [ -e "$_p/system.reg" ] && return 1
+        # actually run here - and -s, not -e: wineboot writes registry content
+        # in its first moments, so an EMPTY system.reg means it never got
+        # started, and fresh is the honest answer. Found live on the arch rig:
+        # the migration harness fabricates exactly this shape (`: > system.reg`),
+        # and -e read it as "booted but will not say", aborting a legacy
+        # machine's first install over a prefix nothing had ever booted. A
+        # NON-empty system.reg with no stamp remains the tampered case and a
+        # refusal - that is the strictness defect 7 was about.
+        [ -s "$_p/system.reg" ] && return 1
         printf 'fresh\n'; return 0
     fi
     if [ "$_rb" -eq "$_pb" ]; then printf 'same\n'; return 0; fi
