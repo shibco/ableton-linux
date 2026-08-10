@@ -34,6 +34,12 @@ else
     echo "ableton-live: cannot write diagnostics to $diagnostic_dir/live.log" >&2
 fi
 
+# The oldest Works contract this launcher is written against. Read by
+# install.sh's infrastructure gate before it upgrades the shared library, so an
+# upgrade that would strand this application is named before it happens rather
+# than discovered as a function error on the next launch.
+WORKS_ABI_MIN=1
+
 # Clear inherited Wine variables so this launch uses only the patched build.
 # Runtime and prefix paths resolve in one place; see scripts/runtime-env.sh.
 for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
@@ -41,6 +47,19 @@ for _l in "$(dirname "$0")/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"; do
 done
 command -v works_runtime_path >/dev/null 2>&1 || {
     echo "!! runtime-env.sh not found next to $0 or in ~/works/apps/ableton-live" >&2; exit 1; }
+# The other half of the install-time gate, at the moment of use: the gate can be
+# bypassed (a hand-copied lib, a future kit forced past the prompt), and what a
+# stranded launcher does without this line is die partway through on whichever
+# missing function it reaches first, which reads as a crash rather than a
+# version conflict. An infrastructure old enough to predate the contract
+# declares nothing and is generation 1.
+if [ "${WORKS_ABI_OLDEST:-1}" -gt "$WORKS_ABI_MIN" ]; then
+    echo "ableton-live: the installed Works infrastructure (generation ${WORKS_ABI:-?}," >&2
+    echo "  oldest supported ${WORKS_ABI_OLDEST:-?}) no longer supports this launcher" >&2
+    echo "  (written against generation $WORKS_ABI_MIN). Update Ableton Live with its" >&2
+    echo "  current installer." >&2
+    exit 1
+fi
 works_bind_runtime
 # Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
 # Keep the winediag channel on: it carries only rare one-line notices that a

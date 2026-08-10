@@ -96,6 +96,75 @@ else
     echo "   (no .sha256 next to tarball: skipping)"
 fi
 
+# --- the infrastructure gate --------------------------------------------------
+# Every application's kit carries its own copy of the Works infrastructure - the
+# shared library, the works command, its verbs - because one self-sufficient
+# installer is the distribution model: run one file, get a working system, no
+# bootstrap in front of it. The cost of that model is that every install is also
+# an infrastructure write onto a machine other applications may already depend
+# on, and unguarded, whichever kit ran last would own ~/works/lib - silently
+# downgrading everyone else.
+#
+# So the write is arbitrated by the ABI range (see runtime-env.sh). Decided here,
+# before anything is stopped or moved, because two of the outcomes are refusals
+# and a refusal this early leaves the machine untouched:
+#
+#   kit newer or equal, nobody stranded    install it        (the silent path)
+#   kit newer, would strand an app         ask, naming them
+#   kit older, its app still supported     keep the newer infrastructure,
+#                                          install only the application
+#   kit older, its app below OLDEST        refuse the whole install
+#
+# Equal generations install unconditionally: the contract is identical by
+# definition of the number, so last-writer-wins is safe exactly there - which is
+# the ordinary re-install and needs no arbitration.
+kit_abi="${WORKS_ABI:-1}"
+kit_oldest="${WORKS_ABI_OLDEST:-1}"
+installed_lib="$HOME/works/lib/runtime-env.sh"
+inst_abi="$(works_abi_field "$installed_lib" WORKS_ABI 2>/dev/null || echo 0)"
+inst_oldest="$(works_abi_field "$installed_lib" WORKS_ABI_OLDEST 2>/dev/null || echo 1)"
+install_infra=1
+if [ -r "$installed_lib" ] && [ "$inst_abi" -gt "$kit_abi" ]; then
+    # A newer infrastructure is already here. Never downgrade it - but this
+    # kit's application is about to run under it, so the promise has to hold in
+    # the other direction too: the installed OLDEST must still cover the floor
+    # this kit's launcher declares.
+    install_infra=0
+    kit_app_min="$(works_abi_field "$here/ableton-live" WORKS_ABI_MIN 2>/dev/null || echo 1)"
+    if [ "$inst_oldest" -gt "$kit_app_min" ]; then
+        echo "!! This kit's Ableton Live is written against Works generation $kit_app_min," >&2
+        echo "   and the installed infrastructure (generation $inst_abi) supports" >&2
+        echo "   generation $inst_oldest at the oldest. This kit is too old for this" >&2
+        echo "   machine: use a current installer." >&2
+        exit 1
+    fi
+    echo "   works: keeping the installed infrastructure (generation $inst_abi;" \
+         "this kit carries $kit_abi)"
+elif [ "$kit_abi" -gt "$inst_abi" ]; then
+    stranded="$(works_apps_below_min "$kit_oldest")"
+    if [ -n "$stranded" ] && [ "${WORKS_ALLOW_ABI_BREAK:-0}" != 1 ]; then
+        echo "!! Upgrading the Works infrastructure to generation $kit_abi drops support" >&2
+        echo "   for generations before $kit_oldest, and these installed applications" >&2
+        echo "   declare an older floor:" >&2
+        printf '%s\n' "$stranded" | sed 's/^/     /' >&2
+        echo "   They would stop launching until each is updated with its own installer." >&2
+        if { : >/dev/tty; } 2>/dev/null; then
+            printf 'Continue anyway? [y/N] ' > /dev/tty
+            ans=""
+            read -r -t 60 ans < /dev/tty || printf '\n' > /dev/tty 2>/dev/null || true
+            # The cleanup trap says "nothing was changed", which at this point
+            # is true.
+            case "$ans" in
+                y|Y|yes|Yes|YES) ;;
+                *) exit 1 ;;
+            esac
+        else
+            echo "   No terminal to ask on; set WORKS_ALLOW_ABI_BREAK=1 if you mean it." >&2
+            exit 1
+        fi
+    fi
+fi
+
 # Anything still running from the installed runtime holds the old files
 # open. Stop it all instead of refusing: ask the prefix's wineserver to
 # take the whole session down (Live and its helpers are its clients), and
@@ -405,10 +474,16 @@ ln -sfn "$HOME/works/apps/ableton-live/ableton-live" "$BIN/ableton-live"
 # `works` acts on the runtime and the store, which no application owns, so it
 # sits in works/bin rather than in any app's directory. Its verbs go beside the
 # shared library: they implement the command, they are not commands themselves.
-install -m755 "$here/works" "$HOME/works/bin/works"
-install -m755 "$here/works-runtime" "$HOME/works/lib/works-runtime"
-install -m755 "$here/works-update" "$HOME/works/lib/works-update"
-install -m755 "$here/works-plug" "$HOME/works/lib/works-plug"
+#
+# Behind the gate decided up top: when the machine already carries a newer
+# infrastructure, this kit installs only its application and leaves ~/works/bin
+# and the verbs alone.
+if [ "$install_infra" = 1 ]; then
+    install -m755 "$here/works" "$HOME/works/bin/works"
+    install -m755 "$here/works-runtime" "$HOME/works/lib/works-runtime"
+    install -m755 "$here/works-update" "$HOME/works/lib/works-update"
+    install -m755 "$here/works-plug" "$HOME/works/lib/works-plug"
+fi
 ln -sfn "$HOME/works/bin/works" "$BIN/works"
 # The two commands this replaced, from an installer that predates it.
 rm -f "$BIN/ableton-runtime" "$BIN/ableton-update" "$BIN/works-runtime" "$BIN/works-update" 2>/dev/null || true
@@ -428,10 +503,16 @@ mkdir -p "$HOME/works/lib" "$HOME/works/apps/ableton-live"
 # The launchers live in ~/.local/bin with no sibling lib, so the shared
 # resolver has to be here for them to source. Without it ableton-live exits
 # on its own first lines and Live never starts.
-install -m644 "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"
-install -m644 "$here/detect-scale.sh" "$HOME/works/lib/detect-scale.sh"
-install -m644 "$here/detect-theme.sh" "$HOME/works/lib/detect-theme.sh"
-install -m644 "$here/shortcut-hold.sh" "$HOME/works/lib/shortcut-hold.sh"
+#
+# The same gate as the command and its verbs: the library and the toolkit are
+# one generation and move together, or the verbs call functions the library
+# does not define.
+if [ "$install_infra" = 1 ]; then
+    install -m644 "$here/runtime-env.sh" "$HOME/works/lib/runtime-env.sh"
+    install -m644 "$here/detect-scale.sh" "$HOME/works/lib/detect-scale.sh"
+    install -m644 "$here/detect-theme.sh" "$HOME/works/lib/detect-theme.sh"
+    install -m644 "$here/shortcut-hold.sh" "$HOME/works/lib/shortcut-hold.sh"
+fi
 # setsyscolors.exe repaints the top bar mid-session when the Live theme changes;
 # without it the colors still apply on the next launch. Kit stages it next to
 # these scripts; a repo checkout carries it in tools/.

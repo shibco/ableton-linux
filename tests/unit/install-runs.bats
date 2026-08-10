@@ -336,3 +336,81 @@ setup() {
     "$HOME/.local/bin/works" runtime path >/dev/null
     "$HOME/works/bin/works" runtime path >/dev/null
 }
+
+# --- the infrastructure gate ----------------------------------------------------
+# Every kit carries its own copy of the Works infrastructure, so every install is
+# also a write onto a machine other applications may already depend on. The gate
+# arbitrates that write by the ABI range. The strand-prompt branch cannot be
+# reached here — this kit's OLDEST is 1 and nothing can be below it — so the
+# census behind it is pinned at unit level in runtime-env.bats, and the prompt
+# itself becomes reachable the first time OLDEST moves.
+
+@test "a fresh install stamps the infrastructure contract" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    grep -q '^WORKS_ABI=' "$HOME/works/lib/runtime-env.sh"
+    grep -q '^WORKS_ABI_OLDEST=' "$HOME/works/lib/runtime-env.sh"
+}
+
+# guards: unguarded, whichever kit ran last owned ~/works/lib — installing an
+# older application silently downgraded the infrastructure under every other
+# application on the machine
+@test "a newer installed infrastructure is kept, not overwritten" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    mkdir -p "$HOME/works/lib"
+    printf '# SENTINEL-NEWER-GENERATION\nWORKS_ABI=99\nWORKS_ABI_OLDEST=1\n' \
+        > "$HOME/works/lib/runtime-env.sh"
+
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" == *"keeping the installed infrastructure"* ]]
+    grep -q 'SENTINEL-NEWER-GENERATION' "$HOME/works/lib/runtime-env.sh" \
+        || { echo "the newer library was overwritten by an older kit" >&2; false; }
+    # the application itself still installed — that is the point of the split
+    [ -x "$HOME/works/apps/ableton-live/ableton-live" ]
+}
+
+# guards: the other direction of the same promise — an installed infrastructure
+# that has dropped this kit's generation cannot run this kit's application, and
+# finding that out at install time beats finding it out as a launch failure
+@test "a kit below the installed OLDEST is refused whole" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    mkdir -p "$HOME/works/lib"
+    printf 'WORKS_ABI=99\nWORKS_ABI_OLDEST=99\n' > "$HOME/works/lib/runtime-env.sh"
+
+    run env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"This kit is too old"* ]]
+    # refused before anything landed: no store, no launcher
+    [ ! -e "$HOME/works/runtimes/stable" ]
+    [ ! -e "$HOME/works/apps/ableton-live/ableton-live" ]
+}
+
+# guards: uninstalling one application used to run works_remove_runtimes and take
+# ~/works/bin/works unconditionally — so removing app A broke app B's launches
+# and deleted runtimes its Plugs were pinned to. The exact dependency between
+# applications the bundled model exists to prevent, created by the uninstaller.
+@test "uninstalling one application keeps the runtimes another still needs" {
+    tarball="$(sandbox_tarball)"
+    [ -n "$tarball" ] || skip "no runtime tarball; set WORKS_TEST_TARBALL to run this"
+    env WORKS_RUNTIME_TARBALL="$tarball" bash "$REPO/scripts/install.sh" --runtime-only >/dev/null 2>&1
+    [ -L "$HOME/works/runtimes/stable" ]
+    mkdir -p "$HOME/works/apps/another-app"
+
+    run setsid --wait bash "$REPO/scripts/uninstall.sh" --yes
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" == *"kept the runtimes"* ]]
+    [ -L "$HOME/works/runtimes/stable" ] || { echo "the channel went with the wrong app" >&2; false; }
+    [ -x "$HOME/works/bin/works" ]       || { echo "the works command went with the wrong app" >&2; false; }
+    [ ! -e "$HOME/works/apps/ableton-live" ]
+
+    # and with the last application, everything shared goes too
+    rmdir "$HOME/works/apps/another-app"
+    setsid --wait bash "$REPO/scripts/uninstall.sh" --yes >/dev/null 2>&1
+    [ ! -e "$HOME/works/runtimes" ]
+    [ ! -e "$HOME/works/bin" ]
+}

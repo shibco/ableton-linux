@@ -667,3 +667,44 @@ id_of() {   # id_of <build-info lines...>
         '. "$REPO/scripts/runtime-env.sh"; works_plug_path >/dev/null'
     [ -z "$stderr" ] || [[ "$stderr" != *"will stop being read"* ]]
 }
+
+# --- the ABI range ------------------------------------------------------------
+# The compatibility contract is three integers compared, so the readers that
+# feed the comparison are worth pinning: a reader that sources the file it is
+# judging would let that file rewrite the judge, and a reader that trusts a
+# non-numeric value turns the gate off.
+
+@test "abi field: reads a declaration without sourcing the file" {
+    f="$BATS_TEST_TMPDIR/lib.sh"
+    printf 'WORKS_ABI=7\nWORKS_ABI_OLDEST=3\necho SIDE-EFFECT\n' > "$f"
+    [ "$(works_abi_field "$f" WORKS_ABI)" = 7 ]
+    [ "$(works_abi_field "$f" WORKS_ABI_OLDEST)" = 3 ]
+    # and nothing executed: sed read it, bash did not
+    run works_abi_field "$f" WORKS_ABI
+    [[ "$output" != *"SIDE-EFFECT"* ]]
+}
+
+@test "abi field: a missing or non-numeric declaration is no value, not zero" {
+    f="$BATS_TEST_TMPDIR/lib.sh"
+    printf 'WORKS_ABI=$(rm -rf /)\n' > "$f"
+    run works_abi_field "$f" WORKS_ABI
+    [ "$status" -ne 0 ]
+    run works_abi_field "$BATS_TEST_TMPDIR/absent" WORKS_ABI
+    [ "$status" -ne 0 ]
+}
+
+# guards: raising OLDEST is the one act that can strand an application, and this
+# is the census that names the casualties before it happens. An application that
+# declares nothing is generation 1 — that is when it must have been written — so
+# while OLDEST stays 1 this can never name anyone.
+@test "apps below min: names exactly the applications an OLDEST would strand" {
+    export WORKS_HOME="$BATS_TEST_TMPDIR/works"
+    mkdir -p "$WORKS_HOME/apps/old-app" "$WORKS_HOME/apps/new-app" "$WORKS_HOME/apps/mute-app"
+    printf '#!/bin/sh\nWORKS_ABI_MIN=1\n' > "$WORKS_HOME/apps/old-app/old-app"
+    printf '#!/bin/sh\nWORKS_ABI_MIN=4\n' > "$WORKS_HOME/apps/new-app/new-app"
+    # mute-app has no launcher at all: treated as generation 1
+    [ -z "$(works_apps_below_min 1)" ]
+    [ "$(works_apps_below_min 2 | sort | tr '\n' ' ')" = "mute-app old-app " ]
+    [ -z "$(works_apps_below_min 2 | grep -x new-app || true)" ]
+    [ "$(works_apps_below_min 5 | grep -cx new-app)" = 1 ]
+}

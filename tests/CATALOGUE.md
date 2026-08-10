@@ -7,7 +7,7 @@ from the files, and the *Guards* column from `# guards:` annotations above a
 test. Run `./tests/catalogue.sh` after adding or renaming a test;
 `tests/repo-hygiene.bats` fails when this file is stale.
 
-420 tests across 17 suites. See [README.md](README.md) for how to run
+430 tests across 17 suites. See [README.md](README.md) for how to run
 them and [../.github/workflows/ci-checks.yml](../.github/workflows/ci-checks.yml)
 for which run on a PR.
 
@@ -15,11 +15,11 @@ for which run on a PR.
 
 - [tests/repo-hygiene.bats](#repo-hygiene) — 17 test(s)
 - [tests/packaging.bats](#packaging) — 10 test(s)
-- [tests/launcher-cli.bats](#launcher-cli) — 19 test(s)
+- [tests/launcher-cli.bats](#launcher-cli) — 21 test(s)
 - [tests/unit/detect-scale.bats](#detect-scale) — 20 test(s)
 - [tests/unit/detect-theme.bats](#detect-theme) — 22 test(s)
 - [tests/unit/launcher.bats](#launcher) — 20 test(s)
-- [tests/unit/install-runs.bats](#install-runs) — 20 test(s)
+- [tests/unit/install-runs.bats](#install-runs) — 24 test(s)
 - [tests/unit/run-header.bats](#run-header) — 12 test(s)
 - [tests/unit/manifest.bats](#manifest) — 21 test(s)
 - [tests/unit/migrate-layout.bats](#migrate-layout) — 42 test(s)
@@ -27,8 +27,8 @@ for which run on a PR.
 - [tests/unit/promote.bats](#promote) — 11 test(s)
 - [tests/unit/works-runtime.bats](#works-runtime) — 34 test(s)
 - [tests/unit/works-plug.bats](#works-plug) — 42 test(s)
-- [tests/unit/works-update.bats](#works-update) — 34 test(s)
-- [tests/unit/runtime-env.bats](#runtime-env) — 72 test(s)
+- [tests/unit/works-update.bats](#works-update) — 35 test(s)
+- [tests/unit/runtime-env.bats](#runtime-env) — 75 test(s)
 - [tests/patch-stack.bats](#patch-stack) — 12 test(s)
 
 <a id="repo-hygiene"></a>
@@ -129,6 +129,8 @@ was covered by anything before.
 | 17 | ABLETON_RT=off launches without chrt even when it would succeed | — |
 | 18 | a stale wineserver is killed and the session booted before registry writes | scripts/ableton-live — reg.exe skips the wineboot wait; the FontSubstitutes HKLM write was lost this way |
 | 19 | the launcher never leaves the fake runtime for the host's wine | — |
+| 20 | a launcher below the infrastructure's OLDEST refuses as a version conflict | — |
+| 21 | a launcher runs under a library that predates the contract | the check must not fire on the infrastructure everyone actually has — |
 
 <a id="detect-scale"></a>
 
@@ -294,6 +296,10 @@ tree ships.
 | 18 | the launcher lives with the application, and PATH holds a link to it | the app directory must contain the app — a launcher that lives only on |
 | 19 | installing leaves no dated launcher copies behind | one dated copy per install, on the PATH, pruned by nothing — the |
 | 20 | the works command lives outside any application, with its verbs beside the library | — |
+| 21 | a fresh install stamps the infrastructure contract | — |
+| 22 | a newer installed infrastructure is kept, not overwritten | unguarded, whichever kit ran last owned ~/works/lib — installing an |
+| 23 | a kit below the installed OLDEST is refused whole | the other direction of the same promise — an installed infrastructure |
+| 24 | uninstalling one application keeps the runtimes another still needs | uninstalling one application used to run works_remove_runtimes and take |
 
 <a id="run-header"></a>
 
@@ -657,6 +663,7 @@ file:// URL, which is the same code path a real channel takes.
 | 32 | the report's columns line up between available and installed | the two ids differ in length by design -- a nightly carries its kind -- |
 | 33 | update help ends on a command, not on prose | the help is a fixed line range over the header comment, so editing that |
 | 34 | update help names every flag it accepts | — |
+| 35 | a pinned WORKS_RUNTIME is refused before any fetch | WORKS_RUNTIME is the outermost say in every resolver, and a pinned |
 
 <a id="runtime-env"></a>
 
@@ -745,6 +752,9 @@ sandbox, which is the whole reason they echo instead of assigning.
 | 70 | compat: the new name wins when both are set | someone with both set has already migrated and left the old one in a |
 | 71 | compat: an application's own settings are not renamed | — |
 | 72 | compat: nothing is said when no old name is set | — |
+| 73 | abi field: reads a declaration without sourcing the file | — |
+| 74 | abi field: a missing or non-numeric declaration is no value, not zero | — |
+| 75 | apps below min: names exactly the applications an OLDEST would strand | raising OLDEST is the one act that can strand an application, and this |
 
 <a id="patch-stack"></a>
 
@@ -794,6 +804,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `11.11 and 11.14 trees coexist on the development machine and are not` | migrate-layout: runtimes from other Wine bases are left alone |
 | `2026.07.29.1 appears four times on the dev machine under two patch stacks` | runtime-env: two builds of one version under different patch stacks get different ids |
 | `THE defect. Every existing user is on the legacy layout on the day the` | run-header: an unmigrated machine is offered an update, not a fresh install |
+| `WORKS_RUNTIME is the outermost say in every resolver, and a pinned` | works-update: a pinned WORKS_RUNTIME is refused before any fetch |
 | ``default` is the selection link itself, so a Plug by that name could` | works-plug: default is refused as a Plug name |
 | ``stat -f` reads statfs.f_type, and ext2, ext3 and ext4 all share magic` | works-plug: the clone names the filesystem the mount table reports |
 | ``wineboot -u` rewriting the registry under a live wineserver` | install-runs: setup-prefix refuses while something runs from the runtime |
@@ -869,6 +880,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `observed during the first real migration` | runtime-env: live pids: a process that exits mid-scan is skipped, not an error |
 | `one dated copy per install, on the PATH, pruned by nothing` | install-runs: installing leaves no dated launcher copies behind |
 | `pruning on behalf of one channel must not strand another` | runtime-env: retention never removes what a DIFFERENT channel points at |
+| `raising OLDEST is the one act that can strand an application, and this` | runtime-env: apps below min: names exactly the applications an OLDEST would strand |
 | `refusing here aborted a whole install over a directory nothing reads.` | migrate-layout: a prefix already at the destination means the move is done, not ambiguous |
 | `releases move, and the manifest must stay the thing that locates the` | works-update: the installer is fetched from beside the manifest |
 | `removing what default points at leaves the selection dangling and` | works-plug: rm refuses the default Plug while others exist, and names the successors |
@@ -896,6 +908,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `the beta channel` | runtime-env: an undated or suffixed artifact is not mistaken for the runtime |
 | `the channel is user configuration and must never choose a host` | manifest: an unknown channel resolves no URL at all |
 | `the channel is what the launcher resolves through` | works-runtime: use refuses a name that is not installed |
+| `the check must not fire on the infrastructure everyone actually has` | launcher-cli: a launcher runs under a library that predates the contract |
 | `the checksum is the only thing making the manifest's URL trustworthy` | works-update: a checksum mismatch stops the install |
 | `the container sees only what build.sh passes with -e, and an unset` | repo-hygiene: build.sh forwards every variable container-build.sh reads from its environment |
 | `the container winning over a stale legacy tree left beside it` | runtime-env: runtime root: the container wins over a legacy tree still present |
@@ -913,6 +926,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `the manifest describes a build that is not on disk yet, so the base` | works-update: a Wine base change on the download path is announced, not refused |
 | `the marker says an application has been installed here. It does NOT say` | run-header: a runtime with no prefix takes the full install, not the update |
 | `the old guard compared two runtimes and applied the answer to a machine` | works-update: with no Plug, a base change from the store is not obstructed |
+| `the other direction of the same promise` | install-runs: a kit below the installed OLDEST is refused whole |
 | `the path is what people copy into a script or a bug report, and it is` | works-plug: list shows each Plug's path, abbreviated under home |
 | `the path is what people copy into a script, a bug report or a `cd`,` | works-runtime: list shows each build's path, abbreviated under home |
 | `the prefix cannot be taken back, so this must not happen quietly` | works-runtime: use refuses a base change with no terminal to ask on |
@@ -944,6 +958,8 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `two builds can share a timestamp -- the same build published on two` | works-update: a build with the same timestamp is not called older |
 | `two installs of one build collapse to one entry, and the loser is set` | migrate-layout: two rollbacks holding one build keep one and set the rest aside |
 | `two prefixes can hold different Lives and different authorisations` | migrate-layout: plug: a prefix at both paths refuses, naming both |
+| `unguarded, whichever kit ran last owned ~/works/lib` | install-runs: a newer installed infrastructure is kept, not overwritten |
+| `uninstalling one application used to run works_remove_runtimes and take` | install-runs: uninstalling one application keeps the runtimes another still needs |
 | `which door of the installer this opens, which is not a detail. Both` | works-update: a matching checksum reaches the installer, through the update door |
 | `with no terminal nobody can answer, and the header takes the update` | run-header: with no terminal the update is taken, not the install |
 | `works_manifest_write emits the key unconditionally but writes whatever` | manifest: a manifest with an empty wine field is refused |

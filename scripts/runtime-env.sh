@@ -19,26 +19,42 @@
 #   WINE_ROOT="$(works_runtime_path)"           # just the path
 #   works_bind_runtime                       # the full launcher binding
 
-# The contract this library offers the applications that source it. Bumped only
-# when the surface changes - a function renamed, removed, or given different
-# semantics - never for a release. Deliberately not the kit's VERSION: that is a
-# date, so keying compatibility on it would make every application raise its
+# The contract this library offers the applications that source it, as a range.
+# WORKS_ABI is the generation this file speaks; WORKS_ABI_OLDEST is the oldest
+# generation it still honours. Each application's launcher declares the
+# WORKS_ABI_MIN it was written against, and the three make both promises this
+# project ships on checkable with integer comparisons:
+#
+#   an application is FORWARD compatible: built against MIN, it keeps working
+#   under every later infrastructure whose OLDEST has not risen past MIN;
+#
+#   the infrastructure is BACKWARD compatible: it carries every application
+#   from OLDEST up, and drops one only by raising OLDEST - a visible,
+#   deliberate act in this file's history, never a side effect of a release.
+#
+# compatible  <=>  WORKS_ABI_OLDEST <= app's WORKS_ABI_MIN <= WORKS_ABI
+#
+# A single integer instead of a range was the first design here and does not
+# survive separate release cadences: if a higher number always means
+# incompatible, the infrastructure can never move without every application
+# updating in the same breath. The range is libtool's current/age idea, which
+# exists for exactly this.
+#
+# Bumped only when the surface changes - a function renamed, removed, or given
+# different semantics - never for a release. Deliberately not the kit's VERSION:
+# that is a date, and keying compatibility on it would raise every application's
 # floor for reasons unrelated to whether anything it calls actually moved.
 #
-# Read by install-works.sh, which installs this library only when it is absent or
-# carries a higher number, and by each application's installer, which refuses an
-# infrastructure above the WORKS_ABI_MIN its launcher declares. Two applications
-# shipping different generations of this file is the ordinary case once more than
-# one exists, and last-writer-wins silently downgrades whichever ran first.
+# Read with sed by install.sh's infrastructure gate and by the launchers, the
+# same shape as LINK_SETUP_VERSION in setup-link.sh: a variable inside the file
+# that implements the thing, never a file beside it that can drift from it.
 #
-# The same shape as LINK_SETUP_VERSION in setup-link.sh: a variable inside the
-# script that implements the thing, read with sed, never a file beside it that
-# can drift from what it describes.
-#
-# shellcheck disable=SC2034  # read with sed by install-works.sh and by each
-# application's installer; nothing in this library consumes it, and that is the
-# point - a number this file could read for itself would not be a contract.
+# shellcheck disable=SC2034  # read with sed from outside; nothing in this
+# library consumes them, and that is the point - a number this file could read
+# for itself would not be a contract.
 WORKS_ABI=1
+# shellcheck disable=SC2034
+WORKS_ABI_OLDEST=1
 
 # Names this library answered to before the runtime was its own thing. They are
 # honoured for one release and say so once, because the rename lands in the same
@@ -429,6 +445,37 @@ works_app_names() {
         [ -d "$_a" ] && [ ! -L "$_a" ] || continue
         printf '%s\n' "${_a##*/}"
     done
+}
+
+# A WORKS_ABI* declaration read out of a file without sourcing it. Sourcing is
+# exactly wrong here: the reader usually holds one generation of this library in
+# scope already and is asking about another, and executing the other to ask it a
+# number would let the file being judged rewrite the judge. Digits only - a
+# clever value is treated as no value.
+works_abi_field() {
+    local _v
+    _v="$(sed -n "s/^${2}=//p" "$1" 2>/dev/null | head -1 | tr -cd '0-9')"
+    [ -n "$_v" ] || return 1
+    printf '%s\n' "$_v"
+}
+
+# The applications an infrastructure with this OLDEST would strand: everyone
+# whose declared floor is below it. The launcher is the file asked - it is named
+# after its directory, which is the convention install.sh creates - and an
+# application that declares nothing is treated as MIN=1, the first generation,
+# because that is when it must have been written. So while OLDEST stays 1
+# nothing can ever appear here, which is the point: raising OLDEST is the only
+# act that puts an application at risk, and this names the casualties before it
+# happens rather than after.
+works_apps_below_min() {
+    local _oldest="$1" _a _l _m
+    while read -r _a; do
+        [ -n "$_a" ] || continue
+        _l="$(works_home)/apps/$_a/$_a"
+        _m="$(works_abi_field "$_l" WORKS_ABI_MIN 2>/dev/null)" || _m=1
+        [ "$_m" -lt "$_oldest" ] && printf '%s\n' "$_a"
+    done < <(works_app_names)
+    return 0
 }
 
 # What is installed in a Plug — asked of Windows, which already knows.

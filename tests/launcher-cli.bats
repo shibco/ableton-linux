@@ -235,3 +235,42 @@ EOF
     [ "$(wc -l < "$WINE_LOG")" -ge 3 ]
     [[ "$(launched)" == 'C:\'* ]]
 }
+
+# --- the compatibility floor --------------------------------------------------
+# The install-time gate can be bypassed — a hand-copied lib, a future kit forced
+# past the prompt — and what a stranded launcher does without its own check is
+# die partway through on whichever missing function it reaches first, which
+# reads as a crash rather than a version conflict. The launcher sources the lib
+# beside itself first, so the fixture is a copy of the launcher with a doctored
+# library beside it: exactly the layout of an installed app under ~/works/apps.
+@test "a launcher below the infrastructure's OLDEST refuses as a version conflict" {
+    d="$BATS_TEST_TMPDIR/stranded"
+    mkdir -p "$d"
+    cp "$REPO/scripts/ableton-live" "$d/ableton-live"
+    cat > "$d/runtime-env.sh" <<'LIB'
+WORKS_ABI=9
+WORKS_ABI_OLDEST=9
+works_runtime_path() { printf '/nowhere\n'; }
+works_bind_runtime() { :; }
+LIB
+    run --separate-stderr env HOME="$FAKE_HOME" PATH="$PATH" bash "$d/ableton-live"
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"no longer supports this launcher"* ]] \
+        || { echo "$stderr" >&2; false; }
+    [[ "$stderr" == *"generation 1"* ]]
+}
+
+# guards: the check must not fire on the infrastructure everyone actually has —
+# a library that predates the contract declares nothing and is generation 1
+@test "a launcher runs under a library that predates the contract" {
+    d="$BATS_TEST_TMPDIR/precontract"
+    mkdir -p "$d"
+    cp "$REPO/scripts/ableton-live" "$d/ableton-live"
+    cat > "$d/runtime-env.sh" <<'LIB'
+works_runtime_path() { printf '/nowhere\n'; }
+works_bind_runtime() { :; }
+LIB
+    run --separate-stderr env HOME="$FAKE_HOME" PATH="$PATH" bash "$d/ableton-live"
+    [[ "$stderr" != *"no longer supports this launcher"* ]] \
+        || { echo "the check fired on a generation-1 library" >&2; false; }
+}
