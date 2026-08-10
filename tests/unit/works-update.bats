@@ -538,3 +538,22 @@ point_at()   { ln -sfn "$2" "$STORE/$1"; }
         [[ "$output" == *"$f"* ]] || { echo "help omits $f" >&2; false; }
     done
 }
+
+# guards: WORKS_RUNTIME is the outermost say in every resolver, and a pinned
+# machine opts out of channels. This used to read the channel and the store as
+# usual and then install flat to the pin with a dated rollback, never touching
+# the channel — reporting a channel it had not changed. Refusing before any
+# fetch is the honest answer, and the message says what a pinned machine that
+# really means it should do instead.
+@test "a pinned WORKS_RUNTIME is refused before any fetch" {
+    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13
+    point_at stable 2026.08.04.1+aaaa
+    on_channel stable
+
+    run env WORKS_RUNTIME="$STORE/2026.08.04.1+aaaa" "$UPD" --yes
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"pinned"* ]]
+    [[ "$output" == *"WORKS_RUNTIME_TARBALL"* ]]
+    [[ "$output" != *"== channel:"* ]] \
+        || { echo "it went on to consult the channel anyway" >&2; false; }
+}

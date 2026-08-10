@@ -16,18 +16,13 @@ command -v works_runtime_path >/dev/null 2>&1 || {
 BIN="$HOME/.local/bin/ableton-live"
 APPS="$HOME/.local/share/applications"
 
-# Removing by sibling glob around one resolved path stopped working when the
-# runtime moved into the store: works_runtime_path now names a build *inside* the
-# container, so `rm -rf` on it would take one entry and leave the rest orphaned
-# behind a dangling channel.
-works_remove_runtimes
+# This application's own pieces go first, unconditionally: they are what this
+# script is for. The shared infrastructure - the runtimes, the works command,
+# the toolkit, the channel - is decided afterwards, by who is left.
 rm -f  "$BIN"        && echo "removed $BIN"
 rm -f  "$BIN".rollback-*
-# The commands themselves live in works/bin; ~/.local/bin holds only links.
-rm -f  "$HOME/works/bin/works" "$HOME/works/lib/works-runtime" "$HOME/works/lib/works-update" \
-       "$HOME/works/lib/works-plug"
-rmdir  "$HOME/works/bin" 2>/dev/null || true
-rm -f  "$HOME/.local/bin/works" "$HOME/.local/bin/works-runtime" "$HOME/.local/bin/works-update" \
+# Legacy PATH links from installers that predate the works command.
+rm -f  "$HOME/.local/bin/works-runtime" "$HOME/.local/bin/works-update" \
        "$HOME/.local/bin/ableton-runtime" "$HOME/.local/bin/ableton-update"
 # Stop and drop the Ableton Link session anchor's user unit (setup-link.sh
 # installs it under ~/.config); the daemon binary goes with ~/works/apps/ableton-live.
@@ -36,21 +31,41 @@ rm -f  "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ableton-linkd.service" \
     && echo "removed ~/.config/systemd/user/ableton-linkd.service"
 systemctl --user daemon-reload 2>/dev/null || true
 rm -rf "$HOME/works/apps/ableton-live" && echo "removed ~/works/apps/ableton-live"
-# The toolkit is shared, so it goes only when nothing is left to source it.
-# Asking the directory rather than tracking a count: a second application's
-# uninstall runs this same line and gets the right answer without either
-# knowing about the other.
-if [ -d "$HOME/works/apps" ] && [ -z "$(ls -A "$HOME/works/apps" 2>/dev/null)" ]; then
-    rm -rf "$HOME/works/lib" "$HOME/works/apps" && echo "removed ~/works/lib (no application left to source it)"
+
+# Everything shared goes only with the last application, and the directory is
+# the census - a second application's uninstall runs these same lines and gets
+# the right answer without either knowing about the other. This used to remove
+# the runtimes and the works command unconditionally, which meant uninstalling
+# one application took every other application's runtime and its `works` with
+# it: the exact dependency between applications the bundled-infrastructure
+# model exists to prevent, created by the uninstaller.
+remaining="$(works_app_names 2>/dev/null || true)"
+if [ -z "$remaining" ]; then
+    # Removing by sibling glob around one resolved path stopped working when
+    # the runtime moved into the store: works_runtime_path now names a build
+    # *inside* the container, so `rm -rf` on it would take one entry and leave
+    # the rest orphaned behind a dangling channel.
+    works_remove_runtimes
+    # The commands themselves live in works/bin; ~/.local/bin holds only links.
+    rm -f  "$HOME/works/bin/works" "$HOME/works/lib/works-runtime" \
+           "$HOME/works/lib/works-update" "$HOME/works/lib/works-plug"
+    rmdir  "$HOME/works/bin" 2>/dev/null || true
+    rm -f  "$HOME/.local/bin/works"
+    rm -rf "$HOME/works/lib" "$HOME/works/apps" 2>/dev/null || true
+    echo "removed ~/works/lib and the works command (no application left)"
+    # The channel install.sh recorded. Not prompted for, unlike the prefix:
+    # this is one word of preference, not data, and leaving it behind means a
+    # later install is followed by an update pointed at a channel nothing
+    # here chose.
+    rm -f  "$(works_runtime_store)/.channel"
+    rmdir  "$(works_runtime_store)" 2>/dev/null || true
+    # Leave no empty shell behind, but never take a Plug with it: rmdir
+    # refuses a directory that still holds anything.
+    rmdir "$HOME/works" 2>/dev/null && echo "removed ~/works" || true
+else
+    echo "kept the runtimes and the works command; still installed:"
+    printf '%s\n' "$remaining" | sed 's/^/     /'
 fi
-# Leave no empty shell behind, but never take a Plug with it: rmdir refuses a
-# directory that still holds anything.
-rmdir "$HOME/works" 2>/dev/null && echo "removed ~/works" || true
-# The channel install.sh recorded. Not prompted for, unlike the prefix: this is
-# one word of preference, not data, and leaving it behind means a later install
-# is followed by an `works-update` pointed at a channel nothing here chose.
-# The directory goes only if it is empty, so anything else under it survives.
-rm -f  "$(works_runtime_store)/.channel"
 rmdir  "${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine" 2>/dev/null \
     && echo "removed ~/.config/ableton-wine" || true
 rm -f  "$APPS/ableton-live.desktop" "$APPS/wine-protocol-ableton.desktop" "$APPS/wine-extension-auz.desktop"

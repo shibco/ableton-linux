@@ -37,6 +37,22 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# A pinned runtime opts out of channels, so updating by channel is not an action
+# this machine can take - and pretending otherwise was worse than refusing.
+# WORKS_RUNTIME is the outermost say in every resolver (the tests, the
+# regression VMs and anyone bisecting depend on that), so an update run under it
+# read the channel and the store as usual, then handed the installer a mode that
+# wrote flat to the pinned path with a dated rollback and never touched the
+# channel: the command reported a channel it had not changed. Say what is true
+# and stop.
+if [ -n "${WORKS_RUNTIME:-}" ]; then
+    echo "!! WORKS_RUNTIME is pinned to $WORKS_RUNTIME." >&2
+    echo "   Updates follow a channel, and a pinned runtime does not. Unset it to" >&2
+    echo "   update, or install a build over the pin deliberately with" >&2
+    echo "   WORKS_RUNTIME_TARBALL and install.sh." >&2
+    exit 1
+fi
+
 # A channel names a symlink and selects a URL, so it is checked against the
 # allowlist rather than trusted — the same constraint that ended the source-repo
 # experiment. works_channel does that; asking it is how the value is validated.
