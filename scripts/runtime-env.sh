@@ -384,20 +384,53 @@ works_plugs_following() {
     done < <(works_plug_names)
 }
 
+# The runtime that bootstrapped a Plug, recovered rather than recorded: the
+# Plug's stamp is the mtime of the wine.inf that booted it, so the booter is
+# whichever installed tree still carries that exact mtime. Walks the store and
+# the legacy root; a booter that has been pruned or set aside is simply not
+# found, and the caller falls back to strict.
+works_plug_base_runtime() {
+    local _p="${1:-}" _pb _e _rb
+    _pb="$(works_plug_base "$_p")" || return 1
+    for _e in "$(works_runtime_store)"/* "$(works_legacy_root)"; do
+        [ -d "$_e" ] && [ ! -L "$_e" ] || continue
+        works_is_quarantine "$_e" && continue
+        _rb="$(works_runtime_base "$_e" 2>/dev/null)" || continue
+        [ "$_rb" = "$_pb" ] || continue
+        printf '%s\n' "$_e"
+        return 0
+    done
+    return 1
+}
+
 # Where running <runtime> against <plug> would take the prefix. Prints one word
 # and leaves the rendering to the caller, because the three commands that ask
 # want to say different things about the same answer.
 #
 #   fresh     the Plug has never been booted; anything may bootstrap it
-#   same      Wine will not re-run wineboot at all
-#   forward   supported, but a one-way door
-#   backward  Wine does not support it
+#   same      the very build that booted it; Wine will not re-run wineboot
+#   refresh   a newer build of the SAME Wine base - the ordinary update, and
+#             Wine re-runs its prefix update exactly as it always has
+#   rollback  an older build of the SAME Wine base - going back to yesterday's
+#             build, which the store exists to allow and the nightly's own
+#             notes tell people to do
+#   forward   a newer base, or one that cannot be identified: one-way door
+#   backward  an older base, or unidentifiable: Wine does not support it
 #
-# Returns 1 without printing when either side cannot be read. That is a refusal,
-# not a skip: the guard it replaces was switched off by an unreadable BUILD-INFO
-# field rather than stopping on one.
+# The stamp alone cannot say which of those a move is. Measured on two tarballs
+# of this project's own builds: wine.inf's mtime is stamped at build time, so
+# two builds of the same wine-11.13 base carry different stamps, and by stamp
+# alone every routine update would read as a base change - and rolling back to
+# yesterday's nightly would read as the unsupported case and be refused. So the
+# stamp gives the direction, and the *severity* comes from comparing the wine:
+# label of the candidate against the label of the runtime that actually booted
+# the Plug, recovered via works_plug_base_runtime. When that runtime is gone or
+# either label is unreadable, the move stays forward/backward - strict, which
+# preserves the rule that an unanswerable question is a refusal, not a skip.
+#
+# Returns 1 without printing when the candidate or the Plug cannot be read.
 works_base_move() {
-    local _r="${1:-}" _p="${2:-}" _rb _pb
+    local _r="${1:-}" _p="${2:-}" _rb _pb _dir _boot _bl _cl
     [ -n "$_p" ] || _p="$(works_plug_path)"
     _p="${_p%/}"
     _rb="$(works_runtime_base "$_r")" || return 1
@@ -410,10 +443,17 @@ works_base_move() {
         [ -e "$_p/system.reg" ] && return 1
         printf 'fresh\n'; return 0
     fi
-    if   [ "$_rb" -eq "$_pb" ]; then printf 'same\n'
-    elif [ "$_rb" -gt "$_pb" ]; then printf 'forward\n'
-    else                             printf 'backward\n'
+    if [ "$_rb" -eq "$_pb" ]; then printf 'same\n'; return 0; fi
+    [ "$_rb" -gt "$_pb" ] && _dir=forward || _dir=backward
+    if _boot="$(works_plug_base_runtime "$_p")"; then
+        _bl="$(works_buildinfo_field "$_boot/ABLETON-WINE-BUILD-INFO.txt" wine)"
+        _cl="$(works_buildinfo_field "${_r%/}/ABLETON-WINE-BUILD-INFO.txt" wine)"
+        if [ -n "$_bl" ] && [ "$_bl" = "$_cl" ]; then
+            [ "$_dir" = forward ] && printf 'refresh\n' || printf 'rollback\n'
+            return 0
+        fi
     fi
+    printf '%s\n' "$_dir"
 }
 
 # Every Plug, by name. Two markers, because a Plug exists before Wine has ever

@@ -171,17 +171,24 @@ for e in "$container"/*; do
     # here - and here it is answerable properly, because the build is on disk.
     # Costing no download is exactly what made this branch look harmless; it is
     # the same one-way door as any other.
-    back=""; fwd=""
+    back=""; fwd=""; roll=""
     while read -r _plug; do
         [ -n "$_plug" ] || continue
         move="$(works_base_move "$e" "$(works_plugs_dir)/$_plug")" || {
             echo "!! $_plug will not say which Wine base bootstrapped it; refusing" >&2
             exit 1; }
+        # refresh - a newer build of the same base - is the ordinary update and
+        # passes in silence; rollback within the base is the store's own
+        # feature and gets a note, not a question.
         case "$move" in
             backward) back="$back $_plug" ;;
             forward)  fwd="$fwd $_plug" ;;
+            rollback) roll="$roll $_plug" ;;
         esac
     done < <(works_plugs_following "$CHANNEL")
+    if [ -n "$roll" ]; then
+        echo "   note: an older build of the same Wine base; going back for:$roll"
+    fi
     if [ -n "$back" ] && [ "${WORKS_ALLOW_BASE_CHANGE:-0}" != 1 ]; then
         echo "!! that build is on an OLDER Wine base than:$back" >&2
         echo "   Wine cannot take a prefix back. Refusing; set" >&2

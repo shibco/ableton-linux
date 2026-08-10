@@ -367,7 +367,7 @@ fi
 # newer prefix is exactly what bisecting is, the regression VMs depend on it, and
 # a pin is already the outermost explicit say in every other resolver here.
 if [ -z "${WORKS_RUNTIME:-}" ]; then
-    back=""; fwd=""
+    back=""; fwd=""; roll=""
     while read -r _plug; do
         [ -n "$_plug" ] || continue
         move="$(works_base_move "$candidate" "$(works_plugs_dir)/$_plug")" || {
@@ -377,11 +377,23 @@ if [ -z "${WORKS_RUNTIME:-}" ]; then
             echo "   install anyway." >&2
             [ "${WORKS_ALLOW_BASE_CHANGE:-0}" = 1 ] || exit 1
             move=""; }
+        # refresh - a newer build of the same base - is the ordinary update and
+        # passes in silence: Wine re-runs its prefix update exactly as every
+        # update has always made it do.
         case "$move" in
             backward) back="$back $_plug" ;;
             forward)  fwd="$fwd $_plug" ;;
+            rollback) roll="$roll $_plug" ;;
         esac
     done < <(works_plugs_following "$CHANNEL")
+
+    # Going back to an older build of the same base is what the store is for -
+    # the dated rollbacks always allowed it, and the nightly's own notes say
+    # "to go back, install the stable installer over it". A note, not a
+    # question: wineboot re-runs against the same wine.inf content.
+    if [ -n "$roll" ]; then
+        echo "   note: this is an older build of the same Wine base; going back for:$roll"
+    fi
 
     # Backward is not a warning. Wine does not support taking a prefix back, so
     # this refuses the way the prefix migration refuses: only an explicit say

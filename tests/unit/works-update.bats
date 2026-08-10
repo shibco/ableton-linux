@@ -557,3 +557,35 @@ point_at()   { ln -sfn "$2" "$STORE/$1"; }
     [[ "$output" != *"== channel:"* ]] \
         || { echo "it went on to consult the channel anyway" >&2; false; }
 }
+
+# guards: same measurement as works-runtime's same-base tests - by stamp alone
+# the no-download channel switch to a newer build of the same base would demand
+# the base-change consent on every routine catch-up. Labels equal means Wine
+# re-runs its prefix update exactly as every update always made it do.
+@test "a same-base newer build in the store retargets without consent" {
+    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13 1600000000
+    a_build 2026.08.04.1+cccc cccccccc 2026-08-08T10:00:00Z wine-11.13 1700000000
+    a_plug studio 1600000000
+    point_at stable 2026.08.04.1+aaaa
+    on_channel stable
+    a_manifest stable cccccccc 2026-08-08T10:00:00Z wine-11.13 x.run deadbeef
+
+    run "$UPD"
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" != *"Re-bootstrapped"* ]]
+    [ "$(readlink "$STORE/stable")" = "2026.08.04.1+cccc" ]
+}
+
+@test "a same-base rollback in the store is noted and allowed" {
+    a_build 2026.08.04.1+aaaa aaaaaaaa 2026-08-06T10:00:00Z wine-11.13 1600000000
+    a_build 2026.08.04.1+cccc cccccccc 2026-08-08T10:00:00Z wine-11.13 1700000000
+    a_plug studio 1700000000                  # booted by the newer build
+    point_at stable 2026.08.04.1+cccc
+    on_channel stable
+    a_manifest stable aaaaaaaa 2026-08-06T10:00:00Z wine-11.13 x.run deadbeef
+
+    run "$UPD"
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" == *"older build of the same Wine base"* ]]
+    [ "$(readlink "$STORE/stable")" = "2026.08.04.1+aaaa" ]
+}

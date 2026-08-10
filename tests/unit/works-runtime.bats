@@ -40,7 +40,7 @@ teardown() {
 }
 
 plant() {
-    local dir="$1" ver="$2" disc="$3" at="${4:-}" base="${5:-wine-11.13}"
+    local dir="$1" ver="$2" disc="$3" at="${4:-}" base="${5:-wine-11.13}" stamp="${6:-}"
     mkdir -p "$dir/bin"
     printf '#!/bin/sh\necho wine-11.13\n' > "$dir/bin/wine"; chmod +x "$dir/bin/wine"
     { printf 'dist-version: %s\n' "$ver"; printf 'patch-stack:  %s\n' "$disc"
@@ -54,21 +54,26 @@ plant() {
     # how these tests came to assert a refusal the code could not produce.
     mkdir -p "$dir/share/wine"
     : > "$dir/share/wine/wine.inf"
+    # Derived from the label by default, overridable because that mirrors what
+    # was measured on real tarballs: the mtime is stamped at build time, so two
+    # builds of one base genuinely differ in stamp while agreeing in label.
     local n; n="$(printf '%s' "$base" | tr -cd '0-9')"
-    touch -d "@$((1500000000 + 10#$n * 1000))" "$dir/share/wine/wine.inf"
+    [ -n "$stamp" ] || stamp=$((1500000000 + 10#$n * 1000))
+    touch -d "@$stamp" "$dir/share/wine/wine.inf"
 }
 
 # A Plug that has been booted, and the base it was booted against — stamped the
 # same way plant() stamps a build, so the two agree by construction. Unbound, so
 # it follows the channel: that is what makes it one of the Plugs a retarget
 # moves, and a pinned one is deliberately not asked about.
-a_plug() {   # name, base-label
-    local d n
+a_plug() {   # name, base-label, [stamp]
+    local d n stamp="${3:-}"
     d="$(works_plugs_dir)/$1"
     mkdir -p "$d/drive_c"
     : > "$d/system.reg"
     n="$(printf '%s' "${2:-wine-11.13}" | tr -cd '0-9')"
-    printf '%s\n' "$((1500000000 + 10#$n * 1000))" > "$d/.update-timestamp"
+    [ -n "$stamp" ] || stamp=$((1500000000 + 10#$n * 1000))
+    printf '%s\n' "$stamp" > "$d/.update-timestamp"
 }
 
 store() {
@@ -446,3 +451,48 @@ fake_live() {
     [[ "$output" == *"works runtime list"* ]]
 }
 
+
+# --- moves within one Wine base ------------------------------------------------
+# Measured on two real tarballs: wine.inf's mtime is stamped at build time, so
+# two builds of the same wine-11.13 differ in stamp. By stamp alone every
+# routine update would read as a base change, and going back to yesterday's
+# build - `use --previous`, the store's whole point, the thing the nightly's
+# own notes tell people to do - would read as the unsupported case and refuse.
+# The severity therefore comes from comparing labels: the candidate's against
+# the label of the runtime that actually booted the Plug, recovered by matching
+# its stamp against the store.
+
+@test "a newer build of the same base switches without a question" {
+    store
+    a_plug studio wine-11.13
+    plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.13 1501113500
+    run setsid bash "$REPO/scripts/works-runtime" use 2026.07.01.1+ddddddd
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" != *"different Wine base"* ]]
+    [[ "$output" != *"Continue"* ]]
+    [ "$(readlink "$C/stable")" = "2026.07.01.1+ddddddd" ]
+}
+
+@test "rollback within the base is noted, never called a DOWNGRADE" {
+    store
+    plant "$C/2026.07.01.1+ddddddd" 2026.07.01.1 dddddddxxx 2026-07-01T00:00:00Z wine-11.13 1501113500
+    ln -sfn "2026.07.01.1+ddddddd" "$C/stable"
+    a_plug studio wine-11.13 1501113500       # booted by the newer build
+    run setsid bash "$REPO/scripts/works-runtime" use 2026.06.01.1+bbbbbbb
+    [ "$status" -eq 0 ] || { echo "$output" >&2; false; }
+    [[ "$output" == *"older build of the same Wine base"* ]]
+    [[ "$output" != *"DOWNGRADE"* ]]
+    [ "$(readlink "$C/stable")" = "2026.06.01.1+bbbbbbb" ]
+}
+
+# guards: the label comparison needs the runtime that booted the Plug, and that
+# runtime can have been pruned. Unfindable is unanswerable, and unanswerable
+# stays strict - the same posture as an unreadable BUILD-INFO.
+@test "a rollback whose booting runtime is gone stays a refusal" {
+    store
+    a_plug studio wine-11.13 1501113999      # a stamp no store entry carries
+    run setsid bash "$REPO/scripts/works-runtime" use 2026.01.01.1+aaaaaaa
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"DOWNGRADE"* ]]
+    [ "$(readlink "$C/stable")" = "2026.06.01.1+bbbbbbb" ]
+}

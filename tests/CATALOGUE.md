@@ -7,7 +7,7 @@ from the files, and the *Guards* column from `# guards:` annotations above a
 test. Run `./tests/catalogue.sh` after adding or renaming a test;
 `tests/repo-hygiene.bats` fails when this file is stale.
 
-430 tests across 17 suites. See [README.md](README.md) for how to run
+435 tests across 17 suites. See [README.md](README.md) for how to run
 them and [../.github/workflows/ci-checks.yml](../.github/workflows/ci-checks.yml)
 for which run on a PR.
 
@@ -25,9 +25,9 @@ for which run on a PR.
 - [tests/unit/migrate-layout.bats](#migrate-layout) — 42 test(s)
 - [tests/unit/works.bats](#works) — 12 test(s)
 - [tests/unit/promote.bats](#promote) — 11 test(s)
-- [tests/unit/works-runtime.bats](#works-runtime) — 34 test(s)
+- [tests/unit/works-runtime.bats](#works-runtime) — 37 test(s)
 - [tests/unit/works-plug.bats](#works-plug) — 42 test(s)
-- [tests/unit/works-update.bats](#works-update) — 35 test(s)
+- [tests/unit/works-update.bats](#works-update) — 37 test(s)
 - [tests/unit/runtime-env.bats](#runtime-env) — 75 test(s)
 - [tests/patch-stack.bats](#patch-stack) — 12 test(s)
 
@@ -549,6 +549,9 @@ resolve through it instead of naming a directory.
 | 32 | runtime help ends on a command, not on prose | every help here is a fixed line range over the file's header comment, |
 | 33 | runtime help names every verb it dispatches | — |
 | 34 | runtime help answers to -h and help as well | — |
+| 35 | a newer build of the same base switches without a question | — |
+| 36 | rollback within the base is noted, never called a DOWNGRADE | — |
+| 37 | a rollback whose booting runtime is gone stays a refusal | the label comparison needs the runtime that booted the Plug, and that |
 
 <a id="works-plug"></a>
 
@@ -664,6 +667,8 @@ file:// URL, which is the same code path a real channel takes.
 | 33 | update help ends on a command, not on prose | the help is a fixed line range over the header comment, so editing that |
 | 34 | update help names every flag it accepts | — |
 | 35 | a pinned WORKS_RUNTIME is refused before any fetch | WORKS_RUNTIME is the outermost say in every resolver, and a pinned |
+| 36 | a same-base newer build in the store retargets without consent | same measurement as works-runtime's same-base tests - by stamp alone |
+| 37 | a same-base rollback in the store is noted and allowed | — |
 
 <a id="runtime-env"></a>
 
@@ -887,6 +892,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `renaming a prefix out from under a live wineserver corrupts its` | migrate-layout: plug: a prefix something is running from is not moved |
 | `replacing the tree under a running Live is how a session is lost` | works-update: it refuses while something is running from the runtime |
 | `reporting the channel's bare version against the installed id put a` | works-update: both sides of the report are ids, not one id and one version |
+| `same measurement as works-runtime's same-base tests - by stamp alone` | works-update: a same-base newer build in the store retargets without consent |
 | `scoping` | runtime-env: runtime pids: a process from another Wine install is ignored |
 | `scripts/ableton-live` | launcher-cli: a stale wineserver is killed and the session booted before registry writes<br>launcher: windowmetrics: a value wrapped across continuation lines is rejoined |
 | `scripts/build-audit.sh` | patch-stack: audit: every wine patch is registered in FINGERPRINTS or STAMP_ONLY |
@@ -922,6 +928,7 @@ Issues, commits and source sites cited by a `# guards:` annotation.
 | `the id contains dots and a plus, so anything treating it as a pattern` | works-runtime: use accepts a nightly build by its full name |
 | `the installed shape is a symlink on PATH pointing into works/bin, with` | works: works resolves its verbs through a symlink on PATH |
 | `the installer name becomes both a URL component and a filename` | manifest: an installer name containing a path is refused |
+| `the label comparison needs the runtime that booted the Plug, and that` | works-runtime: a rollback whose booting runtime is gone stays a refusal |
 | `the launcher's stale-wineserver kill` | runtime-env: a lingering wineserver means busy, but not that Live is running |
 | `the manifest describes a build that is not on disk yet, so the base` | works-update: a Wine base change on the download path is announced, not refused |
 | `the marker says an application has been installed here. It does NOT say` | run-header: a runtime with no prefix takes the full install, not the update |

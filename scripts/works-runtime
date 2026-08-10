@@ -215,7 +215,7 @@ cmd_use() {
     # both go unasked by any comparison made between two runtimes.
     from="$(base_of "$(readlink "$channel" 2>/dev/null)")"
     to="$(base_of "$want")"
-    local -a back=() fwd=(); local p move
+    local -a back=() fwd=() roll=(); local p move
     while read -r p; do
         [ -n "$p" ] || continue
         move="$(works_base_move "$container/$want" "$(works_plugs_dir)/$p")" || {
@@ -223,12 +223,20 @@ cmd_use() {
             echo "   so whether this build would take it backward cannot be answered." >&2
             echo "   Refusing rather than guessing." >&2
             return 1; }
+        # refresh - a newer build of the same base - switches in silence, as
+        # every update always has; rollback within the base is the store's own
+        # feature (`use --previous` exists for it) and gets a note, never a
+        # DOWNGRADE warning.
         case "$move" in
             backward) back+=("$p") ;;
             forward)  fwd+=("$p") ;;
+            rollback) roll+=("$p") ;;
         esac
     done < <(works_plugs_following "$(works_channel)")
 
+    if [ "${#roll[@]}" -gt 0 ]; then
+        echo "note: an older build of the same Wine base; going back for: ${roll[*]}"
+    fi
     if [ "${#back[@]}" -gt 0 ] || [ "${#fwd[@]}" -gt 0 ]; then
         [ -z "$from" ] || [ -z "$to" ] || echo "This build is on a different Wine base: $from -> $to"
         if [ "${#back[@]}" -gt 0 ]; then
