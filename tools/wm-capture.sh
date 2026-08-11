@@ -19,9 +19,12 @@ set -uo pipefail
 
 OUT="${1:-$PWD/wm-capture-$(date +%Y%m%dT%H%M%S)}"
 
-command -v xprop >/dev/null    || { echo "!! xprop not found (install xorg-xprop)"; exit 1; }
-command -v xwininfo >/dev/null || { echo "!! xwininfo not found (install xorg-xwininfo)"; exit 1; }
+command -v xprop >/dev/null || { echo "!! xprop not found (install xorg-xprop)"; exit 1; }
 [ -n "${DISPLAY:-}" ] || { echo "!! DISPLAY is not set (X11/XWayland session required)"; exit 1; }
+# Capture what the installed tools allow: xprop alone still records every
+# property. xwininfo adds geometry/map state and the full window tree.
+HAVE_XWININFO=1
+command -v xwininfo >/dev/null || { HAVE_XWININFO=0; echo "!! xwininfo not found (install xorg-xwininfo); capturing properties only"; }
 
 mkdir -p "$OUT/windows" || exit 1
 echo "==> output: $OUT"
@@ -55,7 +58,7 @@ command -v xrandr >/dev/null && xrandr --query > "$OUT/monitors.txt" 2>&1
 } > "$OUT/root.txt" 2>&1
 
 # --- complete tree (includes override-redirect windows) -----------------------
-xwininfo -root -tree > "$OUT/tree.txt" 2>&1
+[ "$HAVE_XWININFO" = 1 ] && xwininfo -root -tree > "$OUT/tree.txt" 2>&1
 
 # --- per-window detail for every managed client -------------------------------
 ids="$(xprop -root _NET_CLIENT_LIST 2>/dev/null | grep -o '0x[0-9a-f]*')"
@@ -63,7 +66,7 @@ count=0
 for id in $ids; do
     {
         echo "=== $id ==="
-        xwininfo -id "$id" -stats -wm
+        [ "$HAVE_XWININFO" = 1 ] && xwininfo -id "$id" -stats -wm
         echo "--- properties ---"
         xprop -id "$id"
     } > "$OUT/windows/$id.txt" 2>&1
