@@ -158,6 +158,7 @@ FINGERPRINTS='
 0090|ascii|lib/wine/x86_64-windows/dxgi.dll|PRESENT-PATH hwnd=
 0091|ascii|lib/wine/x86_64-unix/winex11.so|WINE_ACTIVATE_RESEND
 0092|ascii|lib/wine/x86_64-unix/winex11.so|WINE_ACTIVATE_SOURCE
+0093|ascii|lib/wine/x86_64-unix/winex11.so|WINE_HOST_STATE_LOCK
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Restoring or un-minimising a window no longer races the desktop with
+  stale minimise and resize requests, which some desktops answered with
+  a wrong size or a re-minimised window. If restore behaves worse than
+  before, launch with `env WINE_HOST_STATE_LOCK=off ableton-live` and
+  report it.
+
 - On KDE, switching windows no longer leaves a window unmovable with the
   wrong taskbar focus. Live now asks for activation once instead of
   repeating the request on every input. If focus stops following your

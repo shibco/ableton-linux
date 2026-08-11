@@ -1,0 +1,175 @@
+Subject: win32u/winex11: lock host window state updates while they are applied
+
+Re-entrant SetWindowPos processing during WM_WINE_WINDOW_STATE_CHANGED
+could request stale minimise, restore, geometry and Motif state while
+the host state was still being applied. Picky window managers saw
+spurious minimise/restore cycles, and an unlucky schedule could apply
+the transient state before SC_RESTORE.
+
+GetWindowStateUpdates now locks the window's host state before
+computing updates; win32u unlocks it with a null-argument call after
+applying them, and requests parked in desired_state flush on unlock.
+
+Backport of wine-mirror 852e39a89c0d (Remi Bernon) onto this tree,
+adapted around the wmtrace lines and the 0042 config-rounding state,
+with LOCK/UNLOCK wmtrace lines added and an underflow guard on the
+unlock path. WINE_HOST_STATE_LOCK=off disables the lock for
+comparison.
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index a0f0e58..6a14a66 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2235,7 +2235,7 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
+         RECT window_rect;
+         HWND foreground;
+ 
+-        if (!user_driver->pGetWindowStateUpdates( hwnd, &state_cmd, &swp_flags, &window_rect, &foreground )) return 0;
++        if (!user_driver->pGetWindowStateUpdates( hwnd, &state_cmd, &swp_flags, &window_rect, &foreground )) goto unlock;
+         window_rect = map_rect_raw_to_virt( window_rect, get_thread_dpi() );
+ 
+         if (foreground) set_foreground_window( foreground, FALSE, TRUE );
+@@ -2258,6 +2258,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
+             break;
+         }
+ 
++    unlock:
++        user_driver->pGetWindowStateUpdates( hwnd, NULL, NULL, NULL, NULL ); /* unlock the host state */
+         return 0;
+     }
+     case WM_WINE_UPDATEWINDOWSTATE:
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 7cbf5ad..8cfe055 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1103,6 +1103,7 @@ static void window_set_mwm_hints( struct x11drv_win_data *data, const MwmHints *
+     const MwmHints *old_hints = &data->pending_state.mwm_hints;
+ 
+     data->desired_state.mwm_hints = *new_hints;
++    if (data->state_locks) return; /* win32 state is being updated, delay the change */
+     if (!data->whole_window || !data->managed || data->embedded) return; /* no window or not managed, nothing to update */
+     if (!memcmp( old_hints, new_hints, sizeof(*new_hints) )) return; /* hints are the same, nothing to update */
+ 
+@@ -1523,6 +1524,7 @@ static void window_set_net_wm_fullscreen_monitors( struct x11drv_win_data *data,
+     data->desired_state.monitors = *new_monitors;
+ 
+     if (!(data->pending_state.net_wm_state & (1 << NET_WM_STATE_FULLSCREEN)) || is_virtual_desktop()) return; /* window isn't fullscreen, delay updating */
++    if (data->state_locks) return; /* win32 state is being updated, delay the change */
+     if (!data->whole_window || !data->managed || data->embedded) return; /* no window or not managed, nothing to update */
+     if (!memcmp( old_monitors, new_monitors, sizeof(*new_monitors) )) return; /* states are the same, nothing to update */
+ 
+@@ -1580,6 +1582,7 @@ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_stat
+ 
+     new_state &= x11drv_init_thread_data()->net_wm_state_mask;
+     data->desired_state.net_wm_state = new_state;
++    if (data->state_locks) return; /* win32 state is being updated, delay the change */
+     if (!data->whole_window || !data->managed || data->embedded) return; /* no window or not managed, nothing to update */
+     if (data->wm_state_serial) return; /* another WM_STATE update is pending, wait for it to complete */
+     /* we ignore and override previous _NET_WM_STATE update requests */
+@@ -1848,6 +1851,7 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
+ 
+     data->desired_state.rect = *new_rect;
+     data->desired_state.above = above;
++    if (data->state_locks) return; /* win32 state is being updated, delay the change */
+     if (!data->whole_window) return; /* no window, nothing to update */
+     if (EqualRect( old_rect, new_rect ) && (old_above || !above || data->managed)) return; /* rects are the same, no need to be raised, nothing to update */
+     if (window_needs_config_change_delay( data ))
+@@ -2070,6 +2074,7 @@ static void window_set_wm_state( struct x11drv_win_data *data, UINT new_state, B
+ 
+     data->desired_state.wm_state = new_state;
+     data->desired_state.activate = activate;
++    if (data->state_locks) return; /* win32 state is being updated, delay the change */
+     if (!data->whole_window) return; /* no window, nothing to update */
+     if (data->wm_state_serial && !data->current_state.wm_state != !data->pending_state.wm_state)
+         return; /* another map/unmap WM_STATE update is pending, wait for it to complete */
+@@ -2391,6 +2396,28 @@ static UINT window_update_client_config( struct x11drv_win_data *data )
+     return flags;
+ }
+ 
++static void window_request_desired_state( struct x11drv_win_data *data )
++{
++    window_set_wm_state( data, data->desired_state.wm_state, data->desired_state.activate );
++    window_set_net_wm_state( data, data->desired_state.net_wm_state );
++    window_set_net_wm_fullscreen_monitors( data, &data->desired_state.monitors );
++    window_set_mwm_hints( data, &data->desired_state.mwm_hints );
++    window_set_config( data, data->desired_state.rect, FALSE );
++}
++
++/* WINE_HOST_STATE_LOCK=off disables the host-state lock for comparison. */
++static BOOL host_state_lock_enabled(void)
++{
++    static int enabled = -1;
++
++    if (enabled == -1)
++    {
++        const char *env = getenv( "WINE_HOST_STATE_LOCK" );
++        enabled = !env || (strcmp( env, "off" ) && strcmp( env, "0" ));
++    }
++    return enabled;
++}
++
+ /***********************************************************************
+  *      GetWindowStateUpdates   (X11DRV.@)
+  */
+@@ -2400,6 +2427,21 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+     struct x11drv_win_data *data;
+     HWND old_foreground;
+ 
++    if (!state_cmd)
++    {
++        if (host_state_lock_enabled() && (data = get_win_data( hwnd )))
++        {
++            if (data->state_locks && !--data->state_locks)
++            {
++                TRACE( "Unlocked window %p/%lx state\n", data->hwnd, data->whole_window );
++                TRACE_(wmtrace)( "UNLOCK hwnd=%p xid=%lx\n", data->hwnd, data->whole_window );
++            }
++            window_request_desired_state( data );
++            release_win_data( data );
++        }
++        return FALSE;
++    }
++
+     *state_cmd = *swp_flags = 0;
+     *foreground = 0;
+ 
+@@ -2414,6 +2456,11 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+ 
+     if ((data = get_win_data( hwnd )))
+     {
++        if (host_state_lock_enabled() && !data->state_locks++)
++        {
++            TRACE( "Locked window %p/%lx state\n", data->hwnd, data->whole_window );
++            TRACE_(wmtrace)( "LOCK hwnd=%p xid=%lx\n", data->hwnd, data->whole_window );
++        }
+         *state_cmd = window_update_client_state( data );
+         *swp_flags = window_update_client_config( data );
+         if (*swp_flags && config_rounding_move_pending( data ))
+@@ -2461,15 +2508,6 @@ static BOOL handle_state_change( unsigned long serial, unsigned long *expect_ser
+     return TRUE;
+ }
+ 
+-static void window_request_desired_state( struct x11drv_win_data *data )
+-{
+-    window_set_wm_state( data, data->desired_state.wm_state, data->desired_state.activate );
+-    window_set_net_wm_state( data, data->desired_state.net_wm_state );
+-    window_set_net_wm_fullscreen_monitors( data, &data->desired_state.monitors );
+-    window_set_mwm_hints( data, &data->desired_state.mwm_hints );
+-    window_set_config( data, data->desired_state.rect, FALSE );
+-}
+-
+ void window_wm_state_notify( struct x11drv_win_data *data, unsigned long serial, UINT value, Time time )
+ {
+     UINT *desired = &data->desired_state.wm_state, *pending = &data->pending_state.wm_state, *current = &data->current_state.wm_state;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 34b53ce..02154d8 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -715,6 +715,7 @@ struct x11drv_win_data
+     unsigned long wm_normal_hints_serial;/* serial of last pending WM_NORMAL_HINTS request */
+     unsigned long configure_serial;    /* serial of last pending configure request */
+     unsigned long net_wm_icon_serial;  /* serial of last pending _NET_WM_ICON request */
++    unsigned long state_locks;         /* X11 state requests lock while updating win32 state */
+     unsigned long config_generation;   /* generation of the current Win32 window rect */
+     unsigned long config_rounding_serial; /* configure request which may be rounded by the WM */
+     unsigned long config_rounding_settle_serial; /* last related request which may adjust the config */
