@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 82 files, numbered 0001 through 0090.
+The current Wine series contains 84 files, numbered 0001 through 0092.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -381,3 +381,15 @@ Apply them in sequence with the rest of the series.
   `WINEDEBUG=-all,+wmtrace,+winediag`, or `ABLETON_WM_TRACE=1` through
   the launcher; `tools/wm-capture.sh` records the matching host-side
   view.
+- `0091`: skip repeat `_NET_ACTIVE_WINDOW` requests for the pending
+  window, keeping 0017's real timestamps. 0017's relaxed skip retried on
+  every fresh input timestamp; under KWin each activation produces
+  feedback with fresh timestamps, so retries ping-pong: wrong taskbar
+  focus and unmovable windows. The fork dropped the same retry in
+  `a641db69` (its issue 76); the non-zero timestamp alone fixes the
+  mutter deadlock. `WINE_ACTIVATE_RESEND=1` restores the relaxed skip.
+- `0092`: let `WINE_ACTIVATE_SOURCE=application` send EWMH source
+  indication 1 instead of 2 in `_NET_ACTIVE_WINDOW` requests, so the WM
+  applies its focus-stealing rules to app-initiated activation.
+  Default-off experiment, separate from 0091 so activation changes stay
+  one variable at a time.

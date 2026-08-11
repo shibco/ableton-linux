@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- On KDE, switching windows no longer leaves a window unmovable with the
+  wrong taskbar focus. Live now asks for activation once instead of
+  repeating the request on every input. If focus stops following your
+  clicks, launch with `env WINE_ACTIVATE_RESEND=1 ableton-live` and
+  report it.
+
 - Window problems are now easier to report. Launching with
   `env ABLETON_WM_TRACE=1 ableton-live` logs every window change that
   Live and the desktop exchange, and `tools/wm-capture.sh` records how
