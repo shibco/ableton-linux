@@ -16,6 +16,7 @@
 #            WINE_SURFACE_INIT=black (restore the old black window-surface fill;
 #              =white forces vanilla white everywhere),
 #            WINE_ACTIVATE_RESEND=1 (restore repeated window-activation requests),
+#            WINE_HOST_STATE_LOCK=off (disable the host window-state lock),
 #            WINE_ACTIVATE_SOURCE=application (ask the desktop to apply its
 #              focus-stealing rules to Live's activation requests),
 #            ABLETON_WM_TRACE=1 (log every window-state transition on the wmtrace

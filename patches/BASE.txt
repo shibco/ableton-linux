@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 85 files, numbered 0001 through 0093.
+The current Wine series contains 86 files, numbered 0001 through 0094.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -404,3 +404,11 @@ Apply them in sequence with the rest of the series.
   applies its focus-stealing rules to app-initiated activation.
   Default-off experiment, separate from 0092 so activation changes stay
   one variable at a time.
+- `0094`: lock a window's host state while win32u applies an update the
+  window manager initiated. Re-entrant SetWindowPos processing could
+  request stale minimise, restore, geometry and Motif state mid-apply;
+  requests made while locked park in the desired state and flush on
+  unlock. Backport of Wine `852e39a8` (Remi Bernon), adapted around the
+  0042 config-rounding state, with wmtrace LOCK/UNLOCK lines and an
+  underflow guard on the unlock path. `WINE_HOST_STATE_LOCK=off`
+  disables the lock for comparison.

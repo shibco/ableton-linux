@@ -83,5 +83,6 @@ d15fbf9a1bb079e972135c252642b2e10029125a67ff52f3584ff063045f2807  0090-winex11-w
 b885814c8533d8eca4c714288a6516960fdc7543e7f13fae626f1e7b2b8ed4f8  0091-win32u-init-window-surfaces-white-transparent-only-f.patch
 bf46e82e08c06410d9bc967a85ed68ef07d92a306128f71055c41e4427ab0b56  0092-winex11-skip-repeat-_NET_ACTIVE_WINDOW-requests-keep.patch
 10a5a45cbd38ab8136dcb9f24e6c7b15dd42fe1330ccc790ff1250858152b204  0093-winex11-let-WINE_ACTIVATE_SOURCE-choose-the-EWMH-act.patch
+b0b08ec1a0e5411423f26a2b38ac4f1597bb35861481599f6b09cf4369a9a947  0094-win32u-winex11-lock-host-window-state-updates-while-.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
