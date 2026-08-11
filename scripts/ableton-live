@@ -13,6 +13,8 @@
 #            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
 #            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
+#            WINE_SURFACE_INIT=black (restore the old black window-surface fill;
+#              =white forces vanilla white everywhere),
 #            ABLETON_WM_TRACE=1 (log every window-state transition on the wmtrace
 #              channel for window-management reports; pair with tools/wm-capture.sh).
 set -u

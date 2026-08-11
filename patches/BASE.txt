@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 82 files, numbered 0001 through 0090.
+The current Wine series contains 83 files, numbered 0001 through 0091.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -381,3 +381,14 @@ Apply them in sequence with the rest of the series.
   `WINEDEBUG=-all,+wmtrace,+winediag`, or `ABLETON_WM_TRACE=1` through
   the launcher; `tools/wm-capture.sh` records the matching host-side
   view.
+- `0091`: initialise fresh window surfaces white, as vanilla Wine does,
+  and keep the transparent 0x00 fill only for 32-bit layered windows,
+  where it gives a fully transparent first frame instead of a stale
+  white flash (dark-themed DComp/JUCE dropshadow popups). The base
+  filled every surface with 0x00, which reads as black on ordinary
+  windows: the floating black squares and black newly-exposed regions.
+  `WINE_SURFACE_INIT=black` restores the old fill; `=white` forces
+  vanilla everywhere. The 0090 SURFACE-CREATE trace line reports the
+  chosen fill. Adapted from `giang17/wine` `53d78989` and `44278e2b`.
+  Their shipped diff is an unconditional 0x00; this patch limits their
+  per-pixel-alpha rationale to the windows it actually describes.

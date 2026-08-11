@@ -1,0 +1,71 @@
+Subject: win32u: init window surfaces white, transparent only for layered ARGB
+
+The base filled every fresh window surface with 0x00. A 32-bit layered
+popup reads that as ARGB(0,0,0,0), fully transparent, which is the
+correct first frame for dark-themed DComp/JUCE dropshadow popups
+(giang17/wine 53d78989 and 44278e2b document the trade-off). Every
+other window reads 0x00 as opaque black: the floating black squares
+and black newly-exposed regions.
+
+Fill 0xff as vanilla Wine does, and keep 0x00 only when the surface is
+32 bpp and the window is WS_EX_LAYERED. WINE_SURFACE_INIT=black
+restores the old unconditional fill, =white forces vanilla everywhere.
+The 0090 SURFACE-CREATE trace line reports the chosen fill for A/B
+evidence.
+
+diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+index 8962d9a..8442967 100644
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -555,10 +555,36 @@ static void *window_surface_get_color( struct window_surface *surface, BITMAPINF
+     return gdi_bits.ptr;
+ }
+ 
++/* Initial fill for a fresh window surface.  Vanilla Wine uses 0xff (opaque
++ * white).  A 32-bit layered window reads 0x00 as ARGB(0,0,0,0), fully
++ * transparent, so its first frame shows nothing instead of a stale white
++ * flash (dark-themed DComp/JUCE dropshadow popups); every other window
++ * keeps vanilla white instead of showing black.  WINE_SURFACE_INIT=black
++ * restores the old unconditional 0x00 for comparison, =white forces
++ * vanilla everywhere. */
++static BYTE window_surface_init_color( HWND hwnd, const BITMAPINFO *info )
++{
++    static int mode = -1;
++
++    if (mode == -1)
++    {
++        const char *env = getenv( "WINE_SURFACE_INIT" );
++        if (env && !strcmp( env, "black" )) mode = 0;
++        else if (env && !strcmp( env, "white" )) mode = 1;
++        else mode = 2;
++    }
++    if (mode == 0) return 0x00;
++    if (mode == 1) return 0xff;
++    if (info->bmiHeader.biBitCount == 32 && (get_window_long( hwnd, GWL_EXSTYLE ) & WS_EX_LAYERED))
++        return 0x00;
++    return 0xff;
++}
++
+ struct window_surface *window_surface_create( UINT size, const struct window_surface_funcs *funcs, HWND hwnd,
+                                               const RECT *rect, BITMAPINFO *info, HBITMAP bitmap )
+ {
+     struct window_surface *surface;
++    BYTE init_color;
+ 
+     if (!(surface = calloc( 1, size ))) return NULL;
+     surface->funcs = funcs;
+@@ -579,10 +605,12 @@ struct window_surface *window_surface_create( UINT size, const struct window_sur
+ 
+     pthread_mutex_init( &surface->mutex, NULL );
+ 
+-    memset( window_surface_get_color( surface, info ), 0x00, info->bmiHeader.biSizeImage );
++    init_color = window_surface_init_color( hwnd, info );
++    memset( window_surface_get_color( surface, info ), init_color, info->bmiHeader.biSizeImage );
+ 
+     TRACE( "created surface %p for hwnd %p rect %s\n", surface, hwnd, wine_dbgstr_rect( &surface->rect ) );
+-    TRACE_(wmtrace)( "SURFACE-CREATE hwnd=%p surface=%p rect=%s\n", hwnd, surface, wine_dbgstr_rect( &surface->rect ) );
++    TRACE_(wmtrace)( "SURFACE-CREATE hwnd=%p surface=%p rect=%s init=%02x\n", hwnd, surface,
++                     wine_dbgstr_rect( &surface->rect ), init_color );
+     return surface;
+ }
+ 
