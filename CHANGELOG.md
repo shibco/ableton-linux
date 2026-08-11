@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Window problems are now easier to report. Launching with
+  `env ABLETON_WM_TRACE=1 ableton-live` logs every window change that
+  Live and the desktop exchange, and `tools/wm-capture.sh` records how
+  the desktop sees Live's windows while a problem is on screen. The
+  troubleshooting guide explains both captures in a new section on
+  windows that will not close, and names the xwayland-satellite 0.8.2
+  bug that hides some dialogs, with its downgrade workaround.
+
 - Link setup records its version marker only when the service step
   completed, so a host where that step failed retries it on the next
   update instead of counting itself configured. The version moves to 5.

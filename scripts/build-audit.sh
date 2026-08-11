@@ -153,6 +153,9 @@ FINGERPRINTS='
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
+0090|ascii|lib/wine/x86_64-unix/winex11.so|REQ-WMSTATE hwnd=
+0090|ascii|lib/wine/x86_64-unix/win32u.so|SURFACE-CREATE hwnd=
+0090|ascii|lib/wine/x86_64-windows/dxgi.dll|PRESENT-PATH hwnd=
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '

@@ -79,5 +79,6 @@ ca9c10db2c1d77d48c206aaca598f3583758eccbdbdbb3096e98b7417a7b4b62  0079-dxgi-skip
 ee36bbf26e5ea22b8d6ecd5344cb72fc7883ac59ed733661dfb4e73f773fc18f  0087-win32u-resolve-font-smoothing-by-source-precedence.patch
 efec6729f1663efe78c7efa941b826b2a28d219bf6faa974294a3bfa854b84f5  0088-win32u-allow-a-semantic-desktop-UI-stock-font.patch
 10d34c085b2a1b554457524978e8a380d3c15aaafd290657e5ef8ca9874221c2  0089-d2d1-avoid-unsigned-ClearType-coverage-underflow.patch
+d15fbf9a1bb079e972135c252642b2e10029125a67ff52f3584ff063045f2807  0090-winex11-win32u-dxgi-add-a-compact-wmtrace-state-tran.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

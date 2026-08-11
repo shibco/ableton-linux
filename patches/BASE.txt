@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 81 files, numbered 0001 through 0089.
+The current Wine series contains 82 files, numbered 0001 through 0090.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -371,3 +371,13 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
+- `0090`: add a `wmtrace` debug channel across winex11, win32u and dxgi.
+  One line per window-state transition: WM requests with their X serials,
+  host acknowledgements (matched, forced, or ignored), the state and
+  geometry handed back to Win32, window-surface creation, the 0065
+  fullscreen normalization firing, parked-DComp reblit decisions with
+  their skip cause, and each swapchain's GL/GDI present choice. Pure
+  tracing, no behaviour change. Enable with
+  `WINEDEBUG=-all,+wmtrace,+winediag`, or `ABLETON_WM_TRACE=1` through
+  the launcher; `tools/wm-capture.sh` records the matching host-side
+  view.

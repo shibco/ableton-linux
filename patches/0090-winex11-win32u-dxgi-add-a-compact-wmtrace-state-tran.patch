@@ -1,0 +1,269 @@
+Subject: winex11/win32u/dxgi: add a compact wmtrace state-transition channel
+
+Diagnosing window-management faults (wrong fullscreen exits, stale
+DComp rectangles, undismissable dialogs, resize disobedience) needs
+one capture that shows the whole lifecycle: what Win32 asked for,
+what was sent to the window manager, what the host acknowledged, and
+what flowed back into Win32 - plus whether a backing surface existed
+and which present path a swapchain chose at the time. Today that
+story is spread across +x11drv, +win and +dxgi, which are far too
+chatty to leave enabled and drown the transitions in event noise.
+
+Add a dedicated wmtrace channel with one line per transition:
+
+- REQ-WMSTATE / REQ-CONFIG / REQ-NETWMSTATE / REQ-TYPE / REQ-MOTIF /
+  REQ-ACTIVATE[-SKIP]: every request Wine sends to the host WM, with
+  HWND/XID, owner, styles, geometry, DPI and the X request serial.
+- ALIAS: a sub-scale config request aliased to the settled host rect
+  (patch 0042) instead of being forwarded.
+- ACK / ACK-FORCED / ACK-IGNORED: every host acknowledgement through
+  handle_state_change, with the pending serial it matched or missed.
+- WIN32-APPLY: the state/geometry X11DRV_GetWindowStateUpdates hands
+  back to Win32.
+- SURFACE-CREATE: window-surface creation (surface validity).
+- FS-NORMALIZE / FS-EXIT: the 0065 fullscreen geometry policy firing.
+- REBLIT / REBLIT-SKIP: parked-DComp reblit decisions (0041/0056),
+  with the skip cause (hidden ancestry / stale buffer).
+- PRESENT-PATH: the GL-vs-GDI present decision per swapchain (0055).
+
+Capture with WINEDEBUG=-all,+wmtrace (add +winediag to keep the 0071
+fallback telemetry). No behaviour change: every hunk is a TRACE_()
+call or channel declaration, all off unless the channel is enabled.
+
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index d88ddf8..726c13d 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -20,6 +20,7 @@
+ #include "dxgi_private.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dxgi);
++WINE_DECLARE_DEBUG_CHANNEL(wmtrace);
+ 
+ static inline struct dxgi_factory *impl_from_IWineDXGIFactory(IWineDXGIFactory *iface)
+ {
+@@ -516,6 +517,7 @@ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+         ++hidden_count;
+         if (hidden_count <= 3 || !(hidden_count % 500))
+             FIXME("Re-blit skipped (hidden ancestry): hwnd %p reason=%s.\n", hwnd, reason);
++        TRACE_(wmtrace)("REBLIT-SKIP hwnd=%p cause=hidden reason=%s\n", hwnd, reason);
+         return;
+     }
+ 
+@@ -532,6 +534,7 @@ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+             if (stale_count <= 5 || !(stale_count % 200))
+                 FIXME("Re-blit skipped (stale %ux%u buffer): hwnd %p reason=%s.\n",
+                         w, h, hwnd, reason);
++            TRACE_(wmtrace)("REBLIT-SKIP hwnd=%p cause=stale size=%ux%u reason=%s\n", hwnd, w, h, reason);
+             dcomp_arm_delayed_reblit(hwnd);
+             return;
+         }
+@@ -543,6 +546,7 @@ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+             if (reblit_count <= 5 || !(reblit_count % 200))
+                 FIXME("Re-blit #%u: hwnd %p %ux%u reason=%s.\n",
+                         reblit_count, hwnd, w, h, reason);
++            TRACE_(wmtrace)("REBLIT hwnd=%p size=%ux%u reason=%s\n", hwnd, w, h, reason);
+             BitBlt(hdc, 0, 0, w, h, comp_dc, 0, 0, SRCCOPY);
+             ReleaseDC(hwnd, hdc);
+         }
+diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
+index 3fd784e..e768bed 100644
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -26,6 +26,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dxgi);
+ WINE_DECLARE_DEBUG_CHANNEL(winediag);
++WINE_DECLARE_DEBUG_CHANNEL(wmtrace);
+ 
+ static UINT dxgi_get_display_refresh_rate(void)
+ {
+@@ -1216,6 +1217,12 @@ HRESULT d3d11_swapchain_init(struct d3d11_swapchain *swapchain, struct dxgi_devi
+             wined3d_swapchain_set_prefer_gl_present(swapchain->wined3d_swapchain, TRUE);
+             FIXME("Top-level device window %p (style %#lx), preferring GL present.\n",
+                     desc->device_window, style);
++            TRACE_(wmtrace)("PRESENT-PATH hwnd=%p style=%#lx path=gl\n", desc->device_window, style);
++        }
++        else
++        {
++            TRACE_(wmtrace)("PRESENT-PATH hwnd=%p style=%#lx path=gdi disabled=%d\n",
++                    desc->device_window, style, disabled);
+         }
+     }
+ 
+diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+index 71db6ec..8962d9a 100644
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -33,6 +33,7 @@
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(win);
++WINE_DECLARE_DEBUG_CHANNEL(wmtrace);
+ 
+ struct dce
+ {
+@@ -581,6 +582,7 @@ struct window_surface *window_surface_create( UINT size, const struct window_sur
+     memset( window_surface_get_color( surface, info ), 0x00, info->bmiHeader.biSizeImage );
+ 
+     TRACE( "created surface %p for hwnd %p rect %s\n", surface, hwnd, wine_dbgstr_rect( &surface->rect ) );
++    TRACE_(wmtrace)( "SURFACE-CREATE hwnd=%p surface=%p rect=%s\n", hwnd, surface, wine_dbgstr_rect( &surface->rect ) );
+     return surface;
+ }
+ 
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 5110d70..7e4bbc8 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -34,6 +34,7 @@
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(win);
++WINE_DECLARE_DEBUG_CHANNEL(wmtrace);
+ 
+ #define USER_HANDLE_TO_INDEX(hwnd) ((LOWORD(hwnd) - FIRST_USER_HANDLE) >> 1)
+ #define USER_HANDLE_FROM_INDEX(index, generation) UlongToHandle( (index << 1) + FIRST_USER_HANDLE + (generation << 16) )
+@@ -4390,6 +4391,8 @@ BOOL WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT
+                 winpos.cx = mon_width;
+                 winpos.cy = mon_height;
+                 winpos.flags &= ~(SWP_NOMOVE | SWP_NOSIZE);
++                TRACE_(wmtrace)( "FS-NORMALIZE hwnd=%p req=%s mon=%s\n", winpos.hwnd,
++                                 wine_dbgstr_rect( &requested ), wine_dbgstr_rect( &mi.rcMonitor ) );
+             }
+             else
+             {
+@@ -4397,6 +4400,8 @@ BOOL WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT
+                 /* The fullscreen client override survives a no-size exit
+                  * unless the ordinary non-client area is recalculated. */
+                 if (was_fullscreen) winpos.flags |= SWP_FRAMECHANGED;
++                if (was_fullscreen) TRACE_(wmtrace)( "FS-EXIT hwnd=%p framechanged req=%s\n", winpos.hwnd,
++                                                     wine_dbgstr_rect( &requested ) );
+             }
+         }
+     }
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index c19a0ec..aca972c 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -55,6 +55,7 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(x11drv);
+ WINE_DECLARE_DEBUG_CHANNEL(systray);
++WINE_DECLARE_DEBUG_CHANNEL(wmtrace);
+ 
+ #define _NET_WM_MOVERESIZE_SIZE_TOPLEFT      0
+ #define _NET_WM_MOVERESIZE_SIZE_TOP          1
+@@ -1117,6 +1118,8 @@ static void window_set_mwm_hints( struct x11drv_win_data *data, const MwmHints *
+     data->mwm_hints_serial = NextRequest( data->display );
+     TRACE( "window %p/%lx, requesting _MOTIF_WM_HINTS %s serial %lu\n", data->hwnd, data->whole_window,
+            debugstr_mwm_hints(&data->pending_state.mwm_hints), data->mwm_hints_serial );
++    TRACE_(wmtrace)( "REQ-MOTIF hwnd=%p xid=%lx hints=%s serial=%lu\n", data->hwnd, data->whole_window,
++                     debugstr_mwm_hints(&data->pending_state.mwm_hints), data->mwm_hints_serial );
+     XChangeProperty( data->display, data->whole_window, x11drv_atom(_MOTIF_WM_HINTS), x11drv_atom(_MOTIF_WM_HINTS),
+                      32, PropModeReplace, (unsigned char *)new_hints, sizeof(*new_hints) / sizeof(long) );
+ }
+@@ -1189,6 +1192,8 @@ static void window_set_net_wm_window_type( struct x11drv_win_data *data, enum x1
+     data->pending_state.net_wm_window_type = new_type;
+     TRACE( "window %p/%lx, requesting _NET_WM_WINDOW_TYPE %lx (%s) serial %lu\n", data->hwnd, data->whole_window,
+            new_type, X11DRV_atom_names[atom - FIRST_XATOM], NextRequest( data->display ) );
++    TRACE_(wmtrace)( "REQ-TYPE hwnd=%p xid=%lx type=%s\n", data->hwnd, data->whole_window,
++                     X11DRV_atom_names[atom - FIRST_XATOM] );
+     XChangeProperty( data->display, data->whole_window, x11drv_atom(_NET_WM_WINDOW_TYPE), XA_ATOM,
+                      32, PropModeReplace, (unsigned char *)&new_type, 1 );
+ }
+@@ -1603,6 +1608,8 @@ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_stat
+         data->net_wm_state_serial = NextRequest( data->display );
+         TRACE( "window %p/%lx, requesting _NET_WM_STATE %#x serial %lu\n", data->hwnd, data->whole_window,
+                data->pending_state.net_wm_state, data->net_wm_state_serial );
++        TRACE_(wmtrace)( "REQ-NETWMSTATE hwnd=%p xid=%lx state=%#x serial=%lu direct=1\n", data->hwnd,
++                         data->whole_window, data->pending_state.net_wm_state, data->net_wm_state_serial );
+         XChangeProperty( data->display, data->whole_window, x11drv_atom(_NET_WM_STATE), XA_ATOM,
+                          32, PropModeReplace, (unsigned char *)atoms, count );
+     }
+@@ -1634,6 +1641,8 @@ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_stat
+             data->net_wm_state_serial = NextRequest( data->display );
+             TRACE( "window %p/%lx, requesting _NET_WM_STATE %#x serial %lu\n", data->hwnd, data->whole_window,
+                    data->pending_state.net_wm_state, data->net_wm_state_serial );
++            TRACE_(wmtrace)( "REQ-NETWMSTATE hwnd=%p xid=%lx state=%#x serial=%lu direct=0\n", data->hwnd,
++                             data->whole_window, data->pending_state.net_wm_state, data->net_wm_state_serial );
+             XSendEvent( data->display, DefaultRootWindow( data->display ), False,
+                         SubstructureRedirectMask | SubstructureNotifyMask, &xev );
+         }
+@@ -1867,6 +1876,8 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
+         TRACE( "window %p/%lx aliasing sub-scale app request %s to host %s, not forwarded\n",
+                data->hwnd, data->whole_window, wine_dbgstr_rect(new_rect),
+                wine_dbgstr_rect(&data->current_state.rect) );
++        TRACE_(wmtrace)( "ALIAS hwnd=%p xid=%lx win32=%s host=%s\n", data->hwnd, data->whole_window,
++                         wine_dbgstr_rect(new_rect), wine_dbgstr_rect(&data->current_state.rect) );
+         return;
+     }
+ 
+@@ -1912,6 +1923,8 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
+         track_config_rounding_request( data, data->configure_serial, new_rect );
+     TRACE( "window %p/%lx, requesting config %s mask %#x above %u, serial %lu\n", data->hwnd, data->whole_window,
+            wine_dbgstr_rect(new_rect), mask, above, data->configure_serial );
++    TRACE_(wmtrace)( "REQ-CONFIG hwnd=%p xid=%lx rect=%s mask=%#x above=%u serial=%lu\n", data->hwnd,
++                     data->whole_window, wine_dbgstr_rect(new_rect), mask, above, data->configure_serial );
+     XReconfigureWMWindow( data->display, data->whole_window, data->vis.screen, mask, &changes );
+ }
+ 
+@@ -2132,6 +2145,16 @@ static void window_set_wm_state( struct x11drv_win_data *data, UINT new_state, B
+     data->wm_state_serial = NextRequest( data->display );
+     TRACE( "window %p/%lx, requesting WM_STATE %#x -> %#x serial %lu, foreground %p, activate %u\n", data->hwnd, data->whole_window,
+            old_state, new_state, data->wm_state_serial, NtUserGetForegroundWindow(), activate );
++    if (TRACE_ON(wmtrace))
++    {
++        UINT trace_style = NtUserGetWindowLongW( data->hwnd, GWL_STYLE );
++        UINT trace_ex_style = NtUserGetWindowLongW( data->hwnd, GWL_EXSTYLE );
++        TRACE_(wmtrace)( "REQ-WMSTATE hwnd=%p xid=%lx %#x->%#x serial=%lu activate=%u style=%08x ex=%08x "
++                         "owner=%p managed=%u rect=%s dpi=%u\n", data->hwnd, data->whole_window, old_state,
++                         new_state, data->wm_state_serial, activate, trace_style, trace_ex_style,
++                         NtUserGetWindowRelative( data->hwnd, GW_OWNER ), data->managed,
++                         wine_dbgstr_rect( &data->rects.window ), NtUserGetDpiForWindow( data->hwnd ) );
++    }
+ 
+     switch (MAKELONG(old_state, new_state))
+     {
+@@ -2403,6 +2426,8 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+     if (!*state_cmd && !*swp_flags && !*foreground) return FALSE;
+     TRACE( "hwnd %p, returning state_cmd %#x, swp_flags %#x, rect %s, foreground %p\n",
+            hwnd, *state_cmd, *swp_flags, wine_dbgstr_rect(rect), *foreground );
++    TRACE_(wmtrace)( "WIN32-APPLY hwnd=%p state_cmd=%#x swp=%#x rect=%s foreground=%p\n",
++                     hwnd, *state_cmd, *swp_flags, wine_dbgstr_rect(rect), *foreground );
+     return TRUE;
+ }
+ 
+@@ -2414,6 +2439,7 @@ static BOOL handle_state_change( unsigned long serial, unsigned long *expect_ser
+     if (reason)
+     {
+         WARN( "Ignoring %s%s%s%s\n", prefix, reason, received, expected );
++        TRACE_(wmtrace)( "ACK-IGNORED %s%s%s%s\n", prefix, reason, received, expected );
+         memcpy( current, value, size );
+         return FALSE;
+     }
+@@ -2428,6 +2454,7 @@ static BOOL handle_state_change( unsigned long serial, unsigned long *expect_ser
+         memcpy( desired, value, size );
+         memcpy( pending, value, size );
+     }
++    TRACE_(wmtrace)( "ACK%s %s%s%s%s\n", reason ? "-FORCED" : "", prefix, reason ? reason : "", received, expected );
+ 
+     memcpy( current, value, size );
+     *expect_serial = 0;
+@@ -2730,6 +2757,8 @@ void set_net_active_window( HWND hwnd, HWND previous )
+     {
+         /* workaround requesting activation of withdrawn windows which breaks some WM, assume the window will soon be mapped */
+         WARN( "skipping _NET_ACTIVE_WINDOW for withdrawn window %p/%lx serial %lu\n", hwnd, window, data->net_active_window_serial );
++        TRACE_(wmtrace)( "REQ-ACTIVATE-SKIP hwnd=%p xid=%lx withdrawn serial=%lu\n", hwnd, window,
++                         data->net_active_window_serial );
+         XNoOp( data->display );
+         return;
+     }
+@@ -2737,6 +2766,8 @@ void set_net_active_window( HWND hwnd, HWND previous )
+ 
+     TRACE( "requesting _NET_ACTIVE_WINDOW %p/%lx serial %lu time %lu\n", hwnd, window,
+            data->net_active_window_serial, data->net_active_window_time );
++    TRACE_(wmtrace)( "REQ-ACTIVATE hwnd=%p xid=%lx prev=%p serial=%lu time=%lu\n", hwnd, window, previous,
++                     data->net_active_window_serial, data->net_active_window_time );
+     XSendEvent( data->display, DefaultRootWindow( data->display ), False,
+                 SubstructureRedirectMask | SubstructureNotifyMask, &xev );
+ }

@@ -12,7 +12,9 @@
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
 #            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
-#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix).
+#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
+#            ABLETON_WM_TRACE=1 (log every window-state transition on the wmtrace
+#              channel for window-management reports; pair with tools/wm-capture.sh).
 set -u
 
 # Keep diagnostics from the current launch at one stable path. Tee preserves
@@ -44,6 +46,11 @@ export PATH="$WINE_ROOT/bin:$PATH"
 # Keep the winediag channel on: it carries only rare one-line notices that a
 # person should read, such as the present-fallback warning from patch 0071.
 export WINEDEBUG="${WINEDEBUG:--all,+winediag}"
+# Window-management transition trace (patch 0090): one line per
+# window-state transition. Opt-in because the log grows with every
+# window operation. Lines land in ~/.log/ableton-wine/live.log with the
+# rest of stderr; tools/wm-capture.sh records the host-side snapshot.
+if [ "${ABLETON_WM_TRACE:-0}" = "1" ]; then export WINEDEBUG="$WINEDEBUG,+wmtrace"; fi
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
 # M4L child visibility otherwise makes winex11 detach and reattach Live's whole
