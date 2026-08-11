@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 86 files, numbered 0001 through 0094.
+The current Wine series contains 87 files, numbered 0001 through 0095.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -412,3 +412,15 @@ Apply them in sequence with the rest of the series.
   0042 config-rounding state, with wmtrace LOCK/UNLOCK lines and an
   underflow guard on the unlock path. `WINE_HOST_STATE_LOCK=off`
   disables the lock for comparison.
+- `0095`: make DComp window teardown complete, idempotent and
+  owning-thread. A cross-thread swapchain release skipped every
+  window-owning cleanup: timers kept firing, the subclass and
+  composition properties leaked, and the subclassed-target count never
+  fell, so winex11 kept classifying ownerless tool popups as menus. A
+  same-thread release also left the popup-stack entry, the desktop
+  active property and the parent clip bit behind. One marker-gated
+  helper now runs the whole teardown from both NCDESTROY handlers,
+  same-thread release, and a new WM_WINE_DCOMP_TEARDOWN message that
+  cross-thread release posts to the owning thread. The wmtrace channel
+  logs each teardown. `WINE_DCOMP_TEARDOWN=legacy` restores the old
+  release path for comparison.
