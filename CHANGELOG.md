@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Plugin views no longer interfere with each other's windows. Closing
+  one of two views inside the same window kept breaking the survivor's
+  drawing, and two plugin processes could clash over the same internal
+  window key and blank one of them.
+
 - Closing a plugin or browser view now cleans up its window machinery
   completely, wherever in Live the close came from. Leftover redraw
   timers and a stuck popup mode could survive before, leaving stale

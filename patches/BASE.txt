@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 86 files, numbered 0001 through 0094.
+The current Wine series contains 89 files, numbered 0001 through 0097.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -413,3 +413,22 @@ Apply them in sequence with the rest of the series.
   cross-thread release posts to the owning thread. The wmtrace channel
   logs each teardown. `WINE_DCOMP_TEARDOWN=legacy` restores the old
   release path for comparison.
+- `0095`: reference-count the parent `WS_CLIPCHILDREN` bit
+  (`__wine_dcomp_clip_refs` on the parent). Two composition targets
+  sharing one parent recorded only the first owner, and the first
+  teardown stripped the style from under the survivor, letting the
+  parent paint over it. The teardown now restores the style only when
+  the last recorded target lets go. `WINE_DCOMP_TEARDOWN=legacy` keeps
+  the old single-owner behaviour.
+- `0096`: only remove the desktop swapchain property when it still
+  points at our own composition window. The key is the swapchain's heap
+  address, which can be recycled into a newer swapchain; removing the
+  key unconditionally then strands the live window. Ported from
+  `giang17/wine` `81e8d12e`.
+- `0097`: key that property by process id as well as address
+  (`__wine_dcomp_wnd_%lu_%I64x`, format shared through
+  `include/wine/winedxgi.idl`). The desktop property list spans the
+  window station, so a host and its WebView2 child could collide on the
+  same address and resolve each other's windows. Ported from
+  `giang17/wine` `df092626`; six of its seven sites exist here, the
+  seventh belongs to the fork's tree compositor.

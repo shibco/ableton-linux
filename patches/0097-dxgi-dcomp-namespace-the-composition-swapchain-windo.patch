@@ -1,0 +1,122 @@
+Subject: dxgi/dcomp: namespace the composition-swapchain window property by pid
+
+The composition swapchain to composition window mapping is published as
+a property on the desktop window, keyed by the swapchain object's
+address. The desktop window's property list is shared across the whole
+window station, so two processes that allocate a swapchain at the same
+address (a host app and its WebView2 child, Live's exact shape) collide
+on the key, and a lookup in one resolves another process's window.
+
+Key the property by the owning process id together with the address.
+The format string lives once in include/wine/winedxgi.idl so the dxgi
+setter and the dcomp getter cannot drift apart silently.
+
+Ported from giang17/wine df092626; six of its seven sites exist in this
+tree, the seventh belongs to the fork's tree compositor.
+
+diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
+index 059b3de..88d1adb 100644
+--- a/dlls/dcomp/device.c
++++ b/dlls/dcomp/device.c
+@@ -32,6 +32,7 @@
+ #include "d2d1_1.h"
+ #include "dcomp.h"
+ #include "wine/debug.h"
++#include "wine/winedxgi.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
+ 
+@@ -98,7 +99,7 @@ static void dcomp_send_child_mode(IUnknown *content)
+         return;
+ 
+     swprintf(prop_name, ARRAY_SIZE(prop_name),
+-            L"__wine_dcomp_wnd_%I64x", (UINT_PTR)content);
++            WINE_DCOMP_WND_PROP_FMT, GetCurrentProcessId(), (UINT_PTR)content);
+     comp_wnd = (HWND)GetPropW(GetDesktopWindow(), prop_name);
+     if (comp_wnd)
+     {
+@@ -1378,13 +1379,13 @@ static void dcomp_visual_try_reparent(struct dcomp_visual *visual)
+     }
+ 
+     swprintf(prop_name, ARRAY_SIZE(prop_name),
+-            L"__wine_dcomp_wnd_%I64x", (UINT_PTR)visual->content);
++            WINE_DCOMP_WND_PROP_FMT, GetCurrentProcessId(), (UINT_PTR)visual->content);
+     comp_wnd = (HWND)GetPropW(GetDesktopWindow(), prop_name);
+ 
+     if (!comp_wnd)
+     {
+-        FIXME("Composition window NOT FOUND for content %p (prop: __wine_dcomp_wnd_%I64x).\n",
+-                visual->content, (UINT_PTR)visual->content);
++        FIXME("Composition window NOT FOUND for content %p (prop: %s).\n",
++                visual->content, debugstr_w(prop_name));
+         return;
+     }
+ 
+@@ -1721,7 +1722,7 @@ static void dcomp_commit_visual_tree(HWND target_hwnd, struct dcomp_visual *root
+         /* Swapchain content: look up the child's composition window */
+         /* Look up the child's composition window (same mechanism as try_reparent) */
+         swprintf(prop_name, ARRAY_SIZE(prop_name),
+-                L"__wine_dcomp_wnd_%I64x", (UINT_PTR)child->content);
++                WINE_DCOMP_WND_PROP_FMT, GetCurrentProcessId(), (UINT_PTR)child->content);
+         child_comp_wnd = (HWND)GetPropW(GetDesktopWindow(), prop_name);
+         if (!child_comp_wnd)
+             continue;
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 41b867c..7e28076 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -797,7 +797,7 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                 swapchain->target_hwnd = NULL;
+ 
+                 swprintf(prop_name, ARRAY_SIZE(prop_name),
+-                        L"__wine_dcomp_wnd_%I64x", (UINT_PTR)sc);
++                        WINE_DCOMP_WND_PROP_FMT, GetCurrentProcessId(), (UINT_PTR)sc);
+                 comp_wnd = (HWND)GetPropW(GetDesktopWindow(), prop_name);
+ 
+                 wined3d_swapchain_set_prefer_gl_present(swapchain->wined3d_swapchain, FALSE);
+@@ -1419,7 +1419,7 @@ static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForComposition(IWin
+     if (SUCCEEDED(hr))
+     {
+         swprintf(prop_name, ARRAY_SIZE(prop_name),
+-                L"__wine_dcomp_wnd_%I64x", (UINT_PTR)*swapchain);
++                WINE_DCOMP_WND_PROP_FMT, GetCurrentProcessId(), (UINT_PTR)*swapchain);
+         SetPropW(GetDesktopWindow(), prop_name, (HANDLE)window);
+         /* Store back-reference for WM_WINE_DCOMP_SET_TARGET handler */
+         SetPropW(window, L"__wine_dcomp_swapchain", (HANDLE)*swapchain);
+diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
+index ca496b8..a180e16 100644
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -354,7 +354,7 @@ static ULONG STDMETHODCALLTYPE d3d11_swapchain_Release(IDXGISwapChain4 *iface)
+             WCHAR prop_name[64];
+ 
+             swprintf(prop_name, ARRAY_SIZE(prop_name),
+-                    L"__wine_dcomp_wnd_%I64x", (UINT_PTR)iface);
++                    WINE_DCOMP_WND_PROP_FMT, GetCurrentProcessId(), (UINT_PTR)iface);
+             /* Only drop the mapping if it still points at our own window.  The
+              * key is this object's address, and the heap hands the same address
+              * out again once we are gone: a swapchain created after ours was
+diff --git a/include/wine/winedxgi.idl b/include/wine/winedxgi.idl
+index fff00de..d59013e 100644
+--- a/include/wine/winedxgi.idl
++++ b/include/wine/winedxgi.idl
+@@ -20,6 +20,19 @@
+ 
+ import "dxgi1_6.idl";
+ 
++/* Desktop-property name format mapping a composition swapchain to its
++ * composition window.  Shared verbatim by dxgi (setter) and dcomp (getter);
++ * keeping it in one place here is the only guard against the two DLLs'
++ * copies diverging silently.  The key is the swapchain pointer together with
++ * the owning process id: the desktop window's property list is shared across
++ * the whole window station, so an address-only key can collide between
++ * processes that happen to allocate a swapchain at the same address (e.g. a
++ * host app and its webview2 child).  The process id scopes each process's
++ * address space apart; within a single process the ownership check in
++ * d3d11_swapchain_Release keeps a recycled address from stranding a live
++ * window. */
++cpp_quote("#define WINE_DCOMP_WND_PROP_FMT L\"__wine_dcomp_wnd_%lu_%I64x\"")
++
+ [
+     object,
+     local,

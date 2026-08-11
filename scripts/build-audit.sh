@@ -160,6 +160,8 @@ FINGERPRINTS='
 0092|ascii|lib/wine/x86_64-unix/winex11.so|WINE_ACTIVATE_SOURCE
 0093|ascii|lib/wine/x86_64-unix/winex11.so|WINE_HOST_STATE_LOCK
 0094|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DCOMP_TEARDOWN
+0095|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_clip_refs
+0097|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_wnd_%lu_%I64x
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
@@ -172,6 +174,7 @@ STAMP_ONLY='
 0086|logic-only (pixel geometry and target policy for ClearType; adds no string literal)
 0087|logic-only (smoothing resolved by source precedence; adds no string literal)
 0089|logic-only (signed ClearType coverage interpolation; adds no string literal)
+0096|logic-only (desktop swapchain property removed only when still owned; adds no string literal)
 0002|logic-only (visible-rect gates; adds no string literal)
 0004|logic-only (reentrant wpchanged state)
 0005|logic-only (NC frame allowance)

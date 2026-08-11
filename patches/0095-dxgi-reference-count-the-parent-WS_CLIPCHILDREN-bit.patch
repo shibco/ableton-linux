@@ -1,0 +1,77 @@
+Subject: dxgi: reference-count the parent WS_CLIPCHILDREN bit
+
+Two composition targets sharing one parent recorded the added
+WS_CLIPCHILDREN bit only on the first: the parent already carried the
+bit when the second arrived, so nothing was recorded for it, and the
+first teardown stripped the style from under the surviving target,
+letting the parent paint over it.
+
+Count owners in a __wine_dcomp_clip_refs property on the parent and
+restore the style only when the last recorded target lets go.
+WINE_DCOMP_TEARDOWN=legacy keeps the old single-owner behaviour
+together with the rest of the legacy teardown path.
+
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 7cc0d08..41b867c 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -635,17 +635,32 @@ static void dcomp_popup_stack_remove(HWND hwnd)
+ /* Restore a parent's style if we OR-ed in WS_CLIPCHILDREN for this target
+  * (see WM_WINE_DCOMP_SET_TARGET).  Keyed off the __wine_dcomp_parent_clip prop,
+  * which is set only when we actually added the bit, so a parent that already had
+- * WS_CLIPCHILDREN is left untouched.  Avoids a permanent host-window style change. */
++ * WS_CLIPCHILDREN is left untouched.  The bit is reference-counted on the
++ * parent (__wine_dcomp_clip_refs): two targets sharing one parent used to
++ * record only the first, and the first teardown stripped the bit from under
++ * the survivor.  The style is only restored when the last recorded target
++ * lets go.  Runs on the targets' UI thread like the popup stack; a shared
++ * parent means the same plugin UI thread. */
+ static void dcomp_restore_parent_clip(HWND hwnd)
+ {
+     HWND phwnd = (HWND)GetPropW(hwnd, L"__wine_dcomp_parent_clip");
+ 
+     if (phwnd)
+     {
+-        LONG pstyle = GetWindowLongW(phwnd, GWL_STYLE);
+-        if (pstyle & WS_CLIPCHILDREN)
+-            SetWindowLongW(phwnd, GWL_STYLE, pstyle & ~WS_CLIPCHILDREN);
++        LONG_PTR refs = (LONG_PTR)GetPropW(phwnd, L"__wine_dcomp_clip_refs");
++
+         RemovePropW(hwnd, L"__wine_dcomp_parent_clip");
++        if (!dcomp_teardown_legacy() && refs > 1)
++        {
++            SetPropW(phwnd, L"__wine_dcomp_clip_refs", (HANDLE)(refs - 1));
++        }
++        else
++        {
++            LONG pstyle = GetWindowLongW(phwnd, GWL_STYLE);
++            RemovePropW(phwnd, L"__wine_dcomp_clip_refs");
++            if (pstyle & WS_CLIPCHILDREN)
++                SetWindowLongW(phwnd, GWL_STYLE, pstyle & ~WS_CLIPCHILDREN);
++        }
+     }
+ }
+ 
+@@ -1291,10 +1306,21 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                     HWND phwnd = GetParent(target_hwnd);
+                     if (phwnd)
+                     {
++                        LONG_PTR refs = (LONG_PTR)GetPropW(phwnd, L"__wine_dcomp_clip_refs");
+                         LONG pstyle = GetWindowLongW(phwnd, GWL_STYLE);
+-                        if (!(pstyle & WS_CLIPCHILDREN))
++
++                        if (!dcomp_teardown_legacy() && refs > 0)
++                        {
++                            /* We already own the bit for another target on this
++                             * parent: count this one too so the style survives
++                             * the first teardown. */
++                            SetPropW(phwnd, L"__wine_dcomp_clip_refs", (HANDLE)(refs + 1));
++                            SetPropW(target_hwnd, L"__wine_dcomp_parent_clip", (HANDLE)phwnd);
++                        }
++                        else if (!(pstyle & WS_CLIPCHILDREN))
+                         {
+                             SetWindowLongW(phwnd, GWL_STYLE, pstyle | WS_CLIPCHILDREN);
++                            SetPropW(phwnd, L"__wine_dcomp_clip_refs", (HANDLE)1);
+                             SetPropW(target_hwnd, L"__wine_dcomp_parent_clip", (HANDLE)phwnd);
+                         }
+                     }
