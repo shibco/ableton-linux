@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- New windows and newly exposed areas no longer start black. Plugin
+  popups with transparency keep a clean first frame. If a window now
+  flashes white where it did not before, launch with
+  `env WINE_SURFACE_INIT=black ableton-live` and report it.
+
 - Window problems are now easier to report. Launching with
   `env ABLETON_WM_TRACE=1 ableton-live` logs every window change that
   Live and the desktop exchange, and `tools/wm-capture.sh` records how
