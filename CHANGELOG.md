@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Tiling window managers get their exact geometry again. When a tiler
+  handed Live a one-pixel size correction, Live could read it as a move
+  and keep its old size, leaving a gap or an overlap in the tile. Moving
+  a window to a display with different scaling no longer carries the old
+  scaling correction with it.
+
 - Newly exposed parts of a plugin popup no longer show leftover pixels
   while the popup has nothing ready to draw, and a Live that is
   minimised or on another workspace stops redrawing parked browser

@@ -19,6 +19,7 @@
 #            WINE_DCOMP_SCOPE=global (restore session-wide plugin-popup inference),
 #            WINE_DCOMP_PAINT=legacy (restore unconditional plugin-paint consumption),
 #            WINE_DCOMP_VIEWABILITY=off (gate parked redraws on WS_VISIBLE alone),
+#            WINE_CONFIG_ROUNDING=legacy (restore the old window-geometry alias policy),
 #            WINE_ACTIVATE_SOURCE=application (ask the desktop to apply its
 #              focus-stealing rules to Live's activation requests),
 #            ABLETON_WM_TRACE=1 (log every window-state transition on the wmtrace

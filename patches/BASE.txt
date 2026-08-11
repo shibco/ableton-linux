@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 95 files, numbered 0001 through 0103.
+The current Wine series contains 96 files, numbered 0001 through 0104.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -481,3 +481,17 @@ Apply them in sequence with the rest of the series.
   subclass hands the number to its own protocol, where toolkits
   commonly treat it as "invoke this callback" with a pointer argument.
   Also posts only while the target still carries the subclass marker.
+- `0104`: tie 0042's config-rounding aliases to Wine's own configure
+  requests, now that 0093 serialises host state. An unsolicited
+  configure could create an alias outright, letting a window manager
+  pin the Win32 size to whatever it happened to hold; it may now only
+  carry an existing alias along a move. `axis_is_host_translation`
+  accepts an axis whose two edges differ by up to one scale unit, so at
+  200% a grant of left+3/right+4 read as a translation while the width
+  grew a pixel, and the alias hid that resize behind `SWP_NOSIZE`;
+  tilers redistributing a spare pixel hand out exactly that, so an
+  unsolicited configure must now leave both dimensions exactly
+  unchanged, traced as ALIAS-DECLINE. The alias is also stamped with
+  the DPI it was computed for and ignored once that changes, covering a
+  move to another monitor. `WINE_CONFIG_ROUNDING=legacy` restores the
+  old policy.
