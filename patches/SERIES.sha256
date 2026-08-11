@@ -89,5 +89,9 @@ dd398cb167a7ef56744c2f009dbb130ba98e13107cc7f96de5cc43c28b0626c0  0094-dxgi-make
 940963327f288c87b723a82213363e79fa5399afb76bea7ba293283f9f5f843b  0097-dxgi-dcomp-namespace-the-composition-swapchain-windo.patch
 56f170f6c07dcf8ea47c3e735083d8b821c6841b58ad187722601075bfb3236a  0098-dcomp-wined3d-exclude-composition-targets-from-GDI-p.patch
 372a7685948f52d07dc5678336077bd4e800d55eaeaa72d9764340421b544670  0099-wined3d-only-exclude-dcomp-targets-that-share-our-to.patch
+364c66cd1e94dd410f3030cdd981ff6230dd979edfb93966ffcbd9c687b1a5a6  0100-dxgi-winex11-scope-DComp-popup-inference-by-thread-a.patch
+b16a8b135278dfc02397c32aea8751d20dfb900f4ae084c3824ad63c5650bb68  0101-dxgi-consume-DComp-paint-and-erase-only-with-a-valid.patch
+972d123fbc2bcc039aa5333d34443650f4a5ab3b0fcf560d0acbc4c7ed4d97d7  0102-dxgi-winex11-gate-parked-reblits-on-host-viewability.patch
+904e9bf116e9b641ca7f495d848bd15fd53f3b15757a14a88af7b27aeee1fe81  0103-dxgi-carry-DComp-teardown-on-a-registered-message-no.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

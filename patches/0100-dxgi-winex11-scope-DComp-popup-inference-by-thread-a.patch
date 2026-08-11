@@ -1,0 +1,206 @@
+Subject: dxgi/winex11: scope DComp popup inference by thread and process
+
+The popup transient anchor and the full-versus-popup mode choice used
+one process-global stack and count: a second plugin's first target
+became a popup of the first plugin (losing its present timer), and its
+popups could anchor to the wrong plugin's window. Both now key on the
+target's UI thread; a plugin creates its popups on its own thread, so
+thread affinity relates a popup to its plugin.
+
+The desktop-wide __wine_dcomp_active flag becomes per-process
+(__wine_dcomp_active_<pid>): the desktop property list spans the window
+station, so the session-wide flag gave unrelated processes' ownerless
+tool popups a menu role while any DComp GUI existed anywhere, the
+undismissable-dialog class of faults. In-process behaviour is
+unchanged.
+
+WINE_DCOMP_SCOPE=global restores the process-global stack, count and
+session-wide flag for comparison.
+
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 7e28076..2856e5e 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -580,13 +580,39 @@ LONG dcomp_subclassed_target_count;
+  * IFX list, embedded).  This flag lets winex11 mark them DROPDOWN_MENU instead.
+  * Set while count > 0, removed at 0 (SetProp with value 0 is not distinguishable
+  * from "unset" — see the SetPropW (HANDLE)1/2 lesson). */
++/* WINE_DCOMP_SCOPE=global restores the session-wide active flag and the
++ * process-global popup anchoring for comparison. */
++static BOOL dcomp_scope_global(void)
++{
++    static int global = -1;
++
++    if (global == -1)
++    {
++        WCHAR val[16] = {0};
++        global = GetEnvironmentVariableW(L"WINE_DCOMP_SCOPE", val, ARRAY_SIZE(val))
++                && !wcscmp(val, L"global");
++    }
++    return global;
++}
++
++static void dcomp_active_prop_name(WCHAR *name, SIZE_T count)
++{
++    if (dcomp_scope_global())
++        swprintf(name, count, L"__wine_dcomp_active");
++    else
++        swprintf(name, count, L"__wine_dcomp_active_%u", GetCurrentProcessId());
++}
++
+ static void dcomp_update_active_prop(void)
+ {
++    WCHAR name[64];
+     LONG count = dcomp_subclassed_target_count;
++
++    dcomp_active_prop_name(name, ARRAY_SIZE(name));
+     if (count > 0)
+-        SetPropW(GetDesktopWindow(), L"__wine_dcomp_active", (HANDLE)(LONG_PTR)count);
++        SetPropW(GetDesktopWindow(), name, (HANDLE)(LONG_PTR)count);
+     else
+-        RemovePropW(GetDesktopWindow(), L"__wine_dcomp_active");
++        RemovePropW(GetDesktopWindow(), name);
+ }
+ 
+ /* Popup transient-parent stack: the open DComp targets in open order
+@@ -601,17 +627,59 @@ static void dcomp_update_active_prop(void)
+  * Global for now (shared across plugins); per-plugin scoping ties into #11. */
+ #define DCOMP_POPUP_STACK_MAX 16
+ static HWND dcomp_popup_stack[DCOMP_POPUP_STACK_MAX];
++static DWORD dcomp_popup_stack_tid[DCOMP_POPUP_STACK_MAX];
+ static int dcomp_popup_stack_depth;
+ 
+-static HWND dcomp_popup_stack_top(void)
++/* Transient anchor for a new target: the previously-opened target on the SAME
++ * UI thread.  A plugin creates its popups on its own thread, so thread
++ * affinity relates a popup to its plugin; the old process-global top could
++ * hand plugin B's popup an anchor belonging to plugin A.
++ * WINE_DCOMP_SCOPE=global restores the plain top-of-stack. */
++static HWND dcomp_popup_stack_top_for(HWND target)
++{
++    DWORD tid;
++    int i;
++
++    if (dcomp_scope_global())
++        return dcomp_popup_stack_depth > 0 ? dcomp_popup_stack[dcomp_popup_stack_depth - 1] : NULL;
++
++    tid = GetWindowThreadProcessId(target, NULL);
++    for (i = dcomp_popup_stack_depth - 1; i >= 0; --i)
++    {
++        if (dcomp_popup_stack_tid[i] == tid && IsWindow(dcomp_popup_stack[i]))
++            return dcomp_popup_stack[i];
++    }
++    return NULL;
++}
++
++/* Full-versus-popup mode: the first target on its own UI thread is that
++ * plugin's main window; later targets on the thread are its popups.  The old
++ * process-global count made the first target of a SECOND plugin a popup,
++ * costing it the present timer. */
++static BOOL dcomp_thread_has_target(HWND target)
+ {
+-    return dcomp_popup_stack_depth > 0 ? dcomp_popup_stack[dcomp_popup_stack_depth - 1] : NULL;
++    DWORD tid;
++    int i;
++
++    if (dcomp_scope_global())
++        return dcomp_subclassed_target_count > 0;
++
++    tid = GetWindowThreadProcessId(target, NULL);
++    for (i = 0; i < dcomp_popup_stack_depth; ++i)
++    {
++        if (dcomp_popup_stack_tid[i] == tid && IsWindow(dcomp_popup_stack[i]))
++            return TRUE;
++    }
++    return FALSE;
+ }
+ 
+ static void dcomp_popup_stack_push(HWND hwnd)
+ {
+     if (dcomp_popup_stack_depth < DCOMP_POPUP_STACK_MAX)
++    {
++        dcomp_popup_stack_tid[dcomp_popup_stack_depth] = GetWindowThreadProcessId(hwnd, NULL);
+         dcomp_popup_stack[dcomp_popup_stack_depth++] = hwnd;
++    }
+     else
+         WARN("DComp popup stack full (%d), not pushing %p.\n", dcomp_popup_stack_depth, hwnd);
+ }
+@@ -626,6 +694,8 @@ static void dcomp_popup_stack_remove(HWND hwnd)
+         {
+             memmove(&dcomp_popup_stack[i], &dcomp_popup_stack[i + 1],
+                     (dcomp_popup_stack_depth - i - 1) * sizeof(*dcomp_popup_stack));
++            memmove(&dcomp_popup_stack_tid[i], &dcomp_popup_stack_tid[i + 1],
++                    (dcomp_popup_stack_depth - i - 1) * sizeof(*dcomp_popup_stack_tid));
+             --dcomp_popup_stack_depth;
+             return;
+         }
+@@ -1228,14 +1298,14 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                     LONG target_style = GetWindowLongW(target_hwnd, GWL_STYLE);
+                     HWND target_parent = GetParent(target_hwnd);
+                     /* Transient anchor for a new popup = the previously-opened
+-                     * target (top of the popup stack). */
+-                    HWND popup_parent = dcomp_popup_stack_top();
++                     * target on the same UI thread (see dcomp_popup_stack_top_for). */
++                    HWND popup_parent = dcomp_popup_stack_top_for(target_hwnd);
+ 
+                     FIXME("DComp popup-detect: target %p style=0x%08lx parent=%p count=%ld.\n",
+                             target_hwnd, (unsigned long)target_style, target_parent,
+                             dcomp_subclassed_target_count);
+ 
+-                    if (dcomp_subclassed_target_count > 0)
++                    if (dcomp_thread_has_target(target_hwnd))
+                         is_popup_mode = TRUE;
+ 
+                     if (is_popup_mode)
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 8cfe055..367be02 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -111,13 +111,28 @@ static const WCHAR *dcomp_swapchain_prop = dcomp_swapchain_propW;
+ static const WCHAR dcomp_popup_parent_propW[] =
+     {'_','_','w','i','n','e','_','d','c','o','m','p','_','p','o','p','u','p','_','p','a','r','e','n','t',0};
+ static const WCHAR *dcomp_popup_parent_prop = dcomp_popup_parent_propW;
+-/* Set on the desktop window by dxgi while a DComp plugin GUI is hosted in this
+- * session.  Used to mark embedded ownerless TOOLWINDOW popups as DROPDOWN_MENU
+- * (see set_style_hints) — they anchor to the host window, so the per-window
+- * dcomp discriminators below cannot see they belong to a DComp plugin. */
+-static const WCHAR dcomp_active_propW[] =
+-    {'_','_','w','i','n','e','_','d','c','o','m','p','_','a','c','t','i','v','e',0};
+-static const WCHAR *dcomp_active_prop = dcomp_active_propW;
++/* Set on the desktop window by dxgi while a DComp plugin GUI is hosted by
++ * THIS process.  Used to mark embedded ownerless TOOLWINDOW popups as
++ * DROPDOWN_MENU (see set_style_hints): they anchor to the host window, so
++ * the per-window dcomp discriminators below cannot see they belong to a
++ * DComp plugin.  The name is scoped by process id: the desktop property
++ * list spans the window station, and the old session-wide flag gave
++ * unrelated processes' ownerless popups a menu role while any DComp GUI
++ * existed anywhere.  WINE_DCOMP_SCOPE=global restores the session-wide
++ * name for comparison. */
++static void get_dcomp_active_prop_name( WCHAR *name, size_t count )
++{
++    const char *env = getenv( "WINE_DCOMP_SCOPE" );
++    char ascii[64];
++    size_t i;
++
++    if (env && !strcmp( env, "global" ))
++        snprintf( ascii, sizeof(ascii), "__wine_dcomp_active" );
++    else
++        snprintf( ascii, sizeof(ascii), "__wine_dcomp_active_%u", (UINT)GetCurrentProcessId() );
++    for (i = 0; ascii[i] && i < count - 1; i++) name[i] = (WCHAR)ascii[i];
++    name[i] = 0;
++}
+ 
+ static BOOL selected_fullscreen_class( HWND hwnd )
+ {
+@@ -1355,8 +1370,10 @@ static void set_style_hints( struct x11drv_win_data *data, DWORD style, DWORD ex
+          * flag catches them. It is deliberately broad (any TOOLWINDOW popup while
+          * a DComp GUI is open) — validated against Serum2 (embedded dropdowns must
+          * not regress). */
++        WCHAR active_prop[64];
++        get_dcomp_active_prop_name( active_prop, ARRAY_SIZE(active_prop) );
+         if (NtUserGetProp( data->hwnd, dcomp_popup_parent_prop ) || anchor_is_dcomp
+-                || NtUserGetProp( NtUserGetDesktopWindow(), dcomp_active_prop ))
++                || NtUserGetProp( NtUserGetDesktopWindow(), active_prop ))
+             window_set_net_wm_window_type( data, XATOM__NET_WM_WINDOW_TYPE_DROPDOWN_MENU );
+         else
+             /* Issue 84: ownerless TOOLWINDOW popups of non-DComp apps (KM88

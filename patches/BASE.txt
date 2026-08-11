@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 91 files, numbered 0001 through 0099.
+The current Wine series contains 95 files, numbered 0001 through 0103.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -446,3 +446,38 @@ Apply them in sequence with the rest of the series.
   plugin editor dragged over Live's WebView2 panel lost its content in
   exactly the intersection. Ported from `giang17/wine` `c2cf448f` (its
   issue 145); applied cleanly on the 0098 port.
+- `0100`: scope DComp popup inference by thread and process. The popup
+  transient anchor and the full-versus-popup mode choice keyed on one
+  process-global stack and count, so a second plugin's first target
+  became a popup of the first (losing its present timer) and popups
+  could anchor to the wrong plugin; both now key on the target's UI
+  thread. The desktop-wide `__wine_dcomp_active` flag becomes
+  per-process (`__wine_dcomp_active_<pid>`), so a DComp GUI in one
+  process no longer gives unrelated processes' ownerless tool popups a
+  menu role, the undismissable-dialog class of faults.
+  `WINE_DCOMP_SCOPE=global` restores the old behaviour for comparison.
+- `0101`: consume DComp popup WM_PAINT and WM_ERASEBKGND only with a
+  valid current-size composition buffer; forward to the app's wndproc
+  otherwise, so newly exposed popup pixels stop keeping undefined
+  content. The target wndproc keeps its consume-without-drawing stale
+  path: forwarding there causes the Learn View revert, and a fill is
+  worse, since the currency check dips whenever Chromium resizes its
+  swapchain under mouse hover and a fill flashed white over valid
+  pixels (first live test). The on-screen pixels are the last presented
+  frame, the deterministic choice for a covered region.
+  `WINE_DCOMP_PAINT=legacy` restores the old popup consumption.
+- `0102`: gate parked DComp reblits on host viewability. IsWindowVisible
+  keeps reporting TRUE while the top level is iconified or on another
+  workspace, so parked reblit timers kept stamping invisible frames.
+  winex11 publishes `__wine_x11_viewable` on each managed top level
+  from WM_STATE acknowledgements (1 mapped, 2 not, absent unknown with
+  WS_VISIBLE fallback) and the reblit gate skips on 2.
+  `WINE_DCOMP_VIEWABILITY=off` keeps the old gate.
+- `0103`: carry 0094's teardown marshalling on a registered window
+  message instead of `WM_USER + 0x102`. The other dcomp `WM_USER`
+  messages only reach our own composition-window class, but this one is
+  posted to windows the application owns, and `WM_USER + n` is
+  application-defined space: a window that no longer carries our
+  subclass hands the number to its own protocol, where toolkits
+  commonly treat it as "invoke this callback" with a pointer argument.
+  Also posts only while the target still carries the subclass marker.

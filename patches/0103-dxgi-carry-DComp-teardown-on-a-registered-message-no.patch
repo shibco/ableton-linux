@@ -1,0 +1,163 @@
+Subject: dxgi: carry DComp teardown on a registered message, not WM_USER space
+
+Patch 0094 marshals teardown to the window's owning thread with
+WM_USER+0x102. The other two dcomp WM_USER messages only ever reach our
+own composition-window class, but this one is posted to windows the
+application owns: Chromium's intermediate D3D window and plugin
+editors. WM_USER+n is application-defined space, so a window that no
+longer carries our subclass when the posted message arrives hands the
+number to its own protocol, where toolkits commonly treat it as
+"invoke this callback" with a pointer argument.
+
+Register a system-range message id instead, which no application
+defines, and post only while the target still carries the subclass
+marker.
+
+Found after a page fault on execute access to a low address in a
+helper process during a plugin scan (first full PR 5 test). Whether
+that fault came through this path is unproven; the collision is a
+defect either way.
+
+diff --git a/dlls/dxgi/dxgi_private.h b/dlls/dxgi/dxgi_private.h
+index 9a1b9b9..f6c242f 100644
+--- a/dlls/dxgi/dxgi_private.h
++++ b/dlls/dxgi/dxgi_private.h
+@@ -181,6 +181,7 @@ struct dxgi_adapter *unsafe_impl_from_IDXGIAdapter(IDXGIAdapter *iface);
+ extern LONG dcomp_subclassed_target_count;
+ extern void dcomp_teardown_window(HWND hwnd);
+ extern BOOL dcomp_teardown_legacy(void);
++extern UINT dcomp_teardown_message(void);
+ 
+ /* IDXGISwapChain */
+ struct d3d11_swapchain
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 878e101..3cea4be 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -390,7 +390,20 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
+ 
+ #define WM_WINE_DCOMP_SET_TARGET (WM_USER + 0x100)
+ #define WM_WINE_DCOMP_SET_CHILD_MODE (WM_USER + 0x101)
+-#define WM_WINE_DCOMP_TEARDOWN (WM_USER + 0x102)
++/* Teardown is marshalled to windows owned by the APPLICATION (Chromium's
++ * intermediate D3D window, plugin editors), unlike the WM_USER messages
++ * above which only ever reach our own comp-window class.  WM_USER+n is
++ * application-defined space: a window that no longer carries our subclass
++ * hands the number to its own protocol, where toolkits commonly treat it as
++ * "invoke this callback" with a pointer argument.  RegisterWindowMessage
++ * returns an id in the system range that no application defines. */
++UINT dcomp_teardown_message(void)
++{
++    static UINT msg;
++
++    if (!msg) msg = RegisterWindowMessageW(L"__wine_dcomp_teardown");
++    return msg;
++}
+ /* SET_TARGET wparam flag set by dlls/dcomp when the binding dcomp device has
+  * no d2d1 device (mirrored there, like the message id itself). */
+ #define DCOMP_SET_TARGET_NULL_D2D1_DEVICE 0x1
+@@ -855,6 +868,12 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+ {
+     WNDPROC orig = (WNDPROC)GetPropW(hwnd, L"__wine_dcomp_orig_wndproc");
+ 
++    if (msg == dcomp_teardown_message())
++    {
++        dcomp_teardown_window(hwnd);
++        return 0;
++    }
++
+     switch (msg)
+     {
+         case WM_ERASEBKGND:
+@@ -895,10 +914,6 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             return 0;
+         }
+ 
+-        case WM_WINE_DCOMP_TEARDOWN:
+-            dcomp_teardown_window(hwnd);
+-            return 0;
+-
+         case WM_TIMER:
+             if (wparam == DCOMP_POPUP_REBLIT_TIMER_ID)
+             {
+@@ -971,6 +986,12 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+ {
+     WNDPROC orig = (WNDPROC)GetPropW(hwnd, L"__wine_dcomp_orig_wndproc");
+ 
++    if (msg == dcomp_teardown_message())
++    {
++        dcomp_teardown_window(hwnd);
++        return 0;
++    }
++
+     switch (msg)
+     {
+         case WM_ERASEBKGND:
+@@ -1027,10 +1048,6 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             return 0;
+         }
+ 
+-        case WM_WINE_DCOMP_TEARDOWN:
+-            dcomp_teardown_window(hwnd);
+-            return 0;
+-
+         case WM_TIMER:
+             if (wparam == DCOMP_REBLIT_TIMER_ID)
+             {
+@@ -1210,15 +1227,18 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+ 
+ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+ {
++    if (msg == dcomp_teardown_message())
++    {
++        DestroyWindow(hwnd);
++        return 0;
++    }
++
+     switch (msg)
+     {
+         case WM_ERASEBKGND:
+             return 1;
+         case WM_NCHITTEST:
+             return HTTRANSPARENT;
+-        case WM_WINE_DCOMP_TEARDOWN:
+-            DestroyWindow(hwnd);
+-            return 0;
+         case WM_PAINT:
+         {
+             PAINTSTRUCT ps;
+diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
+index a180e16..cb6413d 100644
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -28,7 +28,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(dxgi);
+ WINE_DECLARE_DEBUG_CHANNEL(winediag);
+ WINE_DECLARE_DEBUG_CHANNEL(wmtrace);
+ 
+-#define WM_WINE_DCOMP_TEARDOWN (WM_USER + 0x102)
+ 
+ static UINT dxgi_get_display_refresh_rate(void)
+ {
+@@ -344,7 +343,12 @@ static ULONG STDMETHODCALLTYPE d3d11_swapchain_Release(IDXGISwapChain4 *iface)
+                  * thread-affine). */
+                 if (GetWindowThreadProcessId(t, NULL) == GetCurrentThreadId())
+                     dcomp_teardown_window(t);
+-                else if (!PostMessageW(t, WM_WINE_DCOMP_TEARDOWN, 0, 0))
++                /* Only message a window still carrying our subclass: the
++                 * marker is removed by whichever teardown ran first, and a
++                 * window we no longer own may belong to another component
++                 * (or be a recycled handle) by the time this posts. */
++                else if (GetPropW(t, L"__wine_dcomp_subclassed")
++                        && !PostMessageW(t, dcomp_teardown_message(), 0, 0))
+                     WARN("Could not marshal DComp teardown to the thread of %p.\n", t);
+             }
+             swapchain->target_hwnd = NULL;
+@@ -369,7 +373,7 @@ static ULONG STDMETHODCALLTYPE d3d11_swapchain_Release(IDXGISwapChain4 *iface)
+                 if (GetWindowThreadProcessId(swapchain->comp_wnd, NULL) == GetCurrentThreadId())
+                     DestroyWindow(swapchain->comp_wnd);
+                 else if (!dcomp_teardown_legacy()
+-                        && !PostMessageW(swapchain->comp_wnd, WM_WINE_DCOMP_TEARDOWN, 0, 0))
++                        && !PostMessageW(swapchain->comp_wnd, dcomp_teardown_message(), 0, 0))
+                     WARN("Could not marshal comp-window destroy to the thread of %p.\n",
+                             swapchain->comp_wnd);
+             }

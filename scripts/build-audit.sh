@@ -163,6 +163,11 @@ FINGERPRINTS='
 0095|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_clip_refs
 0097|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_wnd_%lu_%I64x
 0098|wide|lib/wine/x86_64-windows/wined3d.dll|__wine_dcomp_target_%u
+0100|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DCOMP_SCOPE
+0100|ascii|lib/wine/x86_64-unix/winex11.so|WINE_DCOMP_SCOPE
+0101|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DCOMP_PAINT
+0102|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DCOMP_VIEWABILITY
+0103|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_teardown
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '

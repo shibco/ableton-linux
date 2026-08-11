@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Newly exposed parts of a plugin popup no longer show leftover pixels
+  while the popup has nothing ready to draw, and a Live that is
+  minimised or on another workspace stops redrawing parked browser
+  views nobody can see.
+
+- One plugin's popup menus no longer attach to another plugin's window,
+  and opening a second plugin no longer costs its editor the redraw
+  drive the first one has. A plugin view in one program also no longer
+  turns unrelated programs' small tool windows into menus. Launch with
+  `env WINE_DCOMP_SCOPE=global ableton-live` to restore the old
+  behaviour and report it if popups misbehave.
+
 - Live's main display no longer paints over a browser view sharing its
   window, which made the view flicker while both redrew. A plugin
   editor dragged across the browser panel also no longer loses its
