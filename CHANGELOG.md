@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Closing a plugin or browser view now cleans up its window machinery
+  completely, wherever in Live the close came from. Leftover redraw
+  timers and a stuck popup mode could survive before, leaving stale
+  rectangles and menu-like behaviour on unrelated windows. If plugin
+  windows behave worse after closing views, launch with
+  `env WINE_DCOMP_TEARDOWN=legacy ableton-live` and report it.
+
 - Restoring or un-minimising a window no longer races the desktop with
   stale minimise and resize requests, which some desktops answered with
   a wrong size or a re-minimised window. If restore behaves worse than
