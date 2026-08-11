@@ -1,0 +1,66 @@
+Subject: winex11: skip repeat _NET_ACTIVE_WINDOW requests, keep real timestamps
+
+Patch 0017 fixed mutter's focus-stealing prevention dropping our
+timestamp-0 activation requests, and also relaxed the duplicate skip so
+a newer input timestamp could retry an ignored request. Under KWin every
+activation produces feedback that yields fresh input timestamps, so the
+retries ping-pong: wrong taskbar focus and unmovable, unsizable windows.
+giang17/wine hit the same regression porting 0017 and dropped the retry
+in a641db69 (issue 76); the non-zero timestamp alone fixes the mutter
+deadlock the retry was written for.
+
+Return to the single pending-window skip and keep the timestamp work
+unchanged. WINE_ACTIVATE_RESEND=1 restores the relaxed skip for
+comparison.
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index aca972c..c6ceb33 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2699,6 +2699,19 @@ void net_active_window_init( struct x11drv_thread_data *data )
+     data->current_state.net_active_window = window;
+ }
+ 
++/* WINE_ACTIVATE_RESEND=1 restores patch 0017's relaxed duplicate skip. */
++static BOOL net_active_window_resend(void)
++{
++    static int mode = -1;
++
++    if (mode == -1)
++    {
++        const char *env = getenv( "WINE_ACTIVATE_RESEND" );
++        mode = env && !strcmp( env, "1" );
++    }
++    return mode;
++}
++
+ static BOOL window_set_pending_activate( HWND hwnd, BOOL *withdrawn )
+ {
+     struct x11drv_win_data *data;
+@@ -2729,12 +2742,20 @@ void set_net_active_window( HWND hwnd, HWND previous )
+     if (EVENT_x11_time_to_win32_time( 0 ))
+         time = NtUserGetThreadState( UserThreadStateMessageTime ) - EVENT_x11_time_to_win32_time( 0 );
+ 
+-    /* Skip only exact repeats: if the WM ignored a previous request for this window
+-     * (e.g. it carried an older timestamp than the WM's focus-stealing cutoff), a new
+-     * user interaction yields a fresh timestamp and must be allowed to retry, else the
+-     * window can never be activated again for the rest of the session. */
+-    if (data->current_state.net_active_window == window && !data->net_active_window_serial) return;
+-    if (data->pending_state.net_active_window == window && time == data->net_active_window_time) return;
++    /* Patch 0017 also relaxed this skip so a newer input timestamp could retry
++     * an ignored request.  Under KWin every activation produces feedback that
++     * yields fresh input timestamps, so retries ping-pong: wrong taskbar focus
++     * and unmovable/unsizable windows (the fork dropped the retry in a641db69
++     * for the same reason, issue 76).  The non-zero timestamp alone fixes the
++     * mutter deadlock the retry was written for, so skip any repeat for the
++     * pending window.  WINE_ACTIVATE_RESEND=1 restores the relaxed skip for
++     * comparison. */
++    if (net_active_window_resend())
++    {
++        if (data->current_state.net_active_window == window && !data->net_active_window_serial) return;
++        if (data->pending_state.net_active_window == window && time == data->net_active_window_time) return;
++    }
++    else if (data->pending_state.net_active_window == window) return;
+     if (window_set_pending_activate( hwnd, &withdrawn )) return;
+ 
+     xev.xclient.type = ClientMessage;

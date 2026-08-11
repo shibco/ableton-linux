@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- On KDE, switching windows no longer leaves a window unmovable with the
+  wrong taskbar focus. Live now asks for activation once instead of
+  repeating the request on every input. If focus stops following your
+  clicks, launch with `env WINE_ACTIVATE_RESEND=1 ableton-live` and
+  report it.
+
 - New windows and newly exposed areas no longer start black. Plugin
   popups with transparency keep a clean first frame. If a window now
   flashes white where it did not before, launch with
