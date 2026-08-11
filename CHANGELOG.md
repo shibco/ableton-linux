@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Live's main display no longer paints over a browser view sharing its
+  window, which made the view flicker while both redrew. A plugin
+  editor dragged across the browser panel also no longer loses its
+  content where the two overlap.
+
 - Plugin views no longer interfere with each other's windows. Closing
   one of two views inside the same window kept breaking the survivor's
   drawing, and two plugin processes could clash over the same internal

@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 89 files, numbered 0001 through 0097.
+The current Wine series contains 91 files, numbered 0001 through 0099.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -432,3 +432,17 @@ Apply them in sequence with the rest of the series.
   same address and resolve each other's windows. Ported from
   `giang17/wine` `df092626`; six of its seven sites exist here, the
   seventh belongs to the fork's tree compositor.
+- `0098`: exclude DComp composition targets from GDI present blits. On
+  Windows the DWM composes a target above everything, so no present
+  paints there; our GDI blit covered the whole top level, overpainting
+  a WebView2 pane at 60 Hz while the composition timer painted it back:
+  visible flicker. dcomp registers target windows in desktop property
+  slots (`__wine_dcomp_target_%u`) and wined3d clips them out of the
+  blit. Ported from `giang17/wine` `8e223552` (its issue 121), adapted
+  to this tree's target release path.
+- `0099`: only exclude targets that share the present's own top level.
+  The registry is desktop-wide, and MapWindowPoints lands a foreign
+  top-level's target wherever the two windows overlap on screen, so a
+  plugin editor dragged over Live's WebView2 panel lost its content in
+  exactly the intersection. Ported from `giang17/wine` `c2cf448f` (its
+  issue 145); applied cleanly on the 0098 port.
