@@ -1,0 +1,165 @@
+Subject: winex11: tie config-rounding aliases to Wine's own configure requests
+
+Patch 0042 aliases a window-manager geometry grant that differs from our
+request only by sub-scale rounding, so a scale-aligned application does
+not chase the difference forever. Three things let that alias outlive
+the request it belongs to, now that 0093 serialises host state.
+
+An unsolicited configure could create an alias outright. There is no
+Wine request to alias against on that path, so a window manager placing
+a window of its own accord could pin the Win32 size to whatever it
+happened to hold; it may now only carry an existing alias along a move.
+
+axis_is_host_translation accepts the two edges of an axis differing by
+up to one scale unit, so at 200% a grant of left+3/right+4 reads as a
+pure translation while the width actually grew a pixel, and the alias
+then hid that resize from Win32 behind SWP_NOSIZE. Tilers hand out
+exactly that when they redistribute a spare pixel, so an unsolicited
+configure must now leave both dimensions exactly unchanged. The refusal
+is traced as ALIAS-DECLINE.
+
+The alias is arithmetic against one scale factor and survived a DPI
+change, so it is stamped with the DPI it was computed for and ignored
+once that changes, which also covers a move to another monitor. The
+stamp goes in activate_config_rounding, the one place that turns an
+alias active, rather than at each call site. The sub-scale alias in
+window_set_config is 0042's own mechanism, and a call site that forgets
+the stamp leaves every reader comparing 0 against the real DPI and
+throwing the alias away.
+
+WINE_CONFIG_ROUNDING=legacy restores the old policy for comparison.
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 450362c..efb0d2c 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1693,6 +1693,21 @@ enum config_rounding_state
+     CONFIG_ROUNDING_ACTIVE,
+ };
+ 
++/* WINE_CONFIG_ROUNDING=legacy restores the pre-lock alias policy: aliases
++ * created from unsolicited window-manager configures, sub-scale size changes
++ * accepted as translations, and aliases outliving a DPI change. */
++static BOOL config_rounding_legacy(void)
++{
++    static int legacy = -1;
++
++    if (legacy == -1)
++    {
++        const char *env = getenv( "WINE_CONFIG_ROUNDING" );
++        legacy = env && !strcmp( env, "legacy" );
++    }
++    return legacy;
++}
++
+ static void clear_config_rounding( struct x11drv_win_data *data, const char *reason )
+ {
+     if (data->config_rounding_state == CONFIG_ROUNDING_NONE) return;
+@@ -1704,6 +1719,7 @@ static void clear_config_rounding( struct x11drv_win_data *data, const char *rea
+     data->config_rounding_serial = 0;
+     data->config_rounding_settle_serial = 0;
+     data->config_rounding_generation = 0;
++    data->config_rounding_dpi = 0;
+ }
+ 
+ static void track_config_rounding_request( struct x11drv_win_data *data, unsigned long serial,
+@@ -1715,6 +1731,7 @@ static void track_config_rounding_request( struct x11drv_win_data *data, unsigne
+     data->config_rounding_generation = data->config_generation;
+     data->config_rounding_win32_rect = *rect;
+     data->config_rounding_host_rect = *rect;
++    data->config_rounding_dpi = NtUserGetDpiForWindow( data->hwnd );
+     TRACE( "window %p/%lx tracking config %s request %lu generation %lu\n", data->hwnd,
+            data->whole_window, wine_dbgstr_rect(rect), serial, data->config_generation );
+ }
+@@ -1778,17 +1795,34 @@ static void activate_config_rounding( struct x11drv_win_data *data, const RECT *
+ {
+     data->config_rounding_state = CONFIG_ROUNDING_ACTIVE;
+     data->config_rounding_host_rect = *host_rect;
++    /* Stamp the DPI here, the one place that turns an alias active, rather than
++     * at each call site: the sub-scale alias in window_set_config is 0042's own
++     * mechanism and left the stamp at 0, so every reader compared 0 against the
++     * real DPI and threw the alias away.  The rounded host rect then goes back
++     * to Win32, the application re-applies its size, and the two chase: the
++     * resize jitter 0042 exists to stop.  The arithmetic that qualified this
++     * alias ran against the current DPI, so that is what it belongs to. */
++    data->config_rounding_dpi = NtUserGetDpiForWindow( data->hwnd );
+     TRACE( "window %p/%lx activating config rounding alias %s -> %s request %lu generation %lu\n",
+            data->hwnd, data->whole_window, wine_dbgstr_rect(&data->config_rounding_win32_rect),
+            wine_dbgstr_rect(host_rect), data->config_rounding_serial,
+            data->config_rounding_generation );
+ }
+ 
++/* The alias is arithmetic against one scale factor, so it means nothing once
++ * the window's DPI changes (moving to another monitor, a scale change). */
++static BOOL config_rounding_dpi_current( const struct x11drv_win_data *data )
++{
++    return config_rounding_legacy() ||
++           data->config_rounding_dpi == NtUserGetDpiForWindow( data->hwnd );
++}
++
+ static BOOL config_rounding_alias_matches_rect( const struct x11drv_win_data *data,
+                                                 const RECT *visible_rect )
+ {
+     return data->config_rounding_state == CONFIG_ROUNDING_ACTIVE &&
+            data->config_rounding_generation == data->config_generation &&
++           config_rounding_dpi_current( data ) &&
+            EqualRect( visible_rect, &data->config_rounding_win32_rect ) &&
+            EqualRect( &data->current_state.rect, &data->config_rounding_host_rect );
+ }
+@@ -1802,6 +1836,7 @@ static BOOL config_rounding_move_pending( const struct x11drv_win_data *data )
+ {
+     return data->config_rounding_state == CONFIG_ROUNDING_ACTIVE &&
+            data->config_rounding_generation == data->config_generation &&
++           config_rounding_dpi_current( data ) &&
+            EqualRect( &data->current_state.rect, &data->config_rounding_host_rect ) &&
+            !EqualRect( &data->rects.visible, &data->config_rounding_win32_rect ) &&
+            rect_sizes_equal( &data->rects.visible, &data->config_rounding_win32_rect );
+@@ -1820,6 +1855,17 @@ static BOOL track_config_rounding_move( struct x11drv_win_data *data, const RECT
+     if (dpi < USER_DEFAULT_SCREEN_DPI || dpi % USER_DEFAULT_SCREEN_DPI) return FALSE;
+     scale = dpi / USER_DEFAULT_SCREEN_DPI;
+ 
++    /* An unsolicited configure carries no Wine request to alias against, so it
++     * may only carry an existing alias along a move, never invent one: without
++     * this a window manager placing a window of its own accord could pin the
++     * Win32 size to whatever it happened to hold. */
++    if (!config_rounding_legacy() &&
++        (data->config_rounding_state != CONFIG_ROUNDING_ACTIVE ||
++         data->config_rounding_generation != data->config_generation ||
++         data->config_rounding_dpi != dpi ||
++         !EqualRect( &old_host_rect, &data->config_rounding_host_rect )))
++        return FALSE;
++
+     left = host_rect->left - old_host_rect.left;
+     top = host_rect->top - old_host_rect.top;
+     right = host_rect->right - old_host_rect.right;
+@@ -1828,6 +1874,18 @@ static BOOL track_config_rounding_move( struct x11drv_win_data *data, const RECT
+         !axis_is_host_translation( left, right, scale ) ||
+         !axis_is_host_translation( top, bottom, scale ))
+         return FALSE;
++    /* axis_is_host_translation tolerates the two edges of an axis differing by
++     * up to one scale unit, so a genuine one-pixel resize reads as a move and
++     * the alias then hides it from Win32 behind SWP_NOSIZE.  Tilers hand out
++     * exactly that when they redistribute a spare pixel, so an unsolicited
++     * configure must leave both dimensions exactly as they were. */
++    if (!config_rounding_legacy() && (left != right || top != bottom))
++    {
++        TRACE_(wmtrace)( "ALIAS-DECLINE hwnd=%p xid=%lx host=%s resize dx=%d,%d dy=%d,%d\n",
++                         data->hwnd, data->whole_window, wine_dbgstr_rect(host_rect),
++                         left, right, top, bottom );
++        return FALSE;
++    }
+ 
+     OffsetRect( &win32_rect, left, top );
+     if (!config_edges_within_dpi_rounding( data, &win32_rect, host_rect )) return FALSE;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 02154d8..1a7a040 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -722,6 +722,7 @@ struct x11drv_win_data
+     unsigned long config_rounding_generation; /* Win32 rect generation of the configure request */
+     RECT config_rounding_win32_rect;   /* Win32 rect associated with a rounded configure request */
+     RECT config_rounding_host_rect;    /* host rect acknowledged for config_rounding_win32_rect */
++    UINT config_rounding_dpi;          /* window DPI the rounding alias was computed for */
+     UINT config_rounding_state;        /* state of the rounded configure request */
+ };
+ 

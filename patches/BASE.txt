@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 81 files, numbered 0001 through 0089.
+The current Wine series contains 96 files, numbered 0001 through 0104.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
@@ -20,11 +20,11 @@ branch as those merge.
 
 Run `./build.sh`. Inside the Podman image, `scripts/container-build.sh`
 unpacks `vendor/wine-base-5c23dd1c.tar.zst`, creates a Git repository, and
-applies `patches/00*.patch` in lexical order with `git am --3way`.
+applies `patches/0*.patch` in lexical order with `git am --3way`.
 
 Some early patch files have no `From` or `Date` header. The build script adds a
 fixed identity and date before passing those files to `git am`. A bare
-`git am patches/00*.patch` command does not reproduce this step.
+`git am patches/0*.patch` command does not reproduce this step.
 
 Patches 0008 through 0013 contain title-bar experiments and their reverts.
 Apply them in sequence with the rest of the series.
@@ -371,3 +371,127 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
+- `0090`: add a `wmtrace` debug channel across winex11, win32u and dxgi.
+  One line per window-state transition: WM requests with their X serials,
+  host acknowledgements (matched, forced, or ignored), the state and
+  geometry handed back to Win32, window-surface creation, the 0065
+  fullscreen normalization firing, parked-DComp reblit decisions with
+  their skip cause, and each swapchain's GL/GDI present choice. Pure
+  tracing, no behaviour change. Enable with
+  `WINEDEBUG=-all,+wmtrace,+winediag`, or `ABLETON_WM_TRACE=1` through
+  the launcher; `tools/wm-capture.sh` records the matching host-side
+  view.
+- `0091`: skip repeat `_NET_ACTIVE_WINDOW` requests for the pending
+  window, keeping 0017's real timestamps. 0017's relaxed skip retried on
+  every fresh input timestamp; under KWin each activation produces
+  feedback with fresh timestamps, so retries ping-pong: wrong taskbar
+  focus and unmovable windows. The fork dropped the same retry in
+  `a641db69` (its issue 76); the non-zero timestamp alone fixes the
+  mutter deadlock. `WINE_ACTIVATE_RESEND=1` restores the relaxed skip.
+- `0092`: let `WINE_ACTIVATE_SOURCE=application` send EWMH source
+  indication 1 instead of 2 in `_NET_ACTIVE_WINDOW` requests, so the WM
+  applies its focus-stealing rules to app-initiated activation.
+  Default-off experiment, separate from 0091 so activation changes stay
+  one variable at a time.
+- `0093`: lock a window's host state while win32u applies an update the
+  window manager initiated. Re-entrant SetWindowPos processing could
+  request stale minimise, restore, geometry and Motif state mid-apply;
+  requests made while locked park in the desired state and flush on
+  unlock. Backport of Wine `852e39a8` (Remi Bernon), adapted around the
+  0042 config-rounding state, with wmtrace LOCK/UNLOCK lines and an
+  underflow guard on the unlock path. `WINE_HOST_STATE_LOCK=off`
+  disables the lock for comparison.
+- `0094`: make DComp window teardown complete, idempotent and
+  owning-thread. A cross-thread swapchain release skipped every
+  window-owning cleanup: timers kept firing, the subclass and
+  composition properties leaked, and the subclassed-target count never
+  fell, so winex11 kept classifying ownerless tool popups as menus. A
+  same-thread release also left the popup-stack entry, the desktop
+  active property and the parent clip bit behind. One marker-gated
+  helper now runs the whole teardown from both NCDESTROY handlers,
+  same-thread release, and a new WM_WINE_DCOMP_TEARDOWN message that
+  cross-thread release posts to the owning thread. The wmtrace channel
+  logs each teardown. `WINE_DCOMP_TEARDOWN=legacy` restores the old
+  release path for comparison.
+- `0095`: reference-count the parent `WS_CLIPCHILDREN` bit
+  (`__wine_dcomp_clip_refs` on the parent). Two composition targets
+  sharing one parent recorded only the first owner, and the first
+  teardown stripped the style from under the survivor, letting the
+  parent paint over it. The teardown now restores the style only when
+  the last recorded target lets go. `WINE_DCOMP_TEARDOWN=legacy` keeps
+  the old single-owner behaviour.
+- `0096`: only remove the desktop swapchain property when it still
+  points at our own composition window. The key is the swapchain's heap
+  address, which can be recycled into a newer swapchain; removing the
+  key unconditionally then strands the live window. Ported from
+  `giang17/wine` `81e8d12e`.
+- `0097`: key that property by process id as well as address
+  (`__wine_dcomp_wnd_%lu_%I64x`, format shared through
+  `include/wine/winedxgi.idl`). The desktop property list spans the
+  window station, so a host and its WebView2 child could collide on the
+  same address and resolve each other's windows. Ported from
+  `giang17/wine` `df092626`; six of its seven sites exist here, the
+  seventh belongs to the fork's tree compositor.
+- `0098`: exclude DComp composition targets from GDI present blits. On
+  Windows the DWM composes a target above everything, so no present
+  paints there; our GDI blit covered the whole top level, overpainting
+  a WebView2 pane at 60 Hz while the composition timer painted it back:
+  visible flicker. dcomp registers target windows in desktop property
+  slots (`__wine_dcomp_target_%u`) and wined3d clips them out of the
+  blit. Ported from `giang17/wine` `8e223552` (its issue 121), adapted
+  to this tree's target release path.
+- `0099`: only exclude targets that share the present's own top level.
+  The registry is desktop-wide, and MapWindowPoints lands a foreign
+  top-level's target wherever the two windows overlap on screen, so a
+  plugin editor dragged over Live's WebView2 panel lost its content in
+  exactly the intersection. Ported from `giang17/wine` `c2cf448f` (its
+  issue 145); applied cleanly on the 0098 port.
+- `0100`: scope DComp popup inference by thread and process. The popup
+  transient anchor and the full-versus-popup mode choice keyed on one
+  process-global stack and count, so a second plugin's first target
+  became a popup of the first (losing its present timer) and popups
+  could anchor to the wrong plugin; both now key on the target's UI
+  thread. The desktop-wide `__wine_dcomp_active` flag becomes
+  per-process (`__wine_dcomp_active_<pid>`), so a DComp GUI in one
+  process no longer gives unrelated processes' ownerless tool popups a
+  menu role, the undismissable-dialog class of faults.
+  `WINE_DCOMP_SCOPE=global` restores the old behaviour for comparison.
+- `0101`: consume DComp popup WM_PAINT and WM_ERASEBKGND only with a
+  valid current-size composition buffer; forward to the app's wndproc
+  otherwise, so newly exposed popup pixels stop keeping undefined
+  content. The target wndproc keeps its consume-without-drawing stale
+  path: forwarding there causes the Learn View revert, and a fill is
+  worse, since the currency check dips whenever Chromium resizes its
+  swapchain under mouse hover and a fill flashed white over valid
+  pixels (first live test). The on-screen pixels are the last presented
+  frame, the deterministic choice for a covered region.
+  `WINE_DCOMP_PAINT=legacy` restores the old popup consumption.
+- `0102`: gate parked DComp reblits on host viewability. IsWindowVisible
+  keeps reporting TRUE while the top level is iconified or on another
+  workspace, so parked reblit timers kept stamping invisible frames.
+  winex11 publishes `__wine_x11_viewable` on each managed top level
+  from WM_STATE acknowledgements (1 mapped, 2 not, absent unknown with
+  WS_VISIBLE fallback) and the reblit gate skips on 2.
+  `WINE_DCOMP_VIEWABILITY=off` keeps the old gate.
+- `0103`: carry 0094's teardown marshalling on a registered window
+  message instead of `WM_USER + 0x102`. The other dcomp `WM_USER`
+  messages only reach our own composition-window class, but this one is
+  posted to windows the application owns, and `WM_USER + n` is
+  application-defined space: a window that no longer carries our
+  subclass hands the number to its own protocol, where toolkits
+  commonly treat it as "invoke this callback" with a pointer argument.
+  Also posts only while the target still carries the subclass marker.
+- `0104`: tie 0042's config-rounding aliases to Wine's own configure
+  requests, now that 0093 serialises host state. An unsolicited
+  configure could create an alias outright, letting a window manager
+  pin the Win32 size to whatever it happened to hold; it may now only
+  carry an existing alias along a move. `axis_is_host_translation`
+  accepts an axis whose two edges differ by up to one scale unit, so at
+  200% a grant of left+3/right+4 read as a translation while the width
+  grew a pixel, and the alias hid that resize behind `SWP_NOSIZE`;
+  tilers redistributing a spare pixel hand out exactly that, so an
+  unsolicited configure must now leave both dimensions exactly
+  unchanged, traced as ALIAS-DECLINE. The alias is also stamped with
+  the DPI it was computed for and ignored once that changes, covering a
+  move to another monitor. `WINE_CONFIG_ROUNDING=legacy` restores the
+  old policy.

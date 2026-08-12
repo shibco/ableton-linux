@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+- Tiling window managers get their exact geometry again. When a tiler
+  handed Live a one-pixel size correction, Live could read it as a move
+  and keep its old size, leaving a gap or an overlap in the tile. Moving
+  a window to a display with different scaling no longer carries the old
+  scaling correction with it. If window sizing behaves worse than
+  before, launch with `env WINE_CONFIG_ROUNDING=legacy ableton-live` and
+  report it.
+
+- Newly exposed parts of a plugin popup no longer show leftover pixels
+  while the popup has nothing ready to draw, and a Live that is
+  minimised or on another workspace stops redrawing parked browser
+  views nobody can see. If popups flash when they open, launch with
+  `env WINE_DCOMP_PAINT=legacy ableton-live` and report it. If a
+  restored window comes back blank, use
+  `env WINE_DCOMP_VIEWABILITY=off ableton-live` and report that.
+
+- One plugin's popup menus no longer attach to another plugin's window,
+  and opening a second plugin no longer costs its editor the redraw
+  drive the first one has. A plugin view in one program also no longer
+  turns unrelated programs' small tool windows into menus. Launch with
+  `env WINE_DCOMP_SCOPE=global ableton-live` to restore the old
+  behaviour and report it if popups misbehave.
+
+- Live's main display no longer paints over a browser view sharing its
+  window, which made the view flicker while both redrew. A plugin
+  editor dragged across the browser panel also no longer loses its
+  content where the two overlap.
+
+- Plugin views no longer interfere with each other's windows. Closing
+  one of two views inside the same window kept breaking the survivor's
+  drawing, and two plugin processes could clash over the same internal
+  window key and blank one of them.
+
+- Closing a plugin or browser view now cleans up its window machinery
+  completely, wherever in Live the close came from. Leftover redraw
+  timers and a stuck popup mode could survive before, leaving stale
+  rectangles and menu-like behaviour on unrelated windows. If plugin
+  windows behave worse after closing views, launch with
+  `env WINE_DCOMP_TEARDOWN=legacy ableton-live` and report it.
+
+- Restoring or un-minimising a window no longer races the desktop with
+  stale minimise and resize requests, which some desktops answered with
+  a wrong size or a re-minimised window. If restore behaves worse than
+  before, launch with `env WINE_HOST_STATE_LOCK=off ableton-live` and
+  report it.
+
+- On KDE, switching windows no longer leaves a window unmovable with the
+  wrong taskbar focus. Live now asks for activation once instead of
+  repeating the request on every input. If focus stops following your
+  clicks, launch with `env WINE_ACTIVATE_RESEND=1 ableton-live` and
+  report it.
+
+- Window problems are now easier to report. Launching with
+  `env ABLETON_WM_TRACE=1 ableton-live` logs every window change that
+  Live and the desktop exchange, and `tools/wm-capture.sh` records how
+  the desktop sees Live's windows while a problem is on screen. The
+  troubleshooting guide explains both captures in a new section on
+  windows that will not close, and names the xwayland-satellite 0.8.2
+  bug that hides some dialogs, with its downgrade workaround.
+
 - Link setup records its version marker only when the service step
   completed, so a host where that step failed retries it on the next
   update instead of counting itself configured. The version moves to 5.

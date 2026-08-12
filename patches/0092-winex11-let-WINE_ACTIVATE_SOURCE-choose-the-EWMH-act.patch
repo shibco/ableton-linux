@@ -1,0 +1,47 @@
+Subject: winex11: let WINE_ACTIVATE_SOURCE choose the EWMH activation source
+
+The base sends every _NET_ACTIVE_WINDOW request with source indication
+2 (pager / direct user action), which asks the WM to activate
+unconditionally. EWMH lets a WM treat source 1 (application) requests
+with its normal focus-stealing rules instead, which may suit WMs where
+unconditional activation fights the user. WINE_ACTIVATE_SOURCE=
+application sends 1; anything else keeps the base behaviour. Default
+off so the 0091 activation change stays a single variable.
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index c6ceb33..7cbf5ad 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2699,6 +2699,23 @@ void net_active_window_init( struct x11drv_thread_data *data )
+     data->current_state.net_active_window = window;
+ }
+ 
++/* EWMH source indication for our _NET_ACTIVE_WINDOW requests.  The base has
++ * always sent 2 (pager / direct user action), which asks the WM to activate
++ * unconditionally.  WINE_ACTIVATE_SOURCE=application sends 1 instead, so the
++ * WM applies its normal focus-stealing rules to app-initiated activation;
++ * default-off experiment. */
++static long net_active_window_source(void)
++{
++    static long source = -1;
++
++    if (source == -1)
++    {
++        const char *env = getenv( "WINE_ACTIVATE_SOURCE" );
++        source = (env && !strcmp( env, "application" )) ? 1 : 2;
++    }
++    return source;
++}
++
+ /* WINE_ACTIVATE_RESEND=1 restores patch 0017's relaxed duplicate skip. */
+ static BOOL net_active_window_resend(void)
+ {
+@@ -2765,7 +2782,7 @@ void set_net_active_window( HWND hwnd, HWND previous )
+     xev.xclient.display = data->display;
+     xev.xclient.send_event = True;
+     xev.xclient.format = 32;
+-    xev.xclient.data.l[0] = 2; /* source: pager */
++    xev.xclient.data.l[0] = net_active_window_source(); /* source: pager, or application via WINE_ACTIVATE_SOURCE */
+     xev.xclient.data.l[1] = time;
+     xev.xclient.data.l[2] = X11DRV_get_whole_window( previous ); /* current active */
+     xev.xclient.data.l[3] = 0;

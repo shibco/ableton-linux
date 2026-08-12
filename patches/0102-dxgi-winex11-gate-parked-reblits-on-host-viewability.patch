@@ -1,0 +1,129 @@
+Subject: dxgi/winex11: gate parked reblits on host viewability, not WS_VISIBLE
+
+IsWindowVisible walks the WS_VISIBLE chain, which stays set while the
+top level is iconified or parked on another workspace, so the parked
+reblit timers kept stamping frames into windows nobody could see.
+winex11 now publishes the host state on each managed top level
+(__wine_x11_viewable: 1 mapped NormalState, 2 not, absent unknown),
+maintained from WM_STATE acknowledgements, and the reblit gate skips
+when the root reports 2. Absent stays a fallback to the WS_VISIBLE
+check, covering unmanaged windows and the virtual desktop.
+WINE_DCOMP_VIEWABILITY=off keeps the old gate for comparison.
+
+Both exits of handle_state_change publish. It records the new state
+before it refuses an old-serial or transient acknowledgement, and a
+window manager that iconifies or restores while one of our requests is
+in flight can send WM_STATE below our serial. Publishing on the success
+path alone left a mapped window marked unviewable, with every parked
+reblit under it stopped.
+
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index f7fc76e..e609648 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -492,6 +492,20 @@ static BOOL dcomp_comp_buffer_current(HWND hwnd, unsigned int w, unsigned int h)
+  * View revert). Liveness is signalled by teardown instead: Release/NCDESTROY
+  * kill the timer and remove the props, and 0036's null-device guard still
+  * suspends the timer for never-presenting dead devices. */
++/* WINE_DCOMP_VIEWABILITY=off keeps the reblit gate on WS_VISIBLE alone. */
++static BOOL dcomp_viewability_enabled(void)
++{
++    static int enabled = -1;
++
++    if (enabled == -1)
++    {
++        WCHAR val[8] = {0};
++        enabled = !(GetEnvironmentVariableW(L"WINE_DCOMP_VIEWABILITY", val, ARRAY_SIZE(val))
++                && (!wcscmp(val, L"off") || !wcscmp(val, L"0")));
++    }
++    return enabled;
++}
++
+ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+ {
+     HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
+@@ -522,6 +536,25 @@ static void dcomp_reblit_comp_buffer(HWND hwnd, const char *reason)
+         return;
+     }
+ 
++    /* IsWindowVisible only walks WS_VISIBLE, which stays set while the top
++     * level is iconified or parked on another workspace.  winex11 publishes
++     * the host state on the root window (1 viewable, 2 not, absent unknown:
++     * fall back to the WS_VISIBLE check above). */
++    if (dcomp_viewability_enabled())
++    {
++        HWND root = GetAncestor(hwnd, GA_ROOT);
++
++        if (root && (UINT_PTR)GetPropW(root, L"__wine_x11_viewable") == 2)
++        {
++            static unsigned int unmapped_count;
++            ++unmapped_count;
++            if (unmapped_count <= 3 || !(unmapped_count % 500))
++                FIXME("Re-blit skipped (host unmapped): hwnd %p reason=%s.\n", hwnd, reason);
++            TRACE_(wmtrace)("REBLIT-SKIP hwnd=%p cause=unmapped reason=%s\n", hwnd, reason);
++            return;
++        }
++    }
++
+     if (comp_dc && dims)
+     {
+         unsigned int w = LOWORD(dims);
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 367be02..450362c 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -108,6 +108,13 @@ static const WCHAR focus_time_prop[] =
+ static const WCHAR dcomp_swapchain_propW[] =
+     {'_','_','w','i','n','e','_','d','c','o','m','p','_','s','w','a','p','c','h','a','i','n',0};
+ static const WCHAR *dcomp_swapchain_prop = dcomp_swapchain_propW;
++/* Host viewability, published for the dcomp reblit gate: 1 = mapped
++ * NormalState, 2 = not; absent = unknown (unmanaged, virtual desktop), so
++ * readers fall back to WS_VISIBLE alone.  Value 2 instead of removal: a
++ * removed property cannot be told apart from one never set. */
++static const WCHAR x11_viewable_propW[] =
++    {'_','_','w','i','n','e','_','x','1','1','_','v','i','e','w','a','b','l','e',0};
++static const WCHAR *x11_viewable_prop = x11_viewable_propW;
+ static const WCHAR dcomp_popup_parent_propW[] =
+     {'_','_','w','i','n','e','_','d','c','o','m','p','_','p','o','p','u','p','_','p','a','r','e','n','t',0};
+ static const WCHAR *dcomp_popup_parent_prop = dcomp_popup_parent_propW;
+@@ -2525,6 +2532,20 @@ static BOOL handle_state_change( unsigned long serial, unsigned long *expect_ser
+     return TRUE;
+ }
+ 
++/* Publish host viewability for the dcomp reblit gate: 1 mapped NormalState,
++ * 2 not.  handle_state_change copies the new value into current_state before it
++ * refuses an old-serial or transient acknowledgement, so both of its exits have
++ * to publish.  A window manager that iconifies or restores while one of our
++ * requests is in flight can send WM_STATE below our serial; skipping the
++ * publish there leaves a mapped window marked unviewable, and every parked
++ * reblit under that top level stops until an unrelated transition happens to
++ * refresh the property. */
++static void window_publish_viewability( struct x11drv_win_data *data )
++{
++    NtUserSetProp( data->hwnd, x11_viewable_prop,
++                   (HANDLE)(UINT_PTR)(data->current_state.wm_state == NormalState ? 1 : 2) );
++}
++
+ void window_wm_state_notify( struct x11drv_win_data *data, unsigned long serial, UINT value, Time time )
+ {
+     UINT *desired = &data->desired_state.wm_state, *pending = &data->pending_state.wm_state, *current = &data->current_state.wm_state;
+@@ -2539,7 +2560,10 @@ void window_wm_state_notify( struct x11drv_win_data *data, unsigned long serial,
+ 
+     if (!handle_state_change( serial, expect_serial, sizeof(value), &value, desired, pending,
+                               current, expected, prefix, received, reason ))
++    {
++        window_publish_viewability( data );
+         return;
++    }
+     data->current_state.activate = data->pending_state.activate;
+     data->reparenting = 0;
+ 
+@@ -2548,6 +2572,8 @@ void window_wm_state_notify( struct x11drv_win_data *data, unsigned long serial,
+ 
+     if (data->current_state.wm_state == NormalState) NtUserSetProp( data->hwnd, focus_time_prop, (HANDLE)time );
+     else if (!data->wm_state_serial) NtUserRemoveProp( data->hwnd, focus_time_prop );
++
++    window_publish_viewability( data );
+ }
+ 
+ void window_net_wm_state_notify( struct x11drv_win_data *data, unsigned long serial, UINT value )

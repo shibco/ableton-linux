@@ -1,0 +1,306 @@
+Subject: dxgi: make DComp window teardown complete, idempotent and owning-thread
+
+Releasing a swapchain from a thread other than its target window's
+skipped every window-owning cleanup: the reblit timers kept firing, the
+subclass stayed installed, the composition properties leaked, and the
+subclassed-target count never fell, so winex11 kept classifying
+ownerless tool popups as menus for the rest of the session. A
+same-thread release also left the popup-stack entry, the desktop active
+property and the parent clip bit behind, and a release followed by
+window destruction could tear down twice.
+
+Factor the whole teardown into dcomp_teardown_window: timers, subclass
+restore with ownership validation, all composition properties, the
+popup-stack entry, the active count and the parent clip, one-shot via a
+__wine_dcomp_subclassed marker. Both NCDESTROY handlers, same-thread
+release and a new WM_WINE_DCOMP_TEARDOWN message use it; a cross-thread
+release posts that message to the owning thread instead of skipping,
+and the comp window destroy marshals the same way.
+WINE_DCOMP_TEARDOWN=legacy restores the old release path for
+comparison.
+
+diff --git a/dlls/dxgi/dxgi_private.h b/dlls/dxgi/dxgi_private.h
+index 039105b..9a1b9b9 100644
+--- a/dlls/dxgi/dxgi_private.h
++++ b/dlls/dxgi/dxgi_private.h
+@@ -179,6 +179,8 @@ struct dxgi_adapter *unsafe_impl_from_IDXGIAdapter(IDXGIAdapter *iface);
+  * Controls full-vs-popup mode; d3d11_swapchain_Release() decrements it when it
+  * un-subclasses a target on its own UI thread. */
+ extern LONG dcomp_subclassed_target_count;
++extern void dcomp_teardown_window(HWND hwnd);
++extern BOOL dcomp_teardown_legacy(void);
+ 
+ /* IDXGISwapChain */
+ struct d3d11_swapchain
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 726c13d..7cc0d08 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -390,6 +390,7 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
+ 
+ #define WM_WINE_DCOMP_SET_TARGET (WM_USER + 0x100)
+ #define WM_WINE_DCOMP_SET_CHILD_MODE (WM_USER + 0x101)
++#define WM_WINE_DCOMP_TEARDOWN (WM_USER + 0x102)
+ /* SET_TARGET wparam flag set by dlls/dcomp when the binding dcomp device has
+  * no d2d1 device (mirrored there, like the message id itself). */
+ #define DCOMP_SET_TARGET_NULL_D2D1_DEVICE 0x1
+@@ -648,6 +649,71 @@ static void dcomp_restore_parent_clip(HWND hwnd)
+     }
+ }
+ 
++static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
++static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
++
++/* WINE_DCOMP_TEARDOWN=legacy restores the pre-0094 swapchain-release
++ * teardown (window-owning cleanup only on the owning thread, skipped
++ * otherwise) for comparison. */
++BOOL dcomp_teardown_legacy(void)
++{
++    static int legacy = -1;
++
++    if (legacy == -1)
++    {
++        WCHAR val[8] = {0};
++        legacy = GetEnvironmentVariableW(L"WINE_DCOMP_TEARDOWN", val, ARRAY_SIZE(val))
++                && !wcscmp(val, L"legacy");
++    }
++    return legacy;
++}
++
++/* Complete, idempotent teardown of a subclassed DComp target window:
++ * timers, subclass, window properties, popup-stack entry, active count
++ * and parent clip restore.  Must run on the window's owning thread
++ * (KillTimer and SetWindowLongPtrW are thread-affine); a cross-thread
++ * swapchain Release marshals here via WM_WINE_DCOMP_TEARDOWN.  The
++ * __wine_dcomp_subclassed marker makes the count/stack/clip effects
++ * one-shot however many of Release, the marshalled message and
++ * WM_NCDESTROY run for the same window. */
++void dcomp_teardown_window(HWND hwnd)
++{
++    WNDPROC orig = (WNDPROC)GetPropW(hwnd, L"__wine_dcomp_orig_wndproc");
++    WNDPROC current;
++
++    if (!GetPropW(hwnd, L"__wine_dcomp_subclassed")) return; /* already torn down */
++    RemovePropW(hwnd, L"__wine_dcomp_subclassed");
++
++    KillTimer(hwnd, DCOMP_REBLIT_TIMER_ID);
++    KillTimer(hwnd, DCOMP_POPUP_REBLIT_TIMER_ID);
++    KillTimer(hwnd, DCOMP_RESIZE_REBLIT_TIMER_ID);
++
++    /* Only unhook while one of our procs is still the current wndproc:
++     * if something subclassed the window after us, restoring orig here
++     * would cut that outer chain.  Leave the chain and the orig property
++     * in place so our proc keeps forwarding. */
++    current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
++    if (orig && (current == dcomp_target_wndproc || current == dcomp_popup_wndproc))
++    {
++        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)orig);
++        RemovePropW(hwnd, L"__wine_dcomp_orig_wndproc");
++    }
++
++    InterlockedDecrement(&dcomp_subclassed_target_count);
++    dcomp_update_active_prop();
++    dcomp_popup_stack_remove(hwnd);
++    dcomp_restore_parent_clip(hwnd);
++
++    RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
++    RemovePropW(hwnd, L"__wine_dcomp_comp_size");
++    RemovePropW(hwnd, L"__wine_dcomp_comp_bits");
++    RemovePropW(hwnd, L"__wine_dcomp_last_present");
++    RemovePropW(hwnd, L"__wine_dcomp_reblit_tries");
++    RemovePropW(hwnd, L"__wine_dcomp_popup_parent");
++    dcomp_clear_null_device_props(hwnd);
++    TRACE_(wmtrace)("DCOMP-TEARDOWN hwnd=%p\n", hwnd);
++}
++
+ /* Lightweight subclass for DComp popup windows (menus, tooltips).
+  * Only blocks WM_ERASEBKGND and re-blits composition content on WM_PAINT.
+  * NO timer, NO periodic Present â avoids dual-swapchain
+@@ -679,6 +745,10 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             return 0;
+         }
+ 
++        case WM_WINE_DCOMP_TEARDOWN:
++            dcomp_teardown_window(hwnd);
++            return 0;
++
+         case WM_TIMER:
+             if (wparam == DCOMP_POPUP_REBLIT_TIMER_ID)
+             {
+@@ -696,12 +766,6 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             LRESULT result;
+             IDXGISwapChain4 *sc = (IDXGISwapChain4 *)GetPropW(hwnd, L"__wine_dcomp_swapchain");
+ 
+-            InterlockedDecrement(&dcomp_subclassed_target_count);
+-            dcomp_update_active_prop();
+-            dcomp_popup_stack_remove(hwnd);
+-            KillTimer(hwnd, DCOMP_POPUP_REBLIT_TIMER_ID);
+-            KillTimer(hwnd, DCOMP_RESIZE_REBLIT_TIMER_ID);
+-
+             /* Before the popup window is destroyed, switch the swapchain back
+              * to its composition window.  This drains the CS queue (no more
+              * presents to the dead popup), releases the popup's DC, and
+@@ -736,15 +800,10 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                 }
+             }
+ 
+-            dcomp_restore_parent_clip(hwnd);
++            dcomp_teardown_window(hwnd);
+             result = orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
+                          : DefWindowProcW(hwnd, msg, wparam, lparam);
+-            RemovePropW(hwnd, L"__wine_dcomp_orig_wndproc");
+             RemovePropW(hwnd, L"__wine_dcomp_swapchain");
+-            RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
+-            RemovePropW(hwnd, L"__wine_dcomp_comp_size");
+-            RemovePropW(hwnd, L"__wine_dcomp_reblit_tries");
+-            dcomp_clear_null_device_props(hwnd);
+             return result;
+         }
+     }
+@@ -807,6 +866,10 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             return 0;
+         }
+ 
++        case WM_WINE_DCOMP_TEARDOWN:
++            dcomp_teardown_window(hwnd);
++            return 0;
++
+         case WM_TIMER:
+             if (wparam == DCOMP_REBLIT_TIMER_ID)
+             {
+@@ -968,25 +1031,14 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+         {
+             LRESULT result;
+             IDXGISwapChain4 *sc = (IDXGISwapChain4 *)GetPropW(hwnd, L"__wine_dcomp_swapchain");
+-            InterlockedDecrement(&dcomp_subclassed_target_count);
+-            dcomp_update_active_prop();
+-            dcomp_popup_stack_remove(hwnd);
+-            KillTimer(hwnd, DCOMP_REBLIT_TIMER_ID);
+-            KillTimer(hwnd, DCOMP_RESIZE_REBLIT_TIMER_ID);
+             /* Window dies first: clear the back-pointer so a later
+              * d3d11_swapchain_Release won't touch this (recycled) HWND. */
+             if (sc)
+                 d3d11_swapchain_from_IDXGISwapChain4(sc)->target_hwnd = NULL;
+-            dcomp_restore_parent_clip(hwnd);
++            dcomp_teardown_window(hwnd);
+             result = orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
+                          : DefWindowProcW(hwnd, msg, wparam, lparam);
+-            RemovePropW(hwnd, L"__wine_dcomp_orig_wndproc");
+             RemovePropW(hwnd, L"__wine_dcomp_swapchain");
+-            RemovePropW(hwnd, L"__wine_dcomp_comp_dc");
+-            RemovePropW(hwnd, L"__wine_dcomp_comp_size");
+-            RemovePropW(hwnd, L"__wine_dcomp_last_present");
+-            RemovePropW(hwnd, L"__wine_dcomp_reblit_tries");
+-            dcomp_clear_null_device_props(hwnd);
+             return result;
+         }
+     }
+@@ -1003,6 +1055,9 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+             return 1;
+         case WM_NCHITTEST:
+             return HTTRANSPARENT;
++        case WM_WINE_DCOMP_TEARDOWN:
++            DestroyWindow(hwnd);
++            return 0;
+         case WM_PAINT:
+         {
+             PAINTSTRUCT ps;
+@@ -1178,6 +1233,7 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                         {
+                             SetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc", (HANDLE)orig);
+                             SetPropW(target_hwnd, L"__wine_dcomp_swapchain", (HANDLE)iface);
++                            SetPropW(target_hwnd, L"__wine_dcomp_subclassed", (HANDLE)1);
+                             /* Anchor transient_for at the previously-opened target
+                              * (read by winex11 set_style_hints) instead of
+                              * get_active_window → nested hierarchy, no main-window pull. */
+@@ -1204,6 +1260,7 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                         {
+                             SetPropW(target_hwnd, L"__wine_dcomp_orig_wndproc", (HANDLE)orig);
+                             SetPropW(target_hwnd, L"__wine_dcomp_swapchain", (HANDLE)iface);
++                            SetPropW(target_hwnd, L"__wine_dcomp_subclassed", (HANDLE)1);
+                             SetTimer(target_hwnd, DCOMP_REBLIT_TIMER_ID, 200, NULL);
+                             InterlockedIncrement(&dcomp_subclassed_target_count);
+                             dcomp_update_active_prop();
+diff --git a/dlls/dxgi/swapchain.c b/dlls/dxgi/swapchain.c
+index e768bed..93d7d98 100644
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -28,6 +28,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(dxgi);
+ WINE_DECLARE_DEBUG_CHANNEL(winediag);
+ WINE_DECLARE_DEBUG_CHANNEL(wmtrace);
+ 
++#define WM_WINE_DCOMP_TEARDOWN (WM_USER + 0x102)
++
+ static UINT dxgi_get_display_refresh_rate(void)
+ {
+     DEVMODEW mode;
+@@ -313,20 +315,37 @@ static ULONG STDMETHODCALLTYPE d3d11_swapchain_Release(IDXGISwapChain4 *iface)
+             HWND t = swapchain->target_hwnd;
+ 
+             RemovePropW(t, L"__wine_dcomp_swapchain");
+-            if (IsWindow(t) && GetWindowThreadProcessId(t, NULL) == GetCurrentThreadId())
++            if (dcomp_teardown_legacy())
++            {
++                /* Pre-0094 teardown: window-owning cleanup only on the owning
++                 * thread; a cross-thread release leaked the timers, the
++                 * subclass, the popup-stack entry and the active count. */
++                if (IsWindow(t) && GetWindowThreadProcessId(t, NULL) == GetCurrentThreadId())
++                {
++                    WNDPROC orig = (WNDPROC)GetPropW(t, L"__wine_dcomp_orig_wndproc");
++
++                    KillTimer(t, DCOMP_REBLIT_TIMER_ID);
++                    KillTimer(t, DCOMP_POPUP_REBLIT_TIMER_ID);
++                    KillTimer(t, DCOMP_RESIZE_REBLIT_TIMER_ID);
++                    if (orig)
++                        SetWindowLongPtrW(t, GWLP_WNDPROC, (LONG_PTR)orig);
++                    RemovePropW(t, L"__wine_dcomp_orig_wndproc");
++                    RemovePropW(t, L"__wine_dcomp_comp_dc");
++                    RemovePropW(t, L"__wine_dcomp_comp_size");
++                    RemovePropW(t, L"__wine_dcomp_comp_bits");
++                    InterlockedDecrement(&dcomp_subclassed_target_count);
++                }
++            }
++            else if (IsWindow(t))
+             {
+-                WNDPROC orig = (WNDPROC)GetPropW(t, L"__wine_dcomp_orig_wndproc");
+-
+-                KillTimer(t, DCOMP_REBLIT_TIMER_ID);
+-                KillTimer(t, DCOMP_POPUP_REBLIT_TIMER_ID);
+-                KillTimer(t, DCOMP_RESIZE_REBLIT_TIMER_ID);
+-                if (orig)
+-                    SetWindowLongPtrW(t, GWLP_WNDPROC, (LONG_PTR)orig);
+-                RemovePropW(t, L"__wine_dcomp_orig_wndproc");
+-                RemovePropW(t, L"__wine_dcomp_comp_dc");
+-                RemovePropW(t, L"__wine_dcomp_comp_size");
+-                RemovePropW(t, L"__wine_dcomp_comp_bits");
+-                InterlockedDecrement(&dcomp_subclassed_target_count);
++                /* Complete teardown on the window's owning thread: directly
++                 * when that is us, marshalled through the subclass proc
++                 * otherwise (KillTimer and SetWindowLongPtrW are
++                 * thread-affine). */
++                if (GetWindowThreadProcessId(t, NULL) == GetCurrentThreadId())
++                    dcomp_teardown_window(t);
++                else if (!PostMessageW(t, WM_WINE_DCOMP_TEARDOWN, 0, 0))
++                    WARN("Could not marshal DComp teardown to the thread of %p.\n", t);
+             }
+             swapchain->target_hwnd = NULL;
+         }
+@@ -338,9 +357,15 @@ static ULONG STDMETHODCALLTYPE d3d11_swapchain_Release(IDXGISwapChain4 *iface)
+                     L"__wine_dcomp_wnd_%I64x", (UINT_PTR)iface);
+             RemovePropW(GetDesktopWindow(), prop_name);
+             RemovePropW(swapchain->comp_wnd, L"__wine_dcomp_swapchain");
+-            if (IsWindow(swapchain->comp_wnd)
+-                    && GetWindowThreadProcessId(swapchain->comp_wnd, NULL) == GetCurrentThreadId())
+-                DestroyWindow(swapchain->comp_wnd);
++            if (IsWindow(swapchain->comp_wnd))
++            {
++                if (GetWindowThreadProcessId(swapchain->comp_wnd, NULL) == GetCurrentThreadId())
++                    DestroyWindow(swapchain->comp_wnd);
++                else if (!dcomp_teardown_legacy()
++                        && !PostMessageW(swapchain->comp_wnd, WM_WINE_DCOMP_TEARDOWN, 0, 0))
++                    WARN("Could not marshal comp-window destroy to the thread of %p.\n",
++                            swapchain->comp_wnd);
++            }
+             swapchain->comp_wnd = NULL;
+         }
+         IWineDXGIFactory_Release(swapchain->factory);

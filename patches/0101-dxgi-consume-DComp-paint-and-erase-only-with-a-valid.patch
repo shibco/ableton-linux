@@ -1,0 +1,95 @@
+Subject: dxgi: consume DComp popup paint and erase only with a valid buffer
+
+The popup wndproc swallowed WM_PAINT and WM_ERASEBKGND whatever the
+composition buffer's state, validating the window with nothing drawn;
+newly exposed popup pixels then kept undefined content behind the
+background_pixmap=None choices (kept, each guards a documented flash
+regression). Popups now forward paint and erase to the app's own
+wndproc when no valid current-size buffer exists.
+
+The target wndproc keeps its consume-without-drawing stale path.
+Forwarding there causes the Learn View revert, and a deterministic
+fill is worse: the currency check dips whenever Chromium resizes its
+swapchain, which mouse-driven hover animation does constantly, and a
+fill repainted valid on-screen pixels as white flashes (first live
+test, Learn View and Splice). The pixels already on screen are the
+last presented frame, and keeping them is the deterministic choice for
+a covered region. WINE_DCOMP_PAINT=legacy restores the unconditional
+popup consumption for comparison.
+
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index 2856e5e..402fc18 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -580,6 +580,21 @@ LONG dcomp_subclassed_target_count;
+  * IFX list, embedded).  This flag lets winex11 mark them DROPDOWN_MENU instead.
+  * Set while count > 0, removed at 0 (SetProp with value 0 is not distinguishable
+  * from "unset" — see the SetPropW (HANDLE)1/2 lesson). */
++/* WINE_DCOMP_PAINT=legacy restores the unconditional paint/erase
++ * consumption for comparison. */
++static BOOL dcomp_paint_legacy(void)
++{
++    static int legacy = -1;
++
++    if (legacy == -1)
++    {
++        WCHAR val[16] = {0};
++        legacy = GetEnvironmentVariableW(L"WINE_DCOMP_PAINT", val, ARRAY_SIZE(val))
++                && !wcscmp(val, L"legacy");
++    }
++    return legacy;
++}
++
+ /* WINE_DCOMP_SCOPE=global restores the session-wide active flag and the
+  * process-global popup anchoring for comparison. */
+ static BOOL dcomp_scope_global(void)
+@@ -810,7 +825,18 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+     switch (msg)
+     {
+         case WM_ERASEBKGND:
++        {
++            HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
++            LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
++
++            /* Only consume the erase when WM_PAINT below can cover the area
++             * from a valid current-size buffer.  A swallowed erase with
++             * nothing to blit leaves newly exposed pixels undefined. */
++            if (!dcomp_paint_legacy() && !(comp_dc && dims
++                    && dcomp_comp_buffer_current(hwnd, LOWORD(dims), HIWORD(dims))))
++                break; /* forward: the app's own wndproc erases deterministically */
+             return 1;
++        }
+ 
+         case WM_PAINT:
+         {
+@@ -818,6 +844,12 @@ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+             HDC comp_dc = (HDC)GetPropW(hwnd, L"__wine_dcomp_comp_dc");
+             LPARAM dims = (LPARAM)GetPropW(hwnd, L"__wine_dcomp_comp_size");
+ 
++            /* No valid current-size buffer: do not consume the paint with
++             * nothing drawn.  Forward so the app's own wndproc paints. */
++            if (!dcomp_paint_legacy() && !(comp_dc && dims
++                    && dcomp_comp_buffer_current(hwnd, LOWORD(dims), HIWORD(dims))))
++                break;
++
+             BeginPaint(hwnd, &ps);
+             if (comp_dc && dims)
+             {
+@@ -945,6 +977,17 @@ static LRESULT CALLBACK dcomp_target_wndproc(HWND hwnd, UINT msg, WPARAM wparam,
+                 if (paint_null <= 3)
+                     FIXME("WM_PAINT: no comp buffer for hwnd %p (dc=%p dims=%#Ix).\n",
+                             hwnd, comp_dc, (ULONG_PTR)dims);
++                /* Consume without drawing: forwarding is not safe here (the
++                 * orig proc erases the surface and the sibling software frame
++                 * shows through, the Learn View revert), and filling is
++                 * worse.  The currency check dips whenever Chromium resizes
++                 * its swapchain, which mouse-driven hover animation does
++                 * constantly, and a fill repainted valid on-screen pixels as
++                 * white flashes (first live test, Learn View and Splice).
++                 * The pixels already on screen are the last presented frame:
++                 * keeping them IS the deterministic choice for a covered
++                 * region, and a newly exposed region while the buffer is
++                 * stale repaints on the next present or reblit. */
+             }
+             EndPaint(hwnd, &ps);
+             ValidateRect(hwnd, NULL);

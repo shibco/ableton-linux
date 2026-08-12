@@ -12,7 +12,7 @@ fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
 # --- --freeze: (re)generate the frozen series manifest ------------------------
 if [ "${1:-}" = --freeze ]; then
-    new="$(cd "$root/patches" && sha256sum 00*.patch pipeasio/*.patch)"
+    new="$(cd "$root/patches" && sha256sum 0*.patch pipeasio/*.patch)"
     if [ -f "$SERIES" ]; then
         say "== freeze diff (old -> new) =="
         diff -u "$SERIES" <(printf '%s\n' "$new") && say "   (no changes)"
@@ -64,7 +64,7 @@ while read -r sum file; do
         sha_ok["$file"]=0
     fi
 done < "$SERIES"
-extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
+extras="$(cd "$root/patches" && ls 0*.patch pipeasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
 # Retired numbers stay retired (renumbering would break cross-references in patch
 # titles and notes/); a gap is fine if documented here, a dropped patch is not.
@@ -153,6 +153,22 @@ FINGERPRINTS='
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
+0090|ascii|lib/wine/x86_64-unix/winex11.so|REQ-WMSTATE hwnd=
+0090|ascii|lib/wine/x86_64-unix/win32u.so|SURFACE-CREATE hwnd=
+0090|ascii|lib/wine/x86_64-windows/dxgi.dll|PRESENT-PATH hwnd=
+0091|ascii|lib/wine/x86_64-unix/winex11.so|WINE_ACTIVATE_RESEND
+0092|ascii|lib/wine/x86_64-unix/winex11.so|WINE_ACTIVATE_SOURCE
+0093|ascii|lib/wine/x86_64-unix/winex11.so|WINE_HOST_STATE_LOCK
+0094|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DCOMP_TEARDOWN
+0095|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_clip_refs
+0097|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_wnd_%lu_%I64x
+0098|wide|lib/wine/x86_64-windows/wined3d.dll|__wine_dcomp_target_%u
+0100|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DCOMP_SCOPE
+0100|ascii|lib/wine/x86_64-unix/winex11.so|WINE_DCOMP_SCOPE
+0101|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DCOMP_PAINT
+0102|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DCOMP_VIEWABILITY
+0103|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_teardown
+0104|ascii|lib/wine/x86_64-unix/winex11.so|WINE_CONFIG_ROUNDING
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
@@ -165,6 +181,8 @@ STAMP_ONLY='
 0086|logic-only (pixel geometry and target policy for ClearType; adds no string literal)
 0087|logic-only (smoothing resolved by source precedence; adds no string literal)
 0089|logic-only (signed ClearType coverage interpolation; adds no string literal)
+0096|logic-only (desktop swapchain property removed only when still owned; adds no string literal)
+0099|logic-only (exclusion restricted to the present top level via GetAncestor; adds no string literal)
 0002|logic-only (visible-rect gates; adds no string literal)
 0004|logic-only (reentrant wpchanged state)
 0005|logic-only (NC frame allowance)

@@ -244,6 +244,36 @@ If fullscreen is still wrong after the update, launch once with
 [open an issue](https://github.com/shibco/ableton-linux/issues) and include
 your desktop environment and whether that launch behaved differently.
 
+## A window will not close or never appears
+
+If your desktop runs xwayland-satellite (niri does), check its version:
+
+```bash
+xwayland-satellite --version
+```
+
+Version 0.8.2 hides some of Live's dialogs, the Trial window included.
+Downgrade to 0.8.1 and try again.
+
+On other desktops, record what yours is doing and open an issue. Run
+this while the stuck window is on screen:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/shibco/ableton-linux/main/tools/wm-capture.sh
+bash wm-capture.sh
+```
+
+Then start Live once with the window log switched on, repeat the
+problem, and quit Live:
+
+```bash
+env ABLETON_WM_TRACE=1 ableton-live
+```
+
+Attach the folder that wm-capture.sh printed and the file
+`~/.log/ableton-wine/live.log` to the issue, and name your desktop
+environment.
+
 ## GNOME handles a Live shortcut instead of Live
 
 GNOME uses Ctrl+Alt+Up and Ctrl+Alt+Down for workspace switching. These keys
@@ -274,3 +304,7 @@ Use the [GitHub issue form](https://github.com/shibco/ableton-linux/issues/new/c
 Include the Live edition, this project's release number, Linux distribution,
 desktop environment, and the exact action that failed. Do not attach Ableton
 installers, authorization files, licence keys, projects, or plugin credentials.
+
+For window problems (wrong size or position, stuck fullscreen, black or
+frozen areas, a window that will not close) also attach the two captures
+described in "A window will not close or never appears" above.

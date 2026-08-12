@@ -1,0 +1,48 @@
+Subject: wined3d: only exclude dcomp targets that share our top level (issue 145)
+
+A present excludes every window listed in the dcomp target registry from its
+clip, so that it does not overpaint a composition target at 60 Hz while the
+tree timer paints it back at 10 Hz.  That is right for targets living in our
+own top level, whose windows all share its drawable.
+
+The registry lives on the desktop window and is therefore desktop-wide: it
+also lists targets of entirely different top levels.  Their rects are not
+"outside our window" as the comment assumed -- MapWindowPoints puts them
+wherever the two windows happen to overlap on screen, and ExcludeClipRect then
+punches that overlap out of our own present.
+
+A plugin editor dragged over Ableton Live's WebView2 panel loses its content in
+exactly the intersection, down to the pixel, and keeps the hole: the visible
+region stays complete, so nothing looks wrong from the window's own side, and
+closing the panel does not help because the target stays registered.  Resizing
+repaints through another path and hides it until the next time.  Seen on a
+Vintage Prom 3 editor and reproduced with a JUCE test plugin.
+
+Only windows sharing our top level share our drawable, so ask for that.  The
+flicker fix keeps working: same top level, same GA_ROOT, same exclusion as
+before.
+
+Ported from giang17/wine c2cf448f on top of the 0098 registry port.
+
+diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
+index fc59728..59abbc6 100644
+--- a/dlls/wined3d/swapchain.c
++++ b/dlls/wined3d/swapchain.c
+@@ -1166,7 +1166,16 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
+ 
+                 swprintf(treg, ARRAY_SIZE(treg), L"__wine_dcomp_target_%u", ti);
+                 t = (HWND)GetPropW(desktop_wnd, treg);
+-                if (t && t != swapchain->win_handle && IsWindow(t))
++                /* Only targets that share our top level share our drawable.
++                 * The registry is desktop-wide, so it also lists targets of
++                 * other top levels - a plugin editor over Live's WebView2
++                 * panel, say.  Their rects are not "outside our window": they
++                 * map to wherever the two windows overlap on screen, and
++                 * excluding them punches that overlap out of our present.  The
++                 * hole then survives, because nothing invalidates us when the
++                 * other top level changes. */
++                if (t && t != swapchain->win_handle && IsWindow(t)
++                        && GetAncestor(t, GA_ROOT) == GetAncestor(swapchain->win_handle, GA_ROOT))
+                     wined3d_exclude_dcomp_children_proc(t, (LPARAM)&ctx);
+             }
+             /* Always BitBlt full comp buffer to window — survives any surface reset. */
