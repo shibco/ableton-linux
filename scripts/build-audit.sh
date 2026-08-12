@@ -71,9 +71,6 @@ extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
-    [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
-    [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
-    [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0072]="unclaimed; kept as a gap so 0073 and 0074 stay where PR 152 put them"
     [0073]="reserved for PR 152"
     [0074]="reserved for PR 152"
@@ -146,6 +143,8 @@ FINGERPRINTS='
 0064|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_open_folder
 0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
+0066|ascii|lib/wine/x86_64-windows/wined3d.dll|Intel(R) UHD Graphics P630
+0068|ascii|lib/wine/x86_64-windows/wined3d.dll|WINE_D3D_FORCE_GPU_RENDERING
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0071|ascii|lib/wine/x86_64-windows/wined3d.dll|Sustained present-size mismatch
 0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
@@ -203,6 +202,7 @@ STAMP_ONLY='
 0052|logic-only (DT_HIDEPREFIX on the menu bar DrawTextW call; no new string literal)
 0053|logic-only (WM_GETMINMAXINFO minimum exported as PMinSize hints; no new string literal)
 0054|logic-only (per-string SystemLink font fallback in draw_menu_item, plus the calc_menu_item_size CJK-measurement fix; no new string literal)
+0067|logic-only (drops the video-memory precondition on the 0061 synthesised description; reuses the 0061 string literal)
 0070|logic-only (break Alt/F10 menu-bar arming when the app consumes the chord key; no new string literal)
 0077|logic-only (minimize/maximize Motif functions advertised unconditionally; extends 0037, no new string literal)
 0078|logic-only (initial monitor DPI seeded in the create_window request; MR 11573 backport, no new string literal)

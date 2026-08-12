@@ -1,0 +1,142 @@
+Subject: wined3d: add WINE_D3D_FORCE_GPU_RENDERING, disclosed in
+ the device name
+
+Ableton Live 12 decides whether to offer its GPU renderer from the PCI
+device ID alone: for vendor 0x8086 it refuses any ID on an internal list
+of 101 Intel devices sold between 2004 and 2014, and the reported name
+plays no part in the decision. That list was drawn up against Intel's
+Windows drivers for those parts. Mesa's drivers for the same silicon are
+a different and far better maintained implementation, and the fallback a
+refused user gets is Live's GDI renderer, which costs about 59% of a CPU
+core in normal use. Whether the trade is worth taking is the user's call
+to make, not ours to make for them.
+
+Setting WINE_D3D_FORCE_GPU_RENDERING=1 substitutes a baseline device ID
+that is on no such list. The vendor, driver and video-memory figure are
+untouched, and the description keeps the card's real name followed by
+the name of the device being reported:
+
+  Intel(R) HD Graphics 4000 (reporting as Intel(R) UHD Graphics 630)
+
+so the substitution is visible everywhere the description surfaces -
+Live's log, its Preferences dialog, any screenshot of either, and any
+report sent onward. The card's own identity is never replaced, only
+accompanied, and the composed string stays inside DXGI_ADAPTER_DESC1's
+128-character field.
+
+The substitution applies to Intel only, since no other vendor is gated
+this way, and it leaves a card that already reports the baseline alone.
+Off by default: applications other than Live read the device ID too, so
+this belongs to a user who has decided they want it.
+---
+ dlls/wined3d/adapter_gl.c | 73 +++++++++++++++++++++++++++++++++++++++
+ dlls/wined3d/wined3d_gl.h |  5 +++
+ 2 files changed, 78 insertions(+)
+
+diff --git a/dlls/wined3d/adapter_gl.c b/dlls/wined3d/adapter_gl.c
+index 40b9753..9ce2732 100644
+--- a/dlls/wined3d/adapter_gl.c
++++ b/dlls/wined3d/adapter_gl.c
+@@ -1053,6 +1053,74 @@ static const struct wined3d_gpu_description *synthesise_gpu_description(struct w
+     return &ctx->synthetic_gpu_description;
+ }
+ 
++/* Report a different PCI device ID than the card's own, keeping the card's
++ * real name and disclosing the substitution in it.
++ *
++ * Ableton Live 12 decides whether to offer its GPU renderer from the PCI
++ * device ID alone: for vendor 0x8086 it refuses any ID on an internal list of
++ * 101 Intel devices sold between 2004 and 2014, and the reported name plays no
++ * part in the decision. The list was drawn up against Intel's Windows drivers
++ * for those parts. Mesa's drivers for the same silicon are a different and
++ * far better maintained implementation, so a user may reasonably want to try
++ * the renderer anyway; the alternative is Live's GDI renderer, which costs
++ * about 59% of a CPU core in normal use.
++ *
++ * Setting WINE_D3D_FORCE_GPU_RENDERING=1 substitutes a baseline device ID that
++ * appears on no such list. The vendor, the driver and the video-memory figure
++ * stay as they are, and the description keeps the card's real name followed by
++ * the name of the device being reported, so the substitution is visible
++ * wherever the description surfaces - Live's own log, its Preferences dialog
++ * and any screenshot of either. Nothing is hidden from the user or from
++ * Ableton.
++ *
++ * Applications other than Live gate on the device ID too, so this is a blunt
++ * instrument: it is off by default and belongs to a user who has decided the
++ * trade is worth it. */
++static const struct wined3d_gpu_description *substitute_gpu_device_id(struct wined3d_caps_gl_ctx *ctx,
++        const struct wined3d_gpu_description *gpu_description)
++{
++    const struct wined3d_gpu_description *baseline;
++    const char *env;
++    size_t tail;
++    int room;
++
++    if (!(env = getenv("WINE_D3D_FORCE_GPU_RENDERING")) || strcmp(env, "1"))
++        return gpu_description;
++
++    /* Only Intel is gated by device ID in the case this exists for, and a
++     * substitution costs accuracy, so leave every other vendor alone. */
++    if (gpu_description->vendor != HW_VENDOR_INTEL)
++    {
++        TRACE("Not substituting a device ID for vendor %04x.\n", gpu_description->vendor);
++        return gpu_description;
++    }
++
++    if (!(baseline = wined3d_get_gpu_description(HW_VENDOR_INTEL, CARD_INTEL_UHD630_1))
++            || gpu_description->device == CARD_INTEL_UHD630_1)
++        return gpu_description;
++
++    /* DXGI_ADAPTER_DESC1 truncates the description at 128 characters and the
++     * disclosure is its tail, so bound the card's own name to leave room:
++     * whatever else is lost, the substitution must still be readable. */
++    tail = strlen(" (reporting as )") + strlen(baseline->description);
++    room = sizeof(ctx->forced_description) > tail + 1
++            ? (int)(sizeof(ctx->forced_description) - 1 - tail) : 0;
++
++    snprintf(ctx->forced_description, sizeof(ctx->forced_description), "%.*s (reporting as %s)",
++            room, gpu_description->description, baseline->description);
++
++    ctx->forced_gpu_description = *gpu_description;
++    ctx->forced_gpu_description.device = baseline->device;
++    ctx->forced_gpu_description.description = ctx->forced_description;
++
++    WARN("WINE_D3D_FORCE_GPU_RENDERING is set; reporting device %04x:%04x as %04x:%04x, %s.\n",
++            gpu_description->vendor, gpu_description->device,
++            ctx->forced_gpu_description.vendor, ctx->forced_gpu_description.device,
++            debugstr_a(ctx->forced_description));
++
++    return &ctx->forced_gpu_description;
++}
++
+ static const struct wined3d_gpu_description *query_gpu_description(const struct wined3d_gl_info *gl_info,
+         struct wined3d_caps_gl_ctx *ctx, const char *gl_renderer)
+ {
+@@ -3882,6 +3950,11 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter_gl *adapter_gl,
+             return FALSE;
+         }
+     }
++    /* Both branches above settle a description, and the feature-level fallback
++     * settles the fabricated CARD_INTEL_IVBD that the substitution exists to
++     * replace, so substitute here rather than inside query_gpu_description. */
++    caps_gl_ctx->gpu_description = substitute_gpu_device_id(caps_gl_ctx, caps_gl_ctx->gpu_description);
++
+     fixup_extensions(gl_info, caps_gl_ctx, gl_renderer_str, gl_vendor);
+ 
+     adapter->vram_bytes_used = 0;
+diff --git a/dlls/wined3d/wined3d_gl.h b/dlls/wined3d/wined3d_gl.h
+index 8510773..7d3aa62 100644
+--- a/dlls/wined3d/wined3d_gl.h
++++ b/dlls/wined3d/wined3d_gl.h
+@@ -819,6 +819,11 @@ struct wined3d_caps_gl_ctx
+      * outlives wined3d_adapter_init_gl_caps(), so it cannot be a local. */
+     struct wined3d_gpu_description synthetic_gpu_description;
+     char synthetic_description[128];
++    /* Backing store for a description whose device ID was substituted under
++     * WINE_D3D_FORCE_GPU_RENDERING. Sized to DXGI_ADAPTER_DESC1's field so
++     * that what fits here is what the application reads. */
++    struct wined3d_gpu_description forced_gpu_description;
++    char forced_description[128];
+     UINT64 vram_bytes;
+ };
+ 

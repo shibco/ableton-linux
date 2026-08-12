@@ -61,6 +61,9 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 0a7fb762e4bef288556f2118c318f6e99fe5532bb61058ccdb6d7732bf42ba27  0063-comdlg32-reveal-explorer-select-folder-targets-throu.patch
 81e02eeac88e6eda5da8044cd5bf74a197b2742f77c46da54e61dbf300031bd3  0064-shell32-route-explorer-folder-open-commands-to-the-h.patch
 7931be1771a070325eb0b87f970e51f7089c216f1bad128fb5ecf504e100e005  0065-win32u-normalize-selected-fullscreen-window.patch
+fd604cd284936df87e0b4ed93936104e99bfdc64dc9cf5f61c0324e6ceff7e31  0066-wined3d-add-the-missing-Intel-devices-from-Skylake-t.patch
+b65877e816921195b1b0f45b901dc512b0c1111b9ea3e034e73aaa57362596b2  0067-wined3d-synthesise-a-GPU-description-without-a-video.patch
+7374abf4910b3da7b6b8592efcd167bb2f8b8c6abdb9c84761147b54f3e4d5dd  0068-wined3d-add-WINE_D3D_FORCE_GPU_RENDERING-disclosed-i.patch
 4b4ca42a11539df9482e7160141be08c10e8f4b1d1c46e1ce3fa60caa0fb993a  0069-win32u-keep-selected-captioned-monitor-sized-window-resizable.patch
 466fc384e186ef54fb6dce6a6eb8f8d400f5ab039ccfc91d57c982ae564eb74d  0070-win32u-break-alt-f10-menu-arming-on-consumed-keys.patch
 f45f017f21733461ddcc11ab443526ad999d43d3a220e191ce05e973a790148c  0071-wined3d-count-and-report-sustained-present-size-fall.patch

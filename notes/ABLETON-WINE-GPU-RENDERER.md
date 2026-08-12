@@ -302,9 +302,132 @@ entry takes precedence over 0061, and the "(MTL)" suffix in 0057's
 entry is what passes Live's check. A traced launch from that machine
 confirming the exact rejected name is still open.
 
+The two paragraphs above explain the refusal by the reported name.
+That explanation is wrong, and the subsection below replaces it.
+
 To check a machine: open Preferences > Display & Input. "Enable GPU
 Renderer" must be a switch, not greyed out with the HD 4000 reason
 text.
+
+### Live matches ID numbers, not names (2026-08-02, patch 0066)
+
+Every graphics chip reports two numbers: a vendor number and a device
+number. Intel's vendor number is `0x8086`; a UHD Graphics 630 reports
+device number `0x3e92`.
+
+Live reads only those numbers. A vendor other than Intel is allowed. A
+device number among 101 listed numbers, all Intel parts sold between
+roughly 2004 and 2014, is refused. Anything else is allowed. The name
+appears only in the message Live displays, which is why the refusal
+reads as a judgement about "Intel(R) HD Graphics 4000". Established
+2026-08-02 by reading `Ableton Live 12 Suite.exe`.
+
+That rules out the earlier account of stickyfran's Meteor Lake laptop,
+which blamed the missing "(MTL)" suffix in 0061's synthesised name. A
+suffix cannot matter to a check that never reads names.
+
+The refused number is one Wine invents. When Wine cannot identify a
+card it guesses from the driver's advertised features, and for Intel it
+always guesses device `0x0162`, "Intel(R) HD Graphics 4000", which is on
+Live's list. Every unidentified Intel card therefore arrives wearing a
+refused identity, however new it is.
+
+Two gaps let a modern card reach that guess.
+
+First, Wine's device table covers 2015 to 2019 Intel unevenly: it holds
+the mobile UHD 630 and one desktop UHD 630 but not `0x3e92`, the desktop
+UHD 630 in the i5-8400 through i7-8700, nor 23 other parts. Patch 0066
+adds them.
+
+Second, patch 0061 describes an unlisted card from its driver's own
+name, but skips the synthesis when the driver reports no video memory.
+Wine reaches the driver through EGL or GLX and picks EGL by default
+(`use_egl = TRUE`, `dlls/winex11.drv/x11drv_main.c`). On EGL it reads
+video memory only from `GL_NVX_gpu_memory_info`
+(`dlls/win32u/opengl.c`). A driver that does not expose that extension
+reports zero, the synthesis is skipped, and wined3d reports the
+invented `0x0162` instead. The table is consulted before either, so a
+card with a table entry is unaffected.
+
+Mesa implements the extension per driver, not universally. Measured
+2026-08-03 on an RX 7900 XT, Mesa 26.1.6, fresh prefix with no `UseEGL`
+override and `trace:wgl:egl_init` in the log: radeonsi on EGL reported
+20 GB, so 0061 runs there and the card keeps its real identity. That
+also rules out the earlier reading of the maintainer's machine as
+implying GLX, since a machine can report its real card on EGL. Whether
+iris exposes the extension is untested; no `WINEDEBUG=+d3d` trace from
+an affected machine has been captured, so the reporting EliteDesk's own
+video-memory report is still unknown.
+
+Patch 0066 closes the first gap. The second needs its own change, so
+that an unidentified card is never reported under a device ID Live
+refuses, with a launcher switch for anyone who needs the renderer off.
+
+Reported 2026-08-02: HP EliteDesk 800 G4 (i5-8500, UHD 630, `0x3e92`) on
+release 2026.08.01.1, "Enable GPU Renderer" greyed out naming the
+invented HD 4000.
+
+#### Forcing the renderer past the list (2026-08-02, patches 0067 and 0068)
+
+Patch 0067 removes the video-memory precondition on 0061's synthesised
+description. The precondition assumed a missing figure was worse than
+the fallback's approximation; where the driver supplies none, the card
+is instead reported under the wrong device ID, over an attribute
+unrelated to identifying it. The patch reports a neutral figure when
+the driver supplies none, so the outcome no longer depends on which
+drivers implement `GL_NVX_gpu_memory_info`. Together with 0066 this
+covers every card Wine can identify, without adding a table entry per
+card.
+
+Patch 0068 covers the cards Live genuinely lists.
+`WINE_D3D_FORCE_GPU_RENDERING=1` reports baseline device
+`0x3e9b` in place of the card's own, so the gate passes. Vendor, driver
+and video memory are untouched, and the description keeps the real name
+with the substitution named after it:
+
+    Intel(R) HD Graphics 4000 (reporting as Intel(R) UHD Graphics 630)
+
+The card's identity is accompanied, never replaced, so the substitution
+shows up wherever the description does: Live's `TD3dSurface: Adapter:`
+line, its Preferences dialog, and any report that carries either. Live's
+usage log records `graphics_device_name` from a separate query that
+still reports the true device, so what Ableton receives identifies the
+real card and marks the substituted one.
+
+Intel only, since no other vendor is gated this way, and off by default,
+since applications besides Live read the device ID.
+
+Whether these pre-2014 parts actually run the renderer well under Mesa
+is unknown. Ableton's list was drawn against Intel's Windows drivers,
+and the fallback for a refused user is the GDI renderer at about 59% of
+a core, so the trade is worth offering. Reports decide the default.
+
+#### Reading a machine's log
+
+```bash
+grep -a "TD3dSurface: Adapter\|GPU Renderer:\|Can't use GPU" \
+  ~/.wine-ableton/drive_c/users/*/AppData/Roaming/Ableton/Live*/Preferences/Log.txt | tail
+```
+
+An `Adapter:` line carries the pair Live received: `(8086:0162)` is the
+invented identity, `(8086:3e92)` the real one. It appears only while
+Live draws through Direct3D, so it is absent both with
+`-_ForceGdiBackend` set and after Live has refused the renderer: 0 lines
+across 129 launches with the flag, 32 across the 33 after removing it. A
+`Can't use GPU renderer:` line records a refusal, but Live writes it
+only when the preference is already on, so its absence proves nothing at
+the default of off.
+
+The fastest datum from a reporter is a screenshot of Settings > Display
+& Input. "Unexplained slow UI at zoom-level 100% and/or crashes" means
+the ID pair was refused. "Gpu rendering is incompatible with
+_ForceGdiBackend" means the legacy flag is still set. "Cannot fetch
+IDXGIAdapter1" means Live found no adapter.
+
+Use `find ~/.wine-ableton -name Options.txt` to check for that flag
+file. In fish a wildcard matching nothing aborts the whole command, so a
+`grep` on a glob path reports the flag as absent in a way that looks
+like an error.
 
 ## Related
 
@@ -313,6 +436,7 @@ text.
 - [Patch 0053](../patches/0053-winex11-export-the-app-minimum-tracking-size-as-PMin.patch)
 - [Patch 0055](../patches/0055-dxgi-prefer-GL-present-for-top-level-swapchain-devic.patch)
 - [Patch 0057](../patches/0057-wined3d-add-Intel-graphics-devices-from-Ice-Lake-to-.patch)
+- [Patch 0066](../patches/0066-wined3d-add-the-missing-Intel-devices-from-Skylake-t.patch)
 - [Patch 0071](../patches/0071-wined3d-count-and-report-sustained-present-size-fall.patch)
 - Resize trace from the diagnosis session:
   `~/Projects/Code/ableton/live-resize-trace-gpu-20260727.log`

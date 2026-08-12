@@ -145,6 +145,10 @@ compatibility defaults.
   layout and exit-state fix for one launch.
 - `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
   resizability fix for one launch without disabling fullscreen normalization.
+- `WINE_D3D_FORCE_GPU_RENDERING=1` reports a baseline Intel device ID in
+  place of the card's own for one launch, so Live offers its GPU renderer on
+  hardware its own list refuses. The real card name is kept and the
+  substitution is shown in the device name Live displays. Off by default.
 - `ABLETON_RT=off` disables realtime scheduling for one launch.
 - `ABLETON_POWER=off` keeps the computer's power mode unchanged for one
   launch.

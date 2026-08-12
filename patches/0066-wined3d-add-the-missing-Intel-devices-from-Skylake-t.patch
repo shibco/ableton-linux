@@ -1,0 +1,146 @@
+Subject: wined3d: add the missing Intel devices from Skylake to Amber
+ Lake
+
+The device table covers the Gen9 families unevenly: Skylake is complete
+except HD Graphics 535, Kaby Lake lacks its GT1, GT3 and workstation
+parts, and Coffee Lake has three of its seventeen devices - the mobile
+H UHD 630, one desktop UHD 630, and the Whiskey Lake UHD 620 - but not
+the other desktop UHD 630 (0x3e92: i5-8400 through i7-8700, the
+highest-volume desktop processors of 2018), the 9th-gen refresh
+(0x3e98), the GT1 and GT3e parts, Whiskey Lake GT1, or the second
+Amber Lake ID. 24 devices in all; IDs and names from the pci.ids
+database.
+
+A miss in this table does more than produce a wrong name. Ableton
+Live 12 gates its GPU renderer on the reported PCI ID: it fetches
+IDXGIAdapter1's DXGI_ADAPTER_DESC1 and, for VendorId 0x8086, refuses
+any DeviceId found on an internal list of 101 pre-2014 Intel devices
+(established by disassembling the check; the device name is used only
+in the refusal message). On a table miss wined3d's feature-level
+fallback fabricates CARD_INTEL_IVBD, device 0x0162 - which is on that
+list. Every table miss therefore disables Live's GPU renderer, no
+matter how modern the real device is.
+
+The synthesised-description path (patch 0061) was meant to cover table
+misses, but it does not run when the driver reports no video memory,
+and on the EGL x11 backend - the default - win32u fills video memory
+only from GL_NVX_gpu_memory_info (dlls/win32u/opengl.c). A driver that
+does not expose that extension reports zero and falls through to the
+fabricated 0x0162 anyway. The table is consulted before that guard, so
+a card with a table entry is unaffected by it. Loosening the guard is
+a separate change.
+
+How many drivers this affects is not established. Mesa implements the
+extension per driver: radeonsi on Mesa 26.1.6 does expose it, and an
+RX 7900 XT on the EGL backend was measured reporting 20 GB, so 0061
+runs there. Whether iris exposes it on the reporting machine is
+unknown - no WINEDEBUG=+d3d trace from that machine has been captured.
+The table entry this patch adds does not depend on the answer.
+
+Verified by compiling the patched table: all 24 IDs resolve to their
+pci.ids names, the table holds no duplicate vendor+device pair, and no
+new ID is on Live's list. Field report: HP EliteDesk 800 G4 (i5-8500,
+UHD 630 0x3e92) on release 2026.08.01.1, "Enable GPU Renderer" greyed
+out with the fabricated HD 4000 named in the reason text.
+
+Also correct the comment above the Ice Lake block: Live's list matches
+PCI device IDs, not names.
+
+Origin: local fix for the 2026-08-02 UHD 630 field report
+(ableton-linux). The missing IDs and the fallback behaviour apply
+upstream as well.
+---
+ dlls/wined3d/directx.c         | 28 ++++++++++++++++++++++++++--
+ dlls/wined3d/wined3d_private.h | 24 ++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/wined3d/directx.c b/dlls/wined3d/directx.c
+index 0decb19..3bab15d 100644
+--- a/dlls/wined3d/directx.c
++++ b/dlls/wined3d/directx.c
+@@ -648,6 +648,7 @@ static const struct wined3d_gpu_description gpu_description_table[] =
+     {HW_VENDOR_INTEL,      CARD_INTEL_HD520_2,             "Intel(R) HD Graphics 520",                                  DRIVER_INTEL_HD4000,  2048},
+     {HW_VENDOR_INTEL,      CARD_INTEL_HD530_1,             "Intel(R) HD Graphics 530",                                  DRIVER_INTEL_HD4000,  2048},
+     {HW_VENDOR_INTEL,      CARD_INTEL_HD530_2,             "Intel(R) HD Graphics 530",                                  DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_HD535,               "Intel(R) HD Graphics 535",                                  DRIVER_INTEL_HD4000,  2048},
+     {HW_VENDOR_INTEL,      CARD_INTEL_HDP530,              "Intel(R) HD Graphics P530",                                 DRIVER_INTEL_HD4000,  2048},
+     {HW_VENDOR_INTEL,      CARD_INTEL_I540,                "Intel(R) Iris(TM) Graphics 540",                            DRIVER_INTEL_HD4000,  2048},
+     {HW_VENDOR_INTEL,      CARD_INTEL_I550,                "Intel(R) Iris(TM) Graphics 550",                            DRIVER_INTEL_HD4000,  2048},
+@@ -666,10 +667,33 @@ static const struct wined3d_gpu_description gpu_description_table[] =
+     {HW_VENDOR_INTEL,      CARD_INTEL_HD630_2,             "Intel(R) HD Graphics 630",                                  DRIVER_INTEL_HD4000,  3072},
+     {HW_VENDOR_INTEL,      CARD_INTEL_UHD630_1,            "Intel(R) UHD Graphics 630",                                 DRIVER_INTEL_HD4000,  3072},
+     {HW_VENDOR_INTEL,      CARD_INTEL_UHD630_2,            "Intel(R) UHD Graphics 630",                                 DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_HD610_1,             "Intel(R) HD Graphics 610",                                  DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_HD610_2,             "Intel(R) HD Graphics 610",                                  DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_HD610_3,             "Intel(R) HD Graphics 610",                                  DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_HD620_2,             "Intel(R) HD Graphics 620",                                  DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_HD635,               "Intel(R) HD Graphics 635",                                  DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_HDP630,              "Intel(R) HD Graphics P630",                                 DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_IP640,               "Intel(R) Iris(R) Plus Graphics 640",                        DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_IP650,               "Intel(R) Iris(R) Plus Graphics 650",                        DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD615,              "Intel(R) UHD Graphics 615",                                 DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD617_2,            "Intel(R) UHD Graphics 617",                                 DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD610_1,            "Intel(R) UHD Graphics 610",                                 DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD610_2,            "Intel(R) UHD Graphics 610",                                 DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD610_3,            "Intel(R) UHD Graphics 610",                                 DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD610_4,            "Intel(R) UHD Graphics 610",                                 DRIVER_INTEL_HD4000,  2048},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD620_3,            "Intel(R) UHD Graphics 620",                                 DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD630_3,            "Intel(R) UHD Graphics 630",                                 DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHD630_4,            "Intel(R) UHD Graphics 630",                                 DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHDP630_1,           "Intel(R) UHD Graphics P630",                                DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHDP630_2,           "Intel(R) UHD Graphics P630",                                DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_UHDP630_3,           "Intel(R) UHD Graphics P630",                                DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_IP645,               "Intel(R) Iris(R) Plus Graphics 645",                        DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_IP655_1,             "Intel(R) Iris(R) Plus Graphics 655",                        DRIVER_INTEL_HD4000,  3072},
++    {HW_VENDOR_INTEL,      CARD_INTEL_IP655_2,             "Intel(R) Iris(R) Plus Graphics 655",                        DRIVER_INTEL_HD4000,  3072},
+     /* Ice Lake and newer. Without an entry here wined3d reports these
+      * devices through the generic Intel fallback ("Intel(R) HD Graphics
+-     * 4000"), which Ableton Live 12 blacklists by name, disabling its
+-     * GPU renderer (issue 84). */
++     * 4000", device 0x0162), whose PCI device ID is on Ableton Live 12's
++     * GPU denylist, disabling its GPU renderer (issue 84). */
+     /* Ice Lake */
+     {HW_VENDOR_INTEL,      CARD_INTEL_ICL_1,               "Intel(R) Iris(R) Plus Graphics (ICL)",                      DRIVER_INTEL_HD4000,  2048},
+     {HW_VENDOR_INTEL,      CARD_INTEL_ICL_2,               "Intel(R) Iris(R) Plus Graphics (ICL)",                      DRIVER_INTEL_HD4000,  2048},
+diff --git a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
+index 21c4adc..1aeef07 100644
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -2433,6 +2433,7 @@ enum wined3d_pci_device
+     CARD_INTEL_HD520_2              = 0x1921,
+     CARD_INTEL_HD530_1              = 0x1912,
+     CARD_INTEL_HD530_2              = 0x191b,
++    CARD_INTEL_HD535                = 0x1923,
+     CARD_INTEL_HDP530               = 0x191d,
+     CARD_INTEL_I540                 = 0x1926,
+     CARD_INTEL_I550                 = 0x1927,
+@@ -2451,6 +2452,29 @@ enum wined3d_pci_device
+     CARD_INTEL_HD630_2              = 0x591b,
+     CARD_INTEL_UHD630_1             = 0x3e9b,
+     CARD_INTEL_UHD630_2             = 0x3e91,
++    CARD_INTEL_HD610_1              = 0x5902,
++    CARD_INTEL_HD610_2              = 0x5906,
++    CARD_INTEL_HD610_3              = 0x590b,
++    CARD_INTEL_HD620_2              = 0x5921,
++    CARD_INTEL_HD635                = 0x5923,
++    CARD_INTEL_HDP630               = 0x591d,
++    CARD_INTEL_IP640                = 0x5926,
++    CARD_INTEL_IP650                = 0x5927,
++    CARD_INTEL_UHD615               = 0x591c,
++    CARD_INTEL_UHD617_2             = 0x87ca,
++    CARD_INTEL_UHD610_1             = 0x3e90,
++    CARD_INTEL_UHD610_2             = 0x3e93,
++    CARD_INTEL_UHD610_3             = 0x3e9c,
++    CARD_INTEL_UHD610_4             = 0x3ea1,
++    CARD_INTEL_UHD620_3             = 0x3ea9,
++    CARD_INTEL_UHD630_3             = 0x3e92,
++    CARD_INTEL_UHD630_4             = 0x3e98,
++    CARD_INTEL_UHDP630_1            = 0x3e94,
++    CARD_INTEL_UHDP630_2            = 0x3e96,
++    CARD_INTEL_UHDP630_3            = 0x3e9a,
++    CARD_INTEL_IP645                = 0x3ea6,
++    CARD_INTEL_IP655_1              = 0x3ea5,
++    CARD_INTEL_IP655_2              = 0x3ea8,
+     CARD_INTEL_ICL_1                = 0x8a51,
+     CARD_INTEL_ICL_2                = 0x8a52,
+     CARD_INTEL_CMLU                 = 0x9b41,
