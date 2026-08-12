@@ -12,14 +12,30 @@ Register target hwnds in desktop-window property slots on
 CreateTargetForHwnd and Release, and exclude every live registered
 target from the present blit clip region.
 
+Registry membership is the whole test. The fork also reads
+__wine_dcomp_child_count on the candidate; we deliberately do not.
+dcomp writes that property only at Commit, and writes 0 when the root
+visual has no child visuals, which a reader cannot tell apart from a
+property nobody ever set. Reading it left every pane built that way
+unexcluded, which is the flicker this patch exists to remove.
+
+The desktop's property list spans the whole window station, and the
+scan-then-claim that picks a slot is not atomic across processes. Live
+and a WebView2 or plugin child process can see the same free slot and
+both write it, and the loser's registration is lost with no error. A
+window property has no atomic claim, so a writer now claims a slot and
+reads it back, moving to the next free slot when the claim did not
+stick. Sixteen slots still cap the window station rather than one
+process.
+
 Ported from giang17/wine 8e223552 (its issue 121), adapted to this
 tree's dcomp target release path.
 
 diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
-index 88d1adb..fabb97a 100644
+index 88d1adb..0377fd3 100644
 --- a/dlls/dcomp/device.c
 +++ b/dlls/dcomp/device.c
-@@ -1411,6 +1411,42 @@ static void dcomp_visual_try_reparent(struct dcomp_visual *visual)
+@@ -1411,6 +1411,63 @@ static void dcomp_visual_try_reparent(struct dcomp_visual *visual)
  
  /* Property name for storing target pointer on HWND (Phase 5 subclass) */
  static const WCHAR dcomp_target_prop[] = L"__wine_dcomp_target";
@@ -53,16 +69,37 @@ index 88d1adb..fabb97a 100644
 +        if (add && free_slot < 0 && (!cur || !IsWindow(cur)))
 +            free_slot = (int)i;
 +    }
-+    if (add && free_slot >= 0)
++    if (!add) return;
++    if (free_slot < 0)
 +    {
-+        swprintf(prop, ARRAY_SIZE(prop), L"__wine_dcomp_target_%u", free_slot);
-+        SetPropW(desktop, prop, (HANDLE)hwnd);
++        WARN("DComp target registry full, %p not registered.\n", hwnd);
++        return;
 +    }
++
++    /* The desktop's property list spans the whole window station, and this
++     * scan-then-claim is not atomic across processes: Live and a WebView2 or
++     * plugin child process can see the same free slot and both write it, and
++     * the loser's registration is lost with no error, so its pane keeps
++     * being overpainted by GDI presents.  A window property has no atomic
++     * claim, so claim optimistically and read back.  A slot that no longer
++     * holds us went to somebody else, so move on to the next free one. */
++    for (i = (unsigned int)free_slot; i < DCOMP_TARGET_REGISTRY_SLOTS; ++i)
++    {
++        HWND cur;
++
++        swprintf(prop, ARRAY_SIZE(prop), L"__wine_dcomp_target_%u", i);
++        cur = (HWND)GetPropW(desktop, prop);
++        if (cur && cur != hwnd && IsWindow(cur)) continue; /* taken since the scan */
++
++        SetPropW(desktop, prop, (HANDLE)hwnd);
++        if ((HWND)GetPropW(desktop, prop) == hwnd) return; /* the claim stuck */
++    }
++    WARN("DComp target registry full, %p not registered.\n", hwnd);
 +}
  /* The window's TRUE pre-subclass WndProc. Kept as a window property (not only in
   * the target struct) so that (a) a second CreateTargetForHwnd on the same HWND
   * never records our own subclass as "original" and (b) the subclass can still
-@@ -1497,6 +1533,7 @@ static ULONG STDMETHODCALLTYPE dcomp_target_Release(IDCompositionTarget *iface)
+@@ -1497,6 +1554,7 @@ static ULONG STDMETHODCALLTYPE dcomp_target_Release(IDCompositionTarget *iface)
              (struct dcomp_target *)GetPropW(target->hwnd, dcomp_target_prop) == target)
          {
              RemovePropW(target->hwnd, dcomp_target_prop);
@@ -70,7 +107,7 @@ index 88d1adb..fabb97a 100644
              if ((WNDPROC)GetWindowLongPtrW(target->hwnd, GWLP_WNDPROC) == dcomp_target_wndproc)
              {
                  WNDPROC orig = (WNDPROC)GetPropW(target->hwnd, dcomp_origproc_prop);
-@@ -2272,6 +2309,7 @@ static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTargetForHwnd(IDCompositionD
+@@ -2272,6 +2330,7 @@ static HRESULT STDMETHODCALLTYPE dcomp_device_CreateTargetForHwnd(IDCompositionD
          }
      }
      SetPropW(hwnd, dcomp_target_prop, (HANDLE)object);
@@ -79,10 +116,10 @@ index 88d1adb..fabb97a 100644
      FIXME("Created composition target %p for hwnd %p (subclassed, orig_wndproc %p).\n",
              object, hwnd, object->orig_wndproc);
 diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
-index 869fe45..fc59728 100644
+index 869fe45..92f27dd 100644
 --- a/dlls/wined3d/swapchain.c
 +++ b/dlls/wined3d/swapchain.c
-@@ -28,6 +28,28 @@ WINE_DEFAULT_DEBUG_CHANNEL(d3d);
+@@ -28,6 +28,34 @@ WINE_DEFAULT_DEBUG_CHANNEL(d3d);
  WINE_DECLARE_DEBUG_CHANNEL(d3d_perf);
  WINE_DECLARE_DEBUG_CHANNEL(winediag);
  
@@ -98,8 +135,14 @@ index 869fe45..fc59728 100644
 +    struct dcomp_child_exclude_ctx *ctx = (struct dcomp_child_exclude_ctx *)lp;
 +    RECT r;
 +
-+    if (IsWindowVisible(child) && GetPropW(child, L"__wine_dcomp_child_count")
-+            && GetWindowRect(child, &r))
++    /* Registry membership already proves this window is a live composition
++     * target, so do not ask for __wine_dcomp_child_count as well.  dcomp writes
++     * that property only at Commit, and writes 0 when the root visual has no
++     * child visuals; a reader cannot tell that 0 apart from a property nobody
++     * ever set.  Asking for it left every pane built that way unexcluded,
++     * which is the flicker this exists to remove.  (The fork's 8e223552 still
++     * asks; we deliberately do not.) */
++    if (IsWindowVisible(child) && GetWindowRect(child, &r))
 +    {
 +        MapWindowPoints(NULL, ctx->parent, (POINT *)&r, 2);
 +        ExcludeClipRect(ctx->dc, r.left, r.top, r.right, r.bottom);
@@ -111,7 +154,7 @@ index 869fe45..fc59728 100644
  static BOOL set_window_present_rect(HWND hwnd, UINT x, UINT y, UINT width, UINT height)
  {
      RECT rect = {x, y, x + width, y + height};
-@@ -1122,10 +1144,37 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
+@@ -1122,10 +1150,37 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
          }
          else
          {

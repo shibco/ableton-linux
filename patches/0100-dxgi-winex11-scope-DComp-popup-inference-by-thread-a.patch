@@ -14,11 +14,24 @@ tool popups a menu role while any DComp GUI existed anywhere, the
 undismissable-dialog class of faults. In-process behaviour is
 unchanged.
 
+The thread keying rests on two more things, so this patch fixes both.
+Every plugin pushes and removes on its own UI thread, so a lock now
+moves the stack, its new thread-id array and the depth together. Without
+one, two plugins opening editors at the same moment tear the arrays
+apart and a popup anchors to an unrelated plugin's window.
+
+A repeat SET_TARGET also stops subclassing a target twice.
+SetWindowLongPtrW would hand back our own proc as the original, our proc
+would then forward to itself on every message, and teardown would
+install it as the window's own wndproc with the application's proc lost.
+That second install also inflated the subclassed count and the popup
+stack, which teardown unwinds only once.
+
 WINE_DCOMP_SCOPE=global restores the process-global stack, count and
 session-wide flag for comparison.
 
 diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
-index 7e28076..2856e5e 100644
+index 9134a50..e338edd 100644
 --- a/dlls/dxgi/factory.c
 +++ b/dlls/dxgi/factory.c
 @@ -580,13 +580,39 @@ LONG dcomp_subclassed_target_count;
@@ -63,7 +76,7 @@ index 7e28076..2856e5e 100644
  }
  
  /* Popup transient-parent stack: the open DComp targets in open order
-@@ -601,17 +627,59 @@ static void dcomp_update_active_prop(void)
+@@ -601,35 +627,113 @@ static void dcomp_update_active_prop(void)
   * Global for now (shared across plugins); per-plugin scoping ties into #11. */
  #define DCOMP_POPUP_STACK_MAX 16
  static HWND dcomp_popup_stack[DCOMP_POPUP_STACK_MAX];
@@ -71,6 +84,20 @@ index 7e28076..2856e5e 100644
  static int dcomp_popup_stack_depth;
  
 -static HWND dcomp_popup_stack_top(void)
++/* The stack, its thread-id array and the depth are process-global, and every
++ * plugin pushes and removes from its own UI thread, so the three have to move
++ * together under a lock.  Two plugins opening or closing editors at the same
++ * moment would otherwise tear the arrays apart and anchor a popup to an
++ * unrelated plugin's window. */
++static CRITICAL_SECTION dcomp_popup_stack_cs;
++static CRITICAL_SECTION_DEBUG dcomp_popup_stack_cs_debug =
++{
++    0, 0, &dcomp_popup_stack_cs,
++    { &dcomp_popup_stack_cs_debug.ProcessLocksList, &dcomp_popup_stack_cs_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": dcomp_popup_stack_cs") }
++};
++static CRITICAL_SECTION dcomp_popup_stack_cs = { &dcomp_popup_stack_cs_debug, -1, 0, 0, 0, 0 };
++
 +/* Transient anchor for a new target: the previously-opened target on the SAME
 + * UI thread.  A plugin creates its popups on its own thread, so thread
 + * affinity relates a popup to its plugin; the old process-global top could
@@ -78,19 +105,29 @@ index 7e28076..2856e5e 100644
 + * WINE_DCOMP_SCOPE=global restores the plain top-of-stack. */
 +static HWND dcomp_popup_stack_top_for(HWND target)
 +{
++    HWND ret = NULL;
 +    DWORD tid;
 +    int i;
 +
++    EnterCriticalSection(&dcomp_popup_stack_cs);
 +    if (dcomp_scope_global())
-+        return dcomp_popup_stack_depth > 0 ? dcomp_popup_stack[dcomp_popup_stack_depth - 1] : NULL;
-+
-+    tid = GetWindowThreadProcessId(target, NULL);
-+    for (i = dcomp_popup_stack_depth - 1; i >= 0; --i)
 +    {
-+        if (dcomp_popup_stack_tid[i] == tid && IsWindow(dcomp_popup_stack[i]))
-+            return dcomp_popup_stack[i];
++        if (dcomp_popup_stack_depth > 0) ret = dcomp_popup_stack[dcomp_popup_stack_depth - 1];
 +    }
-+    return NULL;
++    else
++    {
++        tid = GetWindowThreadProcessId(target, NULL);
++        for (i = dcomp_popup_stack_depth - 1; i >= 0; --i)
++        {
++            if (dcomp_popup_stack_tid[i] == tid && IsWindow(dcomp_popup_stack[i]))
++            {
++                ret = dcomp_popup_stack[i];
++                break;
++            }
++        }
++    }
++    LeaveCriticalSection(&dcomp_popup_stack_cs);
++    return ret;
 +}
 +
 +/* Full-versus-popup mode: the first target on its own UI thread is that
@@ -100,6 +137,7 @@ index 7e28076..2856e5e 100644
 +static BOOL dcomp_thread_has_target(HWND target)
  {
 -    return dcomp_popup_stack_depth > 0 ? dcomp_popup_stack[dcomp_popup_stack_depth - 1] : NULL;
++    BOOL ret = FALSE;
 +    DWORD tid;
 +    int i;
 +
@@ -107,16 +145,22 @@ index 7e28076..2856e5e 100644
 +        return dcomp_subclassed_target_count > 0;
 +
 +    tid = GetWindowThreadProcessId(target, NULL);
++    EnterCriticalSection(&dcomp_popup_stack_cs);
 +    for (i = 0; i < dcomp_popup_stack_depth; ++i)
 +    {
 +        if (dcomp_popup_stack_tid[i] == tid && IsWindow(dcomp_popup_stack[i]))
-+            return TRUE;
++        {
++            ret = TRUE;
++            break;
++        }
 +    }
-+    return FALSE;
++    LeaveCriticalSection(&dcomp_popup_stack_cs);
++    return ret;
  }
  
  static void dcomp_popup_stack_push(HWND hwnd)
  {
++    EnterCriticalSection(&dcomp_popup_stack_cs);
      if (dcomp_popup_stack_depth < DCOMP_POPUP_STACK_MAX)
 +    {
 +        dcomp_popup_stack_tid[dcomp_popup_stack_depth] = GetWindowThreadProcessId(hwnd, NULL);
@@ -124,17 +168,37 @@ index 7e28076..2856e5e 100644
 +    }
      else
          WARN("DComp popup stack full (%d), not pushing %p.\n", dcomp_popup_stack_depth, hwnd);
++    LeaveCriticalSection(&dcomp_popup_stack_cs);
  }
-@@ -626,6 +694,8 @@ static void dcomp_popup_stack_remove(HWND hwnd)
+ 
+ static void dcomp_popup_stack_remove(HWND hwnd)
+ {
+     int i;
+ 
++    EnterCriticalSection(&dcomp_popup_stack_cs);
+     for (i = 0; i < dcomp_popup_stack_depth; ++i)
+     {
+         if (dcomp_popup_stack[i] == hwnd)
          {
              memmove(&dcomp_popup_stack[i], &dcomp_popup_stack[i + 1],
                      (dcomp_popup_stack_depth - i - 1) * sizeof(*dcomp_popup_stack));
 +            memmove(&dcomp_popup_stack_tid[i], &dcomp_popup_stack_tid[i + 1],
 +                    (dcomp_popup_stack_depth - i - 1) * sizeof(*dcomp_popup_stack_tid));
              --dcomp_popup_stack_depth;
-             return;
+-            return;
++            break;
          }
-@@ -1228,14 +1298,14 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+     }
++    LeaveCriticalSection(&dcomp_popup_stack_cs);
+ }
+ 
+ /* Restore a parent's style if we OR-ed in WS_CLIPCHILDREN for this target
+@@ -1256,21 +1360,38 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                  * *stacking* (transient anchor) is handled separately via the popup
+                  * stack below, not by this count. */
+                 {
+-                    BOOL is_popup_mode = FALSE;
++                    BOOL is_popup_mode = FALSE, already_subclassed;
                      LONG target_style = GetWindowLongW(target_hwnd, GWL_STYLE);
                      HWND target_parent = GetParent(target_hwnd);
                      /* Transient anchor for a new popup = the previously-opened
@@ -148,10 +212,31 @@ index 7e28076..2856e5e 100644
                              dcomp_subclassed_target_count);
  
 -                    if (dcomp_subclassed_target_count > 0)
-+                    if (dcomp_thread_has_target(target_hwnd))
++                    /* The composition window is keyed on the swapchain, so a
++                     * client that recreates its swapchain rebinds the same
++                     * target through a new one and this handler can run more
++                     * than once per target.  Never subclass such a window
++                     * twice: SetWindowLongPtrW would hand back our own proc as
++                     * the "original", our proc would then forward to itself on
++                     * every message, and teardown would install it as the
++                     * window's own wndproc with the application's proc lost.
++                     * It would also inflate the count and the popup stack. */
++                    already_subclassed = GetPropW(target_hwnd, L"__wine_dcomp_subclassed") != NULL;
++
++                    if (!already_subclassed && dcomp_thread_has_target(target_hwnd))
                          is_popup_mode = TRUE;
  
-                     if (is_popup_mode)
+-                    if (is_popup_mode)
++                    if (already_subclassed)
++                    {
++                        SetPropW(target_hwnd, L"__wine_dcomp_swapchain", (HANDLE)iface);
++                        FIXME("DComp: target %p already subclassed, rebound swapchain to %p.\n",
++                                target_hwnd, iface);
++                    }
++                    else if (is_popup_mode)
+                     {
+                         /* Lightweight popup mode: subclass with minimal wndproc
+                          * (WM_ERASEBKGND + WM_PAINT only), no timer. */
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 8cfe055..367be02 100644
 --- a/dlls/winex11.drv/window.c

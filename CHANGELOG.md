@@ -6,12 +6,17 @@
   handed Live a one-pixel size correction, Live could read it as a move
   and keep its old size, leaving a gap or an overlap in the tile. Moving
   a window to a display with different scaling no longer carries the old
-  scaling correction with it.
+  scaling correction with it. If window sizing behaves worse than
+  before, launch with `env WINE_CONFIG_ROUNDING=legacy ableton-live` and
+  report it.
 
 - Newly exposed parts of a plugin popup no longer show leftover pixels
   while the popup has nothing ready to draw, and a Live that is
   minimised or on another workspace stops redrawing parked browser
-  views nobody can see.
+  views nobody can see. If popups flash when they open, launch with
+  `env WINE_DCOMP_PAINT=legacy ableton-live` and report it. If a
+  restored window comes back blank, use
+  `env WINE_DCOMP_VIEWABILITY=off ableton-live` and report that.
 
 - One plugin's popup menus no longer attach to another plugin's window,
   and opening a second plugin no longer costs its editor the redraw

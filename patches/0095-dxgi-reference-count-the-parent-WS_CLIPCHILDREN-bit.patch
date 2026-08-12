@@ -7,15 +7,21 @@ first teardown stripped the style from under the surviving target,
 letting the parent paint over it.
 
 Count owners in a __wine_dcomp_clip_refs property on the parent and
-restore the style only when the last recorded target lets go.
+restore the style only when the last recorded target lets go. The count
+follows the target, not the message. The composition window is keyed on
+the swapchain, so a client that recreates its swapchain rebinds the same
+target through a new one, and SET_TARGET can run more than once for a
+single target. Counting each message would then raise the count without
+adding an owner that can ever release it. A target that moves to another
+parent releases the old one first.
 WINE_DCOMP_TEARDOWN=legacy keeps the old single-owner behaviour
 together with the rest of the legacy teardown path.
 
 diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
-index 7cc0d08..41b867c 100644
+index 07eca32..476c1eb 100644
 --- a/dlls/dxgi/factory.c
 +++ b/dlls/dxgi/factory.c
-@@ -635,17 +635,32 @@ static void dcomp_popup_stack_remove(HWND hwnd)
+@@ -635,18 +635,65 @@ static void dcomp_popup_stack_remove(HWND hwnd)
  /* Restore a parent's style if we OR-ed in WS_CLIPCHILDREN for this target
   * (see WM_WINE_DCOMP_SET_TARGET).  Keyed off the __wine_dcomp_parent_clip prop,
   * which is set only when we actually added the bit, so a parent that already had
@@ -49,29 +55,57 @@ index 7cc0d08..41b867c 100644
 +            if (pstyle & WS_CLIPCHILDREN)
 +                SetWindowLongW(phwnd, GWL_STYLE, pstyle & ~WS_CLIPCHILDREN);
 +        }
++    }
++}
++
++/* Take a reference on the parent's WS_CLIPCHILDREN bit for this target, adding
++ * the bit if we are its first owner.  The count follows the target, not the
++ * message: the composition window is keyed on the swapchain, so a client that
++ * recreates its swapchain rebinds the same target through a new one and
++ * SET_TARGET can run twice for one target.  Counting each message would raise
++ * the count without adding an owner that can ever release it, and the parent
++ * would keep a bit outliving its last target, clipping its remaining children
++ * out of its own painting.  A target that moved parent releases the old one. */
++static void dcomp_take_parent_clip(HWND target_hwnd, HWND phwnd)
++{
++    HWND held = (HWND)GetPropW(target_hwnd, L"__wine_dcomp_parent_clip");
++    LONG_PTR refs;
++    LONG pstyle;
++
++    if (held == phwnd) return;
++    if (held) dcomp_restore_parent_clip(target_hwnd);
++
++    refs = (LONG_PTR)GetPropW(phwnd, L"__wine_dcomp_clip_refs");
++    pstyle = GetWindowLongW(phwnd, GWL_STYLE);
++
++    if (!dcomp_teardown_legacy() && refs > 0)
++        SetPropW(phwnd, L"__wine_dcomp_clip_refs", (HANDLE)(refs + 1));
++    else if (!(pstyle & WS_CLIPCHILDREN))
++    {
++        SetWindowLongW(phwnd, GWL_STYLE, pstyle | WS_CLIPCHILDREN);
++        SetPropW(phwnd, L"__wine_dcomp_clip_refs", (HANDLE)1);
      }
++    else return; /* the parent carries the bit itself, leave it alone */
++
++    SetPropW(target_hwnd, L"__wine_dcomp_parent_clip", (HANDLE)phwnd);
  }
  
-@@ -1291,10 +1306,21 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+ static LRESULT CALLBACK dcomp_popup_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+@@ -1289,15 +1336,8 @@ static LRESULT CALLBACK dcomp_swapchain_wndproc(HWND hwnd, UINT msg, WPARAM wpar
+                  * teardown (avoids a permanent host-window style change). */
+                 {
                      HWND phwnd = GetParent(target_hwnd);
-                     if (phwnd)
-                     {
-+                        LONG_PTR refs = (LONG_PTR)GetPropW(phwnd, L"__wine_dcomp_clip_refs");
-                         LONG pstyle = GetWindowLongW(phwnd, GWL_STYLE);
+-                    if (phwnd)
+-                    {
+-                        LONG pstyle = GetWindowLongW(phwnd, GWL_STYLE);
 -                        if (!(pstyle & WS_CLIPCHILDREN))
+-                        {
+-                            SetWindowLongW(phwnd, GWL_STYLE, pstyle | WS_CLIPCHILDREN);
+-                            SetPropW(target_hwnd, L"__wine_dcomp_parent_clip", (HANDLE)phwnd);
+-                        }
+-                    }
 +
-+                        if (!dcomp_teardown_legacy() && refs > 0)
-+                        {
-+                            /* We already own the bit for another target on this
-+                             * parent: count this one too so the style survives
-+                             * the first teardown. */
-+                            SetPropW(phwnd, L"__wine_dcomp_clip_refs", (HANDLE)(refs + 1));
-+                            SetPropW(target_hwnd, L"__wine_dcomp_parent_clip", (HANDLE)phwnd);
-+                        }
-+                        else if (!(pstyle & WS_CLIPCHILDREN))
-                         {
-                             SetWindowLongW(phwnd, GWL_STYLE, pstyle | WS_CLIPCHILDREN);
-+                            SetPropW(phwnd, L"__wine_dcomp_clip_refs", (HANDLE)1);
-                             SetPropW(target_hwnd, L"__wine_dcomp_parent_clip", (HANDLE)phwnd);
-                         }
-                     }
++                    if (phwnd) dcomp_take_parent_clip(target_hwnd, phwnd);
+                 }
+                 ValidateRect(target_hwnd, NULL);
+ 

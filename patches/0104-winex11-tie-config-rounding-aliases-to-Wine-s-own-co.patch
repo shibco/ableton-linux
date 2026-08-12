@@ -20,12 +20,17 @@ is traced as ALIAS-DECLINE.
 
 The alias is arithmetic against one scale factor and survived a DPI
 change, so it is stamped with the DPI it was computed for and ignored
-once that changes, which also covers a move to another monitor.
+once that changes, which also covers a move to another monitor. The
+stamp goes in activate_config_rounding, the one place that turns an
+alias active, rather than at each call site. The sub-scale alias in
+window_set_config is 0042's own mechanism, and a call site that forgets
+the stamp leaves every reader comparing 0 against the real DPI and
+throwing the alias away.
 
 WINE_CONFIG_ROUNDING=legacy restores the old policy for comparison.
 
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index c60c4f2..672cf6b 100644
+index 450362c..efb0d2c 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
 @@ -1693,6 +1693,21 @@ enum config_rounding_state
@@ -66,7 +71,21 @@ index c60c4f2..672cf6b 100644
      TRACE( "window %p/%lx tracking config %s request %lu generation %lu\n", data->hwnd,
             data->whole_window, wine_dbgstr_rect(rect), serial, data->config_generation );
  }
-@@ -1784,11 +1801,20 @@ static void activate_config_rounding( struct x11drv_win_data *data, const RECT *
+@@ -1778,17 +1795,34 @@ static void activate_config_rounding( struct x11drv_win_data *data, const RECT *
+ {
+     data->config_rounding_state = CONFIG_ROUNDING_ACTIVE;
+     data->config_rounding_host_rect = *host_rect;
++    /* Stamp the DPI here, the one place that turns an alias active, rather than
++     * at each call site: the sub-scale alias in window_set_config is 0042's own
++     * mechanism and left the stamp at 0, so every reader compared 0 against the
++     * real DPI and threw the alias away.  The rounded host rect then goes back
++     * to Win32, the application re-applies its size, and the two chase: the
++     * resize jitter 0042 exists to stop.  The arithmetic that qualified this
++     * alias ran against the current DPI, so that is what it belongs to. */
++    data->config_rounding_dpi = NtUserGetDpiForWindow( data->hwnd );
+     TRACE( "window %p/%lx activating config rounding alias %s -> %s request %lu generation %lu\n",
+            data->hwnd, data->whole_window, wine_dbgstr_rect(&data->config_rounding_win32_rect),
+            wine_dbgstr_rect(host_rect), data->config_rounding_serial,
             data->config_rounding_generation );
  }
  
@@ -87,7 +106,7 @@ index c60c4f2..672cf6b 100644
             EqualRect( visible_rect, &data->config_rounding_win32_rect ) &&
             EqualRect( &data->current_state.rect, &data->config_rounding_host_rect );
  }
-@@ -1802,6 +1828,7 @@ static BOOL config_rounding_move_pending( const struct x11drv_win_data *data )
+@@ -1802,6 +1836,7 @@ static BOOL config_rounding_move_pending( const struct x11drv_win_data *data )
  {
      return data->config_rounding_state == CONFIG_ROUNDING_ACTIVE &&
             data->config_rounding_generation == data->config_generation &&
@@ -95,7 +114,7 @@ index c60c4f2..672cf6b 100644
             EqualRect( &data->current_state.rect, &data->config_rounding_host_rect ) &&
             !EqualRect( &data->rects.visible, &data->config_rounding_win32_rect ) &&
             rect_sizes_equal( &data->rects.visible, &data->config_rounding_win32_rect );
-@@ -1820,6 +1847,17 @@ static BOOL track_config_rounding_move( struct x11drv_win_data *data, const RECT
+@@ -1820,6 +1855,17 @@ static BOOL track_config_rounding_move( struct x11drv_win_data *data, const RECT
      if (dpi < USER_DEFAULT_SCREEN_DPI || dpi % USER_DEFAULT_SCREEN_DPI) return FALSE;
      scale = dpi / USER_DEFAULT_SCREEN_DPI;
  
@@ -113,7 +132,7 @@ index c60c4f2..672cf6b 100644
      left = host_rect->left - old_host_rect.left;
      top = host_rect->top - old_host_rect.top;
      right = host_rect->right - old_host_rect.right;
-@@ -1828,6 +1866,18 @@ static BOOL track_config_rounding_move( struct x11drv_win_data *data, const RECT
+@@ -1828,6 +1874,18 @@ static BOOL track_config_rounding_move( struct x11drv_win_data *data, const RECT
          !axis_is_host_translation( left, right, scale ) ||
          !axis_is_host_translation( top, bottom, scale ))
          return FALSE;
@@ -132,14 +151,6 @@ index c60c4f2..672cf6b 100644
  
      OffsetRect( &win32_rect, left, top );
      if (!config_edges_within_dpi_rounding( data, &win32_rect, host_rect )) return FALSE;
-@@ -1835,6 +1885,7 @@ static BOOL track_config_rounding_move( struct x11drv_win_data *data, const RECT
-     data->config_rounding_serial = 0;
-     data->config_rounding_settle_serial = 0;
-     data->config_rounding_generation = data->config_generation;
-+    data->config_rounding_dpi = dpi;
-     data->config_rounding_win32_rect = win32_rect;
-     activate_config_rounding( data, host_rect );
-     TRACE( "window %p/%lx tracking host move as config rounding alias %s -> %s generation %lu\n",
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 02154d8..1a7a040 100644
 --- a/dlls/winex11.drv/x11drv.h
