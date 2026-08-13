@@ -10,7 +10,7 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch'
+readonly REQUIRED_WINE_TAIL='0098-winex11-warp-on-our-own-implicit-button-grab.patch'
 readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
 
 check_required_series_tails()
@@ -328,6 +328,7 @@ FINGERPRINTS='
 0095|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDragThrow
 0096|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
 0097|ascii|lib/wine/x86_64-unix/winex11.so|Wine ignores pointer motion from a scroll report while a button is held
+0098|ascii|lib/wine/x86_64-unix/winex11.so|warping to %u, %u on our own implicit button grab
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size

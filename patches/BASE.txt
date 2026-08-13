@@ -430,3 +430,9 @@ Apply them in sequence with the rest of the series.
   touch from speeding up a left- or right-button control drag. Keep one-finger
   dragging and middle-button navigation unchanged. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0098`: warp the pointer for an application that re-anchors it while a button
+  is held. Smooth scrolling selects XI2 events on our own windows, so a button
+  press creates an implicit XI2 grab that fails the core grab `SetCursorPos`
+  takes; the warp was refused for the whole gesture and Live's faders and knobs
+  ran at raw pointer speed. Ownership comes from the buttons in XI2 events
+  delivered to our own windows and is dropped when the input focus leaves.

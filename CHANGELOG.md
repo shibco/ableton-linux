@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Live's faders, knobs and other controls follow the mouse at the right speed
+  while dragging.
+
 ### PipeASIO 1.5
 
 - Updated the audio driver from PipeASIO 1.2.2 to 1.5.0.

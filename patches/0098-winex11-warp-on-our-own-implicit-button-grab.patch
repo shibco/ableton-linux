@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ableton-wine <local@ableton-wine>
+Date: Wed, 13 Aug 2026 00:00:00 +0200
+Subject: [PATCH] winex11: warp on our own implicit button grab
+
+SmoothScrolling selects XI_Motion, XI_ButtonPress and XI_ButtonRelease on
+each of our own windows. An XI2 selection stops core delivery for that
+device on that window, and a button press on such a window creates an
+implicit XI2 device grab. X11DRV_SetCursorPos and grab_clipping_window
+both take a core XGrabPointer, and both fail against that implicit grab,
+so for the whole of any button-held gesture the cursor cannot be clipped
+and every warp is refused.
+
+Applications that implement relative dragging by re-anchoring the pointer
+with SetCursorPos - Ableton Live's faders and knobs - hold a button for
+the entire gesture. With every re-anchor refused the pointer runs free and
+the application accumulates raw physical motion, so a control crosses its
+whole range from a small movement, and the cursor stays visible because
+the clip window is never mapped.
+
+The grab establishes that the pointer is exclusively ours before moving
+it. When the implicit grab is our own that already holds, so warp instead
+of refusing, and leave the implicit grab alone afterwards: releasing a
+grab this function never took ends the gesture mid-drag.
+
+Ownership is taken from the buttons carried by XI2 events delivered to our
+own windows, not from the thread's key state, which cannot tell our grab
+from another client's. It is dropped when the input focus leaves, beside
+the existing warp-emulation cancel.
+
+Measured with Live 12.4.3, one fader drag: 6364 refused warps before and 0
+after on COSMIC/XWayland; on Fedora KDE/Wayland the warp proceeds on our
+own grab 784 times where it was refused before. Warps with no button held
+are unchanged (2475 vs 2473, no failures either side).
+---
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -351,6 +351,28 @@
+     return mask;
+ }
+ 
++/* Buttons held down in an XI2 event delivered to one of our own windows. A
++ * press on a window we selected XI2 events on creates an implicit XI2 device
++ * grab, which fails the core XGrabPointer that X11DRV_SetCursorPos takes. This
++ * records that the implicit grab is ours rather than inferring it from the
++ * thread's key state, which cannot distinguish our grab from another client's. */
++static unsigned int xi2_implicit_grab_mask;
++
++static void xi2_implicit_grab_update( const XIDeviceEvent *event )
++{
++    xi2_implicit_grab_mask = xinput2_ordinary_button_mask( event );
++}
++
++static void xi2_implicit_grab_clear(void)
++{
++    xi2_implicit_grab_mask = 0;
++}
++
++static BOOL xi2_implicit_grab_held(void)
++{
++    return xi2_implicit_grab_mask != 0;
++}
++
+ static void legacy_wheel_copy_reset( const char *reason )
+ {
+     struct x11drv_thread_data *data = x11drv_thread_data();
+@@ -1060,6 +1082,11 @@
+  * this for discontinuities where a later release may be delivered to another
+  * thread, or may never arrive at all.
+  */
++void xi2_implicit_grab_reset(void)
++{
++    xi2_implicit_grab_clear();
++}
++
+ void warp_emulation_cancel(void)
+ {
+     pthread_mutex_lock( &warp_emulation_mutex );
+@@ -2566,6 +2593,7 @@
+     int root_x, root_y, win_x, win_y;
+     unsigned int state;
+     BOOL observe_warp = FALSE;
++    BOOL warp_grabbed = TRUE;
+ 
+     if (keyboard_grabbed)
+     {
+@@ -2579,9 +2607,22 @@
+                       PointerMotionMask | ButtonPressMask | ButtonReleaseMask,
+                       GrabModeAsync, GrabModeAsync, None, None, CurrentTime ) != GrabSuccess)
+     {
+-        warp_emulation_disarm();
+-        WARN( "refusing to warp pointer to %u, %u without exclusive grab\n", pos.x, pos.y );
+-        return FALSE;
++        /* A smooth-scroll XI2 selection on one of our own windows makes a
++         * button press an implicit XI2 device grab, and that grab fails this
++         * core one. The pointer is already exclusively ours in that case, which
++         * is what the grab was testing for, so warp on the implicit grab rather
++         * than refusing. Applications that implement relative dragging by
++         * re-anchoring with SetCursorPos - Live's faders and knobs - hold a
++         * button for the whole gesture and would otherwise see every warp
++         * refused and accumulate raw pointer motion instead. */
++        if (!xi2_implicit_grab_held())
++        {
++            warp_emulation_disarm();
++            WARN( "refusing to warp pointer to %u, %u without exclusive grab\n", pos.x, pos.y );
++            return FALSE;
++        }
++        TRACE( "warping to %u, %u on our own implicit button grab\n", pos.x, pos.y );
++        warp_grabbed = FALSE;
+     }
+ 
+     if (warp_emulation_available( data->display ) &&
+@@ -2602,7 +2643,7 @@
+     }
+     else warp_emulation_disarm();
+ 
+-    if (!clipping_cursor)
++    if (!clipping_cursor && warp_grabbed)
+         XUngrabPointer( data->display, CurrentTime );
+ 
+     XNoOp( data->display );
+@@ -3978,6 +4019,9 @@
+ {
+     XIDeviceEvent *event = xev->data;
+     struct x11drv_thread_data *data = x11drv_thread_data();
++
++    /* the buttons carried by this event are the ones the implicit grab holds */
++    xi2_implicit_grab_update( event );
+     struct x11drv_scroll_source *src;
+     struct x11drv_win_data *win_data;
+     POINT pt = { event->event_x, event->event_y }, root = { event->root_x, event->root_y };
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -574,6 +574,7 @@
+ extern void pointer_inertia_cancel(void);
+ extern void pointer_inertia_tick(LONG input_serial);
+ extern void warp_emulation_cancel(void);
++extern void xi2_implicit_grab_reset(void);
+ 
+ struct x11drv_thread_data
+ {
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -758,6 +758,7 @@
+ static void focus_out( Display *display , HWND hwnd )
+  {
+     warp_emulation_cancel();
++    xi2_implicit_grab_reset();
+     /* a pinch in progress does not survive losing the input focus */
+     pinch_gestures_reset();
+     /* scrolling elsewhere advances the cumulative valuators unobserved */
