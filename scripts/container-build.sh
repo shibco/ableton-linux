@@ -31,7 +31,7 @@ ABLETON_LINKD_SHA="${ABLETON_LINKD_SHA:-}"
 }
 DESTDIR="$WORK/stage"
 PREFIX_ROOT="$DESTDIR$CONFIGURE_PREFIX"
-npatch="$(ls "$SRC"/patches/00*.patch | wc -l)"
+npatch="$(ls "$SRC"/patches/0*.patch | wc -l)"
 
 # TSan reserves a fixed shadow address range. High-entropy ASLR can collide
 # with that range, and newer runtimes may be unable to request process-local
@@ -143,7 +143,7 @@ git -c user.email=build@localhost -c user.name=dist commit -q -m "base 5c23dd1c"
 # The series ships without From:/Date: mail headers; git am refuses to commit
 # with an empty author, so supply a fixed neutral ident (fixed date keeps the
 # apply reproducible). Patches that still carry headers keep their own.
-for p in "$SRC"/patches/00*.patch; do
+for p in "$SRC"/patches/0*.patch; do
     if head -8 "$p" | grep -q '^From: '; then
         git -c user.email=build@localhost -c user.name=dist am --3way "$p"
     else
@@ -629,7 +629,7 @@ LC_ALL=C sort -c -u "$builder_packages"
 builder_packages_sha="$(sha256sum "$builder_packages" | awk '{print $1}')"
 # Stamp per-patch sha256s into the tree; build-audit.sh diffs this against patches/SERIES.sha256.
 stack_stamp="$PREFIX_ROOT/ABLETON-WINE-PATCH-STACK.txt"
-( cd "$SRC/patches" && sha256sum 00*.patch pipeasio/*.patch ) > "$stack_stamp"
+( cd "$SRC/patches" && sha256sum 0*.patch pipeasio/*.patch ) > "$stack_stamp"
 stack_sha="$(sha256sum "$stack_stamp" | awk '{print $1}')"
 build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 {
