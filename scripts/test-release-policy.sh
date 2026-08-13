@@ -261,32 +261,53 @@ printf 'ok - installer packing, tagging, and release drafting share the gate\n'
 
 series_checker="$root/scripts/build-audit.sh"
 series="$root/patches/SERIES.sha256"
-bash "$series_checker" --check-series-policy "$series" >/dev/null \
-    || fail 'complete patch series failed its terminal-member policy'
+removals() { bash "$series_checker" --check-series-removals "$1" "$2" >/dev/null 2>&1; }
 
-# Read the terminal members off the manifest rather than naming them: the
-# policy pins whichever patch currently ends each series, so a hardcoded name
-# turns into a failing negative test the next time either series grows.
 wine_tail="$(awk '$2 !~ /^pipeasio\// { print $2 }' "$series" | sort | tail -1)"
-pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' "$series" | sort | tail -1)"
+wine_tail_hash="$(awk -v f="$wine_tail" '$2 == f { print $1 }' "$series")"
+wine_tail_suffix="${wine_tail#[0-9][0-9][0-9][0-9]-}"
 
-grep -v "  $wine_tail\$" \
-    "$series" > "$tmp/no-wine-tail"
-if bash "$series_checker" --check-series-policy "$tmp/no-wine-tail" >/dev/null 2>&1; then
-    fail 'series policy accepted a missing final Wine patch'
-fi
+removals "$series" "$series" \
+    || fail 'series policy reported a removal between a manifest and itself'
 
-grep -v "  $pipeasio_tail\$" \
-    "$series" > "$tmp/no-pipeasio-tail"
-if bash "$series_checker" --check-series-policy "$tmp/no-pipeasio-tail" >/dev/null 2>&1; then
-    fail 'series policy accepted a missing final PipeASIO patch'
+# An added patch is not a removal, and each way of altering an existing entry
+# leaves one of the three links back to it: name, sha256, or the suffix.
+{ cat "$series"; echo "$wine_tail_hash  0999-a-patch-that-was-added.patch"; } > "$tmp/added"
+removals "$series" "$tmp/added" || fail 'series policy rejected an added patch'
+
+sed "s|^$wine_tail_hash |0000000000000000000000000000000000000000000000000000000000000000 |" \
+    "$series" > "$tmp/edited"
+removals "$series" "$tmp/edited" || fail 'series policy rejected an edited patch'
+
+sed "s|  $wine_tail\$|  0098-$wine_tail_suffix|" "$series" > "$tmp/renumbered"
+removals "$series" "$tmp/renumbered" || fail 'series policy rejected a renumbered patch'
+
+sed -e "s|^$wine_tail_hash |0000000000000000000000000000000000000000000000000000000000000000 |" \
+    -e "s|  $wine_tail\$|  0098-$wine_tail_suffix|" "$series" > "$tmp/renumbered-edited"
+removals "$series" "$tmp/renumbered-edited" \
+    || fail 'series policy rejected a patch renumbered and edited at once'
+
+grep -v "  $wine_tail\$" "$series" > "$tmp/dropped"
+if removals "$series" "$tmp/dropped"; then
+    fail 'series policy accepted a patch that left the series'
 fi
 
 grep -v '  pipeasio/' "$series" > "$tmp/no-pipeasio-series"
-if bash "$series_checker" --check-series-policy "$tmp/no-pipeasio-series" >/dev/null 2>&1; then
-    fail 'series policy accepted an empty PipeASIO series'
+if removals "$series" "$tmp/no-pipeasio-series"; then
+    fail 'series policy accepted an emptied PipeASIO series'
 fi
-printf 'ok - patch series cannot lose either required terminal member\n'
+
+# Each series has its own gap table: 0027 is documented in one, pipeasio/0003
+# in the other, so removing either needs no further reason.
+{ echo "$wine_tail_hash  0027-a-retired-patch.patch"; cat "$series"; } > "$tmp/with-gap"
+removals "$tmp/with-gap" "$series" \
+    || fail 'series policy rejected the removal of a documented gap number'
+
+{ echo "$wine_tail_hash  pipeasio/0003-a-retired-patch.patch"; cat "$series"; } \
+    > "$tmp/with-pipeasio-gap"
+removals "$tmp/with-pipeasio-gap" "$series" \
+    || fail 'series policy rejected the removal of a documented PipeASIO gap number'
+printf 'ok - patch series cannot lose a patch without a documented reason\n'
 
 # --freeze writes patches/SERIES.sha256 next to the script it runs from, so it is
 # exercised against a copy of patches/ and never rewrites the repo's manifest.
@@ -300,13 +321,18 @@ cmp -s "$tmp/freeze/patches/SERIES.sha256" "$series" \
     || fail '--freeze regenerated a manifest that differs from the committed one'
 printf 'ok - --freeze regenerates the committed manifest\n'
 
-# Recording a series change and enforcing the tail policy are separate steps: a
-# freeze reports whatever is on disk, and the audit path is what rejects it.
-rm -f "$tmp/freeze/patches/$wine_tail"
+# A renumbered patch freezes without comment; a deleted one needs the reason flag.
+mv "$tmp/freeze/patches/$wine_tail" "$tmp/freeze/patches/0098-$wine_tail_suffix"
 bash "$freeze_checker" --freeze >/dev/null \
-    || fail '--freeze refused to record a series whose terminal Wine patch changed'
-if bash "$series_checker" --check-series-policy "$tmp/freeze/patches/SERIES.sha256" \
-    >/dev/null 2>&1; then
-    fail 'series policy accepted a frozen manifest missing its terminal Wine patch'
+    || fail '--freeze refused to record a renumbered patch'
+
+rm -f "$tmp/freeze/patches/0098-$wine_tail_suffix"
+if bash "$freeze_checker" --freeze >/dev/null 2>&1; then
+    fail '--freeze recorded a deleted patch without a reason'
 fi
-printf 'ok - --freeze records series drift and the audit path rejects it\n'
+bash "$freeze_checker" --freeze --allow-series-removals 'test fixture' >/dev/null \
+    || fail '--allow-series-removals did not permit a documented removal'
+if grep -qF "  $wine_tail" "$tmp/freeze/patches/SERIES.sha256"; then
+    fail '--freeze kept a deleted patch in the manifest'
+fi
+printf 'ok - --freeze records a renumber and stops on an undocumented deletion\n'
