@@ -29,9 +29,20 @@ declare -A PIPEASIO_GAPS=(
 # awk reads each manifest once, so a process substitution is a valid argument.
 series_removals()  # $1: old manifest, $2: new manifest
 {
-    awk '
-        function suffix(n) { sub(/^[0-9]{4}-/, "", n); return n }
-        NR==FNR { by_hash[$1]; by_name[$2]; by_suffix[suffix($2)]; next }
+    # Keyed on FILENAME rather than NR==FNR, which reads the second file into the
+    # first file's tables when the first is empty and so reports no removals at all.
+    NEW_MANIFEST="$2" awk '
+        # The number is not at the start of a pipeasio/NNNN- entry. Keep the
+        # directory in the key so the two series cannot match each other.
+        function suffix(n,  cut, tail) {
+            cut = index(n, "/")
+            tail = substr(n, cut + 1)
+            sub(/^[0-9]{4}-/, "", tail)
+            return substr(n, 1, cut) tail
+        }
+        FILENAME == ENVIRON["NEW_MANIFEST"] {
+            by_hash[$1]; by_name[$2]; by_suffix[suffix($2)]; next
+        }
         {
             if ($2 in by_name) next
             if ($1 in by_hash) next
@@ -54,24 +65,31 @@ series_gap_reason()  # manifest entry -> its documented gap reason, or nothing
 # manifest, so every removal needs a SERIES_GAPS entry or an explicit reason.
 require_explained_removals()  # $1: old manifest, $2: new manifest, $3: reason, if any
 {
-    local reason="${3:-}" entry documented unexplained=""
+    local reason="${3:-}" entry documented removed
+    local -a unexplained=()
     for entry in "$1" "$2"; do
         [ -r "$entry" ] || fail "series manifest is missing or unreadable: $entry"
     done
+    # Assigned, not piped: a read error in series_removals must stop the run
+    # rather than read as an empty removal list.
+    removed="$(series_removals "$1" "$2")" || fail "cannot read the series manifests"
     while read -r entry; do
         [ -n "$entry" ] || continue
         documented="$(series_gap_reason "$entry")"
         if [ -n "$documented" ]; then
             say "   removed $entry ($documented)"
         else
-            unexplained="$unexplained${unexplained:+ }$entry"
+            unexplained+=("$entry")
         fi
-    done < <(series_removals "$1" "$2")
-    [ -n "$unexplained" ] || return 0
-    [ -n "$reason" ] || fail "no longer in the series and undocumented: $unexplained"$'\n'\
-"   add a SERIES_GAPS entry, or rerun with --allow-series-removals REASON"
+    done <<< "$removed"
+    [ "${#unexplained[@]}" -gt 0 ] || return 0
+    if [ -z "$reason" ]; then
+        printf '!! no longer in the series and undocumented:\n' >&2
+        printf '     %s\n' "${unexplained[@]}" >&2
+        fail "add a gap-table entry for each, or rerun with --allow-series-removals REASON"
+    fi
     say "   removals allowed ($reason):"
-    for entry in $unexplained; do say "     $entry"; done
+    printf '     %s\n' "${unexplained[@]}"
 }
 
 if [ "${1:-}" = --check-series-removals ]; then

@@ -287,9 +287,29 @@ sed -e "s|^$wine_tail_hash |0000000000000000000000000000000000000000000000000000
 removals "$series" "$tmp/renumbered-edited" \
     || fail 'series policy rejected a patch renumbered and edited at once'
 
+# The number sits after the directory in a pipeasio/ entry, so the suffix has to
+# be taken from the basename or this series loses the renumbered-and-edited case.
+pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' "$series" | sort | tail -1)"
+pipeasio_tail_hash="$(awk -v f="$pipeasio_tail" '$2 == f { print $1 }' "$series")"
+sed -e "s|^$pipeasio_tail_hash |0000000000000000000000000000000000000000000000000000000000000000 |" \
+    -e "s|  $pipeasio_tail\$|  pipeasio/0099-${pipeasio_tail#pipeasio/[0-9][0-9][0-9][0-9]-}|" \
+    "$series" > "$tmp/pipeasio-renumbered-edited"
+removals "$series" "$tmp/pipeasio-renumbered-edited" \
+    || fail 'series policy rejected a PipeASIO patch renumbered and edited at once'
+
 grep -v "  $wine_tail\$" "$series" > "$tmp/dropped"
 if removals "$series" "$tmp/dropped"; then
     fail 'series policy accepted a patch that left the series'
+fi
+
+# An empty new manifest must report every patch, and an unreadable one must stop
+# the run — both are cases where a naive reader reports nothing and passes.
+: > "$tmp/empty-manifest"
+if removals "$series" "$tmp/empty-manifest"; then
+    fail 'series policy accepted a manifest that lost every patch'
+fi
+if removals "$series" "$tmp"; then
+    fail 'series policy passed on a manifest it could not read'
 fi
 
 grep -v '  pipeasio/' "$series" > "$tmp/no-pipeasio-series"
