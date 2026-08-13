@@ -65,6 +65,19 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The series-removal check reads the base commit's copy of
+          # patches/SERIES.sha256, which a shallow clone does not contain.
+          fetch-depth: 0
+
+      - name: Check the patch series for undocumented removals
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git show "$BASE_SHA:patches/SERIES.sha256" > "$RUNNER_TEMP/base-series.sha256"
+          ./scripts/build-audit.sh --check-series-removals \
+              "$RUNNER_TEMP/base-series.sha256" patches/SERIES.sha256
 
       - name: Read runtime version
         id: runtime_version
