@@ -10,27 +10,74 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch'
-readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
+# Retired numbers stay retired (renumbering would break cross-references in patch
+# titles and release history); a gap is fine if documented here, a dropped patch is not.
+# The two series are numbered independently, so each has its own table.
+declare -A SERIES_GAPS=(
+    [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
+    [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
+)
+declare -A PIPEASIO_GAPS=(
+    [0003]="warning-text fix superseded by the 1.5.0 diagnostic relay; the corrected text lives in 0005's quantum diagnostic (both arbitration and converge wordings)"
+    [0007]="follower headroom retired 2026-08-10, mechanism ineffective mid-stream (a live api.alsa.headroom write lands in default_headroom only and takes effect on the next renegotiation, not the running stream)"
+)
 
-check_required_series_tails()
+# Match each entry of an old manifest to the new one by name, by sha256, or by the
+# name without its NNNN- prefix: an edit keeps the name, a renumber keeps the
+# sha256, and both together keep only that suffix. An entry matching none of the
+# three is no longer in the series. Prints those entries, one per line.
+# awk reads each manifest once, so a process substitution is a valid argument.
+series_removals()  # $1: old manifest, $2: new manifest
 {
-    local manifest="${1:?series manifest required}" body wine_tail pipeasio_tail
-    [ -r "$manifest" ] || fail "series manifest is missing or unreadable: $manifest"
-    # Read once: the manifest path may be a FIFO, which the first reader drains.
-    body="$(cat -- "$manifest")"
-    wine_tail="$(awk '$2 !~ /^pipeasio\// { print $2 }' <<<"$body" | sort | tail -1)"
-    pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' <<<"$body" | sort | tail -1)"
-    [ "$wine_tail" = "$REQUIRED_WINE_TAIL" ] ||
-        fail "Wine series must end at $REQUIRED_WINE_TAIL (found ${wine_tail:-none})"
-    [ "$pipeasio_tail" = "$REQUIRED_PIPEASIO_TAIL" ] ||
-        fail "PipeASIO series must end at $REQUIRED_PIPEASIO_TAIL (found ${pipeasio_tail:-none})"
+    awk '
+        function suffix(n) { sub(/^[0-9]{4}-/, "", n); return n }
+        NR==FNR { by_hash[$1]; by_name[$2]; by_suffix[suffix($2)]; next }
+        {
+            if ($2 in by_name) next
+            if ($1 in by_hash) next
+            if (suffix($2) in by_suffix) next
+            print $2
+        }
+    ' "$2" "$1"
 }
 
-if [ "${1:-}" = --check-series-policy ]; then
-    [ "$#" -eq 2 ] || fail "usage: $0 --check-series-policy MANIFEST"
-    check_required_series_tails "$2"
-    say "OK: required Wine and PipeASIO series tails are present."
+series_gap_reason()  # manifest entry -> its documented gap reason, or nothing
+{
+    local base="$1"
+    case "$1" in
+        pipeasio/*) base="${1#pipeasio/}"; printf '%s' "${PIPEASIO_GAPS[${base%%-*}]:-}" ;;
+        *)          printf '%s' "${SERIES_GAPS[${base%%-*}]:-}" ;;
+    esac
+}
+
+# A merge that drops a patch and an intentional retirement produce the same
+# manifest, so every removal needs a SERIES_GAPS entry or an explicit reason.
+require_explained_removals()  # $1: old manifest, $2: new manifest, $3: reason, if any
+{
+    local reason="${3:-}" entry documented unexplained=""
+    for entry in "$1" "$2"; do
+        [ -r "$entry" ] || fail "series manifest is missing or unreadable: $entry"
+    done
+    while read -r entry; do
+        [ -n "$entry" ] || continue
+        documented="$(series_gap_reason "$entry")"
+        if [ -n "$documented" ]; then
+            say "   removed $entry ($documented)"
+        else
+            unexplained="$unexplained${unexplained:+ }$entry"
+        fi
+    done < <(series_removals "$1" "$2")
+    [ -n "$unexplained" ] || return 0
+    [ -n "$reason" ] || fail "no longer in the series and undocumented: $unexplained"$'\n'\
+"   add a SERIES_GAPS entry, or rerun with --allow-series-removals REASON"
+    say "   removals allowed ($reason):"
+    for entry in $unexplained; do say "     $entry"; done
+}
+
+if [ "${1:-}" = --check-series-removals ]; then
+    [ "$#" -eq 3 ] || fail "usage: $0 --check-series-removals OLD_MANIFEST NEW_MANIFEST"
+    require_explained_removals "$2" "$3"
+    say "OK: every patch removed from the series is documented."
     exit 0
 fi
 
@@ -44,15 +91,19 @@ if [ "${1:-}" = --source-tree-sha ]; then
 fi
 
 # --- --freeze: (re)generate the frozen series manifest ------------------------
-# The tail policy is not applied here. --freeze records the series as it stands,
-# and a new terminal patch is the change it exists to record; gating generation
-# on the previous tail makes that change unrecordable. Enforcement is on the
-# committed manifest below and on every path that audits an artifact.
+# --freeze records whatever patches/ contains. Additions are not checked, so a
+# new patch needs no edit here; removals are, per require_explained_removals.
 if [ "${1:-}" = --freeze ]; then
+    allow_removals=""
+    if [ "${2:-}" = --allow-series-removals ]; then
+        [ -n "${3:-}" ] || fail "usage: $0 --freeze [--allow-series-removals REASON]"
+        allow_removals="$3"
+    fi
     new="$(cd "$root/patches" && sha256sum [0-9][0-9][0-9][0-9]-*.patch pipeasio/*.patch)"
     if [ -f "$SERIES" ]; then
         say "== freeze diff (old -> new) =="
         diff -u "$SERIES" <(printf '%s\n' "$new") && say "   (no changes)"
+        require_explained_removals "$SERIES" <(printf '%s\n' "$new") "$allow_removals"
     else
         say "== creating $SERIES =="
     fi
@@ -62,7 +113,6 @@ if [ "${1:-}" = --freeze ]; then
 fi
 
 [ -f "$SERIES" ] || fail "patches/SERIES.sha256 missing — run: ./scripts/build-audit.sh --freeze (then commit it)"
-check_required_series_tails "$SERIES"
 grep -qP 'x' <<<'x' 2>/dev/null || fail "grep -P not supported on this system (needed for UTF-16 fingerprints)"
 
 # --- resolve the artifact: tarball (unpack to tmp) or tree --------------------
@@ -108,12 +158,6 @@ done < "$SERIES"
 extras="$(cd "$root/patches" && printf '%s\n' *.patch pipeasio/*.patch \
     | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
-# Retired numbers stay retired (renumbering would break cross-references in patch
-# titles and release history); a gap is fine if documented here, a dropped patch is not.
-declare -A SERIES_GAPS=(
-    [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
-    [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
-)
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
     num="${f%%-*}"
@@ -132,10 +176,6 @@ done
 # The pipeasio series is numbered independently of the Wine one, and the loop
 # above skips it. Check it the same way, or a dropped or misnumbered patch
 # passes with only its checksum looked at.
-declare -A PIPEASIO_GAPS=(
-    [0003]="warning-text fix superseded by the 1.5.0 diagnostic relay; the corrected text lives in 0005's quantum diagnostic (both arbitration and converge wordings)"
-    [0007]="follower headroom retired 2026-08-10, mechanism ineffective mid-stream (a live api.alsa.headroom write lands in default_headroom only and takes effect on the next renegotiation, not the running stream)"
-)
 asio_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep '^pipeasio/' | sort); do
     base="${f#pipeasio/}"
