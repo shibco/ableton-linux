@@ -5,8 +5,8 @@
  *
  * Wine is carried here as a patch stack rather than directly linkable source.
  * The checker reads guarded delivery from 0092, warp handling from 0094,
- * lifecycle rules from 0095 and final gesture changes from 0096. It ignores
- * removed lines and commit prose.
+ * lifecycle rules from 0095, final gesture changes from 0097, and held LMB
+ * control-drag isolation from 0098. It ignores removed lines and commit prose.
  */
 
 #include <ctype.h>
@@ -407,14 +407,14 @@ static void check_warp_emulation(const char *stack, const char *warp)
 }
 
 static void check_held_and_direct_input(const char *stack, const char *safety,
-                                        const char *lifecycle, const char *final)
+                                        const char *lifecycle, const char *control)
 {
     int ok = 1;
 
     ok &= require_text("held valuators advance the baseline and emit zero", stack,
                        "if(!axis->value_valid||reseed){axis->value=value;axis->value_valid=TRUE;return0;");
-    ok &= require_text("all XI button state controls reseeding", stack,
-                       "buttons_down=xinput2_any_button_down(event);");
+    ok &= require_text("XI and process LMB state control reseeding", control,
+                       "buttons_down=xinput2_any_button_down(event)||held_control_drag_active();");
     ok &= require_text("horizontal held movement is reseeded", stack,
                        "smooth_scroll_delta(&src->scroll_x,value_x,buttons_down,quantize,&discontinuity);");
     ok &= require_text("vertical held movement is reseeded", stack,
@@ -462,14 +462,123 @@ static void check_held_and_direct_input(const char *stack, const char *safety,
                        "if(buttons_down||discontinuity){");
     ok &= require_text("the driver forwards ordinary XI motion with no scroll axes", stack,
                        "if(!have_x&&!have_y)returnforward_xinput2_core_event(hwnd,event,FALSE);");
-    ok &= require_order("the driver reads held state before handling pointer motion in a scroll report", final,
-                        "buttons_down=xinput2_any_button_down(event);",
-                        "if(saw_motion&&(!buttons_down||data->middle_drag.active))");
-    ok &= require_text("the driver forwards held pointer motion from a scroll report only during middle navigation", final,
-                       "if(saw_motion&&(!buttons_down||data->middle_drag.active))"
-                       "forward_xinput2_core_event(hwnd,event,TRUE);"
-                       "elseif(saw_motion)TRACE(\"Wineignorespointermotionfromascrollreportwhileabuttonisheld\\n\");");
-    if (ok) pass("only provenance-matched physical wheel input bypasses fixed gesture delivery");
+    ok &= require_order("the driver reads held state before handling pointer motion in a scroll report", control,
+                        "buttons_down=xinput2_any_button_down(event)||held_control_drag_active();",
+                        "if(saw_motion&&(!buttons_down||data->middle_drag.active||"
+                        "held_control_drag_active()))");
+    ok &= require_text("LMB scroll reports reach only the de-duplicating control channel", control,
+                       "if(saw_motion&&(!buttons_down||data->middle_drag.active||"
+                       "held_control_drag_active()))forward_xinput2_core_event(hwnd,event,TRUE);");
+    if (ok) pass("physical wheel and held LMB motion have isolated delivery routes");
+}
+
+static void check_held_control_drag(const char *control)
+{
+    int ok = 1;
+
+    ok &= require_text("held LMB state is process-wide and mutex protected", control,
+                       "}held_control_drag;staticpthread_mutex_theld_control_drag_mutex="
+                       "PTHREAD_MUTEX_INITIALIZER;");
+    ok &= require_text_between("Button1 starts at the unmodified cooked press point", control,
+                               "staticvoidheld_control_drag_button_press(",
+                               "staticBOOLheld_control_drag_button_release(",
+                               "held_control_drag.logical_x=point.x;"
+                               "held_control_drag.logical_y=point.y;"
+                               "held_control_drag.emitted=point;");
+    ok &= require_text_between("wheel transitions do not terminate the control drag", control,
+                               "staticvoidheld_control_drag_button_press(",
+                               "staticBOOLheld_control_drag_button_release(",
+                               "if(button>=Button4&&button<=7)return;");
+    ok &= require_text_between("a chord cannot remain in the LMB-only channel", control,
+                               "staticvoidheld_control_drag_button_press(",
+                               "staticBOOLheld_control_drag_button_release(",
+                               "if(button!=Button1||(state&(Button2Mask|Button3Mask)))");
+    ok &= require_text("the release uses the last logical point before clearing state", control,
+                       "*point=held_control_drag.emitted;TRACE("
+                       "\"heldLMBcontroldragendsat%s\\n\",wine_dbgstr_point(point));}"
+                       "held_control_drag_reset_locked();");
+
+    ok &= require_text("the control channel records server-processed XI2 pointer deltas", control,
+                       "held_control_drag_raw_motion(event->display,event->time,"
+                       "x_value*x_scale,y_value*y_scale);");
+    ok &= require_text("the raw delta comes from processed rather than WM_INPUT values", control,
+                       "raw->x=*raw_values;x_value=*values;");
+    ok &= require_text_between("each raw total is consumed only once", control,
+                               "staticenumheld_control_motion_result"
+                               "held_control_drag_apply_raw_locked(",
+                               "staticenumheld_control_motion_result"
+                               "held_control_drag_clipped_motion(",
+                               "dx=held_control_drag.raw_dx-held_control_drag.raw_used_x;"
+                               "dy=held_control_drag.raw_dy-held_control_drag.raw_used_y;"
+                               "held_control_drag.raw_used_x=held_control_drag.raw_dx;"
+                               "held_control_drag.raw_used_y=held_control_drag.raw_dy;");
+    ok &= require_text_between("Wine applies raw control deltas with unit gain", control,
+                               "staticenumheld_control_motion_result"
+                               "held_control_drag_apply_raw_locked(",
+                               "staticenumheld_control_motion_result"
+                               "held_control_drag_clipped_motion(",
+                               "held_control_drag.logical_x+=dx;"
+                               "held_control_drag.logical_y+=dy;");
+    ok &= forbid_text_between("the exact control-delta path has no configurable transfer", control,
+                              "staticenumheld_control_motion_result"
+                              "held_control_drag_apply_raw_locked(",
+                              "staticenumheld_control_motion_result"
+                              "held_control_drag_clipped_motion(", "pointer_config");
+    ok &= require_text("attached X connections cannot multiply one raw frame", control,
+                       "heldLMBcontroldragignoresduplicaterawframeonanotherconnection");
+    ok &= require_text("a cooked-before-raw frame is marked consumed", control,
+                       "if(held_control_drag.fallback_valid&&"
+                       "held_control_drag.fallback_time==time){"
+                       "held_control_drag.raw_used_x=held_control_drag.raw_dx;"
+                       "held_control_drag.raw_used_y=held_control_drag.raw_dy;}");
+    ok &= require_text("scroll-bearing frames without pointer deltas are suppressed", control,
+                       "if(co_reported_scroll){held_control_drag.native=native;"
+                       "held_control_drag.native_valid=TRUE;gotodone;}");
+    ok &= require_text("cooked-only motion is an exact coordinate fallback", control,
+                       "dx=native.x-held_control_drag.native.x;"
+                       "dy=native.y-held_control_drag.native.y;");
+
+    ok &= require_order("the LMB channel runs before optional warp mapping", control,
+                        "held_result=held_control_drag_motion(",
+                        "pt=map_emulated_warp_coords(event->display,pt,event->time,TRUE);");
+    ok &= require_text("only a delivered held delta emits an absolute move", control,
+                       "if(held_result==HELD_CONTROL_MOTION_DELIVERED)"
+                       "send_mouse_input(hwnd,pt,MOUSEEVENTF_ABSOLUTE,0,time,NULL);");
+    ok &= require_text("SetCursorPos reanchors the logical control point", control,
+                       "held_control_drag_reanchor((POINT){x,y});");
+    ok &= require_order("GetCursorPos gives the LMB point precedence over warp state", control,
+                        "warp_emulation_get_position(pos);",
+                        "held_control_drag_get_position(pos);");
+    ok &= require_text("clipped input uses the same logical absolute channel", control,
+                       "held_result=held_control_drag_clipped_motion(event->time,&held_pt);");
+    ok &= require_text("clipped LMB input cannot also emit normal relative motion", control,
+                       "if(held_result!=HELD_CONTROL_MOTION_INACTIVE){pointer_inertia_cancel();"
+                       "if(held_result==HELD_CONTROL_MOTION_DELIVERED)"
+                       "send_mouse_input(NULL,held_pt,MOUSEEVENTF_ABSOLUTE,0,time,&raw);"
+                       "elsesend_mouse_input(NULL,(POINT){0},0,0,time,&raw);returnTRUE;}");
+
+    ok &= require_order("LMB isolation precedes configurable physical-wheel routing", control,
+                        "if(held_control_drag_active()){TRACE("
+                        "\"discretewheel%dsuppressed:heldLMBcontroldragisisolated\\n\",delta);"
+                        "returnTRUE;}",
+                        "if(pointer_config.wheel_while_button_held==");
+    ok &= require_text("pinch cannot enter during the process LMB channel", control,
+                       "pinch_input_blocked()||pointer_button_down()||held_control_drag_active()");
+    ok &= require_text("held control motion always cancels continuation", control,
+                       "if(held_result!=HELD_CONTROL_MOTION_INACTIVE){"
+                       "pointer_inertia_cancel();");
+    ok &= require_text("capture acquisition preserves the active drag", control,
+                       "pointer_inertia_cancel();if(!hwnd)held_control_drag_cancel();"
+                       "warp_emulation_cancel();");
+    ok &= require_text("device replacement cancels the active drag", control,
+                       "if(event->deviceid!=data->xinput2_pointer)returnFALSE;"
+                       "held_control_drag_cancel();warp_emulation_cancel();");
+    ok &= require_text("thread teardown cancels the active drag", control,
+                       "if(data){held_control_drag_cancel();warp_emulation_cancel();");
+    ok &= require_text("focus loss cancels the active drag", control,
+                       "held_control_drag_cancel();warp_emulation_cancel();"
+                       "/*apinchinprogressdoesnotsurvivelosingtheinputfocus*/");
+    if (ok) pass("held LMB control motion is exact-once and gesture-free");
 }
 
 static void check_legacy_wheel_copy_guard(const char *final)
@@ -1343,6 +1452,142 @@ static int safe_axis_tick(struct safe_axis *axis, unsigned int *total_travel,
     return packet;
 }
 
+struct reference_control_drag
+{
+    double logical_x;
+    double logical_y;
+    double raw_x;
+    double raw_y;
+    double used_x;
+    double used_y;
+    int emitted_x;
+    int emitted_y;
+    int native_valid;
+    int native_x;
+    int native_y;
+};
+
+static void reference_control_begin(struct reference_control_drag *drag, int x, int y)
+{
+    memset(drag, 0, sizeof(*drag));
+    drag->logical_x = drag->emitted_x = drag->native_x = x;
+    drag->logical_y = drag->emitted_y = drag->native_y = y;
+    drag->native_valid = 1;
+}
+
+static void reference_control_record_raw(struct reference_control_drag *drag,
+                                         double dx, double dy)
+{
+    drag->raw_x += dx;
+    drag->raw_y += dy;
+}
+
+static int reference_control_consume_raw(struct reference_control_drag *drag)
+{
+    double dx = drag->raw_x - drag->used_x;
+    double dy = drag->raw_y - drag->used_y;
+    int x, y;
+
+    drag->used_x = drag->raw_x;
+    drag->used_y = drag->raw_y;
+    if (!dx && !dy) return 0;
+    drag->logical_x += dx;
+    drag->logical_y += dy;
+    x = round(drag->logical_x);
+    y = round(drag->logical_y);
+    if (x == drag->emitted_x && y == drag->emitted_y) return 0;
+    drag->emitted_x = x;
+    drag->emitted_y = y;
+    return 1;
+}
+
+static int reference_control_cooked(struct reference_control_drag *drag,
+                                    int x, int y, int co_reported_scroll)
+{
+    int dx, dy, emitted_x, emitted_y;
+
+    if (co_reported_scroll)
+    {
+        drag->native_x = x;
+        drag->native_y = y;
+        drag->native_valid = 1;
+        return 0;
+    }
+    if (!drag->native_valid)
+    {
+        drag->native_x = x;
+        drag->native_y = y;
+        drag->native_valid = 1;
+        return 0;
+    }
+    dx = x - drag->native_x;
+    dy = y - drag->native_y;
+    drag->native_x = x;
+    drag->native_y = y;
+    drag->logical_x += dx;
+    drag->logical_y += dy;
+    emitted_x = round(drag->logical_x);
+    emitted_y = round(drag->logical_y);
+    if (emitted_x == drag->emitted_x && emitted_y == drag->emitted_y) return 0;
+    drag->emitted_x = emitted_x;
+    drag->emitted_y = emitted_y;
+    return 1;
+}
+
+static void reference_control_reanchor(struct reference_control_drag *drag, int x, int y)
+{
+    drag->logical_x = drag->emitted_x = x;
+    drag->logical_y = drag->emitted_y = y;
+    drag->raw_x = drag->raw_y = drag->used_x = drag->used_y = 0.0;
+    drag->native_valid = 0;
+}
+
+static void check_held_control_motion_math(void)
+{
+    struct reference_control_drag drag;
+    int ok = 1;
+
+    reference_control_begin(&drag, 100, 100);
+    reference_control_record_raw(&drag, 0.25, -0.25);
+    if (reference_control_consume_raw(&drag) ||
+        reference_control_consume_raw(&drag))
+        ok = 0;
+    reference_control_record_raw(&drag, 0.25, -0.25);
+    reference_control_record_raw(&drag, 3.0, -1.5);
+    if (!reference_control_consume_raw(&drag) ||
+        reference_control_consume_raw(&drag) ||
+        fabs(drag.logical_x - 103.5) > 1e-12 ||
+        fabs(drag.logical_y - 98.0) > 1e-12 ||
+        drag.emitted_x != 104 || drag.emitted_y != 98)
+        ok = 0;
+
+    reference_control_reanchor(&drag, 400, 300);
+    reference_control_record_raw(&drag, -2.25, 1.25);
+    if (!reference_control_consume_raw(&drag) ||
+        fabs(drag.logical_x - 397.75) > 1e-12 ||
+        fabs(drag.logical_y - 301.25) > 1e-12 ||
+        drag.emitted_x != 398 || drag.emitted_y != 301)
+        ok = 0;
+
+    reference_control_begin(&drag, 10, 20);
+    if (!reference_control_cooked(&drag, 12, 15, 0) ||
+        reference_control_cooked(&drag, 200, 200, 1) ||
+        !reference_control_cooked(&drag, 201, 202, 0) ||
+        drag.emitted_x != 13 || drag.emitted_y != 17)
+        ok = 0;
+    reference_control_reanchor(&drag, 50, 50);
+    if (reference_control_cooked(&drag, 500, 500, 0) ||
+        !reference_control_cooked(&drag, 502, 497, 0) ||
+        drag.emitted_x != 52 || drag.emitted_y != 47)
+        ok = 0;
+
+    if (!ok)
+        fail("held LMB reference motion is exact and duplicate-free",
+             "gain, fractional carry, reanchor, duplicate, or scroll isolation changed");
+    else
+        pass("held LMB reference motion is exact and duplicate-free");
+}
+
 enum reference_wheel_route
 {
     REFERENCE_WHEEL_FIXED,
@@ -1351,8 +1596,10 @@ enum reference_wheel_route
 };
 
 static enum reference_wheel_route reference_wheel_route(
-    int enabled, unsigned int event_mask, unsigned int held_mask, int middle_drag)
+    int enabled, unsigned int event_mask, unsigned int held_mask,
+    int middle_drag, int control_drag)
 {
+    if (control_drag) return REFERENCE_WHEEL_SUPPRESSED;
     if (enabled && event_mask && event_mask == held_mask && !middle_drag)
         return REFERENCE_WHEEL_STOCK;
     if (event_mask || held_mask || middle_drag) return REFERENCE_WHEEL_SUPPRESSED;
@@ -1365,19 +1612,20 @@ static void check_held_wheel_provenance(void)
     int ok = 1;
 
     for (i = 0; i < 5; i++)
-        if (reference_wheel_route(1, 1u << i, 1u << i, 0) != REFERENCE_WHEEL_STOCK)
+        if (reference_wheel_route(1, 1u << i, 1u << i, 0, 0) != REFERENCE_WHEEL_STOCK)
             ok = 0;
-    if (reference_wheel_route(1, 5u, 5u, 0) != REFERENCE_WHEEL_STOCK ||
-        reference_wheel_route(1, 1u, 2u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(1, 1u, 0u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(1, 0u, 1u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(0, 1u, 1u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(1, 2u, 2u, 1) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(1, 0u, 0u, 0) != REFERENCE_WHEEL_FIXED)
+    if (reference_wheel_route(1, 5u, 5u, 0, 0) != REFERENCE_WHEEL_STOCK ||
+        reference_wheel_route(1, 1u, 2u, 0, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 1u, 0u, 0, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 0u, 1u, 0, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(0, 1u, 1u, 0, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 2u, 2u, 1, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 1u, 1u, 0, 1) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 0u, 0u, 0, 0) != REFERENCE_WHEEL_FIXED)
         ok = 0;
     if (!ok)
         fail("held-wheel routing requires exact physical provenance",
-             "an unstable, disabled, or middle-drag case reached stock delivery");
+             "an unstable, disabled, middle-drag, or LMB-control case reached stock delivery");
     else
         pass("held-wheel routing requires exact physical provenance");
 }
@@ -1842,33 +2090,37 @@ int main(int argc, char **argv)
         "patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch",
         "patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch",
         "patches/0095-winex11-separate-pointer-coast-sources.patch",
-        "patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch"
+        "patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch",
+        "patches/0098-winex11-isolate-held-LMB-control-motion-from-gestures.patch"
     };
     struct text stack_source = {0}, safety_source = {0}, warp_source = {0};
-    struct text lifecycle_source = {0}, final_source = {0};
-    const char *paths[9];
-    char *stack, *safety, *warp, *lifecycle, *final;
+    struct text lifecycle_source = {0}, final_source = {0}, control_source = {0};
+    const char *paths[10];
+    char *stack, *safety, *warp, *lifecycle, *final, *control;
     int i;
 
-    if (argc != 1 && argc != 10)
+    if (argc != 1 && argc != 11)
     {
-        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092 0093 0094 0095 0096]\n", argv[0]);
+        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092 0093 0094 0095 0097 0098]\n",
+                argv[0]);
         return 2;
     }
-    for (i = 0; i < 9; i++) paths[i] = argc == 10 ? argv[i + 1] : defaults[i];
-    for (i = 0; i < 9; i++)
+    for (i = 0; i < 10; i++) paths[i] = argc == 11 ? argv[i + 1] : defaults[i];
+    for (i = 0; i < 10; i++)
         if (!read_patch_new_side(paths[i], &stack_source)) return 2;
     if (!read_patch_new_side(paths[4], &safety_source)) return 2;
     if (!read_patch_new_side(paths[6], &warp_source)) return 2;
     if (!read_patch_new_side(paths[7], &lifecycle_source)) return 2;
     if (!read_patch_new_side(paths[8], &final_source)) return 2;
+    if (!read_patch_new_side(paths[9], &control_source)) return 2;
 
     stack = compact(stack_source.data ? stack_source.data : "");
     safety = compact(safety_source.data ? safety_source.data : "");
     warp = compact(warp_source.data ? warp_source.data : "");
     lifecycle = compact(lifecycle_source.data ? lifecycle_source.data : "");
     final = compact(final_source.data ? final_source.data : "");
-    if (!stack || !safety || !warp || !lifecycle || !final)
+    control = compact(control_source.data ? control_source.data : "");
+    if (!stack || !safety || !warp || !lifecycle || !final || !control)
     {
         fprintf(stderr, "FAIL: out of memory while compacting patch sources\n");
         free(stack_source.data);
@@ -1876,17 +2128,20 @@ int main(int argc, char **argv)
         free(warp_source.data);
         free(lifecycle_source.data);
         free(final_source.data);
+        free(control_source.data);
         free(stack);
         free(safety);
         free(warp);
         free(lifecycle);
         free(final);
+        free(control);
         return 2;
     }
 
     check_pointer_setting_fallback(stack, safety, lifecycle, final);
     check_warp_emulation(stack, warp);
-    check_held_and_direct_input(stack, safety, lifecycle, final);
+    check_held_and_direct_input(stack, safety, lifecycle, control);
+    check_held_control_drag(control);
     check_legacy_wheel_copy_guard(lifecycle);
     check_direct_packet_bounds(stack, safety, final);
     check_continuation_sources(lifecycle, final);
@@ -1902,6 +2157,7 @@ int main(int argc, char **argv)
     check_default_continuation_matrix();
     check_middle_throw_estimator_math();
     check_warp_probe_math();
+    check_held_control_motion_math();
     check_math_limits();
 
     free(stack_source.data);
@@ -1909,11 +2165,13 @@ int main(int argc, char **argv)
     free(warp_source.data);
     free(lifecycle_source.data);
     free(final_source.data);
+    free(control_source.data);
     free(stack);
     free(safety);
     free(warp);
     free(lifecycle);
     free(final);
+    free(control);
     if (failures)
     {
         fprintf(stderr, "pointer safety checks: %u failure%s\n",

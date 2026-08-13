@@ -1,0 +1,562 @@
+From b0eab98628d4f9956d4d72f6966c6e428773fb67 Mon Sep 17 00:00:00 2001
+From: ableton-wine <local@ableton-wine>
+Date: Thu, 13 Aug 2026 10:58:11 +0200
+Subject: [PATCH] winex11: isolate held LMB control motion from gestures
+
+Treat a Button1 control drag as ordinary pointer input, never as a scroll or inertia gesture. Accumulate the X server's processed XI2 pointer deltas at one logical point and forward every delta exactly once without adding a Wine transfer function.
+
+Reanchor that point across SetCursorPos and bypass warp classification while held. Fall back to cooked coordinate deltas when RawMotion is unavailable, and preserve clipped relative operation without sending a second motion path.
+
+Suppress smooth and discrete wheel input, pinch, inertia, and duplicate cooked reports for the lifetime of the drag. Cancel the channel on release, focus loss, capture loss, device replacement, or thread teardown.
+---
+ dlls/winex11.drv/event.c       |   7 +-
+ dlls/winex11.drv/mouse.c       | 347 ++++++++++++++++++++++++++++++++-
+ dlls/winex11.drv/window.c      |   1 +
+ dlls/winex11.drv/x11drv.h      |   1 +
+ dlls/winex11.drv/x11drv_main.c |   1 +
+ 5 files changed, 351 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 923b6f0..38b3509 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -757,6 +757,7 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+  */
+ static void focus_out( Display *display , HWND hwnd )
+  {
++    held_control_drag_cancel();
+     warp_emulation_cancel();
+     /* a pinch in progress does not survive losing the input focus */
+     pinch_gestures_reset();
+@@ -816,7 +817,11 @@ static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
+     HWND foreground = NtUserGetForegroundWindow();
+     XFocusChangeEvent *event = &xev->xfocus;
+ 
+-    if (event->detail != NotifyPointer) warp_emulation_cancel();
++    if (event->detail != NotifyPointer)
++    {
++        held_control_drag_cancel();
++        warp_emulation_cancel();
++    }
+     if (event->detail == NotifyPointer)
+     {
+         if (!hwnd && event->window == x11drv_thread_data()->clip_window)
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index b5be221..66d5d74 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -140,6 +140,39 @@ enum warp_probe_result
+     WARP_PROBE_APPLIED,
+ };
+ 
++enum held_control_motion_result
++{
++    HELD_CONTROL_MOTION_INACTIVE,
++    HELD_CONTROL_MOTION_SUPPRESSED,
++    HELD_CONTROL_MOTION_DELIVERED,
++};
++
++/* A left-button control drag is not a gesture. Keep a process-wide logical
++ * point because the button press, raw event, cooked event, cursor warp, and
++ * release can cross attached Wine threads. raw_dx/raw_dy are the X server's
++ * already-processed pointer deltas; Wine applies no velocity curve, gain, or
++ * smoothing to them. */
++static struct
++{
++    BOOL active;
++    BOOL raw_seen;
++    Display *raw_display;
++    Time raw_time;
++    double raw_dx;
++    double raw_dy;
++    double raw_used_x;
++    double raw_used_y;
++    double logical_x;
++    double logical_y;
++    POINT emitted;
++    BOOL native_valid;
++    POINT native;
++    BOOL fallback_valid;
++    Display *fallback_display;
++    Time fallback_time;
++} held_control_drag;
++static pthread_mutex_t held_control_drag_mutex = PTHREAD_MUTEX_INITIALIZER;
++
+ /* X events can cross Wine threads after input attachment.  Keep one process
+  * state so a release, focus loss, or capture loss on another X11 thread still
+  * terminates the drag which armed emulation. */
+@@ -1053,6 +1086,270 @@ static POINT map_event_coords( HWND hwnd, Window window, Window event_root, POIN
+     return dst;
+ }
+ 
++static void held_control_drag_reset_locked(void)
++{
++    memset( &held_control_drag, 0, sizeof(held_control_drag) );
++}
++
++/***********************************************************************
++ *              held_control_drag_cancel
++ *
++ * End the process-wide LMB control-drag channel at an input discontinuity.
++ */
++void held_control_drag_cancel(void)
++{
++    pthread_mutex_lock( &held_control_drag_mutex );
++    if (held_control_drag.active) TRACE( "cancelling held LMB control drag\n" );
++    held_control_drag_reset_locked();
++    pthread_mutex_unlock( &held_control_drag_mutex );
++}
++
++static void held_control_drag_button_press( unsigned int button, unsigned int state, POINT point )
++{
++    /* Buttons 4--7 are wheel transitions, not drag ownership. They are
++     * suppressed independently below and must not break an LMB drag. */
++    if (button >= Button4 && button <= 7) return;
++
++    pthread_mutex_lock( &held_control_drag_mutex );
++    if (button != Button1 || (state & (Button2Mask | Button3Mask)))
++    {
++        held_control_drag_reset_locked();
++        pthread_mutex_unlock( &held_control_drag_mutex );
++        return;
++    }
++    if (!held_control_drag.active)
++    {
++        held_control_drag_reset_locked();
++        held_control_drag.active = TRUE;
++        held_control_drag.logical_x = point.x;
++        held_control_drag.logical_y = point.y;
++        held_control_drag.emitted = point;
++        held_control_drag.native = point;
++        held_control_drag.native_valid = TRUE;
++        TRACE( "held LMB control drag begins at %s\n", wine_dbgstr_point( &point ) );
++    }
++    pthread_mutex_unlock( &held_control_drag_mutex );
++}
++
++static BOOL held_control_drag_button_release( unsigned int button, POINT *point )
++{
++    BOOL active = FALSE;
++
++    if (button != Button1) return FALSE;
++    pthread_mutex_lock( &held_control_drag_mutex );
++    if ((active = held_control_drag.active))
++    {
++        *point = held_control_drag.emitted;
++        TRACE( "held LMB control drag ends at %s\n", wine_dbgstr_point( point ) );
++    }
++    held_control_drag_reset_locked();
++    pthread_mutex_unlock( &held_control_drag_mutex );
++    return active;
++}
++
++static BOOL held_control_drag_active(void)
++{
++    BOOL active;
++
++    pthread_mutex_lock( &held_control_drag_mutex );
++    active = held_control_drag.active;
++    pthread_mutex_unlock( &held_control_drag_mutex );
++    return active;
++}
++
++static void held_control_drag_reanchor( POINT point )
++{
++    pthread_mutex_lock( &held_control_drag_mutex );
++    if (held_control_drag.active)
++    {
++        held_control_drag.logical_x = point.x;
++        held_control_drag.logical_y = point.y;
++        held_control_drag.emitted = point;
++        /* The server may apply or ignore the warp. The next processed raw
++         * delta is valid either way; a cooked-only fallback first reseeds. */
++        held_control_drag.native_valid = FALSE;
++        held_control_drag.raw_seen = FALSE;
++        held_control_drag.fallback_valid = FALSE;
++        TRACE( "held LMB control drag reanchored at %s\n", wine_dbgstr_point( &point ) );
++    }
++    pthread_mutex_unlock( &held_control_drag_mutex );
++}
++
++static BOOL held_control_drag_get_position( POINT *point )
++{
++    BOOL active;
++
++    pthread_mutex_lock( &held_control_drag_mutex );
++    if ((active = held_control_drag.active)) *point = held_control_drag.emitted;
++    pthread_mutex_unlock( &held_control_drag_mutex );
++    return active;
++}
++
++#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
++static void held_control_drag_raw_motion( Display *display, Time time, double dx, double dy )
++{
++    pthread_mutex_lock( &held_control_drag_mutex );
++    if (!held_control_drag.active) goto done;
++
++    if (!held_control_drag.raw_seen || held_control_drag.raw_time != time)
++    {
++        held_control_drag.raw_seen = TRUE;
++        held_control_drag.raw_display = display;
++        held_control_drag.raw_time = time;
++        held_control_drag.raw_dx = dx;
++        held_control_drag.raw_dy = dy;
++        held_control_drag.raw_used_x = held_control_drag.raw_used_y = 0.0;
++    }
++    else if (held_control_drag.raw_display == display)
++    {
++        held_control_drag.raw_dx += dx;
++        held_control_drag.raw_dy += dy;
++    }
++    else
++    {
++        /* Attached Wine threads can select the same master RawMotion on
++         * separate X connections. The first connection owns this timestamp;
++         * a second copy must not multiply the physical distance. */
++        TRACE( "held LMB control drag ignores duplicate raw frame on another connection\n" );
++        goto done;
++    }
++
++    /* A cooked event can precede its RawMotion copy on another attached
++     * queue. If that cooked fallback was already delivered, mark all raw
++     * movement for the same server frame consumed instead of doubling it. */
++    if (held_control_drag.fallback_valid && held_control_drag.fallback_time == time)
++    {
++        held_control_drag.raw_used_x = held_control_drag.raw_dx;
++        held_control_drag.raw_used_y = held_control_drag.raw_dy;
++    }
++
++done:
++    pthread_mutex_unlock( &held_control_drag_mutex );
++}
++#endif
++
++static enum held_control_motion_result held_control_drag_apply_raw_locked( Time time,
++                                                                           POINT *reported )
++{
++    double dx, dy;
++    POINT point;
++
++    if (!held_control_drag.raw_seen || held_control_drag.raw_time != time)
++        return HELD_CONTROL_MOTION_SUPPRESSED;
++
++    dx = held_control_drag.raw_dx - held_control_drag.raw_used_x;
++    dy = held_control_drag.raw_dy - held_control_drag.raw_used_y;
++    held_control_drag.raw_used_x = held_control_drag.raw_dx;
++    held_control_drag.raw_used_y = held_control_drag.raw_dy;
++    if (dx == 0.0 && dy == 0.0) return HELD_CONTROL_MOTION_SUPPRESSED;
++
++    held_control_drag.logical_x += dx;
++    held_control_drag.logical_y += dy;
++    point.x = round( held_control_drag.logical_x );
++    point.y = round( held_control_drag.logical_y );
++    if (point.x == held_control_drag.emitted.x && point.y == held_control_drag.emitted.y)
++        return HELD_CONTROL_MOTION_SUPPRESSED;
++
++    held_control_drag.emitted = point;
++    *reported = point;
++    TRACE( "held LMB control drag forwards one processed delta %f,%f at %s\n",
++           dx, dy, wine_dbgstr_point( reported ) );
++    return HELD_CONTROL_MOTION_DELIVERED;
++}
++
++#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
++static enum held_control_motion_result held_control_drag_clipped_motion( Time time,
++                                                                         POINT *reported )
++{
++    enum held_control_motion_result result;
++
++    pthread_mutex_lock( &held_control_drag_mutex );
++    if (!held_control_drag.active) result = HELD_CONTROL_MOTION_INACTIVE;
++    else result = held_control_drag_apply_raw_locked( time, reported );
++    pthread_mutex_unlock( &held_control_drag_mutex );
++    return result;
++}
++#endif
++
++static enum held_control_motion_result held_control_drag_motion( Display *display, Time time,
++                                                                 POINT native, unsigned int state,
++                                                                 BOOL co_reported_scroll,
++                                                                 POINT *reported )
++{
++    enum held_control_motion_result result = HELD_CONTROL_MOTION_SUPPRESSED;
++    double dx, dy;
++    POINT point;
++
++    pthread_mutex_lock( &held_control_drag_mutex );
++    if (!held_control_drag.active)
++    {
++        result = HELD_CONTROL_MOTION_INACTIVE;
++        goto done;
++    }
++    if ((state & (Button2Mask | Button3Mask)) ||
++        (!(state & Button1Mask) && !co_reported_scroll))
++    {
++        held_control_drag_reset_locked();
++        result = HELD_CONTROL_MOTION_INACTIVE;
++        goto done;
++    }
++
++    if (held_control_drag.raw_seen && held_control_drag.raw_time == time)
++    {
++        held_control_drag.native = native;
++        held_control_drag.native_valid = TRUE;
++        result = held_control_drag_apply_raw_locked( time, reported );
++        goto done;
++    }
++    else
++    {
++        /* A scroll-bearing frame without a pointer delta is gesture input,
++         * never control movement. Reseed native coordinates so a later
++         * cooked-only fallback cannot release the ignored distance. */
++        if (co_reported_scroll)
++        {
++            held_control_drag.native = native;
++            held_control_drag.native_valid = TRUE;
++            goto done;
++        }
++        if (held_control_drag.fallback_valid &&
++            held_control_drag.fallback_display == display &&
++            held_control_drag.fallback_time == time &&
++            held_control_drag.native.x == native.x && held_control_drag.native.y == native.y)
++            goto done;
++
++        held_control_drag.fallback_valid = TRUE;
++        held_control_drag.fallback_display = display;
++        held_control_drag.fallback_time = time;
++        if (!held_control_drag.native_valid)
++        {
++            held_control_drag.native = native;
++            held_control_drag.native_valid = TRUE;
++            goto done;
++        }
++        dx = native.x - held_control_drag.native.x;
++        dy = native.y - held_control_drag.native.y;
++        held_control_drag.native = native;
++        if (dx == 0.0 && dy == 0.0) goto done;
++    }
++
++    held_control_drag.logical_x += dx;
++    held_control_drag.logical_y += dy;
++    point.x = round( held_control_drag.logical_x );
++    point.y = round( held_control_drag.logical_y );
++    if (point.x == held_control_drag.emitted.x && point.y == held_control_drag.emitted.y) goto done;
++
++    held_control_drag.emitted = point;
++    *reported = point;
++    result = HELD_CONTROL_MOTION_DELIVERED;
++    TRACE( "held LMB control drag forwards one cooked fallback delta %f,%f at %s\n",
++           dx, dy, wine_dbgstr_point( reported ) );
++
++done:
++    pthread_mutex_unlock( &held_control_drag_mutex );
++    return result;
++}
++
+ /***********************************************************************
+  *              warp_emulation_cancel
+  *
+@@ -1439,6 +1736,11 @@ static BOOL send_discrete_wheel_input( HWND hwnd, POINT pt, UINT flags, int delt
+ {
+     unsigned int held_button_mask = pointer_button_mask();
+ 
++    if (held_control_drag_active())
++    {
++        TRACE( "discrete wheel %d suppressed: held LMB control drag is isolated\n", delta );
++        return TRUE;
++    }
+     if (pointer_config.wheel_while_button_held == POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED &&
+         event_button_mask && event_button_mask == held_button_mask &&
+         !x11drv_thread_data()->middle_drag.active)
+@@ -2601,6 +2903,7 @@ BOOL X11DRV_SetCursorPos( INT x, INT y )
+         warp_emulation_record_warp( target, prewarp, state );
+     }
+     else warp_emulation_disarm();
++    held_control_drag_reanchor( (POINT){x, y} );
+ 
+     if (!clipping_cursor)
+         XUngrabPointer( data->display, CurrentTime );
+@@ -2628,6 +2931,7 @@ BOOL X11DRV_GetCursorPos(LPPOINT pos)
+         POINT old = *pos;
+         *pos = root_to_virtual_screen( winX, winY );
+         warp_emulation_get_position( pos );
++        held_control_drag_get_position( pos );
+         TRACE( "pointer at %s server pos %s\n", wine_dbgstr_point(pos), wine_dbgstr_point(&old) );
+     }
+     return ret;
+@@ -2741,6 +3045,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+     }
+ 
+     pt = map_event_coords( hwnd, event->window, event->root, root, pt );
++    held_control_drag_button_press( event->button, event->state, pt );
+     /* Invalidate delayed fixed wheel input before a gesture lock can wait
+      * behind a low-level hook. */
+     if (button >= NB_BUTTONS) warp_emulation_cancel();
+@@ -2800,6 +3105,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+     {
+         if (button_up_flags[button])
+             pt = map_emulated_warp_coords( event->display, pt, event->time, FALSE );
++        held_control_drag_button_release( event->button, &pt );
+         warp_emulation_button_release( event->button );
+     }
+     /* Never carry a sub-notch remainder across a button release into whatever
+@@ -2833,6 +3139,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+ static BOOL x11drv_motion_notify( HWND hwnd, XEvent *xev, BOOL co_reported_scroll )
+ {
+     XMotionEvent *event = &xev->xmotion;
++    enum held_control_motion_result held_result;
+     POINT pt = { event->x, event->y }, root = { event->x_root, event->y_root };
+     UINT time = EVENT_x11_time_to_win32_time( event->time );
+ 
+@@ -2853,6 +3160,15 @@ static BOOL x11drv_motion_notify( HWND hwnd, XEvent *xev, BOOL co_reported_scrol
+      * coast. Pointer coordinates carried by the same XI2 report as scrolling
+      * are part of that scroll frame and must not split its speed history. */
+     if (middle_drag_motion( event, pt, time )) return TRUE;
++    held_result = held_control_drag_motion( event->display, event->time, pt, event->state,
++                                            co_reported_scroll, &pt );
++    if (held_result != HELD_CONTROL_MOTION_INACTIVE)
++    {
++        pointer_inertia_cancel();
++        if (held_result == HELD_CONTROL_MOTION_DELIVERED)
++            send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
++        return TRUE;
++    }
+     pt = map_emulated_warp_coords( event->display, pt, event->time, TRUE );
+     if (!co_reported_scroll) pointer_inertia_cancel();
+     send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
+@@ -2912,6 +3228,7 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
+     struct x11drv_thread_data *data = x11drv_thread_data();
+ 
+     if (event->deviceid != data->xinput2_pointer) return FALSE;
++    held_control_drag_cancel();
+     warp_emulation_cancel();
+     update_relative_valuators( event->classes, event->num_classes );
+ #ifdef XIScrollClass
+@@ -2931,6 +3248,7 @@ static POINT map_raw_event_coords( XIRawEvent *event, POINT *raw )
+     XIValuatorClassInfo *x = &thread_data->x_valuator, *y = &thread_data->y_valuator;
+     const double *values = event->valuators.values, *raw_values = event->raw_values;
+     double x_value = 0, y_value = 0, x_scale, y_scale;
++    BOOL have_x = FALSE, have_y = FALSE;
+     POINT pt = { 0, 0 };
+     RECT virtual_rect;
+     int i;
+@@ -2952,12 +3270,14 @@ static POINT map_raw_event_coords( XIRawEvent *event, POINT *raw )
+         if (!XIMaskIsSet( event->valuators.mask, i )) continue;
+         if (i == x->number)
+         {
++            have_x = TRUE;
+             raw->x = *raw_values;
+             x_value = *values;
+             x->value += x_value * x_scale;
+         }
+         if (i == y->number)
+         {
++            have_y = TRUE;
+             raw->y = *raw_values;
+             y_value = *values;
+             y->value += y_value * y_scale;
+@@ -2968,6 +3288,9 @@ static POINT map_raw_event_coords( XIRawEvent *event, POINT *raw )
+ 
+     warp_emulation_raw_motion( event->display, event->sourceid, event->time,
+                                x_value * x_scale, y_value * y_scale );
++    if (have_x || have_y)
++        held_control_drag_raw_motion( event->display, event->time,
++                                      x_value * x_scale, y_value * y_scale );
+ 
+     /* when not clipping cursor, we use MotionNotify for absolute mouse position */
+     if (!thread_data->clipping_cursor)
+@@ -2996,8 +3319,10 @@ static POINT map_raw_event_coords( XIRawEvent *event, POINT *raw )
+ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+ {
+     XIRawEvent *event = xev->data;
++    enum held_control_motion_result held_result = HELD_CONTROL_MOTION_INACTIVE;
+     UINT time = EVENT_x11_time_to_win32_time( event->time );
+     struct raw_mouse raw = { .count = 1 };
++    POINT held_pt = {0};
+     POINT pt;
+ 
+     if (broken_rawevents && is_old_motion_event( xev->serial ))
+@@ -3007,6 +3332,17 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+     }
+ 
+     pt = map_raw_event_coords( event, raw.data );
++    if (x11drv_thread_data()->clipping_cursor)
++        held_result = held_control_drag_clipped_motion( event->time, &held_pt );
++    if (held_result != HELD_CONTROL_MOTION_INACTIVE)
++    {
++        pointer_inertia_cancel();
++        if (held_result == HELD_CONTROL_MOTION_DELIVERED)
++            send_mouse_input( NULL, held_pt, MOUSEEVENTF_ABSOLUTE, 0, time, &raw );
++        else
++            send_mouse_input( NULL, (POINT){0}, 0, 0, time, &raw );
++        return TRUE;
++    }
+     if (pt.x || pt.y) pointer_inertia_cancel();
+     send_mouse_input( NULL, pt, 0, 0, time, &raw );
+     return TRUE;
+@@ -4054,12 +4390,13 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+ 
+     /* While the user holds any button, keep scroll baselines current without
+      * sending smooth wheel input to the dragged control. */
+-    buttons_down = xinput2_any_button_down( event );
++    buttons_down = xinput2_any_button_down( event ) || held_control_drag_active();
+     quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED;
+ 
+-    /* Ignore pointer motion from a smooth-scroll report during an ordinary
+-     * button drag. Continue sending this motion during middle navigation. */
+-    if (saw_motion && (!buttons_down || data->middle_drag.active))
++    /* The LMB control-drag channel consumes one processed pointer delta and
++     * rejects duplicate cooked copies. Other held-button scroll reports stay
++     * motionless; middle navigation continues through its own fixed anchor. */
++    if (saw_motion && (!buttons_down || data->middle_drag.active || held_control_drag_active()))
+         forward_xinput2_core_event( hwnd, event, TRUE );
+     else if (saw_motion)
+         TRACE( "Wine ignores pointer motion from a scroll report while a button is held\n" );
+@@ -4473,7 +4810,7 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
+     HWND hwnd;
+ 
+     pthread_mutex_lock( &pinch_mutex );
+-    if (pinch_input_blocked() || pointer_button_down())
++    if (pinch_input_blocked() || pointer_button_down() || held_control_drag_active())
+     {
+         pinch_cancel_active_locked( event->display );
+         if (event->evtype == XI_GesturePinchEnd &&
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 2d6440c..a14b5bc 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3825,6 +3825,7 @@ void X11DRV_SetCapture( HWND hwnd, UINT flags, HWND previous )
+     TRACE( "hwnd %p, flags %#x, previous %p\n", hwnd, flags, previous );
+ 
+     pointer_inertia_cancel();
++    if (!hwnd) held_control_drag_cancel();
+     warp_emulation_cancel();
+     if (!(flags & (GUI_INMOVESIZE | GUI_INMENUMODE))) return;
+ 
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 1c38c39..d3e5f7d 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -573,6 +573,7 @@ struct x11drv_scroll_inertia
+ 
+ extern void pointer_inertia_cancel(void);
+ extern void pointer_inertia_tick(LONG input_serial);
++extern void held_control_drag_cancel(void);
+ extern void warp_emulation_cancel(void);
+ 
+ struct x11drv_thread_data
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index c655e55..f50cd7c 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -904,6 +904,7 @@ void X11DRV_ThreadDetach(void)
+ 
+     if (data)
+     {
++        held_control_drag_cancel();
+         warp_emulation_cancel();
+         /* Stop this thread's tracker and remove its timer slot while its
+          * window and thread data are still valid. */
+-- 
+2.55.0
+

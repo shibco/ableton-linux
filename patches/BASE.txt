@@ -11,7 +11,7 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The current Wine series contains 95 files, numbered 0001 through 0097.
+The current Wine series contains 96 files, numbered 0001 through 0098.
 Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
 once numbered 0066 and 0067 now appear after the gesture patches as 0093
 and 0094, because 0066 through 0068 were held for this GPU series.
@@ -430,3 +430,8 @@ Apply them in sequence with the rest of the series.
   touch from speeding up a left- or right-button control drag. Keep one-finger
   dragging and middle-button navigation unchanged. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0098`: isolate LMB control motion from gestures. Forward the X server's
+  processed pointer delta exactly once with no Wine smoothing, acceleration or
+  gain; carry fractional pixels and reanchor application warps. Suppress
+  scroll, pinch, inertia, physical wheel input and duplicate cooked or clipped
+  motion until release. See `notes/ABLETON-WINE-POINTER-GESTURES.md`.

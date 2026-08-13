@@ -152,8 +152,9 @@ These environment variables change one launch without changing the saved install
   `enabled`. `disabled` leaves direct middle-button navigation unchanged.
 - `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled|enabled` controls physical
   mouse-wheel clicks while another button is held. It defaults to `enabled`.
-  The wheel stays blocked during middle-button navigation. Touchpad scrolling,
-  pinch and continued movement stay blocked during a drag.
+  The wheel stays blocked during middle-button navigation and every held-LMB
+  control drag. Touchpad scrolling, pinch and continued movement stay blocked
+  during a drag.
 - `WINE_X11_INERTIA_CURVE=exponential|linear` selects how continued movement
   slows. `WINE_X11_INERTIA_RATE=<0.5..16.0>` selects how soon it stops. The
   default rate is `4.0`. Lower values keep movement going for longer. Higher
@@ -162,6 +163,11 @@ These environment variables change one launch without changing the saved install
   for faders and knobs that move farther than the pointer. It defaults to
   `disabled`. `auto` waits until it sees the fault twice. `enabled` forces the
   repair for one launch.
+
+None of these settings changes held-LMB motion sensitivity. Faders, sliders
+and knobs receive the desktop's processed pointer delta exactly once with no
+Wine smoothing, acceleration or gain. The path is independent of mouse versus
+touchpad and of one versus two touchpad contacts.
 
 Named pointer values ignore letter case. `off` and `0` mean `disabled` where
 supported. Wine reports an invalid value in the normal launch log, then uses

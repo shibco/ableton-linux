@@ -41,12 +41,14 @@
 
 - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
   navigation. A plain middle click remains a click.
-- Fixed left- and right-button control drags speeding up when a second touch
-  starts scrolling. Normal one-finger dragging and middle-button navigation
-  remain unchanged.
-- Touchpad scrolling and pinch zoom cannot move a control while a mouse button
-  is held. A mouse wheel still works except during middle-button navigation,
-  and pressing a button stops earlier continued movement.
+- Isolated held-LMB fader, slider and knob movement from gesture handling.
+  Mouse and touchpad drags now use each desktop's processed pointer delta
+  exactly once, with no Wine smoothing, acceleration or sensitivity change,
+  including when a second touchpad contact appears.
+- Touchpad scrolling, pinch zoom, inertia, duplicate XI2/core motion and
+  physical wheel input cannot move an LMB-held control. A mouse wheel still
+  works with other held buttons except during middle-button navigation, and
+  pressing a button stops earlier continued movement.
 - Added scrolling inertia and middle-drag throw. Both are on by default and
   have separate off switches. Fast releases keep their speed, then movement
   slows gradually. A short or curved middle-button drag can throw. New input

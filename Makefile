@@ -48,7 +48,8 @@ pointer-safety-check:
 		patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch \
 		patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch \
 		patches/0095-winex11-separate-pointer-coast-sources.patch \
-		patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch
+		patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch \
+		patches/0098-winex11-isolate-held-LMB-control-motion-from-gestures.patch
 
 clean:                        ## remove build outputs
 	rm -rf dist

@@ -14,12 +14,20 @@ By default, Live provides:
 - normal mouse-wheel clicks while another button is held, except during
   middle-button navigation.
 
+Left-button fader, slider and knob drags use a separate control-motion path.
+Wine keeps the desktop's processed pointer delta, carries fractional pixels,
+and forwards each physical delta once. It adds no smoothing, acceleration,
+sensitivity multiplier or gesture continuation. This path is the same for a
+mouse, a clickpad with one finger, and a clickpad with another finger present.
+
 `TouchpadInertia` affects scrolling after release. `MiddleDragThrow` affects
 middle-button movement after release. Turning either one off leaves direct
 scrolling and direct middle-button navigation unchanged.
 
-The XWayland correction for faders and knobs defaults to `disabled`.
-KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
+The older optional XWayland correction still defaults to `disabled`. Held LMB
+control drags bypass its warp classifier and reanchor directly when the
+application calls `SetCursorPos`. KDE/XWayland, GNOME/XWayland and Xorg
+hands-on checks remain open.
 
 ## Settings
 
@@ -47,13 +55,13 @@ values stop it sooner.
 ## Safety rules
 
 - A mouse-button press stops older scrolling inertia or middle-drag throw.
-- Adding a second touch and scrolling cannot speed up a left- or right-button
-  control drag. Normal one-finger dragging and middle-button navigation remain
-  available. Touchpad scrolling and pinch cannot change the held control.
-  Wine does not send ignored movement after release.
-- A physical mouse wheel still works while another button is held, except
-  during middle-button navigation. Set `WheelWhileButtonHeld=disabled` to
-  block it.
+- While LMB is held, Wine forwards only processed pointer displacement. It
+  applies unit gain, carries subpixel remainder, and rejects duplicate core,
+  XI2 and clipped-motion copies. Scroll valuators, physical wheel input, pinch
+  and inertia cannot enter that control drag or appear after release.
+- A physical mouse wheel still works while a non-LMB button is held, except
+  during middle-button navigation. It is always blocked during an LMB control
+  drag, regardless of `WheelWhileButtonHeld`.
 - Middle-button navigation works only while its own middle button remains held.
   Another button press stops it.
 - Continued movement stays at the window and point where it began. It cannot
@@ -113,15 +121,19 @@ hands-on checks below remain required.
 Mute or disconnect monitoring before a check that can change volume. Start
 with Live's Master fader low.
 
-1. Drag faders and knobs. Their values must follow the pointer without jumps.
+1. Drag faders and knobs with LMB using a mouse and a touchpad. Repeat at slow
+   and fast speeds. One physical pixel of vertical travel must produce the same
+   control travel; no Wine acceleration, smoothing or sensitivity transition
+   may appear after press, during movement or at release.
 2. Load an affected Max for Live device without clicking its panel. A Live
    fader must still follow the pointer. Repeat after clicking the device once.
-3. Hold a fader with the left or right button. Drag with one finger, then add a
-   second touch and scroll. The drag must not speed up. Touchpad scrolling and
-   pinch must not change the fader during the drag or after release.
-4. Hold the left or right mouse button and turn a physical mouse wheel. The
-   wheel must work with the default setting. Repeat with
-   `WheelWhileButtonHeld=disabled`; the wheel must stop.
+3. Hold a fader with LMB. Drag with one touchpad finger, add a stationary second
+   finger, then move either finger and try two-finger scrolling and pinch. The
+   fader must follow only pointer displacement at the same rate as step 1.
+   Gesture reports must not change it during the drag or after release.
+4. Hold LMB and turn a physical mouse wheel; the wheel must not reach the held
+   control. Hold RMB and repeat: the wheel works by default and stops with
+   `WheelWhileButtonHeld=disabled`.
 5. Make a fast smooth scroll. The view must keep moving, slow gradually and stay
    within the limits above. New input must stop it. Repeat with
    `TouchpadInertia=disabled`; direct scrolling must feel the same but stop with
@@ -153,5 +165,5 @@ Live version, setting and result for each check.
   desktop may omit the end report.
 - This work applies when Live runs through Xorg or XWayland. It does not apply
   when Live runs directly through Wayland.
-- Testing the Max for Live pointer repair on the affected Fedora computer
-  remains open.
+- Hands-on held-LMB comparison across KDE/XWayland, GNOME/XWayland and Xorg,
+  including the affected Fedora computer, remains open.
