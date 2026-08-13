@@ -287,6 +287,12 @@ sed -e "s|^$wine_tail_hash |0000000000000000000000000000000000000000000000000000
 removals "$series" "$tmp/renumbered-edited" \
     || fail 'series policy rejected a patch renumbered and edited at once'
 
+# Renaming a patch without changing it breaks the suffix link, and only the
+# sha256 ties the new entry back to the old one.
+sed "s|  $wine_tail\$|  0098-winex11-an-entirely-different-description.patch|" \
+    "$series" > "$tmp/renamed"
+removals "$series" "$tmp/renamed" || fail 'series policy rejected a renamed patch'
+
 # The number sits after the directory in a pipeasio/ entry, so the suffix has to
 # be taken from the basename or this series loses the renumbered-and-edited case.
 pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' "$series" | sort | tail -1)"
@@ -319,11 +325,14 @@ fi
 
 # Each series has its own gap table: 0027 is documented in one, pipeasio/0003
 # in the other, so removing either needs no further reason.
-{ echo "$wine_tail_hash  0027-a-retired-patch.patch"; cat "$series"; } > "$tmp/with-gap"
+# A hash and a suffix of their own, or the entry matches a surviving patch and
+# never reaches the gap tables.
+retired_hash='1111111111111111111111111111111111111111111111111111111111111111'
+{ echo "$retired_hash  0027-a-retired-wine-patch.patch"; cat "$series"; } > "$tmp/with-gap"
 removals "$tmp/with-gap" "$series" \
     || fail 'series policy rejected the removal of a documented gap number'
 
-{ echo "$wine_tail_hash  pipeasio/0003-a-retired-patch.patch"; cat "$series"; } \
+{ echo "$retired_hash  pipeasio/0003-a-retired-pipeasio-patch.patch"; cat "$series"; } \
     > "$tmp/with-pipeasio-gap"
 removals "$tmp/with-pipeasio-gap" "$series" \
     || fail 'series policy rejected the removal of a documented PipeASIO gap number'

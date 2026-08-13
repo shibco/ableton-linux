@@ -22,10 +22,12 @@ declare -A PIPEASIO_GAPS=(
     [0007]="follower headroom retired 2026-08-10, mechanism ineffective mid-stream (a live api.alsa.headroom write lands in default_headroom only and takes effect on the next renegotiation, not the running stream)"
 )
 
-# Match each entry of an old manifest to the new one by name, by sha256, or by the
-# name without its NNNN- prefix: an edit keeps the name, a renumber keeps the
-# sha256, and both together keep only that suffix. An entry matching none of the
-# three is no longer in the series. Prints those entries, one per line.
+# Match each entry of an old manifest to the new one by sha256 or by the name
+# without its NNNN- prefix. Editing a patch keeps that suffix, renumbering keeps
+# the sha256 (patch files do not carry their own number), and doing both keeps
+# the suffix. An entry matching neither is no longer in the series. Prints those
+# entries, one per line. Matching on the full name as well would add nothing:
+# equal names have equal suffixes.
 # awk reads each manifest once, so a process substitution is a valid argument.
 series_removals()  # $1: old manifest, $2: new manifest
 {
@@ -41,10 +43,9 @@ series_removals()  # $1: old manifest, $2: new manifest
             return substr(n, 1, cut) tail
         }
         FILENAME == ENVIRON["NEW_MANIFEST"] {
-            by_hash[$1]; by_name[$2]; by_suffix[suffix($2)]; next
+            by_hash[$1]; by_suffix[suffix($2)]; next
         }
         {
-            if ($2 in by_name) next
             if ($1 in by_hash) next
             if (suffix($2) in by_suffix) next
             print $2
