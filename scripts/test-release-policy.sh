@@ -287,3 +287,26 @@ if bash "$series_checker" --check-series-policy "$tmp/no-pipeasio-series" >/dev/
     fail 'series policy accepted an empty PipeASIO series'
 fi
 printf 'ok - patch series cannot lose either required terminal member\n'
+
+# --freeze writes patches/SERIES.sha256 next to the script it runs from, so it is
+# exercised against a copy of patches/ and never rewrites the repo's manifest.
+mkdir -p "$tmp/freeze/scripts"
+cp -a "$root/patches" "$tmp/freeze/patches"
+cp -a "$series_checker" "$tmp/freeze/scripts/build-audit.sh"
+freeze_checker="$tmp/freeze/scripts/build-audit.sh"
+bash "$freeze_checker" --freeze >/dev/null \
+    || fail '--freeze cannot regenerate the series manifest'
+cmp -s "$tmp/freeze/patches/SERIES.sha256" "$series" \
+    || fail '--freeze regenerated a manifest that differs from the committed one'
+printf 'ok - --freeze regenerates the committed manifest\n'
+
+# Recording a series change and enforcing the tail policy are separate steps: a
+# freeze reports whatever is on disk, and the audit path is what rejects it.
+rm -f "$tmp/freeze/patches/$wine_tail"
+bash "$freeze_checker" --freeze >/dev/null \
+    || fail '--freeze refused to record a series whose terminal Wine patch changed'
+if bash "$series_checker" --check-series-policy "$tmp/freeze/patches/SERIES.sha256" \
+    >/dev/null 2>&1; then
+    fail 'series policy accepted a frozen manifest missing its terminal Wine patch'
+fi
+printf 'ok - --freeze records series drift and the audit path rejects it\n'
