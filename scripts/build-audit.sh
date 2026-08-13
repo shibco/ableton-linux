@@ -15,10 +15,12 @@ readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-
 
 check_required_series_tails()
 {
-    local manifest="${1:?series manifest required}" wine_tail pipeasio_tail
+    local manifest="${1:?series manifest required}" body wine_tail pipeasio_tail
     [ -r "$manifest" ] || fail "series manifest is missing or unreadable: $manifest"
-    wine_tail="$(awk '$2 !~ /^pipeasio\// { print $2 }' "$manifest" | sort | tail -1)"
-    pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' "$manifest" | sort | tail -1)"
+    # Read once: the manifest path may be a FIFO, which the first reader drains.
+    body="$(cat -- "$manifest")"
+    wine_tail="$(awk '$2 !~ /^pipeasio\// { print $2 }' <<<"$body" | sort | tail -1)"
+    pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' <<<"$body" | sort | tail -1)"
     [ "$wine_tail" = "$REQUIRED_WINE_TAIL" ] ||
         fail "Wine series must end at $REQUIRED_WINE_TAIL (found ${wine_tail:-none})"
     [ "$pipeasio_tail" = "$REQUIRED_PIPEASIO_TAIL" ] ||
@@ -42,9 +44,12 @@ if [ "${1:-}" = --source-tree-sha ]; then
 fi
 
 # --- --freeze: (re)generate the frozen series manifest ------------------------
+# The tail policy is not applied here. --freeze records the series as it stands,
+# and a new terminal patch is the change it exists to record; gating generation
+# on the previous tail makes that change unrecordable. Enforcement is on the
+# committed manifest below and on every path that audits an artifact.
 if [ "${1:-}" = --freeze ]; then
     new="$(cd "$root/patches" && sha256sum [0-9][0-9][0-9][0-9]-*.patch pipeasio/*.patch)"
-    check_required_series_tails <(printf '%s\n' "$new")
     if [ -f "$SERIES" ]; then
         say "== freeze diff (old -> new) =="
         diff -u "$SERIES" <(printf '%s\n' "$new") && say "   (no changes)"
