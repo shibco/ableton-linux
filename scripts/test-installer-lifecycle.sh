@@ -69,6 +69,10 @@ if [ "$prerequisite_failed" -eq 1 ]; then
     echo "!! run ./build.sh first" >&2
     fail "prerequisite build artifacts are valid"
 fi
+# The sudo password-path checks drive a PTY from Python.  Name the missing
+# dependency here; without this the first case fails as a sudo behaviour bug.
+command -v python3 >/dev/null 2>&1 \
+    || fail "python3 is available for the sudo password-path checks"
 
 new_env()
 {

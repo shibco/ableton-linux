@@ -41,8 +41,12 @@ case "$action" in enable|disable|status|snapshot|preflight-rollback|preflight-co
     *) echo "usage: setup-link.sh enable [--mode=session|always] | disable | status" >&2; exit 2 ;;
 esac
 case "$action" in
-    enable|disable|status|snapshot|preflight-rollback|preflight-commit|rollback|commit)
+    enable|disable|snapshot|preflight-rollback|preflight-commit|rollback|commit)
         ableton_install_lock_acquire
+        ableton_validate_install_state_journals ;;
+    status)
+        # A read-only query validates the journals it reads but never takes the
+        # exclusive install lock: status must stay answerable during an install.
         ableton_validate_install_state_journals ;;
 esac
 
@@ -84,6 +88,22 @@ owned_link_pids()
 }
 
 stop_owned_detached_link_daemons()
+{
+    # ableton-linkctl's start and stop both serialise on this lock. Take it
+    # too, so a launcher-initiated start cannot spawn a daemon between this
+    # enumeration and the PID-record removal below.  The subshell keeps the
+    # descriptor from leaking past the body's early returns.
+    mkdir -p -- "${link_pid_file%/*}" || return 1
+    (
+        flock -w 10 9 || {
+            echo "!! timed out waiting for the Link lifecycle lock" >&2
+            exit 1
+        }
+        stop_owned_detached_link_daemons_locked
+    ) 9> "${link_pid_file%/*}/linkd.lock"
+}
+
+stop_owned_detached_link_daemons_locked()
 {
     local pid exe want running=0 failed=0
     local -a pids=()
@@ -646,6 +666,7 @@ ensure_recorded_firewall()
                 echo "!! cannot verify the recorded ufw rule because ufw is missing" >&2
                 return 127
             }
+            echo "   verifying the recorded ufw allowance for UDP 20808 (sudo, each step bounded to two minutes)"
             ufw_link_rule_state || rule_state=$?
             if [ "$rule_state" -eq 1 ]; then
                 echo "   restoring the recorded ufw allowance for UDP 20808"
@@ -655,6 +676,7 @@ ensure_recorded_firewall()
                 return 1
             fi ;;
         firewalld-added)
+            echo "   verifying the recorded firewalld allowance for UDP 20808 (sudo, each step bounded to two minutes)"
             if command -v firewall-cmd >/dev/null 2>&1 \
                && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
                 firewalld_link_rule_state || rule_state=$?
@@ -707,7 +729,7 @@ configure_firewall()
             write_link_firewall_state none
             echo "   ufw already allows UDP 20808; leaving the foreign/pre-existing rule alone"
         elif [ "$rule_state" -eq 1 ]; then
-            echo "   ufw is active: adding UDP 20808 (sudo, bounded to two minutes)"
+            echo "   ufw is active: adding UDP 20808 (sudo, each step bounded to two minutes)"
             write_link_firewall_state ufw-added
             # Persist ownership before ufw can make a partial change. The
             # caller's recovery can then remove only this attempted rule.
@@ -724,7 +746,7 @@ configure_firewall()
             write_link_firewall_state none
             echo "   firewalld already allows UDP 20808; leaving the foreign/pre-existing rule alone"
         elif [ "$rule_state" -eq 1 ]; then
-            echo "   firewalld is active: adding UDP 20808 (sudo, bounded to two minutes)"
+            echo "   firewalld is active: adding UDP 20808 (sudo, each step bounded to two minutes)"
             write_link_firewall_state firewalld-added
             ableton_sudo_run_bounded 120 \
                 firewall-cmd --permanent --add-port=20808/udp || return $?

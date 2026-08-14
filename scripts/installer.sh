@@ -378,6 +378,9 @@ host_preflight()
             [ "$(uname -m)" = x86_64 ] \
                 || { echo "!! this command requires x86_64" >&2; return 1; } ;;
     esac
+    # repair-live11 runs no bounded external command, so it does not need GNU
+    # timeout.  This only helps an extracted kit: the .run header needs timeout
+    # for its own payload extraction and refuses before delegating here.
     case "$command_name:$subcommand" in
         prefix:repair-live11) ;;
         *) command -v timeout >/dev/null \
