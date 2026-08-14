@@ -428,7 +428,8 @@ Apply them in sequence with the rest of the series.
 - `0097`: use the final 100 ms of movement for inertia and middle-drag throw.
   Set the default rate to 4.0 and raise the continuation limits. Stop a second
   touch from speeding up a left- or right-button control drag. Keep one-finger
-  dragging and middle-button navigation unchanged. See
+  dragging unchanged, and invert both middle-button navigation axes so content
+  follows the pointer. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0098`: isolate LMB control motion from gestures. Forward the X server's
   processed pointer delta exactly once with no Wine smoothing, acceleration or

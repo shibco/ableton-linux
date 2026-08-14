@@ -677,6 +677,10 @@ static void check_direct_packet_bounds(const char *stack, const char *safety,
     ok &= require_text("smooth excess is discarded after one notch", stack,
                        "if((delta=round(units))>max_delta||delta<-max_delta){axis->value=value;"
                        "returndelta>0?max_delta:-max_delta;}");
+    ok &= require_text("middle-drag horizontal input is inverted", final,
+                       "move_x=drag->last.x-pt.x;");
+    ok &= require_text("middle-drag vertical input is inverted", final,
+                       "move_y=drag->last.y-pt.y;");
     ok &= require_text("middle-drag vertical movement is bounded before delivery", final,
                        "delta_y=middle_drag_delta(&drag->accum_y,notched);");
     ok &= require_text("middle-drag horizontal movement is bounded before delivery", final,

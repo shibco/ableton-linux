@@ -40,7 +40,8 @@
 ### Pointer input
 
 - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
-  navigation. A plain middle click remains a click.
+  navigation. Middle-button dragging moves the content with the pointer on
+  both axes. A plain middle click remains a click.
 - Isolated held-LMB fader, slider and knob movement from gesture handling.
   Mouse and touchpad drags now use each desktop's processed pointer delta
   exactly once, with no Wine smoothing, acceleration or sensitivity change,

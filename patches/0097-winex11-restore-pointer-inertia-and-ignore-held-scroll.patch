@@ -1,4 +1,4 @@
-From 7808160d02908efba625abcdfb0f0848aee9f381 Mon Sep 17 00:00:00 2001
+From 45fcca1083661a55cc5821526adf825cfbf3b526 Mon Sep 17 00:00:00 2001
 From: ableton-wine <local@ableton-wine>
 Date: Wed, 12 Aug 2026 23:53:15 +0200
 Subject: [PATCH] winex11: restore pointer inertia and ignore held scroll
@@ -12,17 +12,17 @@ Set the default rate to 4.0. Limit each update to 300 units per axis,
 each axis to 4,800 units, the total to 7,200 units and each run to 384
 updates. Keep the timer, cancellation and missed-frame rules.
 
-Ignore pointer motion from a smooth-scroll report during an ordinary
-held-button drag. Keep ordinary drag, middle navigation and physical
-wheel handling.
+Invert both middle-drag navigation axes so dragged content follows the
+pointer. Ignore pointer motion from a smooth-scroll report during an
+ordinary held-button drag. Keep ordinary drag and physical wheel handling.
 ---
- dlls/winex11.drv/mouse.c       | 151 +++++++++++++++++----------------
+ dlls/winex11.drv/mouse.c       | 159 +++++++++++++++++----------------
  dlls/winex11.drv/x11drv.h      |   1 +
  dlls/winex11.drv/x11drv_main.c |   2 +-
- 3 files changed, 79 insertions(+), 75 deletions(-)
+ 3 files changed, 83 insertions(+), 79 deletions(-)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 729ec0b..b5be221 100644
+index 729ec0b..ca2c580 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -1609,11 +1609,6 @@ static BOOL middle_drag_begin( HWND hwnd, XButtonEvent *event, POINT pt, UINT ti
@@ -37,7 +37,15 @@ index 729ec0b..b5be221 100644
      return TRUE;
  }
  
-@@ -1682,14 +1677,6 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+@@ -1676,20 +1671,12 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+         return FALSE;
+     }
+ 
+-    move_x = pt.x - drag->last.x;
+-    move_y = pt.y - drag->last.y;
++    move_x = drag->last.x - pt.x;
++    move_y = drag->last.y - pt.y;
+     drag->accum_x += move_x;
      drag->accum_y += move_y;
      drag->last = pt;
  
@@ -52,10 +60,12 @@ index 729ec0b..b5be221 100644
      if (!drag->moved)
      {
          if (abs( pt.x - drag->origin.x ) <= drag->slop_x &&
-@@ -1697,6 +1684,13 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+@@ -1697,8 +1684,15 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
          drag->moved = TRUE;
      }
  
+-    delta_y = middle_drag_delta( &drag->accum_y, notched );  /* up scrolls up */
+-    delta_x = middle_drag_delta( &drag->accum_x, notched );  /* right scrolls right */
 +#ifdef XIScrollClass
 +    /* Start throw history with the motion that begins navigation. */
 +    if (move_x || move_y)
@@ -63,9 +73,11 @@ index 729ec0b..b5be221 100644
 +                                  move_x, -move_y, time );
 +#endif
 +
-     delta_y = middle_drag_delta( &drag->accum_y, notched );  /* up scrolls up */
-     delta_x = middle_drag_delta( &drag->accum_x, notched );  /* right scrolls right */
++    delta_y = middle_drag_delta( &drag->accum_y, notched );  /* dragging down scrolls up */
++    delta_x = middle_drag_delta( &drag->accum_x, notched );  /* dragging right scrolls left */
  
+     if (delta_y)
+     {
 @@ -3181,20 +3175,21 @@ static BOOL send_xinput2_wheel_input( HWND hwnd, POINT pt, UINT flags, int delta
  #define INERTIA_DEADLINE_MS  100     /* conservative XI2 inactivity end fallback */
  #define INERTIA_RELEASE_GATE_MS 70   /* reject an end marker after movement has rested */
@@ -383,4 +395,3 @@ index 2b8d8ad..c655e55 100644
  /* Earlier development builds of these features read different names, and
 -- 
 2.55.0
-

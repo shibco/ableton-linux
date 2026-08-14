@@ -8,7 +8,7 @@ By default, Live provides:
 
 - smooth vertical and horizontal scrolling;
 - pinch zoom;
-- middle-button drag navigation;
+- middle-button drag navigation that moves content with the pointer;
 - scrolling inertia after a quick release;
 - continued movement after releasing a moving middle-button drag; and
 - normal mouse-wheel clicks while another button is held, except during
@@ -139,10 +139,11 @@ with Live's Master fader low.
    `TouchpadInertia=disabled`; direct scrolling must feel the same but stop with
    the touchpad or wheel.
 6. Release a moving middle-button drag. Repeat with a short drag and a gentle
-   curve. The view must keep moving only after release. A click, a drag held
-   still for more than 80 ms, a cancelled drag or an extra button press must
-   not start a throw. Repeat with `MiddleDragThrow=disabled`; direct navigation
-   must remain unchanged and stop at release.
+   curve. Direct navigation and the throw must move content with the pointer
+   on both axes. The view must keep moving only after release. A click, a drag
+   held still for more than 80 ms, a cancelled drag or an extra button press
+   must not start a throw. Repeat with `MiddleDragThrow=disabled`; direct
+   navigation must remain unchanged and stop at release.
 7. Pinch in and out, including while holding Ctrl. Live must zoom and leave the
    physical Ctrl state unchanged. A cancelled pinch must stop zooming.
 8. If Live pauses while loading a plug-in or browser folder during a fast
