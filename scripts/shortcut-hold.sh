@@ -63,6 +63,30 @@ ableton_shortcuts_strip_ctrl_alt()
     printf '[%s]' "$out"
 }
 
+ableton_shortcuts_legacy_v1_valid()
+{
+    local state="$1" schema key original extra terminal
+    local -A seen=()
+    [ -f "$state" ] && [ ! -L "$state" ] && [ -O "$state" ] && [ -r "$state" ] \
+        && [ "$(stat -c '%a' -- "$state" 2>/dev/null || true)" = 600 ] || return 1
+    [ "$(LC_ALL=C tr -cd '\000' < "$state" 2>/dev/null | wc -c)" -eq 0 ] || return 1
+    while IFS='|' read -r schema key original extra || [ -n "$schema$key$original$extra" ]; do
+        [ -z "$extra" ] && [ -n "$original" ] || return 1
+        case "$schema|$key" in
+            org.gnome.desktop.wm.keybindings\|switch-to-workspace-up) terminal=Up ;;
+            org.gnome.desktop.wm.keybindings\|switch-to-workspace-down) terminal=Down ;;
+            org.gnome.settings-daemon.plugins.media-keys\|logout) terminal=Delete ;;
+            *) return 1 ;;
+        esac
+        [ -z "${seen[$schema|$key]+x}" ] || return 1
+        case "$original" in \[*\]|@as\ \[*\]) ;; *) return 1 ;; esac
+        [ "$(ableton_shortcuts_strip_ctrl_alt "$original" "$terminal")" \
+            != "$(ableton_shortcuts_normalize_value "$original")" ] || return 1
+        seen["$schema|$key"]=1
+    done < "$state"
+    [ "${#seen[@]}" -ge 1 ]
+}
+
 ableton_shortcuts_keys()
 {
     # Live only assigns Ctrl+Alt+Up/Down (note chance), not Left/Right.  Do not
@@ -352,15 +376,18 @@ ableton_shortcuts_prepare()
     # V2 hold so the old snapshot cannot immediately undo the new values.
     # V1 has no held-value field with which to detect concurrent user edits.
     if [ -n "$legacy_state" ] && [ -f "$legacy_state" ] && ! ableton_shortcuts_live_running; then
-        failures=0
-        while IFS='|' read -r schema key original; do
-            [ -n "$schema" ] && [ -n "$key" ] && [ -n "$original" ] || continue
-            gsettings set "$schema" "$key" "$original" 2>/dev/null || failures=$((failures + 1))
-        done < "$legacy_state"
-        if [ "$failures" -eq 0 ]; then
-            rm -f -- "$legacy_state"
+        if ableton_shortcuts_legacy_v1_valid "$legacy_state"; then
+            failures=0
+            while IFS='|' read -r schema key original; do
+                gsettings set "$schema" "$key" "$original" 2>/dev/null || failures=$((failures + 1))
+            done < "$legacy_state"
+            if [ "$failures" -eq 0 ]; then
+                rm -f -- "$legacy_state"
+            else
+                echo "ableton-live: legacy shortcut recovery state retained at $legacy_state" >&2
+            fi
         else
-            echo "ableton-live: legacy shortcut recovery state retained at $legacy_state" >&2
+            echo "ableton-live: refusing malformed legacy shortcut state: $legacy_state" >&2
         fi
     fi
 
