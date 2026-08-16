@@ -154,8 +154,9 @@ ableton_managed_path_allowed()
         "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID"|\
         "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop"|\
         "$ABLETON_DATA_HOME/wine-extension-auz.desktop"|"$ABLETON_DATA_HOME/ableton-linkctl"|\
-        "$ABLETON_DATA_HOME/setup-link.sh"|"$ABLETON_DATA_HOME/ableton-linkd.service"|\
-        "$ABLETON_DATA_HOME/VERSION"|"$ABLETON_DATA_HOME/ableton-linkd"|\
+         "$ABLETON_DATA_HOME/setup-link.sh"|"$ABLETON_DATA_HOME/ableton-linkd.service"|\
+         "$ABLETON_DATA_HOME/runtime-link.sh"|\
+         "$ABLETON_DATA_HOME/VERSION"|"$ABLETON_DATA_HOME/ableton-linkd"|\
         "$ABLETON_BIN_HOME/ableton-live"|"$ABLETON_BIN_HOME/max9"|\
         "$ABLETON_BIN_HOME/pipeasio-settings"|\
         "$data_root/applications/ableton-live.desktop"|\
