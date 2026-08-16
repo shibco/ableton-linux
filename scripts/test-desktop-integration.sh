@@ -25,6 +25,17 @@ new_env()
     printf '%s\n' "$base"
 }
 
+install_fake_pipewire_probe()
+{
+    local base="$1"
+    mkdir -p -- "$base/runtime/bin"
+    cat > "$base/runtime/bin/pipewire-version-probe" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+    chmod 755 -- "$base/runtime/bin/pipewire-version-probe"
+}
+
 install_fake_desktop_tools()
 {
     local base="$1"
@@ -70,6 +81,7 @@ run_isolated()
         XDG_STATE_HOME="$base/state" XDG_CACHE_HOME="$base/cache" \
         XDG_RUNTIME_DIR="$base/run" TMPDIR="$base/tmp" \
         ABLETON_TEST_MIME_STATE="$base/mime-defaults.tsv" \
+        ABLETON_WINE_ROOT="$base/runtime" \
         PATH="$base/fakebin:/usr/bin:/bin" "$@"
 }
 
@@ -78,6 +90,7 @@ auz_id=io.github.shibco.ableton-linux.auz.desktop
 
 base="$(new_env unique-handlers)"
 install_fake_desktop_tools "$base"
+install_fake_pipewire_probe "$base"
 mkdir -p -- "$base/data/applications"
 cat > "$base/data/applications/wine-protocol-ableton.desktop" <<EOF
 [Desktop Entry]
@@ -107,6 +120,7 @@ ok "installer uses unique callback handlers and retires only its legacy entry"
 
 base="$(new_env registration-failure)"
 install_fake_desktop_tools "$base"
+install_fake_pipewire_probe "$base"
 if run_isolated "$base" env ABLETON_TEST_XDG_STICKY=1 \
     bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
     fail "installer accepts a handler default that did not stick"
@@ -133,6 +147,10 @@ for tool in wineserver wineboot winepath; do
 exit 0
 EOF
 done
+cat > "$base/runtime/bin/pipewire-version-probe" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
 chmod +x "$base/runtime/bin/"*
 printf 'registry\n' > "$base/prefix/system.reg"
 printf 'registry\n' > "$base/prefix/user.reg"
