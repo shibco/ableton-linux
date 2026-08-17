@@ -452,3 +452,4 @@ Apply them in sequence with the rest of the series.
   the drag's own motion was delivered there. `WINE_X11_POINTER_FEATURES`
   disables every pointer feature at once for baseline comparisons. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0099`: ARM64 EC support

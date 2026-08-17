@@ -94,6 +94,7 @@ b644c922888e201e1ae525ab22993d89bee835410cd36a739b9f84387009d009  0095-winex11-s
 707a404f2c1d4e02abfa4eb4cbe35669f0caa46ce12dd685d5748f3a699d1186  0096-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch
 80c69a6f555ecc8fcf36fb5d7f466ab9fe4cc1a09f48db7c1cbac442197faef7  0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch
 5296ad3f9f91911cf13849e2edf33793d97c2c4d0c06fbee0f119cb06e1114fc  0098-winex11-suspend-XI-scroll-selection-during-core-drags.patch
+d1949511bdf3657c818843053567473b59257baf0c2410119bf7b26d3ae88f61  0099-arm64ec.patch
 e2759a5aee2cc5820a3ed27d2d4f954a6a5262c1a95172ad11ffa5302c487387  pipeasio/0001-asio-clamp-unavailable-sample-rate-requests.patch
 b4d53b6ebb24e39c7d23efcbddd837149d4d08886167637a73bb085af851d2c1  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
 65555e38187564f77ac4f2ba1dd76d812e452c5442e21474b9c8a31706beb7ba  pipeasio/0004-accept-any-buffer-size-in-range-log-every-adjustment.patch

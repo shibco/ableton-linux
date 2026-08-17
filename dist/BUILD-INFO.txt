@@ -2,15 +2,15 @@ dist-version: 2026.08.14.3
 wine:         wine-11.13
 base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c
 prefix:       /opt/wine-d2d1-nspa-11.13 (configure-time only; tarball is relocatable, see relocation gate)
-patches:      105
-wine-patches: 96
+patches:      106
+wine-patches: 97
 pipeasio-patches: 9
-patch-head:   ce5e614abf8ee63de398b59796d0c137533f3d6d
-patch-stack:  0424cf36479da6d8aab9677d937198cf78b0b898f4008c38210e361d0066d7c3
-source-tree:  2ebc265c3355d8b56bf144adc23341fbd4a7444b98b375d9940fb5f59be5db78
-builder-packages: 1dcd332ce0fa5ccbf47b1a26d6288e11c6de0584571d7239e7e63ba641a4187c
+patch-head:   01b93dd341b9be35d2a51b2c29ea8ff349a54a12
+patch-stack:  0ea2ea80f561936166bcb29cb3a8578d596b1aa8eb9a21565769df7107abb630
+source-tree:  f7bb8f2832a1e9e89a533123c19eea126d55fba566a517407cb0a028e7312c7e
+builder-packages: 01a29e2a4639b6c2b0e20924361271d81cecaa84b4a3a9ac3f3c42dbde4a0156
 cabextract-static: 7943e60673f029eeb7150dd201f39a8cdefa16b7995a948540789d659b1bc92b
-ableton-linkd: 4f9672dd0227b92cac46ce93cc27399d97ecc391ae909782784bb28317862a23
+ableton-linkd: 582ed2015928d094d2aeb75b1a052d03ed1b098661994b8c0125f4fefb3f9e40
 pipeasio:     1.5.0
 pipewire-floor: 1.4.2 (required for both client library and daemon at install and driver startup)
 pipewire-version-probe: 4ea7a631decb71c0c9dfa562c916efeb82df8b5d7187b06e942f74dbbb63c31f
@@ -21,9 +21,9 @@ pipeasio-tests: CTest non-integration scope passed (unit, registration/layout, A
 pipeasio-no-qt: CMake driver build/install + non-integration CTest passed
 pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed
 ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
-libusb-pe:    c07b72dd10f2ac16c0f6c07bc6bb12838a041e88e7c9679e0f8b9788bfce6bad
-libusb-unix:  5c18dc48b25ce6dc14b38c40eec3e640378bd80490a8ec63ac0aaf6f227b842e
+libusb-pe:    3dac848bf90da15e9b620240df42b90a00e6a31d4cf046ef27ac18c86f3d1fd3
+libusb-unix:  342c5e4acebe1dbd5901de2689f539d9a67b1cea8408c4c94a91418a0d832574
 portal-unix:  2bc1af44d3aa5452d8ecee3c1cea3fd948cd1019222ac46eb00b17b251b8fa57
 pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
-pipeasio-unix: eb4a3320db1a47fdb828c83ef224f7520bb557543ef23fff2d3ded9c0f9ad7c1
+pipeasio-unix: 2b4bc0ab37de535523b38543da6cb5079edbf1bfa269353c145c324343be88d0
 built-on:     Ubuntu 22.04 (glibc 2.35)

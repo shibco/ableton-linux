@@ -1,0 +1,1240 @@
+From ae0ef7f3bf2ab51d7cb815c2d47caa85fa798816 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Mon, 11 Aug 2025 16:35:17 +0100
+Subject: [PATCH 01/19] ntdll/tests: Add THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH
+ test.
+
+---
+ include/winternl.h | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/include/winternl.h b/include/winternl.h
+index 81dc3db2b74..ccbea7efdfe 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -628,8 +628,8 @@ typedef struct _TEB
+             USHORT LoaderWorker : 1;
+             USHORT SkipLoaderInit : 1;
+             USHORT SkipFileAPIBrokering : 1;
+-        };
+-    };
++        } DUMMYSTRUCTNAME;
++    } DUMMYUNIONNAME1;
+     PVOID                        TxnScopeEnterCallback;             /* fcc/17f0 */
+     PVOID                        TxnScopeExitCallback;              /* fd0/17f8 */
+     PVOID                        TxnScopeContext;                   /* fd4/1800 */
+@@ -1145,7 +1145,7 @@ typedef struct _TEB32
+     ULONG                        MergedPrefLanguages;               /* 0fc0 */
+     ULONG                        MuiImpersonation;                  /* 0fc4 */
+     USHORT                       CrossTebFlags;                     /* 0fc8 */
+-    union {
++        union {
+         USHORT SameTebFlags;                                        /* 0fca */
+         struct {
+             USHORT SafeThunkCall : 1;
+@@ -1164,8 +1164,8 @@ typedef struct _TEB32
+             USHORT LoaderWorker : 1;
+             USHORT SkipLoaderInit : 1;
+             USHORT SkipFileAPIBrokering : 1;
+-        };
+-    };
++        } DUMMYSTRUCTNAME;
++    } DUMMYUNIONNAME1;
+     ULONG                        TxnScopeEnterCallback;             /* 0fcc */
+     ULONG                        TxnScopeExitCallback;              /* 0fd0 */
+     ULONG                        TxnScopeContext;                   /* 0fd4 */
+@@ -1271,7 +1271,7 @@ typedef struct _TEB64
+     ULONG64                      MergedPrefLanguages;               /* 17e0 */
+     ULONG                        MuiImpersonation;                  /* 17e8 */
+     USHORT                       CrossTebFlags;                     /* 17ec */
+-    union {
++        union {
+         USHORT SameTebFlags;                                        /* 17ee */
+         struct {
+             USHORT SafeThunkCall : 1;
+@@ -1290,8 +1290,8 @@ typedef struct _TEB64
+             USHORT LoaderWorker : 1;
+             USHORT SkipLoaderInit : 1;
+             USHORT SkipFileAPIBrokering : 1;
+-        };
+-    };
++        } DUMMYSTRUCTNAME;
++    } DUMMYUNIONNAME1;
+     ULONG64                      TxnScopeEnterCallback;             /* 17f0 */
+     ULONG64                      TxnScopeExitCallback;              /* 17f8 */
+     ULONG64                      TxnScopeContext;                   /* 1800 */
+-- 
+2.55.0
+
+
+From 4849041e1a4909f546759e073918bda202b4dde0 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Mon, 18 Aug 2025 18:51:57 +0100
+Subject: [PATCH 02/19] ntdll: Support THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH
+ flag.
+
+---
+ dlls/ntdll/loader.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 443b9841170..4eb1cf1fb0a 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3958,6 +3958,12 @@ void WINAPI LdrShutdownThread(void)
+     /* don't do any detach calls if process is exiting */
+     if (process_detaching) return;
+ 
++    if (NtCurrentTeb()->SkipThreadAttach)
++    {
++        heap_thread_detach();
++        return;
++    }
++
+     RtlProcessFlsData( NtCurrentTeb()->FlsSlots, 1 );
+ 
+     RtlEnterCriticalSection( &loader_section );
+-- 
+2.55.0
+
+
+From 976ac2d661e04b2d388c466e5d40e9bc1f9b58c0 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Mon, 11 Aug 2025 16:40:01 +0100
+Subject: [PATCH 03/19] ntdll/tests: Test THREAD_CREATE_FLAGS_SKIP_LOADER_INIT
+ flag.
+
+---
+ dlls/ntdll/tests/thread.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/dlls/ntdll/tests/thread.c b/dlls/ntdll/tests/thread.c
+index 7416fd6d18c..a572e1b907a 100644
+--- a/dlls/ntdll/tests/thread.c
++++ b/dlls/ntdll/tests/thread.c
+@@ -548,4 +548,15 @@ START_TEST(thread)
+     test_thread_bypass_process_freeze();
+     test_NtQueueApcThreadEx();
+     test_skip_thread_attach();
++
++    if (pRtlWow64GetProcessMachines)
++    {
++        USHORT current, native;
++        NTSTATUS status = pRtlWow64GetProcessMachines( GetCurrentProcess(), &current, &native );
++        if (!status && native == IMAGE_FILE_MACHINE_ARM64)
++        {
++            trace( "Running arm64 tests.\n" );
++            test_arm64_skip_loader_init();
++        }
++    }
+ }
+-- 
+2.55.0
+
+
+From 0b74e2f2f633a654c63e6df07f037612e0b53dd4 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Mon, 11 Aug 2025 16:46:41 +0100
+Subject: [PATCH 04/19] ntdll: Support THREAD_CREATE_FLAGS_SKIP_LOADER_INIT
+ flag.
+
+I confirmed that ARM64EC BT thread creation callbacks aren't called through
+some logging in FEX.
+---
+ dlls/ntdll/unix/thread.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 546963a4241..d4c48af56f4 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1452,7 +1452,6 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
+     teb->SkipLoaderInit = !!(flags & THREAD_CREATE_FLAGS_SKIP_LOADER_INIT);
+     if ((wow_teb = get_wow_teb( teb )))
+     {
+-        wow_teb->SkipThreadAttach = teb->SkipThreadAttach;
+         wow_teb->SkipLoaderInit = teb->SkipLoaderInit;
+     }
+ 
+-- 
+2.55.0
+
+
+From 8ae23b97acd9d61a4cd02ee8637fc193789970e2 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Thu, 27 Jul 2023 08:00:43 -0700
+Subject: [PATCH 05/19] ntdll: Implement WOW64 thread suspension helpers.
+
+---
+ dlls/ntdll/loader.c         | 2 ++
+ dlls/ntdll/ntdll.spec       | 1 +
+ dlls/ntdll/ntdll_misc.h     | 1 +
+ dlls/ntdll/signal_arm64ec.c | 7 +++++++
+ dlls/ntdll/signal_x86_64.c  | 7 +++++++
+ include/winternl.h          | 1 +
+ 6 files changed, 19 insertions(+)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 4eb1cf1fb0a..b0aef8294fb 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4331,6 +4331,7 @@ static void build_wow64_main_module(void)
+ static void (WINAPI *pWow64LdrpInitialize)( CONTEXT *ctx );
+ 
+ void (WINAPI *pWow64PrepareForException)( EXCEPTION_RECORD *rec, CONTEXT *context ) = NULL;
++NTSTATUS (WINAPI *pWow64SuspendLocalThread)( HANDLE thread, ULONG *count ) = NULL;
+ 
+ static void init_wow64( CONTEXT *context )
+ {
+@@ -4355,6 +4356,7 @@ static void init_wow64( CONTEXT *context )
+ 
+         GET_PTR( Wow64LdrpInitialize );
+         GET_PTR( Wow64PrepareForException );
++        GET_PTR( Wow64SuspendLocalThread );
+ #undef GET_PTR
+         imports_fixup_done = TRUE;
+     }
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 0b6d9b2cbf4..10d42eeb138 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1150,6 +1150,7 @@
+ @ stdcall -arch=win64 RtlWow64PushCrossProcessWorkOntoWorkList(ptr ptr ptr)
+ @ stdcall -arch=win64 RtlWow64RequestCrossProcessHeavyFlush(ptr)
+ @ stdcall -arch=win64 RtlWow64SetThreadContext(long ptr)
++@ stdcall -arch=win64 RtlWow64SuspendThread(long ptr)
+ @ stub RtlWriteMemoryStream
+ @ stdcall RtlWriteRegistryValue(long ptr wstr long ptr long)
+ @ stub RtlZeroHeap
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 1ac221bf156..88fbe13cd30 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -74,6 +74,7 @@ extern void WINAPI KiUserApcDispatcher(CONTEXT*,ULONG_PTR,ULONG_PTR,ULONG_PTR,PN
+ extern void WINAPI KiUserCallbackDispatcher(ULONG,void*,ULONG);
+ extern void WINAPI KiUserCallbackDispatcherReturn(void);
+ extern void (WINAPI *pWow64PrepareForException)( EXCEPTION_RECORD *rec, CONTEXT *context );
++extern NTSTATUS (WINAPI *pWow64SuspendLocalThread)( HANDLE thread, ULONG *count );
+ 
+ /* debug helpers */
+ extern LPCSTR debugstr_us( const UNICODE_STRING *str );
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index 140775d1a72..52678a8e43d 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -1827,6 +1827,13 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
+     return emulated_processor_features[feature];
+ }
+ 
++/***********************************************************************
++ *              RtlWow64SuspendThread (NTDLL.@)
++ */
++NTSTATUS WINAPI RtlWow64SuspendThread( HANDLE thread, ULONG *count )
++{
++    return NtSuspendThread( thread, count );
++}
+ 
+ /*************************************************************************
+  *		RtlWalkFrameChain (NTDLL.@)
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index b94e4a23a99..5bb14b3ac24 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -866,6 +866,13 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
+     return feature < PROCESSOR_FEATURE_MAX && user_shared_data->ProcessorFeatures[feature];
+ }
+ 
++/***********************************************************************
++ *              RtlWow64SuspendThread (NTDLL.@)
++ */
++NTSTATUS WINAPI RtlWow64SuspendThread( HANDLE thread, ULONG *count )
++{
++    return NtSuspendThread( thread, count );
++}
+ 
+ /*************************************************************************
+  *		RtlWalkFrameChain (NTDLL.@)
+diff --git a/include/winternl.h b/include/winternl.h
+index ccbea7efdfe..029660d2430 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -5420,6 +5420,7 @@ NTSYSAPI USHORT    WINAPI RtlWow64GetCurrentMachine(void);
+ NTSYSAPI NTSTATUS  WINAPI RtlWow64GetProcessMachines(HANDLE,USHORT*,USHORT*);
+ NTSYSAPI NTSTATUS  WINAPI RtlWow64GetSharedInfoProcess(HANDLE,BOOLEAN*,WOW64INFO*);
+ NTSYSAPI NTSTATUS  WINAPI RtlWow64IsWowGuestMachineSupported(USHORT,BOOLEAN*);
++NTSYSAPI NTSTATUS  WINAPI RtlWow64SuspendThread(HANDLE,ULONG*);
+ NTSYSAPI NTSTATUS  WINAPI RtlWriteRegistryValue(ULONG,PCWSTR,PCWSTR,ULONG,PVOID,ULONG);
+ NTSYSAPI NTSTATUS  WINAPI RtlZombifyActivationContext(struct _ACTIVATION_CONTEXT *);
+ NTSYSAPI NTSTATUS  WINAPI RtlpNtCreateKey(PHANDLE,ACCESS_MASK,const OBJECT_ATTRIBUTES*,ULONG,const UNICODE_STRING*,ULONG,PULONG);
+-- 
+2.55.0
+
+
+From 98f8c8852b0109237a2fbb4baae0a6bde0491c0d Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Thu, 27 Jul 2023 08:20:59 -0700
+Subject: [PATCH 06/19] wow64: Support running a BT module provided suspend
+ routine.
+
+Suspension in JITs cannot easily be handled on the unix side, so allow BT
+modules to provide their own suspend helper.
+---
+ dlls/wow64/process.c  |  2 +-
+ dlls/wow64/syscall.c  | 10 ++++++++++
+ dlls/wow64/wow64.spec |  2 +-
+ 3 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/wow64/process.c b/dlls/wow64/process.c
+index 98d1c600dd9..496d45d22ca 100644
+--- a/dlls/wow64/process.c
++++ b/dlls/wow64/process.c
+@@ -1120,7 +1120,7 @@ NTSTATUS WINAPI wow64_NtSuspendThread( UINT *args )
+     HANDLE handle = get_handle( &args );
+     ULONG *count = get_ptr( &args );
+ 
+-    return NtSuspendThread( handle, count );
++    return RtlWow64SuspendThread( handle, count );
+ }
+ 
+ 
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+index cfeb8f4ae6b..e8c15150f73 100644
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -102,6 +102,7 @@ static void     (WINAPI *pBTCpuProcessInit)(void);
+ static NTSTATUS (WINAPI *pBTCpuSetContext)(HANDLE,HANDLE,void *,void *);
+ static void     (WINAPI *pBTCpuThreadInit)(void);
+ static void     (WINAPI *pBTCpuSimulate)(void) __attribute__((used));
++static NTSTATUS (WINAPI *pBTCpuSuspendLocalThread)(HANDLE,ULONG *);
+ static void *   (WINAPI *p__wine_get_unix_opcode)(void);
+ static void *   (WINAPI *pKiRaiseUserExceptionDispatcher)(void);
+ void     (WINAPI *pBTCpuFlushInstructionCache2)( const void *, SIZE_T ) = NULL;
+@@ -1015,6 +1016,7 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
+     GET_PTR( BTCpuProcessInit );
+     GET_PTR( BTCpuThreadInit );
+     GET_PTR( BTCpuResetToConsistentState );
++    GET_PTR( BTCpuSuspendLocalThread );
+     GET_PTR( BTCpuSetContext );
+     GET_PTR( BTCpuSimulate );
+     GET_PTR( BTCpuFlushInstructionCache2 );
+@@ -1713,3 +1715,11 @@ NTSTATUS WINAPI Wow64RaiseException( int code, EXCEPTION_RECORD *rec )
+ 
+     return STATUS_SUCCESS;
+ }
++
++/**********************************************************************
++ *            Wow64SuspendLocalThread (wow64.@)
++ */
++NTSTATUS WINAPI Wow64SuspendLocalThread( HANDLE thread, ULONG *count )
++{
++    return pBTCpuSuspendLocalThread( thread, count );
++}
+diff --git a/dlls/wow64/wow64.spec b/dlls/wow64/wow64.spec
+index 5b4e565e593..8f95dfcdbe5 100644
+--- a/dlls/wow64/wow64.spec
++++ b/dlls/wow64/wow64.spec
+@@ -22,7 +22,7 @@
+ @ stub Wow64ShallowThunkAllocSecurityQualityOfService32TO64_FNC
+ @ stub Wow64ShallowThunkSIZE_T32TO64
+ @ stub Wow64ShallowThunkSIZE_T64TO32
+-@ stub Wow64SuspendLocalThread
++@ stdcall Wow64SuspendLocalThread(long ptr)
+ @ stdcall -norelay Wow64SystemServiceEx(long ptr)
+ @ stub Wow64ValidateUserCallTarget
+ @ stub Wow64ValidateUserCallTargetFilter
+-- 
+2.55.0
+
+
+From a0a84069f4c430b305ad79dce613f029c7b7d2e3 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Fri, 19 Apr 2024 20:25:30 +0000
+Subject: [PATCH 07/19] HACK: Use x86 mono on aarch64.
+
+---
+ dlls/appwiz.cpl/addons.c | 7 +------
+ dlls/mscoree/metahost.c  | 2 +-
+ 2 files changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/appwiz.cpl/addons.c b/dlls/appwiz.cpl/addons.c
+index f0835e90ed5..b5fb87fe9d8 100644
+--- a/dlls/appwiz.cpl/addons.c
++++ b/dlls/appwiz.cpl/addons.c
+@@ -48,7 +48,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(appwizcpl);
+ #ifdef __i386__
+ #define GECKO_ARCH "x86"
+ #define GECKO_SHA "26cecc47706b091908f7f814bddb074c61beb8063318e9efc5a7f789857793d6"
+-#elif defined(__x86_64__)
++#elif defined(__x86_64__) || defined(__aarch64__)
+ #define GECKO_ARCH "x86_64"
+ #define GECKO_SHA "e590b7d988a32d6aa4cf1d8aa3aa3d33766fdd4cf4c89c2dcc2095ecb28d066f"
+ #else
+@@ -57,13 +57,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(appwizcpl);
+ #endif
+ 
+ #define MONO_VERSION "11.2.0"
+-#if defined(__i386__) || defined(__x86_64__)
+ #define MONO_ARCH "x86"
+ #define MONO_SHA "b4525679e7da30d4658ceb85739cbc55c771791054abbb4b3152fe96ded0b897"
+-#else
+-#define MONO_ARCH ""
+-#define MONO_SHA "???"
+-#endif
+ 
+ typedef struct {
+     const char *version;
+diff --git a/dlls/mscoree/metahost.c b/dlls/mscoree/metahost.c
+index eb609fccc29..cb3fa084883 100644
+--- a/dlls/mscoree/metahost.c
++++ b/dlls/mscoree/metahost.c
+@@ -711,7 +711,7 @@ HRESULT ICLRRuntimeInfo_GetRuntimeHost(ICLRRuntimeInfo *iface, RuntimeHost **res
+ 
+ #ifdef __i386__
+ static const WCHAR libmono2_arch_dll[] = {'\\','b','i','n','\\','l','i','b','m','o','n','o','-','2','.','0','-','x','8','6','.','d','l','l',0};
+-#elif defined(__x86_64__)
++#elif defined(__x86_64__) || defined(__aarch64__)
+ static const WCHAR libmono2_arch_dll[] = {'\\','b','i','n','\\','l','i','b','m','o','n','o','-','2','.','0','-','x','8','6','_','6','4','.','d','l','l',0};
+ #else
+ static const WCHAR libmono2_arch_dll[] = {'\\','b','i','n','\\','l','i','b','m','o','n','o','-','2','.','0','.','d','l','l',0};
+-- 
+2.55.0
+
+From fe7fe469313dd06342584cf2e390a351067c8bf1 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Tue, 23 Apr 2024 12:58:04 +0000
+Subject: [PATCH] configure: Enable vcruntime140_1 and dpnsvcr for arm64x
+ builds.
+
+---
+ configure.ac                            | 4 ++--
+ dlls/vcruntime140_1/vcruntime140_1.spec | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 5297a4f844e..5e7d778fb41 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2392,7 +2392,7 @@ dnl *** Check for modules to disable by default
+
+ enable_libusb_1_0=${enable_libusb_1_0:-x86_64}
+ test "x$enable_libusb_1_0" != xno && enable_libusb_1_0=x86_64
+-enable_vcruntime140_1=${enable_vcruntime140_1:-x86_64,arm64ec}
++enable_vcruntime140_1=${enable_vcruntime140_1:-x86_64,arm64ec,aarch64}
+
+ if test -n "$PE_ARCHS"
+ then
+@@ -2433,7 +2433,7 @@ enable_wuauserv=${enable_wuauserv:-$HOST_ARCH}
+ dnl Explicitly enable some programs for arm64ec
+ enable_cmd=${enable_cmd:-yes}
+ enable_dllhost=${enable_dllhost:-yes}
+-enable_dpnsvr=${enable_dpnsvr:-i386,x86_64,arm64ec}
++enable_dpnsvr=${enable_dpnsvr:-i386,x86_64,arm64ec,aarch64}
+ enable_dxdiag=${enable_dxdiag:-yes}
+ enable_msiexec=${enable_msiexec:-yes}
+ enable_netsh=${enable_netsh:-yes}
+diff --git a/dlls/vcruntime140_1/vcruntime140_1.spec b/dlls/vcruntime140_1/vcruntime140_1.spec
+index 0b126fa95d4..af295940a61 100644
+--- a/dlls/vcruntime140_1/vcruntime140_1.spec
++++ b/dlls/vcruntime140_1/vcruntime140_1.spec
+@@ -1,3 +1,3 @@
+-@ cdecl __CxxFrameHandler4(ptr long ptr ptr)
++@ cdecl -arch=arm64ec,x86_64 __CxxFrameHandler4(ptr long ptr ptr)
+ @ stub __NLG_Dispatch2
+ @ stub __NLG_Return2
+--
+2.55.0
+
+From 240e54b7fd0cb242b3404f5c90572e374b342203 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Mon, 19 Aug 2024 20:29:50 +0000
+Subject: [PATCH 09/19] include: Add arm64 SVE xstate headers.
+
+---
+ include/winnt.h | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/include/winnt.h b/include/winnt.h
+index 2dc1aadddde..c97fa8191a7 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -1558,6 +1558,13 @@ typedef struct _XSAVE_AREA_HEADER
+ }
+ XSAVE_AREA_HEADER, *PXSAVE_AREA_HEADER;
+ 
++typedef struct _XSAVE_ARM64_SVE_HEADER {
++    ULONG VectorLength;
++    ULONG VectorRegisterOffset;
++    ULONG PredicateRegisterOffset;
++    ULONG Reserved[5];
++} XSAVE_ARM64_SVE_HEADER, *PXSAVE_ARM64_SVE_HEADER;
++
+ typedef struct _YMMCONTEXT
+ {
+     M128A Ymm0;
+@@ -1738,6 +1745,7 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
+ #define CONTEXT_ARM64_FLOATING_POINT  (CONTEXT_ARM64 | 0x00000004)
+ #define CONTEXT_ARM64_DEBUG_REGISTERS (CONTEXT_ARM64 | 0x00000008)
+ #define CONTEXT_ARM64_X18       (CONTEXT_ARM64 | 0x00000010)
++#define CONTEXT_ARM64_XSTATE    (CONTEXT_ARM64 | 0x00000020)
+ #define CONTEXT_ARM64_FULL (CONTEXT_ARM64_CONTROL | CONTEXT_ARM64_INTEGER | CONTEXT_ARM64_FLOATING_POINT)
+ #define CONTEXT_ARM64_ALL  (CONTEXT_ARM64_FULL | CONTEXT_ARM64_DEBUG_REGISTERS | CONTEXT_ARM64_X18)
+ 
+@@ -2017,6 +2025,7 @@ typedef struct DECLSPEC_ALIGN(16) _ARM64EC_NT_CONTEXT
+ #define CONTEXT_INTEGER CONTEXT_ARM64_INTEGER
+ #define CONTEXT_FLOATING_POINT CONTEXT_ARM64_FLOATING_POINT
+ #define CONTEXT_DEBUG_REGISTERS CONTEXT_ARM64_DEBUG_REGISTERS
++#define CONTEXT_XSTATE CONTEXT_ARM64_XSTATE
+ #define CONTEXT_FULL CONTEXT_ARM64_FULL
+ #define CONTEXT_ALL CONTEXT_ARM64_ALL
+ #define CONTEXT_RET_TO_GUEST CONTEXT_ARM64_RET_TO_GUEST
+-- 
+2.55.0
+
+
+From 78b1b5172979f2ec9006e5b4c3aba21e56be19f2 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Wed, 21 Aug 2024 22:26:28 +0000
+Subject: [PATCH 10/19] FEX specific AVX support for arm64ec
+
+---
+ dlls/ntdll/signal_arm64ec.c | 56 ++++++++++++++++++++++++-------------
+ dlls/ntdll/signal_x86_64.c  |  2 +-
+ dlls/ntdll/unix/system.c    | 17 +++++++++++
+ dlls/ntdll/unwind.h         | 16 +++++++++++
+ include/winnt.h             |  5 ++--
+ 5 files changed, 73 insertions(+), 23 deletions(-)
+
+diff --git a/dlls/ntdll/signal_arm64ec.c b/dlls/ntdll/signal_arm64ec.c
+index 52678a8e43d..1559adee703 100644
+--- a/dlls/ntdll/signal_arm64ec.c
++++ b/dlls/ntdll/signal_arm64ec.c
+@@ -35,6 +35,11 @@
+ #include "wine/debug.h"
+ #include "ntsyscalls.h"
+ 
++union ARM64EC_NT_XCONTEXT {
++    ARM64EC_NT_CONTEXT context;
++    BYTE buffer[0x800];
++};
++
+ WINE_DEFAULT_DEBUG_CHANNEL(seh);
+ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ 
+@@ -1263,7 +1268,11 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
+  */
+ void dispatch_emulation( ARM64_NT_CONTEXT *arm_ctx )
+ {
+-    context_arm_to_x64( get_arm64ec_cpu_area()->ContextAmd64, arm_ctx );
++    ARM64EC_NT_CONTEXT *context = get_arm64ec_cpu_area()->ContextAmd64;
++    CONTEXT_EX *xctx;
++
++    RtlInitializeExtendedContext( context, ctx_flags_arm_to_x64( arm_ctx->ContextFlags), &xctx );
++    context_arm_to_x64( context, arm_ctx );
+     get_arm64ec_cpu_area()->InSimulation = 1;
+     pBeginSimulation();
+ }
+@@ -1293,11 +1302,13 @@ static void dispatch_syscall( ARM64_NT_CONTEXT *context )
+ }
+ 
+ 
+-static void * __attribute__((used)) prepare_exception_arm64ec( EXCEPTION_RECORD *rec, ARM64EC_NT_CONTEXT *context, ARM64_NT_CONTEXT *arm_ctx )
++static void * __attribute__((used)) prepare_exception_arm64ec( EXCEPTION_RECORD *rec, union ARM64EC_NT_XCONTEXT *context, ARM64_NT_CONTEXT *arm_ctx )
+ {
++    CONTEXT_EX *xctx;
+     if (rec->ExceptionCode == STATUS_EMULATION_SYSCALL) dispatch_syscall( arm_ctx );
+-    context_arm_to_x64( context, arm_ctx );
+-    if (pResetToConsistentState) pResetToConsistentState( rec, &context->AMD64_Context, arm_ctx );
++    RtlInitializeExtendedContext( context, ctx_flags_arm_to_x64( arm_ctx->ContextFlags ), &xctx );
++    context_arm_to_x64( &context->context, arm_ctx );
++    if (pResetToConsistentState) pResetToConsistentState( rec, &context->context.AMD64_Context, arm_ctx );
+     /* call x64 dispatcher if the thunk or the function pointer was modified */
+     if (pWow64PrepareForException || memcmp( KiUserExceptionDispatcher_thunk, KiUserExceptionDispatcher_orig,
+                                              sizeof(KiUserExceptionDispatcher_orig) ))
+@@ -1312,12 +1323,13 @@ void __attribute__((naked)) KiUserExceptionDispatcher( EXCEPTION_RECORD *rec, CO
+ {
+     asm( ".seh_proc \"#KiUserExceptionDispatcher\"\n\t"
+          ".seh_context\n\t"
+-         "sub sp, sp, #0x4d0\n\t"       /* sizeof(ARM64EC_NT_CONTEXT) */
+-         ".seh_stackalloc 0x4d0\n\t"
++         "sub sp, sp, #0xcd0\n\t"       /* sizeof(union ARM64EC_NT_XCONTEXT) */
++         ".seh_stackalloc 0xcd0\n\t"
+          ".seh_endprologue\n\t"
+-         "add x0, sp, #0x3b0+0x4d0\n\t" /* rec */
++         "add x0, sp, #0xcd0\n\t"
++         "add x0, x0, #0x3b0\n\t"       /* rec */
+          "mov x1, sp\n\t"               /* context */
+-         "add x2, sp, #0x4d0\n\t"       /* arm_ctx (context + 1) */
++         "add x2, sp, #0xcd0\n\t"       /* arm_ctx (context + 1) */
+          "bl \"#prepare_exception_arm64ec\"\n\t"
+          "cbz x0, 1f\n\t"
+          /* bypass exit thunk to avoid messing up the stack */
+@@ -1325,8 +1337,9 @@ void __attribute__((naked)) KiUserExceptionDispatcher( EXCEPTION_RECORD *rec, CO
+          "ldr x16, [x16, #:lo12:__os_arm64x_dispatch_call_no_redirect]\n\t"
+          "mov x9, x0\n\t"
+          "blr x16\n"
+-         "1:\tadd x0, sp, #0x3b0+0x4d0\n\t" /* rec */
+-         "mov x1, sp\n\t"                   /* context */
++         "1:\tadd x0, sp, #0xcd0\n\t"
++         "add x0, x0, #0x3b0\n\t"       /* rec */
++         "mov x1, sp\n\t"               /* context */
+          "bl #dispatch_exception\n\t"
+          "brk #1\n\t"
+          ".seh_endproc" );
+@@ -1340,11 +1353,12 @@ static void __attribute__((used)) dispatch_apc( void (CALLBACK *func)(ULONG_PTR,
+                                                 ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3,
+                                                 BOOLEAN alertable, ARM64_NT_CONTEXT *arm_ctx )
+ {
+-    ARM64EC_NT_CONTEXT context;
+-
+-    context_arm_to_x64( &context, arm_ctx );
+-    func( arg1, arg2, arg3, &context.AMD64_Context );
+-    NtContinue( &context.AMD64_Context, alertable );
++    union ARM64EC_NT_XCONTEXT context;
++    CONTEXT_EX *xctx;
++    RtlInitializeExtendedContext( &context, ctx_flags_arm_to_x64( arm_ctx->ContextFlags), &xctx );
++    context_arm_to_x64( &context.context, arm_ctx );
++    func( arg1, arg2, arg3, &context.context.AMD64_Context );
++    NtContinue( &context.context.AMD64_Context, alertable );
+ }
+ __ASM_GLOBAL_FUNC( "#KiUserApcDispatcher",
+                    ".seh_context\n\t"
+@@ -2119,7 +2133,9 @@ void __attribute__((naked)) RtlUserThreadStart( PRTL_THREAD_START_ROUTINE entry,
+  */
+ void WINAPI LdrInitializeThunk( CONTEXT *arm_context, ULONG_PTR unk2, ULONG_PTR unk3, ULONG_PTR unk4 )
+ {
+-    ARM64EC_NT_CONTEXT context;
++    union ARM64EC_NT_XCONTEXT context;
++    CONTEXT_EX *xctx;
++    RtlInitializeExtendedContext( &context, ctx_flags_arm_to_x64( arm_context->ContextFlags), &xctx );
+ 
+     if (!__os_arm64x_check_call)
+     {
+@@ -2130,10 +2146,10 @@ void WINAPI LdrInitializeThunk( CONTEXT *arm_context, ULONG_PTR unk2, ULONG_PTR
+         __os_arm64x_set_x64_information = LdrpSetX64Information;
+     }
+ 
+-    context_arm_to_x64( &context, (ARM64_NT_CONTEXT *)arm_context );
+-    loader_init( &context.AMD64_Context, (void **)&context.X0 );
+-    TRACE_(relay)( "\1Starting thread proc %p (arg=%p)\n", (void *)context.X0, (void *)context.X1 );
+-    NtContinue( &context.AMD64_Context, TRUE );
++    context_arm_to_x64( &context.context, (ARM64_NT_CONTEXT *)arm_context );
++    loader_init( &context.context.AMD64_Context, (void **)&context.context.X0 );
++    TRACE_(relay)( "\1Starting thread proc %p (arg=%p)\n", (void *)context.context.X0, (void *)context.context.X1 );
++    NtContinue( &context.context.AMD64_Context, TRUE );
+ }
+ 
+ 
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index 5bb14b3ac24..2c6f4ccef7e 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -82,7 +82,7 @@ __ASM_GLOBAL_FUNC( "EXP+#KiUserExceptionDispatcher",
+                    "test %rax,%rax\n\t"
+                    "jz 1f\n\t"
+                    "subq $0x28,%rsp\n\t"
+-                   "leaq 0x30+0x3b0+0x4d0(%rsp),%rcx\n\t" /* rec */
++                   "leaq 0x30+0x3b0+0xcd0(%rsp),%rcx\n\t" /* rec */
+                    "leaq 0x30(%rsp),%rdx\n\t"             /* context */
+                    "call *%rax\n"
+                    "addq $0x28,%rsp\n"
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index 2d6e3184ac9..a4370936775 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -748,6 +748,23 @@ static ULONGLONG get_cpu_features(void)
+     return 0;  /* FIXME */
+ }
+ 
++static void init_xstate_features( XSTATE_CONFIGURATION *xstate )
++{
++    xstate->EnabledFeatures = (1 << XSTATE_LEGACY_FLOATING_POINT) | (1 << XSTATE_LEGACY_SSE) | (1 << XSTATE_AVX);
++    xstate->EnabledVolatileFeatures = xstate->EnabledFeatures;
++    xstate->AllFeatureSize = 0x340;
++
++    xstate->OptimizedSave = 0;
++    xstate->CompactionEnabled = 0;
++
++    xstate->Features[0].Size = xstate->AllFeatures[0] = offsetof(XSAVE_FORMAT, XmmRegisters);
++    xstate->Features[1].Size = xstate->AllFeatures[1] = sizeof(M128A) * 16;
++    xstate->Features[1].Offset = xstate->Features[0].Size;
++    xstate->Features[2].Offset = 0x240;
++    xstate->Features[2].Size = 0x100;
++    xstate->Size = 0x340;
++}
++
+ void init_shared_data_cpuinfo( KUSER_SHARED_DATA *data )
+ {
+     BOOLEAN *features = data->ProcessorFeatures;
+diff --git a/dlls/ntdll/unwind.h b/dlls/ntdll/unwind.h
+index faca8a259fb..71a4d23da04 100644
+--- a/dlls/ntdll/unwind.h
++++ b/dlls/ntdll/unwind.h
+@@ -36,6 +36,7 @@ static inline ULONG ctx_flags_x64_to_arm( ULONG flags )
+     if (flags & CONTEXT_AMD64_CONTROL) ret |= CONTEXT_ARM64_CONTROL;
+     if (flags & CONTEXT_AMD64_INTEGER) ret |= CONTEXT_ARM64_INTEGER;
+     if (flags & CONTEXT_AMD64_FLOATING_POINT) ret |= CONTEXT_ARM64_FLOATING_POINT;
++    if (flags & CONTEXT_AMD64_XSTATE) ret |= CONTEXT_ARM64_FEX_YMMSTATE;
+     return ret;
+ }
+ 
+@@ -47,6 +48,7 @@ static inline ULONG ctx_flags_arm_to_x64( ULONG flags )
+     if (flags & CONTEXT_ARM64_CONTROL) ret |= CONTEXT_AMD64_CONTROL;
+     if (flags & CONTEXT_ARM64_INTEGER) ret |= CONTEXT_AMD64_INTEGER;
+     if (flags & CONTEXT_ARM64_FLOATING_POINT) ret |= CONTEXT_AMD64_FLOATING_POINT;
++    if (flags & CONTEXT_ARM64_FEX_YMMSTATE) ret |= CONTEXT_AMD64_XSTATE;
+     return ret;
+ }
+ 
+@@ -166,6 +168,13 @@ static inline void context_x64_to_arm( ARM64_NT_CONTEXT *arm_ctx, const ARM64EC_
+     fpcsr = mxcsr_to_fpcsr( ec_ctx->AMD64_MxCsr );
+     arm_ctx->Fpcr = fpcsr;
+     arm_ctx->Fpsr = fpcsr >> 32;
++
++    if ((ec_ctx->ContextFlags & CONTEXT_XSTATE) == CONTEXT_XSTATE)
++    {
++        CONTEXT_EX *ec_xctx = (CONTEXT_EX *)(ec_ctx + 1);
++        YMMCONTEXT *ec_ymm = RtlLocateExtendedFeature( ec_xctx, XSTATE_AVX, NULL );
++        memcpy( arm_ctx->V + 16, ec_ymm, sizeof(*ec_ymm) );
++    }
+ }
+ 
+ static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_NT_CONTEXT *arm_ctx )
+@@ -216,6 +225,13 @@ static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_N
+     ec_ctx->X17_3 = arm_ctx->X17 >> 48;
+ 
+     memcpy( ec_ctx->V, arm_ctx->V, sizeof(ec_ctx->V) );
++
++    if ((arm_ctx->ContextFlags & CONTEXT_ARM64_FEX_YMMSTATE) == CONTEXT_ARM64_FEX_YMMSTATE)
++    {
++        CONTEXT_EX *ec_xctx = (CONTEXT_EX *)(ec_ctx + 1);
++        YMMCONTEXT *ec_ymm = RtlLocateExtendedFeature( ec_xctx, XSTATE_AVX, NULL );
++        memcpy( ec_ymm, arm_ctx->V + 16, sizeof(*ec_ymm) );
++    }
+ }
+ 
+ #endif /* __aarch64__ || __arm64ec__ */
+diff --git a/include/winnt.h b/include/winnt.h
+index c97fa8191a7..4ed52f43597 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -1744,8 +1744,9 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS
+ #define CONTEXT_ARM64_INTEGER         (CONTEXT_ARM64 | 0x00000002)
+ #define CONTEXT_ARM64_FLOATING_POINT  (CONTEXT_ARM64 | 0x00000004)
+ #define CONTEXT_ARM64_DEBUG_REGISTERS (CONTEXT_ARM64 | 0x00000008)
+-#define CONTEXT_ARM64_X18       (CONTEXT_ARM64 | 0x00000010)
+-#define CONTEXT_ARM64_XSTATE    (CONTEXT_ARM64 | 0x00000020)
++#define CONTEXT_ARM64_X18             (CONTEXT_ARM64 | 0x00000010)
++#define CONTEXT_ARM64_XSTATE          (CONTEXT_ARM64 | 0x00000020)
++#define CONTEXT_ARM64_FEX_YMMSTATE   (CONTEXT_ARM64 | 0x00000040)
+ #define CONTEXT_ARM64_FULL (CONTEXT_ARM64_CONTROL | CONTEXT_ARM64_INTEGER | CONTEXT_ARM64_FLOATING_POINT)
+ #define CONTEXT_ARM64_ALL  (CONTEXT_ARM64_FULL | CONTEXT_ARM64_DEBUG_REGISTERS | CONTEXT_ARM64_X18)
+ 
+-- 
+2.55.0
+
+
+From bc25259de92009cd8eff47780133a7b3cd96e1bd Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Wed, 17 Apr 2024 23:44:33 +0000
+Subject: [PATCH 11/19] Use FEX wow64/ARM64EC dll names
+
+---
+ dlls/ntdll/loader.c  | 3 +--
+ dlls/wow64/syscall.c | 2 +-
+ loader/wine.inf.in   | 4 ++--
+ 3 files changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index b0aef8294fb..d64663d5d9b 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4281,7 +4281,7 @@ static void load_arm64ec_module(void)
+     ULONG buffer[16];
+     KEY_VALUE_PARTIAL_INFORMATION *info = (KEY_VALUE_PARTIAL_INFORMATION *)buffer;
+     UNICODE_STRING nameW = RTL_CONSTANT_STRING( L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\amd64" );
+-    WCHAR module[64] = L"C:\\windows\\system32\\xtajit64.dll";
++    WCHAR module[64] = L"C:\\windows\\system32\\libarm64ecfex.dll";
+     OBJECT_ATTRIBUTES attr;
+     WINE_MODREF *wm;
+     NTSTATUS status;
+@@ -4365,7 +4365,6 @@ static void init_wow64( CONTEXT *context )
+     pWow64LdrpInitialize( context );
+ }
+ 
+-
+ #else
+ 
+ void *Wow64Transition = NULL;
+diff --git a/dlls/wow64/syscall.c b/dlls/wow64/syscall.c
+index e8c15150f73..74592cda083 100644
+--- a/dlls/wow64/syscall.c
++++ b/dlls/wow64/syscall.c
+@@ -921,7 +921,7 @@ static const WCHAR *get_cpu_dll_name(void)
+     {
+     case IMAGE_FILE_MACHINE_I386:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86" );
+-        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"xtajit.dll" : L"wow64cpu.dll");
++        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"libwow64fex.dll" : L"wow64cpu.dll");
+         break;
+     case IMAGE_FILE_MACHINE_ARMNT:
+         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\arm" );
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index 738e98f4a83..36be925623f 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -397,9 +397,9 @@ HKLM,%CurrentVersion%,"ProgramFilesDir (x86)",,"%16426%"
+ HKLM,%CurrentVersion%,"CommonFilesDir (x86)",,"%16428%"
+ HKLM,%CurrentVersion%,"ProgramFilesDir (Arm)",,"C:\Program Files (Arm)"
+ HKLM,%CurrentVersion%,"CommonFilesDir (Arm)",,"C:\Program Files (Arm)\Common Files"
+-HKLM,Software\Microsoft\Wow64\amd64,,2,"xtajit64.dll"
++HKLM,Software\Microsoft\Wow64\amd64,,2,"libarm64ecfex.dll"
+ HKLM,Software\Microsoft\Wow64\arm,,2,"wowarmhw.dll"
+-HKLM,Software\Microsoft\Wow64\x86,,2,"xtajit.dll"
++HKLM,Software\Microsoft\Wow64\x86,,2,"libwow64fex.dll"
+ 
+ [CurrentVersionWow64.ntx86]
+ HKLM,%CurrentVersion%,"ProgramFilesDir (x86)",,"%16422%"
+-- 
+2.55.0
+
+From 3ba222423729901ed3294e542701b85318587267 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Thu, 10 Jul 2025 16:09:08 +0100
+Subject: [PATCH 13/19] ntdll: Add FEX specific Asahi TSO support
+
+---
+ dlls/ntdll/unix/process.c | 36 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index 418f95b7735..1c7a6b4ab43 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -46,6 +46,9 @@
+ #ifdef HAVE_SYS_PARAM_H
+ # include <sys/param.h>
+ #endif
++#ifdef HAVE_SYS_PRCTL_H
++# include <sys/prctl.h>
++#endif
+ #ifdef HAVE_SYS_QUEUE_H
+ # include <sys/queue.h>
+ #endif
+@@ -1074,6 +1077,35 @@ void fill_vm_counters( VM_COUNTERS_EX *pvmi, int unix_pid )
+ 
+ #endif
+ 
++static BOOL set_hardware_tso( BOOL enable ) {
++#ifdef HAVE_PRCTL
++#ifndef PR_GET_MEM_MODEL
++#define PR_GET_MEM_MODEL 0x6d4d444c
++#endif
++#ifndef PR_SET_MEM_MODEL
++#define PR_SET_MEM_MODEL 0x4d4d444c
++#endif
++#ifndef PR_SET_MEM_MODEL_DEFAULT
++#define PR_SET_MEM_MODEL_DEFAULT 0
++#endif
++#ifndef PR_SET_MEM_MODEL_TSO
++#define PR_SET_MEM_MODEL_TSO 1
++#endif
++    if (enable)
++    {
++        int ret = prctl( PR_GET_MEM_MODEL, 0, 0, 0, 0 );
++        if (ret == PR_SET_MEM_MODEL_DEFAULT)
++            return !prctl( PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_TSO, 0, 0, 0 );
++        return ret == PR_SET_MEM_MODEL_TSO;
++    }
++
++    prctl( PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_DEFAULT, 0, 0, 0 );
++    return TRUE;
++#else
++    return FALSE;
++#endif
++}
++
+ #define UNIMPLEMENTED_INFO_CLASS(c) \
+     case c: \
+         FIXME( "(process=%p) Unimplemented information class: " #c "\n", handle); \
+@@ -1859,6 +1891,10 @@ NTSTATUS WINAPI NtSetInformationProcess( HANDLE handle, PROCESSINFOCLASS class,
+         SERVER_END_REQ;
+         break;
+ 
++    case ProcessFexHardwareTso:
++        if (size != sizeof(BOOL)) return STATUS_INFO_LENGTH_MISMATCH;
++        return set_hardware_tso( *(BOOL *)info ) ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
++
+     case ProcessPowerThrottlingState:
+         FIXME( "ProcessPowerThrottlingState - stub\n" );
+         return STATUS_SUCCESS;
+-- 
+2.55.0
+
+
+From e1e240e9ad27779d4063e0da6eeebe5b19a9884b Mon Sep 17 00:00:00 2001
+From: Jacek Caban <jacek@codeweavers.com>
+Date: Thu, 10 Jul 2025 18:55:42 +0100
+Subject: [PATCH 14/19] HACK: ntdll: Manually define exit thunks for
+ mem{cpy/move/set}
+
+---
+ libs/winecrt0/arm64ec.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/libs/winecrt0/arm64ec.c b/libs/winecrt0/arm64ec.c
+index 1930a27d627..d997e55d72d 100644
+--- a/libs/winecrt0/arm64ec.c
++++ b/libs/winecrt0/arm64ec.c
+@@ -111,4 +111,45 @@ asm( "\t.section .rdata,\"dr\"\n"
+      "\t.rva __os_arm64x_helper7\n"
+      "\t.rva __os_arm64x_helper8\n" );
+ 
++/*
++ * HACK: Provide an exit thunk for memcpy/memmove/memset to work around
++ * https://github.com/llvm/llvm-project/issues/101355
++ */
++asm( "\t.def $iexit_thunk$cdecl$i8$i8i8i8; .scl 2; .type 32; .endef\n"
++     "\t.section .wowthk$aa,\"xr\",discard,$iexit_thunk$cdecl$i8$i8i8i8\n"
++     "\t.globl  $iexit_thunk$cdecl$i8$i8i8i8\n"
++     "\t.p2align 2\n"
++     "$iexit_thunk$cdecl$i8$i8i8i8:\n"
++     "\t.seh_proc $iexit_thunk$cdecl$i8$i8i8i8\n"
++     "\tsub     sp, sp, #48\n"
++     "\t.seh_stackalloc 48\n"
++     "\tstp     x29, x30, [sp, #32]\n"
++     "\t.seh_save_fplr 32\n"
++     "\tadd     x29, sp, #32\n"
++     "\t.seh_add_fp 32\n"
++     "\t.seh_endprologue\n"
++     "\tadrp    x8, __os_arm64x_dispatch_call_no_redirect\n"
++     "\tldr     x16, [x8, :lo12:__os_arm64x_dispatch_call_no_redirect]\n"
++     "\tblr     x16\n"
++     "\tmov     x0, x8\n"
++     "\t.seh_startepilogue\n"
++     "\tldp     x29, x30, [sp, #32]\n"
++     "\t.seh_save_fplr  32\n"
++     "\tadd     sp, sp, #48\n"
++     "\t.seh_stackalloc 48\n"
++     "\t.seh_endepilogue\n"
++     "\tret\n"
++     "\t.seh_endproc\n"
++
++     "\t.section .hybmp$x,\"yi\"\n"
++     "\t.symidx memcpy\n"
++     "\t.symidx $iexit_thunk$cdecl$i8$i8i8i8\n"
++     "\t.word 4\n"
++     "\t.symidx memmove\n"
++     "\t.symidx $iexit_thunk$cdecl$i8$i8i8i8\n"
++     "\t.word 4\n"
++     "\t.symidx memset\n"
++     "\t.symidx $iexit_thunk$cdecl$i8$i8i8i8\n"
++     "\t.word 4\n" );
++
+ #endif /* __arm64ec__ */
+-- 
+2.55.0
+
+
+From 054b42b8754d61adaf73ee7c27fce8692fd50587 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Tue, 15 Jul 2025 17:09:15 +0100
+Subject: [PATCH 15/19] HACK: Avoid delay importing rpcrt4
+
+Works around broken variadic exit thunks.
+---
+ dlls/sechost/Makefile.in  | 3 +--
+ 2 files changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/dlls/sechost/Makefile.in b/dlls/sechost/Makefile.in
+index ec1eb100683..25439e94090 100644
+--- a/dlls/sechost/Makefile.in
++++ b/dlls/sechost/Makefile.in
+@@ -1,7 +1,6 @@
+ MODULE    = sechost.dll
+ IMPORTLIB = sechost
+-IMPORTS   = kernelbase
+-DELAYIMPORTS = rpcrt4
++IMPORTS   = kernelbase rpcrt4
+ 
+ SOURCES = \
+ 	plugplay.idl \
+-- 
+2.55.0
+
+
+From 255702fb11ad684cdff6b3f63bf2e43cf788d015 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Wed, 6 Aug 2025 21:56:24 +0100
+Subject: [PATCH 16/19] ntdll: Implement FEX-specific kernel-side unaligned
+ atomic handling.
+
+---
+ dlls/ntdll/unix/process.c | 15 +++++++++++++++
+ include/winternl.h        |  7 +++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index 1c7a6b4ab43..5cedadc20ef 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -1106,6 +1106,17 @@ static BOOL set_hardware_tso( BOOL enable ) {
+ #endif
+ }
+ 
++static BOOL set_unalign_atomic_mode( ULONG64 flags ) {
++#ifdef HAVE_PRCTL
++#ifndef PR_ARM64_SET_UNALIGN_ATOMIC
++#define PR_ARM64_SET_UNALIGN_ATOMIC 0x46455849
++#endif
++    return !prctl( PR_ARM64_SET_UNALIGN_ATOMIC, flags, 0, 0, 0 );;
++#else
++    return FALSE;
++#endif
++}
++
+ #define UNIMPLEMENTED_INFO_CLASS(c) \
+     case c: \
+         FIXME( "(process=%p) Unimplemented information class: " #c "\n", handle); \
+@@ -1895,6 +1906,10 @@ NTSTATUS WINAPI NtSetInformationProcess( HANDLE handle, PROCESSINFOCLASS class,
+         if (size != sizeof(BOOL)) return STATUS_INFO_LENGTH_MISMATCH;
+         return set_hardware_tso( *(BOOL *)info ) ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
+ 
++    case ProcessFexUnalignAtomic:
++        if (size != sizeof(ULONG64)) return STATUS_INFO_LENGTH_MISMATCH;
++        return set_unalign_atomic_mode( *(ULONG64 *)info ) ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
++
+     case ProcessPowerThrottlingState:
+         FIXME( "ProcessPowerThrottlingState - stub\n" );
+         return STATUS_SUCCESS;
+diff --git a/include/winternl.h b/include/winternl.h
+index 65c89764d0b..509b5ddcfde 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2014,8 +2014,15 @@ typedef enum _PROCESSINFOCLASS {
+     ProcessWineMakeProcessSystem = 1000,
+     ProcessWineGrantAdminToken = 1002,
+ #endif
++    ProcessFexHardwareTso = 2000,
++    ProcessFexUnalignAtomic,
+ } PROCESSINFOCLASS;
+ 
++// These match the prctl flag values
++#define FEX_UNALIGN_ATOMIC_EMULATE       (1ULL << 0)
++#define FEX_UNALIGN_ATOMIC_BACKPATCH     (1ULL << 1)
++#define FEX_UNALIGN_ATOMIC_STRICT_SPLIT_LOCKS    (1ULL << 2)
++
+ #define MEM_EXECUTE_OPTION_DISABLE   0x01
+ #define MEM_EXECUTE_OPTION_ENABLE    0x02
+ #define MEM_EXECUTE_OPTION_DISABLE_THUNK_EMULATION 0x04
+-- 
+2.55.0
+
+
+From f544e2792240421f83d5af03e5fdcb879d48a0da Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Thu, 7 Aug 2025 20:57:03 +0100
+Subject: [PATCH 17/19] WIP: ntdll: ARM64EC suspend support
+
+---
+ dlls/ntdll/ntdll_misc.h        | 1 +
+ dlls/ntdll/signal_x86_64.c     | 8 ++++++++
+ dlls/ntdll/unix/signal_arm64.c | 1 -
+ 3 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 88fbe13cd30..c5b75ccf806 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -169,6 +169,7 @@ extern IMAGE_ARM64EC_METADATA *arm64ec_get_module_metadata( HMODULE module );
+ extern void arm64ec_update_hybrid_metadata( void *module, IMAGE_NT_HEADERS *nt,
+                                             const IMAGE_ARM64EC_METADATA *metadata );
+ extern void invoke_arm64ec_syscall(void);
++extern void arm64ec_suspend_point(void);
+ 
+ extern void *__os_arm64x_check_call;
+ extern void *__os_arm64x_check_icall;
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index 2c6f4ccef7e..e7a1bd05780 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -73,6 +73,14 @@ __ASM_GLOBAL_FUNC( invoke_arm64ec_syscall,
+                    "pushq %r10\n\t"         /* and return to syscall thunk */
+                    "ret" )
+ 
++/**************************************************************************
++ *		arm64ec_suspend_point
++ *
++ * x64 stub to support cooperative suspend when leaving a syscall callack.
++ */
++__ASM_GLOBAL_FUNC( arm64ec_suspend_point,
++                   "ret" )
++
+ /*******************************************************************
+  *		KiUserExceptionDispatcher (NTDLL.@)
+  */
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 522ade368f0..17d7e1831a0 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -240,7 +240,6 @@ void set_process_instrumentation_callback( void *callback )
+     if (callback) FIXME( "Not supported.\n" );
+ }
+ 
+-
+ /***********************************************************************
+  *           syscall_frame_fixup_for_fastpath
+  *
+-- 
+2.55.0
+
+
+From 38ce97dd77651dc964aafdfd0d716f0ddf945f22 Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Mon, 11 Aug 2025 21:56:19 +0100
+Subject: [PATCH 18/19] ntdll: Support cross-process wow64 suspend on ARM64.
+
+---
+ dlls/ntdll/signal_arm64.c | 65 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 65 insertions(+)
+
+diff --git a/dlls/ntdll/signal_arm64.c b/dlls/ntdll/signal_arm64.c
+index e560718c770..7881b809f97 100644
+--- a/dlls/ntdll/signal_arm64.c
++++ b/dlls/ntdll/signal_arm64.c
+@@ -673,7 +673,72 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
+     return !!(cpu_features_bitmap[feature / 64] & (1ull << (feature % 64)));
+ }
+ 
++static void suspend_remote_breakin( HANDLE thread )
++{
++    ULONG count;
++    NTSTATUS status = pWow64SuspendLocalThread( thread, &count );
++    if (status >= 0) status = count;
++    NtTerminateThread( GetCurrentThread(),  status );
++}
+ 
++ /***********************************************************************
++  *              RtlWow64SuspendThread (NTDLL.@)
++  */
++ NTSTATUS WINAPI RtlWow64SuspendThread( HANDLE thread, ULONG *count )
++ {
++    HANDLE thread_dup;
++    THREAD_BASIC_INFORMATION tbi;
++    NTSTATUS status = NtDuplicateObject( NtCurrentProcess(), thread, NtCurrentProcess(), &thread_dup,
++                                         THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME, 0, 0 );
++    if (status) return status;
++    status = NtQueryInformationThread( thread_dup, ThreadBasicInformation, &tbi, sizeof(tbi), NULL);
++    NtClose( thread_dup );
++    if (status) return status;
++
++    if (tbi.ClientId.UniqueProcess != NtCurrentTeb()->ClientId.UniqueProcess)
++    {
++        HANDLE process;
++        HANDLE suspender_thread;
++        HANDLE remote_suspendee_thread;
++        OBJECT_ATTRIBUTES attr = { .Length = sizeof(attr) };
++
++        status = NtOpenProcess( &process, PROCESS_CREATE_THREAD | PROCESS_DUP_HANDLE, &attr, &tbi.ClientId );
++        if (status) return status;
++
++        status = NtDuplicateObject( NtCurrentProcess(), thread, process, &remote_suspendee_thread, 0, 0,
++                                    DUPLICATE_SAME_ACCESS );
++        if (status) goto err_close_proc;
++
++        status = NtCreateThreadEx( &suspender_thread, SYNCHRONIZE | THREAD_QUERY_INFORMATION, NULL, process,
++                                   suspend_remote_breakin, remote_suspendee_thread,
++                                   THREAD_CREATE_FLAGS_SKIP_THREAD_ATTACH | THREAD_CREATE_FLAGS_SKIP_LOADER_INIT |
++                                   THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER | THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE,
++                                   0, 0, 0, NULL );
++        if (status) goto err_close_remote_hnd;
++
++        NtWaitForSingleObject( suspender_thread, FALSE, NULL );
++        status = NtQueryInformationThread( suspender_thread, ThreadBasicInformation, &tbi, sizeof(tbi), NULL );
++        if (!status)
++        {
++            if (tbi.ExitStatus < 0)
++            {
++                status = tbi.ExitStatus;
++            }
++            else if (count)
++            {
++                *count = (ULONG)tbi.ExitStatus;
++            }
++        }
++        NtClose( suspender_thread );
++err_close_remote_hnd:
++        NtDuplicateObject( process, remote_suspendee_thread, NULL, NULL, 0, 0, DUPLICATE_CLOSE_SOURCE );
++err_close_proc:
++        NtClose( process );
++        return status;
++     }
++
++     return pWow64SuspendLocalThread( thread, count ); 
++ }
+ /*************************************************************************
+  *		RtlWalkFrameChain (NTDLL.@)
+  */
+-- 
+2.55.0
+
+
+From 1a78efb2af53d565e0cb25b5c152b3e4574648bd Mon Sep 17 00:00:00 2001
+From: Billy Laws <blaws05@gmail.com>
+Date: Fri, 12 Apr 2024 20:54:16 +0000
+Subject: [PATCH 19/19] server: Ensure allocated space for mappings is in
+ accessible memory.
+
+---
+ server/mapping.c | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/server/mapping.c b/server/mapping.c
+index a53b6b68304..2ee4831c750 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -21,6 +21,7 @@
+ #include "config.h"
+ 
+ #include <assert.h>
++#include <errno.h>
+ #include <fcntl.h>
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -272,11 +273,33 @@ static inline mem_size_t round_size( mem_size_t size, mem_size_t mask )
+     return (size + mask) & ~mask;
+ }
+ 
++static void free_available_high_map_addr( client_ptr_t base, mem_size_t size )
++{
++    unsigned int flags = MAP_PRIVATE | MAP_ANON;
++
++#ifdef MAP_FIXED_NOREPLACE
++    flags |= MAP_FIXED_NOREPLACE;
++#endif
++
++    while (base >> 32)
++    {
++        void *ret = mmap( (void *)base, host_page_mask + 1, PROT_NONE, flags, -1, 0 );
++        if (ret != MAP_FAILED) munmap( ret, host_page_mask + 1 );
++        if ((ret != MAP_FAILED && ret >= (void *)base) || errno == EEXIST)
++        {
++            free_map_addr( base, size );
++            return;
++        }
++        base >>= 1;
++        size >>= 1;
++    }
++}
++
+ void init_memory(void)
+ {
+     host_page_mask = sysconf( _SC_PAGESIZE ) - 1;
+     free_map_addr( 0x60000000, 0x1c000000 );
+-    free_map_addr( 0x600000000000, 0x100000000000 );
++    free_available_high_map_addr( 0x600000000000, 0x100000000000 );
+ }
+ 
+ static void ranges_dump( struct object *obj, int verbose )
+-- 
+2.55.0
+
