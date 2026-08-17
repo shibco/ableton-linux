@@ -135,6 +135,39 @@ for probe in pushusb push2usb push3usb; do
         "$SRC/tools/$probe.c" "${libusb_libs[@]}" -o "$WORK/$probe-preflight"
 done
 
+echo "== FIXME FEX ARM64EC =="
+cd /work/FEX
+mkdir build-arm64ec
+cd build-arm64ec
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DCMAKE_INSTALL_LIBDIR=$PREFIX_ROOT/lib/wine/aarch64-windows -DENABLE_LTO=False -DMINGW_TRIPLE=arm64ec-w64-mingw32 -DBUILD_TESTING=False -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT ..
+ninja
+ninja install
+cd ..
+mkdir build-wow64
+cd build-wow64
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DCMAKE_INSTALL_LIBDIR=$PREFIX_ROOT/lib/wine/aarch64-windows -DENABLE_LTO=False -DMINGW_TRIPLE=aarch64-w64-mingw32 -DBUILD_TESTING=False -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT ..
+ninja
+ninja install
+cd ..
+cd /work
+
+echo "== FIXME FEX ARM64EC =="
+cd /work/FEX
+mkdir build-arm64ec
+cd build-arm64ec
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DCMAKE_INSTALL_LIBDIR=$PREFIX_ROOT/lib/wine/aarch64-windows -DENABLE_LTO=False -DMINGW_TRIPLE=arm64ec-w64-mingw32 -DBUILD_TESTING=False -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT ..
+ninja
+ninja install
+cd ..
+mkdir build-wow64
+cd build-wow64
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DCMAKE_INSTALL_LIBDIR=$PREFIX_ROOT/lib/wine/aarch64-windows -DENABLE_LTO=False -DMINGW_TRIPLE=aarch64-w64-mingw32 -DBUILD_TESTING=False -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT ..
+ninja
+ninja install
+cd ..
+cd /work
+>>>>>>> 7e900fb (WIP FEX ARM64EC support)
+
 echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.13 @ 5c23dd1c) =="
 mkdir -p "$WORK/wine-src"
 zstd -dc --long=27 "$SRC/vendor/wine-base-5c23dd1c.tar.zst" | tar -x -C "$WORK/wine-src"
@@ -169,7 +202,8 @@ mkdir -p "$WORK/build" && cd "$WORK/build"
 # that dir, so the 5.15 system headers stay authoritative for everything else.
 CPPFLAGS="-I/opt/ntsync-uapi" ../wine-src/configure \
     --prefix="$CONFIGURE_PREFIX" \
-    --enable-archs=i386,x86_64 \
+    --enable-archs=arm64ec,aarch64,i386,x86_64 \
+    --with-mingw=clang \
     --disable-tests
 make -j"$JOBS"
 make install DESTDIR="$DESTDIR"

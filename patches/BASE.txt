@@ -415,3 +415,4 @@ Apply them in sequence with the rest of the series.
 - `0106` extends the patch 0032 USB bridge for Push 3. Add synchronous bulk
   transfer, error text, and hotplug registration exports. Accept USB interface
   numbers from 0 to 255. The helper polls after the hotplug registration result.
+- `0107`: ARM64 EC support

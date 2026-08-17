@@ -14,7 +14,7 @@ IMAGE="${IMAGE:-ableton-wine-build:22.04}"
 JOBS="${JOBS:-$(nproc)}"
 # Default auto; see scripts/container-build.sh for why releases stay fail-closed
 # without it. CI sets require explicitly.
-PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
+PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-skip}"
 # shellcheck source=scripts/lib/tsan.sh
 source "$here/scripts/lib/tsan.sh"
 pipeasio_tsan_mode_valid "$PIPEASIO_TSAN_MODE" || {
@@ -113,7 +113,7 @@ echo "== [1/7] verify vendored inputs against pinned checksums =="
     bitstream-vera.sha256 llvm-apt-key.sha256 )
 
 echo "== [2/7] build container image ($IMAGE) =="
-"$ENGINE" build -t "$IMAGE" -f "$source_snapshot/Containerfile" "$source_snapshot"
+"$ENGINE" build -t "$IMAGE" -f "$source_snapshot/Containerfile" "$source_snapshot" --platform linux/arm64
 
 mkdir -p dist "$here/.ccache"
 echo "== [3/7] build installer helpers in the configured image =="

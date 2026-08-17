@@ -10,7 +10,7 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch'
+readonly REQUIRED_WINE_TAIL='0107-arm64ec.patch'
 readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0012-recover-selected-routes-after-hotplug.patch'
 
 check_required_series_tails()
