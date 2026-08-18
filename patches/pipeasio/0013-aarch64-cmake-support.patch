@@ -1,4 +1,4 @@
-From cd66ab55e14ec410f0b7bac2d8e9168dd3663de4 Mon Sep 17 00:00:00 2001
+From 0102d5cd402b2670d6afc73b2cbb4995c216696a Mon Sep 17 00:00:00 2001
 From: Paul Sajna <hello@paulsajna.com>
 Date: Mon, 17 Aug 2026 20:56:17 -0700
 Subject: [PATCH] aarch64 cmake support
@@ -6,7 +6,7 @@ Subject: [PATCH] aarch64 cmake support
 ---
  CMakeLists.txt      | 22 +++++++++--
  cmake/WineDLL.cmake | 91 +++++++++++++++++++--------------------------
- 2 files changed, 56 insertions(+), 57 deletions(-)
+ 2 files changed, 57 insertions(+), 56 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 1453500..ef5b529 100644
@@ -56,7 +56,7 @@ index 1453500..ef5b529 100644
                          GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
  endif()
 diff --git a/cmake/WineDLL.cmake b/cmake/WineDLL.cmake
-index 48d7435..f995ed9 100644
+index 48d7435..61112ac 100644
 --- a/cmake/WineDLL.cmake
 +++ b/cmake/WineDLL.cmake
 @@ -31,6 +31,20 @@ find_program(WINEGCC
@@ -134,7 +134,7 @@ index 48d7435..f995ed9 100644
                  -E ${WDL_SPEC}
                  $<TARGET_OBJECTS:${_objlib}>
                  -o ${_pe}
-@@ -197,41 +196,27 @@ function(add_wine_dll)
+@@ -197,41 +196,29 @@ function(add_wine_dll)
          VERBATIM
          COMMENT "winebuild ${WDL_NAME}.dll (fake PE module)")
  
@@ -155,16 +155,15 @@ index 48d7435..f995ed9 100644
          OUTPUT  ${_so}
 -        COMMAND ${WINEGCC} -shared
 -                ${WDL_SPEC}
-+        COMMAND "${WINEGCC}" -shared 
++        COMMAND "${WINEGCC}" -shared "${WINE_TARGET_WIN_FLAG}"
 +                -E ${WDL_SPEC}
                  $<TARGET_OBJECTS:${_objlib}>
 -                ${_winegcc_extra_flags}
 -                ${_lflags}
 -                ${WDL_LDFLAGS}
--                -o ${_so}
 +                -lodbc32 -lole32 -luuid -lwinmm -luser32 -lkernelbase
 +                /opt/pipewire-sdk/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so
-+                -o "${_so}"
+                 -o ${_so}
          DEPENDS ${_objlib} ${WDL_SPEC} $<TARGET_OBJECTS:${_objlib}>
 -        COMMAND_EXPAND_LISTS
 -        VERBATIM
@@ -173,6 +172,8 @@ index 48d7435..f995ed9 100644
 +        COMMENT "winegcc pipeasio64.dll.so (WoW64 unixlib)")
  
 -    add_custom_target(${WDL_NAME} ALL DEPENDS ${_pe} ${_so})
++    add_custom_target(pipeasio64_dll ALL DEPENDS "pipeasio64.dll")
++    add_custom_target(pipeasio64_so ALL DEPENDS "pipeasio64.dll.so")
  
      if(NOT WDL_NO_INSTALL)
          # Install into the Wine arch layout, plus the unified-name symlinks
@@ -186,7 +187,7 @@ index 48d7435..f995ed9 100644
                  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                              GROUP_READ GROUP_EXECUTE
                              WORLD_READ WORLD_EXECUTE)
-@@ -239,16 +224,16 @@ function(add_wine_dll)
+@@ -239,16 +226,16 @@ function(add_wine_dll)
          # live prefix; install(CODE) does not apply it like install(FILES).
          install(CODE "
              file(CREATE_LINK ${WDL_NAME}.dll

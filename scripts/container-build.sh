@@ -650,7 +650,7 @@ bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
 pipewire_probe_sha="$(sha256sum "$pipewire_probe" | awk '{print $1}')"
 
-pipeasio_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio64.dll"
+pipeasio_pe="$PREFIX_ROOT/lib/wine/aarch64-windows/pipeasio64.dll"
 pipeasio_unix="$PREFIX_ROOT/lib/wine/aarch64-unix/pipeasio64.dll.so"
 test -s "$pipeasio_pe"
 test -s "$pipeasio_unix"
