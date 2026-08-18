@@ -480,7 +480,7 @@ mapfile -t noqt_unit_targets < <(pipeasio_unit_targets build-noqt)
     echo "!! no unit-labelled CTest targets found in the no-Qt build" >&2
     exit 1
 }
-cmake --build build-noqt -j "$JOBS" --target \
+cmake --build build-noqt -j "$JOBS" --target=aarch64-windows  \
     pipeasio64 "${noqt_unit_targets[@]}"
 pipeasio_ctest_nonintegration build-noqt
 noqt_stage="$(mktemp -d /tmp/pipeasio-noqt-install.XXXXXX)"

@@ -1,0 +1,38 @@
+From 78085bc27c49d894db6b7153ce600f32b85652c9 Mon Sep 17 00:00:00 2001
+From: Paul Sajna <hello@paulsajna.com>
+Date: Mon, 17 Aug 2026 19:54:51 -0700
+Subject: [PATCH] gate processor-specific x86_64 intrinsics
+
+---
+ src/audio.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/audio.c b/src/audio.c
+index 291631f..0c66820 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -55,8 +55,10 @@
+ #include <sys/mman.h>
+ #include <sys/resource.h>
+ #include <unistd.h>
++#if defined(__x86_64__)
+ #include <pmmintrin.h> /* _MM_SET_DENORMALS_ZERO_MODE */
+ #include <xmmintrin.h> /* _MM_SET_FLUSH_ZERO_MODE */
++#endif
+ 
+ /* RT/data-loop thread id for diagnostics. */
+ static unsigned long
+@@ -112,8 +114,10 @@ audio_rt_trampoline(LPVOID raw)
+ 
+     /* Flush subnormal floats to zero on this RT thread: the ASIO host's DSP
+      * runs here, and denormals can stall the CPU for hundreds of cycles. */
++#if defined(__x86_64__)
+     _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+     _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
++#endif
+ 
+     s->user_ret = s->user_entry(s->user_arg);
+     return 0;
+-- 
+2.55.0
+

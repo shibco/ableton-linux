@@ -11,7 +11,7 @@ say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
 readonly REQUIRED_WINE_TAIL='0099-arm64ec.patch'
-readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
+readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0012-gate-processor-specific-x86_64-intrinsics.patch'
 
 check_required_series_tails()
 {
@@ -348,6 +348,7 @@ pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-contro
 # not reach the panel binary; its fingerprint is the tooltip literal above,
 # stored as UTF-16 by QStringLiteral, hence the wide encoding.
 PIPEASIO_MARKER_TODO='
+0012
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
 # Wine loads the unix half under the spec-file name pipeasio.dll.so, so the
