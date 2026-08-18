@@ -212,8 +212,8 @@ ln -s "$PREFIX_ROOT" "$CONFIGURE_PREFIX"
 "$PREFIX_ROOT/bin/wine" --version
 
 bridge_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/libusb-1.0.dll"
-bridge_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/libusb-1.0.so"
-portal_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/comdlg32.so"
+bridge_unix="$PREFIX_ROOT/lib/wine/aarch64-unix/libusb-1.0.so"
+portal_unix="$PREFIX_ROOT/lib/wine/aarch64-unix/comdlg32.so"
 i386_bridge_pe="$PREFIX_ROOT/lib/wine/i386-windows/libusb-1.0.dll"
 i386_bridge_unix="$PREFIX_ROOT/lib/wine/i386-unix/libusb-1.0.so"
 [ -f "$bridge_pe" ] || { echo "!! Push USB bridge PE missing: $bridge_pe" >&2; exit 1; }
@@ -238,7 +238,7 @@ readelf -d "$bridge_unix" | grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/nu
 strings "$portal_unix" | grep -F 'org.freedesktop.portal.FileChooser' >/dev/null
 
 # configure silently drops winealsa (ALSA MIDI) when libasound2-dev is absent: fail, don't ship without it.
-winealsa_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/winealsa.so"
+winealsa_unix="$PREFIX_ROOT/lib/wine/aarch64-unix/winealsa.so"
 if [ ! -s "$winealsa_unix" ]; then
     echo "!! winealsa.so missing: libasound2-dev not present at configure time; no ALSA MIDI" >&2
     exit 1
@@ -246,7 +246,7 @@ fi
 
 # configure also silently drops winegstreamer (mp3/mp4/wma import) without
 # the gstreamer-1.0 dev packages — shipped unnoticed until issue #44.
-winegstreamer_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/winegstreamer.so"
+winegstreamer_unix="$PREFIX_ROOT/lib/wine/aarch64-unix/winegstreamer.so"
 if [ ! -s "$winegstreamer_unix" ]; then
     echo "!! winegstreamer.so missing: libgstreamer1.0-dev/libgstreamer-plugins-base1.0-dev not present at configure time; no mp3/mp4/wma import" >&2
     exit 1
@@ -263,7 +263,7 @@ fi
 # grep -c, not grep -q: -q exits on first match, strings dies of SIGPIPE and
 # pipefail turns the success into a false "missing" (this killed a good build).
 ntsync_srv="$(strings "$PREFIX_ROOT/bin/wineserver" | grep -c ntsync || true)"
-ntsync_ntd="$(strings "$PREFIX_ROOT/lib/wine/x86_64-unix/ntdll.so" | grep -c ntsync || true)"
+ntsync_ntd="$(strings "$PREFIX_ROOT/lib/wine/aarch64-unix/ntdll.so" | grep -c ntsync || true)"
 if [ "${ntsync_srv:-0}" -eq 0 ]; then
     echo "!! no ntsync in wineserver; waits would fall back to server round trips" >&2
     exit 1
@@ -327,11 +327,11 @@ esac
 # It compiles on the oldest build host and records only PipeWire's stable
 # soname, so the host's selected client closure remains authoritative.
 pipewire_probe="$PREFIX_ROOT/bin/pipewire-version-probe"
-pipewire_sdk_lib="$PW_SDK/usr/lib/x86_64-linux-gnu/libpipewire-0.3.so"
+pipewire_sdk_lib="$PW_SDK/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so"
 test -s "$SRC/tools/pipewire-version-probe.c"
 test -s "$pipewire_sdk_lib"
 read -r -a pipewire_probe_cflags <<< "$(
-    PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
+    PKG_CONFIG_PATH="$PW_SDK/usr/lib/aarch64-linux-gnu/pkgconfig" \
     PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
         pkg-config --cflags libpipewire-0.3
 )"
@@ -346,7 +346,7 @@ pipewire_probe_needed="$(
         | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' \
         | sort
 )"
-if [ "$pipewire_probe_needed" != $'libc.so.6\nlibpipewire-0.3.so.0' ]; then
+if [ "$pipewire_probe_needed" != $'ld-linux-aarch64.so.1\nlibc.so.6\nlibpipewire-0.3.so.0' ]; then
     echo "!! pipewire-version-probe has unexpected DT_NEEDED entries:" >&2
     printf '%s\n' "$pipewire_probe_needed" >&2
     exit 1
@@ -395,7 +395,7 @@ echo "   pipewire-version-probe: client stub + ASan/UBSan verification passed"
 pipeasio_cmake_configure() {
     local build_dir="$1"
     shift
-    PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
+    PKG_CONFIG_PATH="$PW_SDK/usr/lib/aarch64-linux-gnu/pkgconfig" \
     PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
     CC=gcc CXX=g++ \
     cmake -S . -B "$build_dir" -G Ninja \
@@ -512,9 +512,9 @@ noqt_stage="$(mktemp -d /tmp/pipeasio-noqt-install.XXXXXX)"
 DESTDIR="$noqt_stage" cmake --install build-noqt
 noqt_root="$noqt_stage$CONFIGURE_PREFIX"
 test -s "$noqt_root/lib/wine/x86_64-windows/pipeasio64.dll"
-test -s "$noqt_root/lib/wine/x86_64-unix/pipeasio64.dll.so"
+test -s "$noqt_root/lib/wine/aarch64-unix/pipeasio64.dll.so"
 test "$(readlink "$noqt_root/lib/wine/x86_64-windows/pipeasio.dll")" = pipeasio64.dll
-test "$(readlink "$noqt_root/lib/wine/x86_64-unix/pipeasio.dll.so")" = pipeasio64.dll.so
+test "$(readlink "$noqt_root/lib/wine/aarch64-unix/pipeasio.dll.so")" = pipeasio64.dll.so
 test ! -e "$noqt_root/bin/pipeasio-settings"
 test ! -e "$noqt_root/share/applications/pipeasio-settings.desktop"
 test ! -e "$noqt_root/share/icons/hicolor/scalable/apps/pipeasio.svg"
@@ -595,9 +595,9 @@ DESTDIR="$DESTDIR" cmake --install build
 rm -f -- "$PREFIX_ROOT/bin/pipeasio-register"
 
 # Must link the host's PipeWire by soname, with no SDK/build path baked in.
-readelf -d "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so" \
+readelf -d "$PREFIX_ROOT/lib/wine/aarch64-unix/pipeasio64.dll.so" \
     | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
-if readelf -d "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -qE 'RPATH|RUNPATH'; then
+if readelf -d "$PREFIX_ROOT/lib/wine/aarch64-unix/pipeasio64.dll.so" | grep -qE 'RPATH|RUNPATH'; then
     echo "!! pipeasio64.dll.so carries an rpath into the build container" >&2
     exit 1
 fi
@@ -653,7 +653,7 @@ portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
 pipewire_probe_sha="$(sha256sum "$pipewire_probe" | awk '{print $1}')"
 
 pipeasio_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio64.dll"
-pipeasio_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so"
+pipeasio_unix="$PREFIX_ROOT/lib/wine/aarch64-unix/pipeasio64.dll.so"
 test -s "$pipeasio_pe"
 test -s "$pipeasio_unix"
 pipeasio_pe_sha="$(sha256sum "$pipeasio_pe" | awk '{print $1}')"
@@ -741,7 +741,7 @@ WINEPREFIX="$reloc/prefix" WINEDEBUG=-all \
 # a newer glibc than this container, so satisfy the loader with a stub that
 # exports exactly the pw_ symbols the driver references.
 pwstub="$(mktemp -d)"
-nm -D "$reloc/$NAME/lib/wine/x86_64-unix/pipeasio64.dll.so" \
+nm -D "$reloc/$NAME/lib/wine/aarch64-unix/pipeasio64.dll.so" \
     | awk '$1 == "U" && $2 ~ /^pw_/ { print "void " $2 "(void) {}" }' > "$pwstub/stub.c"
 gcc -shared -fPIC -Wl,-soname,libpipewire-0.3.so.0 -o "$pwstub/libpipewire-0.3.so.0" "$pwstub/stub.c"
 WINEPREFIX="$reloc/prefix" WINEDEBUG=-all \
