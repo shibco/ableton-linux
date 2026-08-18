@@ -1,0 +1,212 @@
+From cd66ab55e14ec410f0b7bac2d8e9168dd3663de4 Mon Sep 17 00:00:00 2001
+From: Paul Sajna <hello@paulsajna.com>
+Date: Mon, 17 Aug 2026 20:56:17 -0700
+Subject: [PATCH] aarch64 cmake support
+
+---
+ CMakeLists.txt      | 22 +++++++++--
+ cmake/WineDLL.cmake | 91 +++++++++++++++++++--------------------------
+ 2 files changed, 56 insertions(+), 57 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1453500..ef5b529 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -181,9 +181,22 @@ if(BUILD_WOW64_32)
+             -fsanitize=address -fsanitize=undefined)
+         list(APPEND _pa32_sanitize_libs -lasan -lubsan)
+     endif()
++
++    # Detect and adjust paths for ARM64 (AArch64) target
++    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
++        set(WINE_WIN_ARCH "aarch64-windows")
++        set(WINE_UNIX_ARCH "aarch64-unix")
++        set(WINE_TARGET_FLAG "--target=aarch64-windows")
++    else()
++        # Fallback to your original x86_64 / WoW64 paths
++        set(WINE_WIN_ARCH "i386-windows")
++        set(WINE_UNIX_ARCH "x86_64-unix")
++        set(WINE_TARGET_FLAG "")
++    endif()
++
+     add_custom_command(
+         OUTPUT  "${PA32_SO}"
+-        COMMAND "${WINEGCC}" -shared
++        COMMAND "${WINEGCC}" ${WINE_TARGET_FLAG} -shared
+                 "${PA32_SPEC}"
+                 $<TARGET_OBJECTS:pipeasio32_unix_objs>
+                 -lpthread -ldl ${PIPEWIRE_LINK_LIBRARIES} ${PIPEWIRE_LDFLAGS_OTHER}
+@@ -192,14 +205,15 @@ if(BUILD_WOW64_32)
+         DEPENDS pipeasio32_unix_objs "${PA32_SPEC}"
+                 $<TARGET_OBJECTS:pipeasio32_unix_objs>
+         VERBATIM COMMAND_EXPAND_LISTS
+-        COMMENT "winegcc pipeasio32.so (WoW64 unixlib)")
++        COMMENT "winegcc pipeasio32.so (${WINE_UNIX_ARCH} unixlib)")
+ 
+     add_custom_target(pipeasio32_unix ALL DEPENDS "${PA32_SO}")
+     add_custom_target(pipeasio32 ALL DEPENDS "${PA32_DLL}")
+     add_dependencies(pipeasio32 pipeasio32_unix)
+ 
+-    install(FILES "${PA32_DLL}" DESTINATION "${PA_WINE_DEST}/i386-windows")
+-    install(FILES "${PA32_SO}" DESTINATION "${PA_WINE_DEST}/x86_64-unix"
++    # Dynamically route the files to their respective target directories
++    install(FILES "${PA32_DLL}" DESTINATION "${PA_WINE_DEST}/${WINE_WIN_ARCH}")
++    install(FILES "${PA32_SO}" DESTINATION "${PA_WINE_DEST}/${WINE_UNIX_ARCH}"
+             PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                         GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+ endif()
+diff --git a/cmake/WineDLL.cmake b/cmake/WineDLL.cmake
+index 48d7435..f995ed9 100644
+--- a/cmake/WineDLL.cmake
++++ b/cmake/WineDLL.cmake
+@@ -31,6 +31,20 @@ find_program(WINEGCC
+     NAMES winegcc winegcc-stable winegcc-development winegcc-staging
+     PATHS ${_wine_tool_paths} REQUIRED)
+ 
++
++if(CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
++    set(WINE_WIN_ARCH "aarch64-windows")
++    set(WINE_UNIX_ARCH "aarch64-unix")
++    set(WINE_TARGET_WIN_FLAG "--target=aarch64-windows")
++    set(WINE_BUILD_TARGET_FLAG "-b" "aarch64-windows")
++else()
++    set(WINE_WIN_ARCH "x86_64-windows")
++    set(WINE_UNIX_ARCH "x86_64-unix")
++    set(WINE_TARGET_WIN_FLAG "")
++    set(WINE_BUILD_TARGET_FLAG "")
++endif()
++
++
+ # Probe for Wine include directories.  An SDK root R holds "wine/debug.h" plus
+ # the Win32 headers, under "R/wine/windows" (Arch, Fedora, winehq, upstream
+ # "make install") or "R/windows" (Debian's libwine-dev); packagings differ only
+@@ -142,15 +156,14 @@ function(add_wine_dll)
+         message(FATAL_ERROR "add_wine_dll: NAME, SPEC, and SOURCES are required.")
+     endif()
+ 
+-    # Compile sources to PIC .o files with the host gcc.  These objects are
+-    # consumed by both the winebuild (PE fake) and winegcc (ELF .so) steps.
+-    # Force -fno-lto: distro CFLAGS often inject -flto=auto (Fedora); objects
+-    # still show Dll* in nm, but winebuild's ld -r partial link leaves those
+-    # symbols undefined so the .spec export scan fails ("function
+-    # 'DllRegisterServer' not defined"). LTO bytecode is useless to
+-    # winebuild/winegcc; objects need a real ELF symtab (issue #6).
+-    set(_objlib ${WDL_NAME}_objs)
+-    add_library(${_objlib} OBJECT ${WDL_SOURCES})
++    set(_objlib pipeasio64_objs)
++    add_library(${_objlib} OBJECT
++        src/asio.c
++        src/audio.c
++        src/config.c
++        src/main.c
++        src/regsvr.c
++    )
+     set_target_properties(${_objlib} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+     target_include_directories(${_objlib} PRIVATE
+         ${WDL_INCLUDES}
+@@ -168,27 +181,13 @@ function(add_wine_dll)
+         $<$<CONFIG:RelWithDebInfo>:-O2 -g -DNDEBUG -fvisibility=hidden>
+         $<$<CONFIG:Debug>:-O0 -g3 -DDEBUG -fno-omit-frame-pointer -fstack-protector-all>)
+ 
+-    # Debug builds always get -O0 -g3 (from the CONFIG:Debug block above).
+-    # AddressSanitizer is opt-in via PIPEASIO_ASAN=ON because Wine's
+-    # dynamic loader can't reliably make libasan first in the library
+-    # list, which makes the runtime refuse to start. When enabled,
+-    # winegcc filters -fsanitize from its gcc link invocation, so we
+-    # request the libraries explicitly with -lasan/-lubsan.
+-    set(_winegcc_extra_flags "")
+-    option(PIPEASIO_ASAN "Build .so half with -fsanitize=address,undefined" OFF)
+-    if(PIPEASIO_ASAN)
+-        target_compile_options(${_objlib} PRIVATE
+-            -fsanitize=address -fsanitize=undefined)
+-        list(APPEND _winegcc_extra_flags -lasan -lubsan)
+-    endif()
+-
+     set(_pe "${CMAKE_BINARY_DIR}/${WDL_NAME}.dll")
+     set(_so "${CMAKE_BINARY_DIR}/${WDL_NAME}.dll.so")
+ 
+     # Step 1: Wine fake PE DLL via winebuild.
+-    add_custom_command(
++     add_custom_command(
+         OUTPUT  ${_pe}
+-        COMMAND ${WINEBUILD} -m64 --dll --fake-module
++        COMMAND ${WINEBUILD} -m64 --dll --fake-module ${WINE_BUILD_TARGET_FLAG}
+                 -E ${WDL_SPEC}
+                 $<TARGET_OBJECTS:${_objlib}>
+                 -o ${_pe}
+@@ -197,41 +196,27 @@ function(add_wine_dll)
+         VERBATIM
+         COMMENT "winebuild ${WDL_NAME}.dll (fake PE module)")
+ 
+-    # Step 2: ELF .so via winegcc.
+-    # LIBS are bare names (-lfoo) resolved through winegcc's own search path,
+-    # which is where the Win32 import libraries live.  LDFLAGS is appended
+-    # verbatim and is meant for absolute library paths (pkg-config's
+-    # <pkg>_LINK_LIBRARIES) so a PipeWire outside /usr is honoured.  Do NOT
+-    # feed raw -L here: a -L/usr/lib ahead of winegcc's own directories makes
+-    # -luuid resolve to util-linux's libuuid instead of Wine's import library,
+-    # and the link dies on an undefined IID_IUnknown.
+-    set(_lflags "")
+-    foreach(_l ${WDL_LIBS})
+-        list(APPEND _lflags -l${_l})
+-    endforeach()
++    # 2. THE UNIXLIB SIDE (The Linux ELF component)
+     add_custom_command(
+         OUTPUT  ${_so}
+-        COMMAND ${WINEGCC} -shared
+-                ${WDL_SPEC}
++        COMMAND "${WINEGCC}" -shared 
++                -E ${WDL_SPEC}
+                 $<TARGET_OBJECTS:${_objlib}>
+-                ${_winegcc_extra_flags}
+-                ${_lflags}
+-                ${WDL_LDFLAGS}
+-                -o ${_so}
++                -lodbc32 -lole32 -luuid -lwinmm -luser32 -lkernelbase
++                /opt/pipewire-sdk/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so
++                -o "${_so}"
+         DEPENDS ${_objlib} ${WDL_SPEC} $<TARGET_OBJECTS:${_objlib}>
+-        COMMAND_EXPAND_LISTS
+-        VERBATIM
+-        COMMENT "winegcc ${WDL_NAME}.dll.so (ELF shared object)")
++        VERBATIM COMMAND_EXPAND_LISTS
++        COMMENT "winegcc pipeasio64.dll.so (WoW64 unixlib)")
+ 
+-    add_custom_target(${WDL_NAME} ALL DEPENDS ${_pe} ${_so})
+ 
+     if(NOT WDL_NO_INSTALL)
+         # Install into the Wine arch layout, plus the unified-name symlinks
+         # that Wine 10+ looks up.
+         install(FILES ${_pe}
+-                DESTINATION "${PA_WINE_DEST}/x86_64-windows")
++            DESTINATION "${PA_WINE_DEST}/${WINE_WIN_ARCH}")
+         install(FILES ${_so}
+-                DESTINATION "${PA_WINE_DEST}/x86_64-unix"
++            DESTINATION "${PA_WINE_DEST}/${WINE_UNIX_ARCH}"
+                 PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                             GROUP_READ GROUP_EXECUTE
+                             WORLD_READ WORLD_EXECUTE)
+@@ -239,16 +224,16 @@ function(add_wine_dll)
+         # live prefix; install(CODE) does not apply it like install(FILES).
+         install(CODE "
+             file(CREATE_LINK ${WDL_NAME}.dll
+-                 \$ENV{DESTDIR}${PA_WINE_DEST_ABS}/x86_64-windows/pipeasio.dll
++                \$ENV{DESTDIR}${PA_WINE_DEST_ABS}/${WINE_WIN_ARCH}/pipeasio.dll
+                  SYMBOLIC)
+             file(CREATE_LINK ${WDL_NAME}.dll.so
+-                 \$ENV{DESTDIR}${PA_WINE_DEST_ABS}/x86_64-unix/pipeasio.dll.so
++                \$ENV{DESTDIR}${PA_WINE_DEST_ABS}/${WINE_UNIX_ARCH}/pipeasio.dll.so
+                  SYMBOLIC)
+             # file(CREATE_LINK) does not feed the manifest like file(INSTALL),
+             # so record the links by hand or the documented uninstall leaves
+             # them behind.
+             list(APPEND CMAKE_INSTALL_MANIFEST_FILES
+-                 \"${PA_WINE_DEST_ABS}/x86_64-windows/pipeasio.dll\"
+-                 \"${PA_WINE_DEST_ABS}/x86_64-unix/pipeasio.dll.so\")")
++                \"${PA_WINE_DEST_ABS}/${WINE_WIN_ARCH}/pipeasio.dll\"
++                \"${PA_WINE_DEST_ABS}/${WINE_UNIX_ARCH}/pipeasio.dll.so\")")
+     endif()
+ endfunction()
+-- 
+2.55.0
+

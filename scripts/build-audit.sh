@@ -405,6 +405,7 @@ pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotpl
 # winealsa and winmm fingerprints above verify that implementation.
 PIPEASIO_MARKER_TODO='
 0012
+0013
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
 # Wine loads the unix half under the spec-file name pipeasio.dll.so, so the
