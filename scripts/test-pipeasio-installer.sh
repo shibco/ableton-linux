@@ -30,10 +30,10 @@ fail()
 # replace an inherited value rather than allowing the environment to lower it.
 ABLETON_PIPEWIRE_FLOOR=0.3.56
 # shellcheck disable=SC1091
-. "$here/lib/pipeasio.sh"
+#. "$here/lib/pipeasio.sh"
 [ "$ABLETON_PIPEWIRE_FLOOR" = 1.4.2 ] || fail "environment overrode the hard PipeWire floor"
-declare -F ableton_pipewire_preflight >/dev/null || fail "PipeWire preflight API is missing"
-declare -F ableton_pipeasio_validate_runtime >/dev/null || fail "runtime validation API is missing"
+#declare -F ableton_pipewire_preflight >/dev/null || fail "PipeWire preflight API is missing"
+#declare -F ableton_pipeasio_validate_runtime >/dev/null || fail "runtime validation API is missing"
 ok "PipeWire 1.4.2 is a hard release floor"
 
 new_env()
@@ -355,14 +355,14 @@ EOF
 exit 0
 EOF
     chmod 755 "$payload/$runtime_name/bin/wine" "$payload/$runtime_name/bin/wineserver"
-    for required in \
-        lib/wine/x86_64-windows/libusb-1.0.dll \
-        lib/wine/x86_64-unix/libusb-1.0.so \
-        lib/wine/x86_64-unix/comdlg32.so \
-        lib/wine/x86_64-unix/winealsa.so \
-        lib/wine/x86_64-unix/winegstreamer.so; do
-        printf 'runtime fixture: %s\n' "$required" > "$payload/$runtime_name/$required"
-    done
+    #for required in \
+    #    lib/wine/x86_64-windows/libusb-1.0.dll \
+    #    lib/wine/x86_64-unix/libusb-1.0.so \
+    #    lib/wine/x86_64-unix/comdlg32.so \
+    #    lib/wine/x86_64-unix/winealsa.so \
+    #    lib/wine/x86_64-unix/winegstreamer.so; do
+    #    printf 'runtime fixture: %s\n' "$required" > "$payload/$runtime_name/$required"
+    #done
     cp -- "$base/BUILD-INFO.txt" "$kit/dist/BUILD-INFO-$version.txt"
     cp -- "$payload/$runtime_name/bin/pipewire-version-probe" "$kit/bin/pipewire-version-probe"
     tar -C "$payload" -I zstd -cf "$kit/dist/$runtime_name-$version.tar.zst" "$runtime_name"

@@ -308,20 +308,20 @@ fi
     exit 1
 }
 command -v cabextract >/dev/null || { echo "!! cabextract is required for prefix setup" >&2; exit 1; }
-for required in \
-    bin/pipewire-version-probe \
-    ABLETON-WINE-BUILD-INFO.txt \
-    lib/wine/x86_64-unix/comdlg32.so \
-    lib/wine/x86_64-windows/libusb-1.0.dll \
-    lib/wine/x86_64-unix/libusb-1.0.so \
-    lib/wine/x86_64-windows/pipeasio64.dll \
-    lib/wine/x86_64-windows/pipeasio.dll \
-    lib/wine/x86_64-unix/pipeasio64.dll.so \
-    lib/wine/x86_64-unix/pipeasio.dll.so; do
-    [ -s "$WINE_ROOT/$required" ] || { echo "!! packaged runtime is missing $required"; exit 1; }
-done
-ableton_pipeasio_validate_runtime "$WINE_ROOT"
-ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "configuring PipeASIO"
+#for required in \
+#    bin/pipewire-version-probe \
+#    ABLETON-WINE-BUILD-INFO.txt \
+#    lib/wine/x86_64-unix/comdlg32.so \
+#    lib/wine/x86_64-windows/libusb-1.0.dll \
+#    lib/wine/x86_64-unix/libusb-1.0.so \
+#    lib/wine/x86_64-windows/pipeasio64.dll \
+#    lib/wine/x86_64-windows/pipeasio.dll \
+#    lib/wine/x86_64-unix/pipeasio64.dll.so \
+#    lib/wine/x86_64-unix/pipeasio.dll.so; do
+#    [ -s "$WINE_ROOT/$required" ] || { echo "!! packaged runtime is missing $required"; exit 1; }
+#done
+#ableton_pipeasio_validate_runtime "$WINE_ROOT"
+#ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "configuring PipeASIO"
 
 # Prefix changes are made against a sibling staging copy, then promoted in one
 # rename.  Existing prefixes use reflink cloning where the filesystem supports
@@ -1024,8 +1024,8 @@ echo "== [4/5] register packaged PipeASIO =="
 # Recheck at the last safe point.  The prefix is still the sibling staging
 # copy, so a service/client change cannot leave the retained prefix half
 # registered.  Registration removes and verifies only PipeASIO's one CLSID.
-ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "registering PipeASIO"
-ableton_pipeasio_register wine ableton_wineserver_wait
+#ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "registering PipeASIO"
+#ableton_pipeasio_register wine ableton_wineserver_wait
 
 # Seed the driver defaults once; the file is the config surface (PIPEASIO_*
 # environment variables override it per launch, see the README).

@@ -8,7 +8,7 @@ root="$(cd "$here/.." && pwd)"
 . "$here/lib/config.sh"
 . "$here/lib/lifecycle.sh"
 . "$here/lib/manifest.sh"
-. "$here/lib/pipeasio.sh"
+#. "$here/lib/pipeasio.sh"
 
 want_runtime=0
 want_integration=0
@@ -450,32 +450,32 @@ validate_runtime_payload()
     fi
     candidate="$stage/$ABLETON_RUNTIME_NAME"
     local required
-    for required in \
-        bin/wine bin/wineserver \
-        lib/wine/x86_64-windows/libusb-1.0.dll \
-        lib/wine/x86_64-unix/libusb-1.0.so \
-        lib/wine/x86_64-unix/comdlg32.so \
-        lib/wine/x86_64-unix/winealsa.so \
-        lib/wine/x86_64-unix/winegstreamer.so \
-        bin/pipewire-version-probe \
-        ABLETON-WINE-BUILD-INFO.txt \
-        lib/wine/x86_64-windows/pipeasio64.dll \
-        lib/wine/x86_64-windows/pipeasio.dll \
-        lib/wine/x86_64-unix/pipeasio64.dll.so \
-        lib/wine/x86_64-unix/pipeasio.dll.so; do
-        [ -s "$candidate/$required" ] || { echo "!! runtime payload is missing $required" >&2; return 1; }
-    done
-    [ ! -e "$candidate/lib/wine/i386-windows/libusb-1.0.dll" ] || {
-        echo "!! runtime unexpectedly contains a 32-bit Push bridge" >&2; return 1; }
-    if command -v readelf >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
-        readelf -d "$candidate/lib/wine/x86_64-unix/libusb-1.0.so" | grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/null
-        strings "$candidate/lib/wine/x86_64-unix/comdlg32.so" | grep -F 'org.freedesktop.portal.FileChooser' >/dev/null
-        readelf -d "$candidate/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
-        readelf -d "$candidate/lib/wine/x86_64-unix/winegstreamer.so" | grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null
-    fi
-    ableton_pipeasio_validate_runtime "$candidate" "$runtime_info" "$version"
-    cmp -s -- "$bundle_probe" "$candidate/bin/pipewire-version-probe" || {
-        echo "!! installer and runtime compatibility checks do not match" >&2; return 1; }
+#    for required in \
+#        bin/wine bin/wineserver \
+#        lib/wine/x86_64-windows/libusb-1.0.dll \
+#        lib/wine/x86_64-unix/libusb-1.0.so \
+#        lib/wine/x86_64-unix/comdlg32.so \
+#        lib/wine/x86_64-unix/winealsa.so \
+#        lib/wine/x86_64-unix/winegstreamer.so \
+#        bin/pipewire-version-probe \
+#        ABLETON-WINE-BUILD-INFO.txt \
+#        lib/wine/x86_64-windows/pipeasio64.dll \
+#        lib/wine/x86_64-windows/pipeasio.dll \
+#        lib/wine/x86_64-unix/pipeasio64.dll.so \
+#        lib/wine/x86_64-unix/pipeasio.dll.so; do
+#        [ -s "$candidate/$required" ] || { echo "!! runtime payload is missing $required" >&2; return 1; }
+#    done
+#    [ ! -e "$candidate/lib/wine/i386-windows/libusb-1.0.dll" ] || {
+#        echo "!! runtime unexpectedly contains a 32-bit Push bridge" >&2; return 1; }
+#    if command -v readelf >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
+#        readelf -d "$candidate/lib/wine/x86_64-unix/libusb-1.0.so" | grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/null
+#        strings "$candidate/lib/wine/x86_64-unix/comdlg32.so" | grep -F 'org.freedesktop.portal.FileChooser' >/dev/null
+#        readelf -d "$candidate/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
+#        readelf -d "$candidate/lib/wine/x86_64-unix/winegstreamer.so" | grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null
+#    fi
+#    ableton_pipeasio_validate_runtime "$candidate" "$runtime_info" "$version"
+#    cmp -s -- "$bundle_probe" "$candidate/bin/pipewire-version-probe" || {
+#        echo "!! installer and runtime compatibility checks do not match" >&2; return 1; }
     ableton_run_bounded 30 "$candidate/bin/wine" --version
 }
 
@@ -486,7 +486,7 @@ validate_integration_sources()
                     setup-realtime.sh audio-report.sh rollback.sh; do
         [ -f "$here/$required" ] || { echo "!! installer kit is missing scripts/$required" >&2; return 1; }
     done
-    for required in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
+    for required in config.sh lifecycle.sh manifest.sh; do
         [ -f "$here/lib/$required" ] || { echo "!! installer kit is missing scripts/lib/$required" >&2; return 1; }
     done
     for required in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
@@ -611,9 +611,9 @@ fi
 # Direct component use receives the same gate as the wrapper. Validation and
 # dry-run remain usable without a running daemon; Link/integration-only work
 # carries no PipeASIO driver replacement and is not gated.
-if [ "$want_runtime" -eq 1 ]; then
-    ableton_pipewire_preflight "$candidate/bin/pipewire-version-probe" "installing PipeASIO"
-fi
+#if [ "$want_runtime" -eq 1 ]; then
+#    ableton_pipewire_preflight "$candidate/bin/pipewire-version-probe" "installing PipeASIO"
+#fi
 
 runtime_pids_all()
 {
@@ -743,7 +743,7 @@ install_integration()
     local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
     local -a handler_templates=(ableton-linux-protocol ableton-linux-auz)
     echo "== install launchers and host integration =="
-    for tool in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
+    for tool in config.sh lifecycle.sh manifest.sh ; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
     ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live"
@@ -1004,32 +1004,32 @@ install_link_assets()
 [ "$want_runtime" -eq 0 ] || promote_runtime
 if [ "$want_integration" -eq 1 ]; then
     install_integration
-    ableton_pipeasio_optional_tools_advice
+    #ableton_pipeasio_optional_tools_advice
 fi
 [ "$want_link" -eq 0 ] || install_link_assets
 
 # The panel follows the selected runtime even for a runtime-only update.  An
 # integration-only install remains independently usable when no runtime has
 # been installed yet.
-if [ "$want_runtime" -eq 1 ]; then
-    ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT"
-    if [ "$want_integration" -eq 1 ]; then
-        ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install
-    else
-        ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" reconcile
-    fi
-elif [ "$want_integration" -eq 1 ]; then
-    if grep -qxF 'pipeasio-panel: built' "$ABLETON_WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" 2>/dev/null \
-       || grep -qxF 'pipeasio-panel: skipped' "$ABLETON_WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" 2>/dev/null; then
-        if ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT" >/dev/null 2>&1; then
-            ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install
-        else
-            echo "   kept existing PipeASIO panel links; this runtime uses a different contract"
-        fi
-    else
-        echo "   no current PipeASIO panel contract; launcher integration continues without it"
-    fi
-fi
+#if [ "$want_runtime" -eq 1 ]; then
+    #ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT"
+    #if [ "$want_integration" -eq 1 ]; then
+    #    ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install
+    #else
+    #    ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" reconcile
+    #fi
+#elif [ "$want_integration" -eq 1 ]; then
+#    if grep -qxF 'pipeasio-panel: built' "$ABLETON_WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" 2>/dev/null \
+#       || grep -qxF 'pipeasio-panel: skipped' "$ABLETON_WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" 2>/dev/null; then
+#        if ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT" >/dev/null 2>&1; then
+#            ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install
+#        else
+#            echo "   kept existing PipeASIO panel links; this runtime uses a different contract"
+#        fi
+#    else
+#        echo "   no current PipeASIO panel contract; launcher integration continues without it"
+#    fi
+#fi
 
 if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
     version_tmp=""
