@@ -180,7 +180,15 @@ ableton_pipeasio_validate_runtime()
     fi
     dist_version="$(ableton_pipeasio_build_info_value "$info" dist-version)" || {
         echo "!! runtime has no unique distribution version" >&2; return 1; }
-    [[ "$dist_version" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] || {
+    # "nix" is the Nix package's distribution identity: the store hash, not a
+    # release date, identifies that build, and setup-prefix.sh validates the
+    # runtime it was started from. Accepted only for a runtime that is actually
+    # in the store, so a tarball runtime cannot use the name to skip the version
+    # check. Where a caller names the version it expects - install.sh matching a
+    # runtime against its payload - the comparison below rejects "nix" anyway,
+    # it equalling no release version.
+    [[ "$dist_version" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] \
+        || { [ "$dist_version" = nix ] && [ "${runtime#/nix/store/}" != "$runtime" ]; } || {
         echo "!! runtime has an invalid distribution version" >&2; return 1; }
     if [ -n "$expected_version" ] && [ "$dist_version" != "$expected_version" ]; then
         echo "!! runtime build information belongs to version $dist_version, not $expected_version" >&2

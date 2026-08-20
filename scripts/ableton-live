@@ -389,29 +389,80 @@ fi
 # mandatory: nothing under Wine can sandbox the renderer. User-supplied flags come first.
 export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:+$WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS }--use-gl=angle --use-angle=swiftshader --disable-gpu-compositing --disable-gpu-rasterization --disable-direct-composition --disable-features=ForceSWDCompWhenDCompFallbackRequired --edge-webview-foreground-boost-opt-out --no-sandbox"
 
+# The runtime link: any path this launcher writes into user configuration has to
+# be stable and user-owned, never $WINE_ROOT itself, which on a Nix install is a
+# store path that a garbage collection can delete and that every upgrade
+# renames. Resolved (and on Nix registered as a GC root) on every launch, so an
+# upgrade re-points it without the user re-running a setup step. Only the Nix
+# package ships the library, so on a .run install it is absent, the value stays
+# empty, and the repair below copies the staged entry verbatim as it always
+# has.
+RUNTIME_LINK=""
+runtime_lib="$WINE_ROOT/share/ableton-wine/scripts/runtime-link.sh"
+if [ -r "$runtime_lib" ]; then
+    . "$runtime_lib"
+    RUNTIME_LINK="$(ableton_runtime_link "$WINE_ROOT")" || RUNTIME_LINK=""
+fi
+
 # Reinstate the project-owned authorisation handlers and pin their defaults on
 # every launch.  The reverse-DNS desktop IDs cannot collide with Wine's global
 # wine-protocol-*.desktop exports.  install.sh stages authoritative copies so a
 # missing or changed entry can be repaired before the next browser round trip.
 repair_handler_entries() {
     local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    local staged id type current i repaired=0
+    local staged id type current want tmp rewrite i repaired=0
     local -a ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
     local -a types=(x-scheme-handler/ableton application/x-wine-extension-auz)
     for id in "${ids[@]}"; do
         staged="$ABLETON_DATA_HOME/$id"
+        # Packaged installs (nix) stage them under the runtime root instead of $HOME.
+        [ -f "$staged" ] || staged="$WINE_ROOT/share/ableton-wine/$id"
         if [ ! -f "$staged" ]; then
             echo "ableton-live: cannot repair $id: staged handler is missing at $staged" >&2
             continue
         fi
-        if ! cmp -s -- "$staged" "$apps/$id"; then
-            echo "ableton-live: reinstating project handler $id" >&2
-            if ! mkdir -p -- "$apps" || ! cp -- "$staged" "$apps/$id"; then
-                echo "ableton-live: failed to install $apps/$id" >&2
-                continue
-            fi
-            repaired=1
+        # An entry that is a symlink into the store is owned by nix or
+        # home-manager: it is read-only, rewriting it fails, and the declaration
+        # that produced it would put it back anyway. Repairing it every launch
+        # would only print two failures each time.
+        case "$(readlink -- "$apps/$id" 2>/dev/null)" in
+            /nix/store/*) continue ;;
+        esac
+        # A packaged install's staged copy names the runtime root, which on Nix
+        # is a store path; record the stable link instead, so neither an upgrade
+        # nor a garbage collection can strand the entry. A tarball entry routes
+        # through $ABLETON_BIN_HOME and contains no runtime root at all, so
+        # there is nothing to rewrite and the file is copied verbatim, as
+        # before - which keeps it byte-identical to the digest install.sh
+        # recorded for it.
+        want="$(cat -- "$staged")"
+        rewrite=0
+        if [ -n "$RUNTIME_LINK" ] && [ "${want#*"$WINE_ROOT"/}" != "$want" ]; then
+            want="${want//"$WINE_ROOT"\//$RUNTIME_LINK/}"
+            rewrite=1
         fi
+        if [ "$rewrite" -eq 1 ]; then
+            [ "$want" = "$(cat -- "$apps/$id" 2>/dev/null)" ] && continue
+        else
+            cmp -s -- "$staged" "$apps/$id" && continue
+        fi
+        echo "ableton-live: reinstating project handler $id" >&2
+        tmp="$apps/.$id.$$"
+        if ! mkdir -p -- "$apps"; then
+            echo "ableton-live: failed to install $apps/$id" >&2
+            continue
+        fi
+        if [ "$rewrite" -eq 1 ]; then
+            printf '%s\n' "$want" > "$tmp" || tmp=""
+        else
+            cp -- "$staged" "$tmp" || tmp=""
+        fi
+        if [ -z "$tmp" ] || ! mv -f -- "$tmp" "$apps/$id"; then
+            [ -z "$tmp" ] || rm -f -- "$tmp"
+            echo "ableton-live: failed to install $apps/$id" >&2
+            continue
+        fi
+        repaired=1
     done
     if [ "$repaired" -eq 1 ]; then
         if command -v update-desktop-database >/dev/null 2>&1; then
@@ -543,6 +594,8 @@ if ! ableton_live_running; then
     dpi_mode="${ABLETON_DPI_MODE:-auto}"
     dpi_family=""; dpi_scale=""
     dpi_lib="$ABLETON_DATA_HOME/detect-scale.sh"
+    # Packaged installs (nix) ship the libs under the runtime root instead of $HOME.
+    [ -r "$dpi_lib" ] || dpi_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-scale.sh"
     [ -r "$dpi_lib" ] && . "$dpi_lib"
     if ! declare -F ableton_dpi_block_values >/dev/null 2>&1; then
         # no (or an older) detect-scale.sh: the two legacy blocks still resolve inline
@@ -775,6 +828,7 @@ theme_watch_prefs_cfg() {
 }
 theme_watch_loop() {
     local apply="$ABLETON_DATA_HOME/setsyscolors.exe"
+    [ -f "$apply" ] || apply="$WINE_ROOT/share/ableton-wine/scripts/setsyscolors.exe"
     local lock="$WINEPREFIX/.ableton-theme-watch.lock" cfg last="" cur bar_bg bar_fg
     local applied=""    # last color set actually broadcast; skip re-firing when unchanged
     local major have_inotify=0 f
@@ -1088,6 +1142,7 @@ if ! ableton_live_running; then
     # Sourced outside the auto branch: the topbar color detection below wants the lib
     # even when ABLETON_THEME_MODE pins the scheme.
     theme_lib="$ABLETON_DATA_HOME/detect-theme.sh"
+    [ -r "$theme_lib" ] || theme_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-theme.sh"
     [ -r "$theme_lib" ] && . "$theme_lib"
     theme_mode="${ABLETON_THEME_MODE:-auto}"
     if [ "$theme_mode" = auto ]; then
@@ -1171,7 +1226,7 @@ fi
 require_live() {
     [ -n "$EXE" ] && return 0
     echo "ableton-live: no Ableton Live installation found in $WINEPREFIX" >&2
-    echo "ableton-live: run the ableton-wine-setup .run with the install command and your Ableton download next to it, or install Live manually: see the README" >&2
+    echo "ableton-live: run the ableton-wine-setup .run with the install command and your Ableton download next to it - on a packaged install, put the zip in ~/Proprietary and rerun setup-prefix with ABLETON_LIVE_AUTOINSTALL=1 - or install Live manually: see the README" >&2
     exit 1
 }
 
@@ -1214,6 +1269,8 @@ fi
 # always-on anchor). Daemon mode logs under XDG_STATE_HOME/ableton-wine/logs/.
 # ABLETON_LINKD overrides the binary path.
 linkctl="$ABLETON_DATA_HOME/ableton-linkctl"
+# Packaged installs (nix) stage it under the runtime root instead of $HOME.
+[ -x "$linkctl" ] || linkctl="$WINE_ROOT/share/ableton-wine/scripts/ableton-linkctl"
 if [ "$ABLETON_LINK_MODE" != off ] && [ -x "$linkctl" ]; then
     "$linkctl" start || echo "ableton-live: configured Link anchor failed to start" >&2
 fi
@@ -1233,6 +1290,7 @@ fi
 # resize-deaf) and exits on its own after Live is gone. No-op when the helper
 # is not installed.
 learnheal="$ABLETON_DATA_HOME/learnheal.exe"
+[ -f "$learnheal" ] || learnheal="$WINE_ROOT/share/ableton-wine/learnheal.exe"
 if [ -n "$EXE" ] && [ -f "$learnheal" ]; then
     ( exec 9>&-; ableton_run_bounded 90 env WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wine" "$learnheal" ) </dev/null >/dev/null 2>&1 &
     disown
