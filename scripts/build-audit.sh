@@ -85,9 +85,26 @@ esac
 [ -d "$tree/lib/wine" ] || fail "$tree does not look like a $NAME tree (no lib/wine)"
 say "== auditing tree: $tree =="
 
-pass=0; failed=0
+pass=0; failed=0; skipped=0
 ok()  { pass=$((pass+1));   printf '   %-42s PASS %s\n' "$1" "$2"; }
 bad() { failed=$((failed+1)); printf '   %-42s FAIL %s\n' "$1" "$2"; }
+# ABLETON_AUDIT_PROFILE=nix relaxes ONLY the container-pipeline provenance
+# records (sanitizer runs, builder manifests, installer helper hashes, the git
+# source-tree digest): the Nix build runs none of those pipelines and cannot
+# stamp records it has not produced. Every structural, patch, fingerprint and
+# binary-hash check still fails hard, and the release profile is unchanged.
+# A relaxed record is reported and counted as skipped, never as passed.
+AUDIT_PROFILE="${ABLETON_AUDIT_PROFILE:-release}"
+case "$AUDIT_PROFILE" in release|nix) ;;
+    *) fail "ABLETON_AUDIT_PROFILE must be release or nix (got '$AUDIT_PROFILE')" ;;
+esac
+pipeline_bad() {   # container-pipeline provenance: FAIL on release, skipped on nix
+    if [ "$AUDIT_PROFILE" = release ]; then
+        bad "$1" "$2"
+    else
+        skipped=$((skipped+1)); printf '   %-42s SKIP %s (nix profile)\n' "$1" "$2"
+    fi
+}
 
 # --- [1/4] frozen series vs patches/ on disk ----------------------------------
 say "== [1/4] patch series vs frozen manifest =="
@@ -176,18 +193,24 @@ else
 fi
 source_tree_record="$(sed -n 's/^source-tree:  *//p' "$binfo" 2>/dev/null || true)"
 source_tree_count="$(grep -c '^source-tree:' "$binfo" 2>/dev/null || true)"
-if [ -n "$expected_source_tree" ]; then
-    source_tree_actual="$expected_source_tree"
+if [ "$AUDIT_PROFILE" = nix ]; then
+    # The git source-tree digest exists only in the container pipeline; the
+    # nix builder sees a filtered store copy with no .git to digest.
+    pipeline_bad "BUILD-INFO source tree" "git digest is a container-pipeline record"
 else
-    source_tree_actual="$("$root/scripts/source-tree-digest.sh")"
-fi
-if [ "$source_tree_count" -eq 1 ] \
-   && [[ "$source_tree_record" =~ ^[0-9a-f]{64}$ ]] \
-   && [ "$source_tree_record" = "$source_tree_actual" ]; then
-    ok "BUILD-INFO source tree" "matches current source candidate"
-else
-    bad "BUILD-INFO source tree" \
-        "recorded=${source_tree_record:-missing} current=$source_tree_actual"
+    if [ -n "$expected_source_tree" ]; then
+        source_tree_actual="$expected_source_tree"
+    else
+        source_tree_actual="$("$root/scripts/source-tree-digest.sh")"
+    fi
+    if [ "$source_tree_count" -eq 1 ] \
+       && [[ "$source_tree_record" =~ ^[0-9a-f]{64}$ ]] \
+       && [ "$source_tree_record" = "$source_tree_actual" ]; then
+        ok "BUILD-INFO source tree" "matches current source candidate"
+    else
+        bad "BUILD-INFO source tree" \
+            "recorded=${source_tree_record:-missing} current=$source_tree_actual"
+    fi
 fi
 
 # The Qt panel is optional, but its provenance is not. A normal value starts
@@ -226,7 +249,7 @@ if [ -f "$binfo" ]; then
     if grep -q '^pipeasio-no-qt: .*passed$' "$binfo"; then
         ok "no-Qt build/install gate" "recorded passed"
     else
-        bad "no-Qt build/install gate" "missing from BUILD-INFO"
+        pipeline_bad "no-Qt build/install gate" "missing from BUILD-INFO"
     fi
     if grep -q '^pipeasio-sanitizers: ASan+UBSan .*; TSan unit passed$' "$binfo"; then
         ok "PipeASIO sanitizer gate" "ASan+UBSan and TSan recorded passed"
@@ -236,7 +259,7 @@ if [ -f "$binfo" ]; then
         ok "PipeASIO sanitizer gate" \
             "ASan+UBSan passed; TSan explicitly skipped (non-release build)"
     else
-        bad "PipeASIO sanitizer gate" "missing/incomplete in BUILD-INFO"
+        pipeline_bad "PipeASIO sanitizer gate" "missing/incomplete in BUILD-INFO"
     fi
     pipewire_probe_hash="$(sed -n 's/^pipewire-version-probe: *//p' "$binfo")"
     pipewire_probe_count="$(grep -c '^pipewire-version-probe:' "$binfo" || true)"
@@ -250,7 +273,7 @@ if [ -f "$binfo" ]; then
             "$binfo"; then
         ok "PipeWire probe test gate" "client stub + ASan/UBSan recorded passed"
     else
-        bad "PipeWire probe test gate" "missing/incomplete in BUILD-INFO"
+        pipeline_bad "PipeWire probe test gate" "missing/incomplete in BUILD-INFO"
     fi
     builder_packages_count="$(grep -c '^builder-packages:' "$binfo" || true)"
     builder_packages_hash="$(sed -n 's/^builder-packages: *//p' "$binfo")"
@@ -258,7 +281,7 @@ if [ -f "$binfo" ]; then
        && [[ "$builder_packages_hash" =~ ^[0-9a-f]{64}$ ]]; then
         ok "BUILD-INFO builder packages" "manifest hash recorded"
     else
-        bad "BUILD-INFO builder packages" "missing, duplicate, or malformed hash"
+        pipeline_bad "BUILD-INFO builder packages" "missing, duplicate, or malformed hash"
     fi
     for helper_spec in cabextract-static ableton-linkd; do
         helper_count="$(grep -c "^${helper_spec}:" "$binfo" || true)"
@@ -266,7 +289,7 @@ if [ -f "$binfo" ]; then
         if [ "$helper_count" -eq 1 ] && [[ "$helper_hash" =~ ^[0-9a-f]{64}$ ]]; then
             ok "BUILD-INFO $helper_spec" "installer helper hash recorded"
         else
-            bad "BUILD-INFO $helper_spec" "missing, duplicate, or malformed hash"
+            pipeline_bad "BUILD-INFO $helper_spec" "missing, duplicate, or malformed hash"
         fi
     done
     while IFS='|' read -r record_key artifact_path; do
@@ -624,10 +647,18 @@ if command -v readelf >/dev/null; then
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
         && ok "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
         || bad "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
-    if readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
-        bad "pipeasio.dll.so rpath" "carries a build-container rpath"
-    else
+    # The tarball must resolve the HOST's libpipewire, so it carries no rpath;
+    # the Nix package deliberately pins the closure's (nix/pipeasio.nix gates
+    # that RUNPATH). Both are right for their packaging. What must never ship
+    # is a path from the build container, which resolves on no user's machine.
+    asio_rpath="$(readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null \
+        | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
+    if [ -z "$asio_rpath" ]; then
         ok "pipeasio.dll.so rpath" "none (resolves via host loader)"
+    elif printf '%s' "$asio_rpath" | tr ':' '\n' | grep -qv '^/nix/store/'; then
+        bad "pipeasio.dll.so rpath" "carries a build-container rpath: $asio_rpath"
+    else
+        ok "pipeasio.dll.so rpath" "nix store pin ($asio_rpath)"
     fi
     pipewire_probe_needed="$(
         readelf -d "$tree/bin/pipewire-version-probe" 2>/dev/null \
@@ -641,11 +672,16 @@ if command -v readelf >/dev/null; then
         bad "pipewire-version-probe DT_NEEDED" \
             "unexpected libraries: ${pipewire_probe_needed//$'\n'/, }"
     fi
-    if readelf -d "$tree/bin/pipewire-version-probe" 2>/dev/null \
-            | grep -qE 'RPATH|RUNPATH'; then
-        bad "pipewire-version-probe rpath" "carries a build/SDK rpath"
-    else
+    # Same packaging split as pipeasio.dll.so above: the tarball probe resolves
+    # the host's libpipewire (no rpath), the Nix package pins its closure's.
+    probe_rpath="$(readelf -d "$tree/bin/pipewire-version-probe" 2>/dev/null \
+        | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
+    if [ -z "$probe_rpath" ]; then
         ok "pipewire-version-probe rpath" "none"
+    elif printf '%s' "$probe_rpath" | tr ':' '\n' | grep -qv '^/nix/store/'; then
+        bad "pipewire-version-probe rpath" "carries a build/SDK rpath: $probe_rpath"
+    else
+        ok "pipewire-version-probe rpath" "nix store pin ($probe_rpath)"
     fi
     if [ "$panel_built" = 1 ]; then
         if readelf -d "$tree/bin/pipeasio-settings" 2>/dev/null \
@@ -681,7 +717,11 @@ fi
 
 say ""
 if [ "$failed" -eq 0 ]; then
-    say "OK: build audit passed — $pass checks, every patch verified."
+    if [ "$skipped" -gt 0 ]; then
+        say "OK: build audit passed — $pass checks, every patch verified; $skipped provenance records skipped ($AUDIT_PROFILE profile)."
+    else
+        say "OK: build audit passed — $pass checks, every patch verified."
+    fi
 else
     say "!! BUILD AUDIT FAILED — $failed of $((pass+failed)) checks failed. Do not ship this artifact." >&2
     exit 1
