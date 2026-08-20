@@ -729,6 +729,7 @@ cp "$here/lib/config.sh" "$base/data/ableton-wine/lib/config.sh"
 cp "$here/lib/lifecycle.sh" "$base/data/ableton-wine/lib/lifecycle.sh"
 cp "$here/lib/manifest.sh" "$base/data/ableton-wine/lib/manifest.sh"
 cp "$here/lib/pipeasio.sh" "$base/data/ableton-wine/lib/pipeasio.sh"
+cp "$here/lib/live-components.sh" "$base/data/ableton-wine/lib/live-components.sh"
 cp "$here/ableton-linkctl" "$base/data/ableton-wine/ableton-linkctl"
 cp "$here/setup-link.sh" "$base/data/ableton-wine/setup-link.sh"
 cp /bin/sleep "$base/data/ableton-wine/ableton-linkd"
@@ -762,7 +763,8 @@ exit 0
 EOF
 chmod +x "$base/fakebin/systemctl"
 for owned in "$base/data/ableton-wine/lib/config.sh" "$base/data/ableton-wine/lib/lifecycle.sh" \
-    "$base/data/ableton-wine/lib/manifest.sh" "$base/data/ableton-wine/lib/pipeasio.sh" \
+    "$base/data/ableton-wine/lib/live-components.sh" "$base/data/ableton-wine/lib/manifest.sh" \
+    "$base/data/ableton-wine/lib/pipeasio.sh" \
     "$base/data/ableton-wine/ableton-linkctl" "$base/data/ableton-wine/setup-link.sh" \
     "$base/data/ableton-wine/ableton-linkd"; do
     printf 'file\t%s\t%s\n' "$owned" "$(sha256sum "$owned" | awk '{print $1}')" \

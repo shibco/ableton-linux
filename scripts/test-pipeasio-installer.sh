@@ -340,7 +340,8 @@ make_runtime_only_kit()
     cp -- "$here/install.sh" "$here/installer.sh" "$here/setup-prefix.sh" \
         "$kit/scripts/"
     cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
-        "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
+        "$here/lib/live-components.sh" "$here/lib/manifest.sh" \
+        "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
     printf '%s\n' "$version" > "$kit/VERSION"
     make_runtime "$payload/$runtime_name" "$base/BUILD-INFO.txt" built
     cat > "$payload/$runtime_name/bin/wine" <<'EOF'
@@ -3022,8 +3023,8 @@ make_commit_preflight_kit()
     local base="$1" kit="$1/commit-kit"
     mkdir -p -- "$kit/scripts/lib"
     cp -- "$here/installer.sh" "$kit/scripts/"
-    cp -- "$here/lib/config.sh" "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" \
-        "$kit/scripts/lib/"
+    cp -- "$here/lib/config.sh" "$here/lib/live-components.sh" \
+        "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
     cat > "$kit/scripts/install.sh" <<'EOF'
 #!/bin/sh
 set -eu

@@ -13,6 +13,7 @@ fi
 . "$here/lib/config.sh"
 . "$here/lib/pipeasio.sh"
 . "$here/lib/manifest.sh"
+. "$here/lib/live-components.sh"
 
 usage()
 {
@@ -20,11 +21,13 @@ usage()
 Usage:
   installer install [--live-installer FILE] [--prefix PATH] [--runtime-root PATH]
                     [--live-major 11|12] [--link=off|session|always]
-                    [--skip-live-install] [--yes] [--dry-run]
+                    [--skip-live-install] [--low-fi-ableton] [--yes] [--dry-run]
   installer update [--prefix PATH] [--runtime-root PATH]
-                   [--link=keep|off|session|always] [--yes] [--dry-run]
+                   [--link=keep|off|session|always] [--low-fi-ableton]
+                   [--yes] [--dry-run]
   installer runtime install [--runtime-root PATH] [--yes] [--dry-run]
-  installer prefix create|update [--prefix PATH] [--live-major 11|12] [--dry-run]
+  installer prefix create|update [--prefix PATH] [--live-major 11|12]
+                                  [--low-fi-ableton] [--dry-run]
   installer prefix repair-live11 [--prefix PATH] [--dry-run]
   installer link enable [--mode=session|always] | disable | status
   installer uninstall [--keep-prefix|--delete-prefix] [--yes] [--dry-run]
@@ -37,6 +40,7 @@ Compatibility aliases (deprecated, conflicts are errors):
 Precedence: command-line paths and values override ABLETON_* environment
 variables, which override the persistent XDG config and compatibility defaults.
 Noninteractive installs require --live-installer or --skip-live-install.
+--low-fi-ableton persistently removes and blocks Max for Live and WebView2.
 EOF
 }
 
@@ -69,6 +73,7 @@ runtime_seen=0
 major_seen=0
 mode_seen=0
 link_seen=0
+low_fi_seen=0
 
 if [ "${1:-}" = plan ]; then
     dry_run=1
@@ -130,6 +135,9 @@ while [ $# -gt 0 ]; do
             [ "$mode_seen" -eq 0 ] || { echo "!! --mode was specified more than once" >&2; exit 2; }
             mode_seen=1; link_mode_option="${1#*=}" ;;
         --skip-live-install) skip_live=1 ;;
+        --low-fi-ableton)
+            [ "$low_fi_seen" -eq 0 ] || { echo "!! --low-fi-ableton was specified more than once" >&2; exit 2; }
+            low_fi_seen=1 ;;
         --yes|-y) assume_yes=1 ;;
         --dry-run) dry_run=1 ;;
         --keep-prefix) keep_prefix=1 ;;
@@ -239,32 +247,34 @@ case "$command_name:$subcommand" in
         [ -z "$link_mode_option" ] || invalid_option --mode ;;
     runtime:install)
         [ -z "$live_payload$cli_prefix$cli_major$cli_link$link_mode_option" ] || invalid_option "non-runtime options"
-        [ "$skip_live$delete_prefix$keep_prefix" = 000 ] || invalid_option "non-runtime options" ;;
+        [ "$skip_live$delete_prefix$keep_prefix$low_fi_seen" = 0000 ] || invalid_option "non-runtime options" ;;
     prefix:create|prefix:update)
         [ -z "$live_payload$cli_link$link_mode_option" ] || invalid_option "non-prefix options"
         [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] || invalid_option "non-prefix options" ;;
     prefix:repair-live11)
         [ -z "$live_payload$cli_runtime$cli_major$cli_link$link_mode_option" ] \
             || invalid_option "non-repair options"
-        [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] \
+        [ "$skip_live$delete_prefix$keep_prefix$assume_yes$low_fi_seen" = 00000 ] \
             || invalid_option "non-repair options" ;;
     link:enable)
         if [ -n "$cli_link" ] && { [ "$explicit_command" -eq 1 ] || [ "$compat_link" != session ]; }; then
             invalid_option --link
         fi
         [ -z "$live_payload$cli_prefix$cli_runtime$cli_major" ] || invalid_option "non-Link options"
-        [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] || invalid_option "non-Link options" ;;
+        [ "$skip_live$delete_prefix$keep_prefix$assume_yes$low_fi_seen" = 00000 ] || invalid_option "non-Link options" ;;
     link:disable|link:status)
         [ -z "$live_payload$cli_prefix$cli_runtime$cli_major$cli_link$link_mode_option" ] || invalid_option options
-        [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] || invalid_option options ;;
+        [ "$skip_live$delete_prefix$keep_prefix$assume_yes$low_fi_seen" = 00000 ] || invalid_option options ;;
     uninstall:)
         [ -z "$live_payload$cli_major$cli_link$link_mode_option" ] || invalid_option "non-uninstall options"
-        [ "$skip_live" -eq 0 ] || invalid_option --skip-live-install ;;
+        [ "$skip_live" -eq 0 ] || invalid_option --skip-live-install
+        [ "$low_fi_seen" -eq 0 ] || invalid_option --low-fi-ableton ;;
 esac
 
 if [ -n "$cli_prefix" ]; then ABLETON_WINEPREFIX="$cli_prefix"; export ABLETON_WINEPREFIX; fi
 if [ -n "$cli_runtime" ]; then ABLETON_WINE_ROOT="$cli_runtime"; export ABLETON_WINE_ROOT; fi
 if [ -n "$cli_major" ]; then ABLETON_LIVE_VERSION="$cli_major"; export ABLETON_LIVE_VERSION; fi
+[ "$low_fi_seen" -eq 0 ] || { ABLETON_LOW_FI_ABLETON=1; export ABLETON_LOW_FI_ABLETON; }
 ableton_config_init
 
 # PR #182 briefly owned a configured custom Link binary.  Only a narrowly
@@ -497,6 +507,9 @@ case "$command_name:$subcommand" in
         if [ "$dry_run" -eq 1 ]; then
             "$here/install.sh" "${components[@]}" --dry-run
             printf '  transactionally %s prefix: %s\n' "$([ "$command_name" = update ] && echo update || echo create)" "$ABLETON_WINEPREFIX"
+            if [ "$ABLETON_LOW_FI_ABLETON" = 1 ]; then
+                printf '  enforce --low-fi-ableton: remove Max for Live and WebView2 before first launch\n'
+            fi
             printf '  stage prefix as a sibling, promote only after all checks, then write: %s/pipeasio/config.ini\n' \
                 "${XDG_CONFIG_HOME:-$HOME/.config}"
             [ -z "$live_payload" ] || printf '  run bounded Live %s installer: %s\n' "$ABLETON_LIVE_VERSION" "$live_payload"
@@ -823,6 +836,14 @@ EOF
         ableton_run_bounded 15 env WINEPREFIX="$ABLETON_WINEPREFIX" \
             "$ABLETON_WINE_ROOT/bin/wine" taskkill /f /im "$tray" >/dev/null 2>&1 || true
     done
+    if [ "$ABLETON_LOW_FI_ABLETON" = 1 ]; then
+        for web_image in MicrosoftEdgeUpdate.exe msedgewebview2.exe; do
+            ableton_run_bounded 15 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+                "$ABLETON_WINE_ROOT/bin/wine" taskkill /f /im "$web_image" >/dev/null 2>&1 || true
+        done
+        echo "-- low-fi: removing Max for Live and WebView2"
+        ableton_low_fi_remove "$ABLETON_WINEPREFIX"
+    fi
     ableton_run_bounded 60 env WINEPREFIX="$ABLETON_WINEPREFIX" \
         "$ABLETON_WINE_ROOT/bin/wineserver" -w >/dev/null 2>&1 || {
             echo "!! post-installer prefix wait timed out" >&2; return 1; }

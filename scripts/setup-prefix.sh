@@ -18,6 +18,7 @@ declare -F ableton_config_init >/dev/null 2>&1 || { echo "!! setup-prefix: confi
 ableton_config_init
 . "$here/lib/manifest.sh"
 . "$here/lib/pipeasio.sh"
+. "$here/lib/live-components.sh"
 
 # The kit root holds vendor/. Layouts that must work:
 #   <kit>/scripts/setup-prefix.sh        -> vendor at $here/../vendor (repo, extracted .run kit)
@@ -625,7 +626,12 @@ case "$dpi_mode" in
     ;;
 esac
 
-echo "== [1/5] initialise prefix at $WINEPREFIX =="
+if [ "$ABLETON_LOW_FI_ABLETON" = 1 ]; then
+    echo "== [1/5] low-fi: remove Max for Live and WebView2 before prefix boot =="
+    ableton_low_fi_remove "$WINEPREFIX"
+else
+    echo "== [1/5] initialise prefix at $WINEPREFIX =="
+fi
 # While updating the prefix, wineboot offers Wine's Mono and Gecko installers. This runtime
 # vendors neither, so on a machine with no cached package it opens a modal "Wine Mono
 # Installer" prompt; nothing answers it in an unattended run and the wineserver -w below then

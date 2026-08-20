@@ -127,7 +127,7 @@ def expected_from_source(root: Path, info: Path, runtime: Path) -> dict[str, Exp
         add_source(expected, root / "scripts" / name, f"scripts/{name}", 0o755)
     for name in ("ableton-linkd.service",):
         add_source(expected, root / "scripts" / name, f"scripts/{name}", 0o644)
-    for name in ("config.sh", "lifecycle.sh", "manifest.sh", "pipeasio.sh"):
+    for name in ("config.sh", "lifecycle.sh", "live-components.sh", "manifest.sh", "pipeasio.sh"):
         add_source(expected, root / "scripts/lib" / name, f"scripts/lib/{name}", 0o644)
     add_source(expected, root / "tools/setsyscolors.exe", "scripts/setsyscolors.exe", 0o644)
     add_source(expected, root / "tools/learnheal.exe", "scripts/learnheal.exe", 0o644)

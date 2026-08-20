@@ -224,6 +224,7 @@ ableton_config_snapshot_capture()
     ABLETON_CONFIG_SNAPSHOT_TOKEN="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || return 1
     ABLETON_CONFIG_SNAPSHOT_VALUES="$(printf '%s\n' \
         "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINKD" "$ABLETON_LINK_MODE" \
+        "${ABLETON_LOW_FI_ABLETON:-0}" \
         "$ABLETON_DATA_HOME" "$ABLETON_CONFIG_HOME" "$ABLETON_STATE_HOME" \
         "$ABLETON_CACHE_HOME" "$ABLETON_BIN_HOME" | sha256sum | awk '{print $1}')"
     export ABLETON_CONFIG_SNAPSHOT_PATH ABLETON_CONFIG_SNAPSHOT_TOKEN ABLETON_CONFIG_SNAPSHOT_VALUES
@@ -237,6 +238,7 @@ ableton_config_snapshot_verify()
     token="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || return 1
     values="$(printf '%s\n' \
         "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINKD" "$ABLETON_LINK_MODE" \
+        "${ABLETON_LOW_FI_ABLETON:-0}" \
         "$ABLETON_DATA_HOME" "$ABLETON_CONFIG_HOME" "$ABLETON_STATE_HOME" \
         "$ABLETON_CACHE_HOME" "$ABLETON_BIN_HOME" | sha256sum | awk '{print $1}')"
     [ "$token" = "$ABLETON_CONFIG_SNAPSHOT_TOKEN" ] \
@@ -281,11 +283,12 @@ ableton_managed_config_valid()
                 case "$value" in *$'\n'*|*$'\r'*|*$'\t'*) return 1 ;; esac ;;
             live_major) case "$value" in ''|11|12) ;; *) return 1 ;; esac ;;
             link_mode) case "$value" in off|session|always) ;; *) return 1 ;; esac ;;
+            low_fi_ableton) case "$value" in 0|1) ;; *) return 1 ;; esac ;;
             *) return 1 ;;
         esac
     done < "$file"
     [ "$header" -eq 1 ] \
-        && [ "${#seen[@]}" -eq 6 ] \
+        && { [ "${#seen[@]}" -eq 6 ] || [ "${#seen[@]}" -eq 7 ]; } \
         && [ -n "${seen[format]+x}" ] \
         && [ -n "${seen[runtime_root]+x}" ] \
         && [ -n "${seen[prefix]+x}" ] \
@@ -344,12 +347,19 @@ ableton_config_init()
         configured="$(ableton_config_file_value linkd 2>/dev/null || true)"
         ABLETON_LINKD="${configured:-$ABLETON_DATA_HOME/ableton-linkd}"
     fi
+    if [ -z "${ABLETON_LOW_FI_ABLETON+x}" ]; then
+        configured="$(ableton_config_file_value low_fi_ableton 2>/dev/null || true)"
+        ABLETON_LOW_FI_ABLETON="${configured:-0}"
+    fi
 
     case "$ABLETON_LINK_MODE" in off|session|always) ;;
         *) ableton_config_error "link mode must be off, session, or always (got '$ABLETON_LINK_MODE')"; return 1 ;;
     esac
     case "${ABLETON_LIVE_VERSION:-}" in ''|11|12) ;;
         *) ableton_config_error "Live major must be 11 or 12 (got '$ABLETON_LIVE_VERSION')"; return 1 ;;
+    esac
+    case "$ABLETON_LOW_FI_ABLETON" in 0|1) ;;
+        *) ableton_config_error "low-fi Ableton policy must be 0 or 1 (got '$ABLETON_LOW_FI_ABLETON')"; return 1 ;;
     esac
     for configured in "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_DATA_HOME" \
                       "$ABLETON_CONFIG_HOME" "$ABLETON_STATE_HOME" "$ABLETON_CACHE_HOME" \
@@ -401,6 +411,7 @@ ableton_config_init()
     done
 
     export ABLETON_WINE_ROOT ABLETON_WINEPREFIX ABLETON_LINK_MODE ABLETON_LINKD
+    export ABLETON_LOW_FI_ABLETON
     export ABLETON_DATA_HOME ABLETON_CONFIG_HOME ABLETON_STATE_HOME ABLETON_CACHE_HOME
     export ABLETON_BIN_HOME ABLETON_CONFIG_FILE
     export ABLETON_PROTOCOL_DESKTOP_ID ABLETON_AUZ_DESKTOP_ID
@@ -417,6 +428,7 @@ ableton_render_config()
     printf 'live_major=%s\n' "$major"
     printf 'link_mode=%s\n' "$ABLETON_LINK_MODE"
     printf 'linkd=%s\n' "$ABLETON_LINKD"
+    printf 'low_fi_ableton=%s\n' "$ABLETON_LOW_FI_ABLETON"
 }
 
 ableton_expected_config_token()

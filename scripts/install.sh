@@ -486,7 +486,7 @@ validate_integration_sources()
                     setup-realtime.sh audio-report.sh rollback.sh; do
         [ -f "$here/$required" ] || { echo "!! installer kit is missing scripts/$required" >&2; return 1; }
     done
-    for required in config.sh lifecycle.sh manifest.sh; do
+    for required in config.sh lifecycle.sh live-components.sh manifest.sh; do
         [ -f "$here/lib/$required" ] || { echo "!! installer kit is missing scripts/lib/$required" >&2; return 1; }
     done
     for required in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
@@ -743,7 +743,7 @@ install_integration()
     local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
     local -a handler_templates=(ableton-linux-protocol ableton-linux-auz)
     echo "== install launchers and host integration =="
-    for tool in config.sh lifecycle.sh manifest.sh ; do
+    for tool in config.sh lifecycle.sh live-components.sh manifest.sh; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
     ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live"

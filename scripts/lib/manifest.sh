@@ -145,7 +145,8 @@ ableton_managed_path_allowed()
     case "$kind" in file|config|symlink) ;; *) return 1 ;; esac
     case "$path" in
         "$ABLETON_DATA_HOME/lib/config.sh"|"$ABLETON_DATA_HOME/lib/lifecycle.sh"|\
-        "$ABLETON_DATA_HOME/lib/manifest.sh"|"$ABLETON_DATA_HOME/lib/pipeasio.sh"|\
+        "$ABLETON_DATA_HOME/lib/live-components.sh"|"$ABLETON_DATA_HOME/lib/manifest.sh"|\
+        "$ABLETON_DATA_HOME/lib/pipeasio.sh"|\
         "$ABLETON_DATA_HOME/detect-scale.sh"|"$ABLETON_DATA_HOME/detect-theme.sh"|\
         "$ABLETON_DATA_HOME/shortcut-hold.sh"|"$ABLETON_DATA_HOME/setup-realtime.sh"|\
         "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/rollback.sh"|\
@@ -881,6 +882,7 @@ ableton_legacy_owned_path()
                 && grep -qxF 'NoDisplay=true' "$path" ;;
         "$ABLETON_DATA_HOME/detect-scale.sh") grep -qF 'Sourceable display-scale detection' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/detect-theme.sh") grep -qF 'Sourceable theme detection helpers' "$path" 2>/dev/null ;;
+        "$ABLETON_DATA_HOME/lib/live-components.sh") grep -qF 'Opt-in payload removal' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/shortcut-hold.sh") grep -qF 'GNOME shortcut hold' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/setsyscolors.exe"|"$ABLETON_DATA_HOME/learnheal.exe") return 1 ;;
         "$ABLETON_BIN_HOME/ableton-live") grep -qF 'Ableton Live launcher for the patched Wine stack' "$path" 2>/dev/null ;;
