@@ -35,33 +35,33 @@ source_paths="$(mktemp /tmp/ableton-source-paths.XXXXXX)"
 source_snapshot="$(mktemp -d /tmp/ableton-source-snapshot.XXXXXX)"
 output_stage="$(mktemp -d /tmp/ableton-build-output.XXXXXX)"
 promotion_stage=""
-cleanup_build_stages()
-{
-    if [ -n "$promotion_stage" ]; then
-        case "$promotion_stage" in
-            "$here"/dist/.promote.*)
-                rm -rf -- "${promotion_stage:?}"
-                ;;
-            *) echo "!! refusing to remove unexpected promotion path: $promotion_stage" >&2 ;;
-        esac
-    fi
-    case "$source_snapshot" in
-        /tmp/ableton-source-snapshot.*)
-            chmod -R u+w -- "$source_snapshot" 2>/dev/null || true
-            rm -rf -- "${source_snapshot:?}"
-            ;;
-        *) echo "!! refusing to remove unexpected source snapshot: $source_snapshot" >&2 ;;
-    esac
-    case "$output_stage" in
-        /tmp/ableton-build-output.*) rm -rf -- "${output_stage:?}" ;;
-        *) echo "!! refusing to remove unexpected output stage: $output_stage" >&2 ;;
-    esac
-    case "$source_paths" in
-        /tmp/ableton-source-paths.*) rm -f -- "${source_paths:?}" ;;
-        *) echo "!! refusing to remove unexpected source path list: $source_paths" >&2 ;;
-    esac
-}
-trap cleanup_build_stages EXIT
+#cleanup_build_stages()
+#{
+#    if [ -n "$promotion_stage" ]; then
+#        case "$promotion_stage" in
+#            "$here"/dist/.promote.*)
+#                rm -rf -- "${promotion_stage:?}"
+#                ;;
+#            *) echo "!! refusing to remove unexpected promotion path: $promotion_stage" >&2 ;;
+#        esac
+#    fi
+#    case "$source_snapshot" in
+#        /tmp/ableton-source-snapshot.*)
+#            chmod -R u+w -- "$source_snapshot" 2>/dev/null || true
+#            rm -rf -- "${source_snapshot:?}"
+#            ;;
+#        *) echo "!! refusing to remove unexpected source snapshot: $source_snapshot" >&2 ;;
+#    esac
+#    case "$output_stage" in
+#        /tmp/ableton-build-output.*) rm -rf -- "${output_stage:?}" ;;
+#        *) echo "!! refusing to remove unexpected output stage: $output_stage" >&2 ;;
+#    esac
+#    case "$source_paths" in
+#        /tmp/ableton-source-paths.*) rm -f -- "${source_paths:?}" ;;
+#        *) echo "!! refusing to remove unexpected source path list: $source_paths" >&2 ;;
+#    esac
+#}
+#trap cleanup_build_stages EXIT
 
 echo "== [0/7] freeze the current source candidate =="
 git ls-files -z --cached --others --exclude-standard -- . ':(exclude)dist' \

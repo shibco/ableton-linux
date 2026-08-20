@@ -2,28 +2,16 @@ dist-version: 2026.08.14.3
 wine:         wine-11.13
 base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c
 prefix:       /opt/wine-d2d1-nspa-11.13 (configure-time only; tarball is relocatable, see relocation gate)
-patches:      106
 wine-patches: 97
-pipeasio-patches: 9
-patch-head:   01b93dd341b9be35d2a51b2c29ea8ff349a54a12
-patch-stack:  0ea2ea80f561936166bcb29cb3a8578d596b1aa8eb9a21565769df7107abb630
-source-tree:  f7bb8f2832a1e9e89a533123c19eea126d55fba566a517407cb0a028e7312c7e
-builder-packages: 01a29e2a4639b6c2b0e20924361271d81cecaa84b4a3a9ac3f3c42dbde4a0156
-cabextract-static: 7943e60673f029eeb7150dd201f39a8cdefa16b7995a948540789d659b1bc92b
-ableton-linkd: 582ed2015928d094d2aeb75b1a052d03ed1b098661994b8c0125f4fefb3f9e40
-pipeasio:     1.5.0
-pipewire-floor: 1.4.2 (required for both client library and daemon at install and driver startup)
-pipewire-version-probe: 4ea7a631decb71c0c9dfa562c916efeb82df8b5d7187b06e942f74dbbb63c31f
-pipewire-version-probe-tests: client-stub+ASan+UBSan passed
-pipeasio-panel: built
-pipeasio-settings: 8e8304ac13baa19d9c78c1a7f3baa96264f8e5fc4005cde71477e78c3ba9c44c (Qt 6.2 link)
-pipeasio-tests: CTest non-integration scope passed (unit, registration/layout, ABI, panel)
-pipeasio-no-qt: CMake driver build/install + non-integration CTest passed
-pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed
+patch-head:   b453c30ccb30a515490fe35c6251048be4df1bd8
+patch-stack:  dee88d302ff3d50f9d930da5b16bbcaaa99248430830dd7c648ef257ebeef00a
+source-tree:  a3adc3412263f2fbf68f0ecb8b4bebd9b2f5f79fb4f72392667f84280e3eb1be
+builder-packages: a0ff89421e94b41a8d81ae6567cb0ac539bace2b2435c6d7ffb60a483f971aac
+cabextract-static: 0d8dabb696879311ae93bb514c94595848baa6c8c285914ccd86c7f31e2475b1
+ableton-linkd: 10a51d59dc7355a3a5eb7841d52105c9ae3f1db4d648f1d12c53455f7931397b
+pipewire-version-probe: e30a955601324b58e14d5e8445a9c2aaa10578214a7a9fb88d11dd2c275774d4
 ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
-libusb-pe:    3dac848bf90da15e9b620240df42b90a00e6a31d4cf046ef27ac18c86f3d1fd3
-libusb-unix:  342c5e4acebe1dbd5901de2689f539d9a67b1cea8408c4c94a91418a0d832574
-portal-unix:  2bc1af44d3aa5452d8ecee3c1cea3fd948cd1019222ac46eb00b17b251b8fa57
-pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
-pipeasio-unix: 2b4bc0ab37de535523b38543da6cb5079edbf1bfa269353c145c324343be88d0
+libusb-pe:    60e8126c1702bead5e940ea2fbbd5704292faf03d74675d6f618744f5eb14591
+libusb-unix:  ef168e97ca0bb1ef1b382af1130abb51befb31827dfd41949d95e2b0eeebca80
+portal-unix:  8e6a408907bc3286324e26a2d3fbbd3d0032238aa80932443a77ed507e239981
 built-on:     Ubuntu 22.04 (glibc 2.35)
