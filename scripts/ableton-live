@@ -475,16 +475,42 @@ if ! ableton_live_running; then
     session_started=1
 fi
 
+callback_live_exe_for_audio_settings()
+{
+    local candidate version selected="" selected_version=""
+    local -a candidates
+
+    # A callback belongs to the prefix registry, so ABLETON_LIVE_EXE does not
+    # select what Wine starts.  A shared point version is still unambiguous:
+    # every candidate uses the same Live preferences directory.
+    mapfile -t candidates < <(ABLETON_LIVE_EXE='' find_live_exe "${ABLETON_LIVE_VERSION:-}")
+    [ "${#candidates[@]}" -gt 0 ] || return 1
+    for candidate in "${candidates[@]}"; do
+        version="$(ableton_live_product_version "$candidate" 2>/dev/null)" || return 1
+        case "$version" in 12.*) ;; *) return 1 ;; esac
+        if [ -n "$selected_version" ] && [ "$version" != "$selected_version" ]; then
+            return 1
+        fi
+        selected="$candidate"
+        selected_version="$version"
+    done
+    printf '%s\n' "$selected"
+}
+
 apply_max_audio_threads_setting()
 {
     local selected_exe="$live_exe_unix"
-    if ! declare -F ableton_seed_max_audio_threads >/dev/null 2>&1; then
+    if ! declare -F ableton_seed_max_audio_threads >/dev/null 2>&1 \
+       || ! declare -F ableton_live_product_version >/dev/null 2>&1; then
         echo "ableton-live: Reinstall ableton-linux to restore audio thread settings." >&2
         return 1
     fi
     if [ -z "$selected_exe" ]; then
-        selected_exe="$(find_live_exe "${ABLETON_LIVE_VERSION:-}" 2>/dev/null | tail -n 1)" \
-            || selected_exe=""
+        if ! selected_exe="$(callback_live_exe_for_audio_settings)"; then
+            echo "ableton-live: The callback does not identify one Live 12 version for audio thread settings." >&2
+            echo "ableton-live: Start the intended edition directly with ABLETON_LIVE_EXE to apply the requested count." >&2
+            return 0
+        fi
     fi
     ableton_seed_max_audio_threads "$WINEPREFIX" "$max_audio_threads" \
         "$selected_exe" "${USER:-}"
