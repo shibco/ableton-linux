@@ -121,6 +121,7 @@ base="$(new_env callback-discovery)"
 install_fake_desktop_tools "$base"
 mkdir -p -- "$base/runtime/bin" "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program" \
     "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Standard/Program" \
+    "$base/prefix/drive_c/users/test/AppData/Roaming" \
     "$base/data/ableton-wine" "$base/data/applications" "$base/run"
 cat > "$base/runtime/bin/wine" <<'EOF'
 #!/bin/sh
@@ -136,8 +137,11 @@ done
 chmod +x "$base/runtime/bin/"*
 printf 'registry\n' > "$base/prefix/system.reg"
 printf 'registry\n' > "$base/prefix/user.reg"
-printf 'exe\n' > "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
-printf 'exe\n' > "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Standard/Program/Ableton Live 12 Standard.exe"
+for edition in Suite Standard; do
+    live_fixture="$base/prefix/drive_c/ProgramData/Ableton/Live 12 $edition/Program/Ableton Live 12 $edition.exe"
+    printf 'P\0r\0o\0d\0u\0c\0t\0V\0e\0r\0s\0i\0o\0n\0\0\0' > "$live_fixture"
+    printf '1\0002\000.\0004\000.\0003\000\000\000' >> "$live_fixture"
+done
 sed "s#@BIN@#$base/home/.local/bin#g" "$here/../desktop/ableton-linux-protocol.desktop.in" \
     > "$base/data/ableton-wine/$protocol_id"
 sed "s#@BIN@#$base/home/.local/bin#g" "$here/../desktop/ableton-linux-auz.desktop.in" \
@@ -156,7 +160,16 @@ link_mode=off
 linkd=$base/data/ableton-wine/ableton-linkd
 EOF
 : > "$base/wine.log"
-run_isolated "$base" env ABLETON_POWER=off ABLETON_RT=off ABLETON_THEME_MODE=preserve \
+if run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=64 \
+    ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" \
+    'ableton://invalid-ableton-linux-probe' >"$base/invalid.out" 2>"$base/invalid.err"; then
+    fail "The audio thread range check runs before Wine starts."
+fi
+grep -q 'Set ABLETON_MAX_AUDIO_THREADS to off or a number from one to 63' "$base/invalid.err" \
+    || fail "The launcher reports the accepted audio thread values."
+[ ! -s "$base/wine.log" ] || fail "The audio thread range check runs before Wine starts."
+
+run_isolated "$base" env USER=test ABLETON_POWER=off ABLETON_RT=off ABLETON_THEME_MODE=preserve \
     ABLETON_DPI_MODE=preserve ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
     ABLETON_TOPBAR_MODE=preserve ABLETON_LAUNCH_TIMEOUT=5 ABLETON_TEST_WINE_LOG="$base/wine.log" \
     bash "$here/ableton-live" 'ableton://invalid-ableton-linux-probe' >"$base/out" 2>"$base/err" || true
@@ -166,6 +179,35 @@ cmp -s "$base/data/ableton-wine/$protocol_id" "$base/data/applications/$protocol
     || fail "launcher does not repair its changed project handler"
 ! grep -q 'multiple Live 12 editions' "$base/err" \
     || fail "same-major Live discovery blocks the protocol callback"
-ok "protocol callbacks restore handlers, use persistent prefix state, and bypass ambiguous Live discovery"
+callback_prefs="$base/prefix/drive_c/users/test/AppData/Roaming/Ableton/Live 12.4.3/Preferences"
+[ ! -e "$callback_prefs/Options.txt" ] \
+    || fail "A callback with the default launcher setting preserves Live's current audio thread count."
+
+: > "$base/wine.log"
+run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=16 ABLETON_POWER=off \
+    ABLETON_RT=off ABLETON_THEME_MODE=preserve ABLETON_DPI_MODE=preserve \
+    ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
+    ABLETON_TOPBAR_MODE=preserve ABLETON_LAUNCH_TIMEOUT=5 \
+    ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" \
+    'ableton://invalid-ableton-linux-probe' >"$base/seed.out" 2>"$base/seed.err" || true
+grep -qx -- '-MaxAudioThreads=16' "$callback_prefs/Options.txt" \
+    || fail "A protocol callback that starts Live writes the requested count to the Live 12.4.3 settings."
+
+rm -f -- "$callback_prefs/Options.txt" "$callback_prefs/.ableton-linux-max-audio-threads-v1"
+rmdir -- "$callback_prefs" "${callback_prefs%/Preferences}" \
+    "$base/prefix/drive_c/users/test/AppData/Roaming/Ableton"
+license="$base/Authorize.auz"
+: > "$license"
+: > "$base/wine.log"
+run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=16 ABLETON_POWER=off \
+    ABLETON_RT=off ABLETON_THEME_MODE=preserve \
+    ABLETON_DPI_MODE=preserve ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
+    ABLETON_TOPBAR_MODE=preserve ABLETON_LAUNCH_TIMEOUT=5 ABLETON_TEST_WINE_LOG="$base/wine.log" \
+    bash "$here/ableton-live" "$license" >"$base/auz.out" 2>"$base/auz.err" || true
+grep -qF "prefix=$base/prefix wine start /w /unix $license" "$base/wine.log" \
+    || fail "The licence callback uses the selected Wine prefix."
+grep -qx -- '-MaxAudioThreads=16' "$callback_prefs/Options.txt" \
+    || fail "A licence callback that starts Live writes the requested count to the Live 12.4.3 settings."
+ok "Callback launches use the selected Wine prefix. They preserve the Ableton protocol handlers. The default launcher setting preserves Live's current audio thread count. A requested count reaches the Live 12.4.3 settings when a protocol or licence callback starts Live."
 
 printf 'PASS: %s desktop integration checks\n' "$pass"

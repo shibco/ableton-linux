@@ -30,6 +30,13 @@ ABLETON-LIVE VARIABLES:
         by default the launcher runs Live under SCHED_RR wherever
         realtime rights exist
 
+    ABLETON_MAX_AUDIO_THREADS=off|<number>
+        Use a number from one to 63 for the audio thread count in Live 12.
+        The launcher saves the number before Live starts when it lowers the count that Live selects.
+        Use off to preserve the current Live setting.
+        The default is off.
+        The launcher preserves existing settings and later edits.
+
     ABLETON_POWER=off
         skip the performance power-profile hold for this launch; by
         default the launcher holds the "performance" profile while
@@ -239,6 +246,9 @@ for lifecycle_lib in "$launcher_here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/l
     if [ -r "$lifecycle_lib" ]; then . "$lifecycle_lib"; break; fi
 done
 declare -F ableton_live_running >/dev/null 2>&1 || { echo "ableton-live: lifecycle helper is missing" >&2; exit 1; }
+for live_options_lib in "$launcher_here/lib/live-options.sh" "$ABLETON_DATA_HOME/lib/live-options.sh"; do
+    if [ -r "$live_options_lib" ]; then . "$live_options_lib"; break; fi
+done
 
 # Live exits cleanly; WebView2's updater does not, and one wedged agent keeps the
 # wineserver alive for the whole login session.
@@ -263,6 +273,11 @@ export WINEPREFIX="$ABLETON_WINEPREFIX"
 [ -f "$WINEPREFIX/system.reg" ] || { echo "ableton-live: Wine prefix is missing or incomplete at $WINEPREFIX" >&2; exit 1; }
 case "${ABLETON_LIVE_VERSION:-}" in ''|11|12) ;;
     *) echo "ableton-live: ABLETON_LIVE_VERSION must be 11 or 12" >&2; exit 2 ;;
+esac
+max_audio_threads="${ABLETON_MAX_AUDIO_THREADS:-off}"
+case "$max_audio_threads" in
+    off|[1-9]|[1-5][0-9]|6[0-3]) ;;
+    *) echo "ableton-live: Set ABLETON_MAX_AUDIO_THREADS to off or a number from one to 63." >&2; exit 2 ;;
 esac
 
 # Armed after the guards: teardown ends this prefix's agents, and a launch that
@@ -439,41 +454,6 @@ repair_handler_entries() {
 }
 repair_handler_entries
 
-# Report a stable, small CPU count to Live: cap 8, honouring taskset/cgroup cpusets. 
-# Emit 8 when usable CPUs exceed 8, the allowed-set size when affinity-constrained 
-# below that, and nothing otherwise (Wine's default is fine).
-# A user-set WINE_CPU_TOPOLOGY always wins. Inert on this runtime until the patched
-# ntdll/wineserver consumer lands; exported as groundwork only.
-select_cpu_topology() {
-    local online allowed list part lo hi
-    online="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || online=""
-    case "$online" in ""|*[!0-9]*) return 1 ;; esac
-    allowed="$online"
-    list="$(awk '/^Cpus_allowed_list:/{print $2; exit}' /proc/self/status 2>/dev/null)"
-    if [ -n "$list" ]; then
-        allowed=0
-        for part in ${list//,/ }; do
-            case "$part" in
-                *-*) lo="${part%%-*}"; hi="${part##*-}"
-                     case "$lo$hi" in ""|*[!0-9]*) return 1 ;; esac
-                     allowed=$((allowed + hi - lo + 1)) ;;
-                *)   case "$part" in *[!0-9]*) return 1 ;; esac
-                     allowed=$((allowed + 1)) ;;
-            esac
-        done
-    fi
-    [ "$allowed" -ge 1 ] || return 1
-    if [ "$allowed" -gt 8 ]; then
-        printf '8\n'
-    elif [ "$allowed" -lt "$online" ]; then
-        printf '%d\n' "$allowed"
-    fi
-}
-if [ -z "${WINE_CPU_TOPOLOGY:-}" ]; then
-    cpu_topology="$(select_cpu_topology)" || cpu_topology=""
-    [ -n "$cpu_topology" ] && export WINE_CPU_TOPOLOGY="$cpu_topology"
-fi
-
 # Live and Max share this coordinator.  It is acquired only for a cold Live
 # start and remains held until the selected prefix exposes the Live process.
 cold_launch=0
@@ -493,6 +473,30 @@ if ! ableton_live_running; then
     # This launcher owns the session from here: every wine invocation is below.
     # launch_lock_held cannot serve as the gate - it is cleared once Live appears.
     session_started=1
+fi
+
+apply_max_audio_threads_setting()
+{
+    local selected_exe="$live_exe_unix"
+    if ! declare -F ableton_seed_max_audio_threads >/dev/null 2>&1; then
+        echo "ableton-live: Reinstall ableton-linux to restore audio thread settings." >&2
+        return 1
+    fi
+    if [ -z "$selected_exe" ]; then
+        selected_exe="$(find_live_exe "${ABLETON_LIVE_VERSION:-}" 2>/dev/null | tail -n 1)" \
+            || selected_exe=""
+    fi
+    ableton_seed_max_audio_threads "$WINEPREFIX" "$max_audio_threads" \
+        "$selected_exe" "${USER:-}"
+}
+if [ "$max_audio_threads" != off ]; then
+    if [ "$cold_launch" -eq 1 ]; then
+        if ! apply_max_audio_threads_setting; then
+            echo "ableton-live: Live will use the current count for audio threads during this launch." >&2
+        fi
+    else
+        echo "ableton-live: Exit Live. Run the command again to apply the audio thread count." >&2
+    fi
 fi
 
 # Keep the menu entry tracking the installed edition: install.sh renders it
