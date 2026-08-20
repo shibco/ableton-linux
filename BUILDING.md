@@ -80,6 +80,21 @@ make verify
 
 The container build also runs PipeASIO's non-integration CTest suite, a no-Qt build, ASan and UBSan tests, ThreadSanitizer unit tests, relocation and registration checks, and the final runtime audit. These checks do not replace a run with Live and real audio hardware.
 
+## Nix build
+
+The flake builds the runtime from the same vendored sources and the same patch series as the Podman pipeline, and runs the same gates on the result: both patch series must match `patches/SERIES.sha256`, ntsync must be compiled into wineserver and ntdll, ALSA and GStreamer must be built, the Bitstream Vera faces must be present, and PipeASIO must register in a throwaway prefix.
+
+```bash
+nix build .#wine-d2d1-nspa   # the patched Wine only
+nix build .#pipeasio         # the ASIO driver only
+nix build .#ableton-linkd    # the Ableton Link peer only
+nix build                    # the full runtime -> result/
+```
+
+The final `build-audit.sh` runs under `ABLETON_AUDIT_PROFILE=nix`. That profile reports six provenance records as skipped — the sanitizer runs, the no-Qt gate, the PipeWire probe test gate, the builder package manifest, the two installer helper hashes, and the git source-tree digest — because the container pipeline produces them and the Nix build does not run it. Every structural, patch, fingerprint and binary-hash check is unchanged, and the default `release` profile still fails on all six.
+
+The setup steps are also flake apps: `.#setup-prefix`, `.#setup-realtime` and `.#setup-link`. `.#wine` runs a Windows executable against the Ableton prefix on this runtime, and `.#check-ntsync` runs `scripts/check-ntsync.sh` with its Wine root already set to the store path.
+
 ## Configure Ableton Link
 
 Configure Ableton Link networking and choose when it runs:
@@ -104,10 +119,16 @@ This writes `dist/ableton-wine-setup-<version>.run` and its SHA-256 file. Packag
 
 The installer saves the runtime root, Wine prefix, selected Live major version, and Link mode. For these values, a command-line option overrides an exported `ABLETON_*` variable, which overrides the saved XDG configuration and then the default.
 
-- `ABLETON_WINE_ROOT` selects the Wine runtime. The default is `~/.local/opt/wine-d2d1-nspa-11.13`.
+- `ABLETON_WINE_ROOT` selects the Wine runtime. The default is `~/.local/opt/wine-d2d1-nspa-11.13`; the Nix package's launchers and shipped scripts default to their own store path instead.
 - `ABLETON_WINEPREFIX` selects the Wine prefix. The default is `~/.wine-ableton`.
 - `ABLETON_LIVE_VERSION=11|12` selects a Live major version for the launcher.
 - `ABLETON_LINK_MODE=off|session|always` controls when Ableton Link runs.
+
+`setup-prefix.sh` reads these when it prepares the prefix; they change nothing about a launch, and the `.run` installer ignores all three, installing Live from its own payload instead:
+
+- `ABLETON_INSTALLER_DIR` selects where step [6/6] looks for your Ableton Live installation ZIP. The default is `~/Proprietary`.
+- `ABLETON_LIVE_AUTOINSTALL=1` lets step [6/6] run the installer it found. Unset, the step reports what it found and prints the manual install steps instead.
+- `ABLETON_INSTALLER_UI=1` shows the Ableton installer window instead of running it silently. A silent run defers Ableton's licence agreement to Live's first launch.
 
 These environment variables change one launch without changing the saved installer configuration:
 
@@ -198,5 +219,6 @@ The optional `scripts/setup-realtime.sh` asks for `sudo`, adds the current user 
 - [`tools`](tools/): diagnostic and build tools
 - [`desktop`](desktop/): application and file-type integration
 - [`dist`](dist/): generated build output
+- [`flake.nix`](flake.nix) and [`nix`](nix/): Nix flake packaging
 
 The authoritative patch list and provenance are in [patches/BASE.txt](patches/BASE.txt).
