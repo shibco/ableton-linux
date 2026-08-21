@@ -127,8 +127,18 @@ ableton_pipeasio_validate_panel()
 
     case "$mode" in
         built)
-            [[ "$record" =~ ^([0-9a-f]{64})\ \(Qt\ 6\.2\ link\)$ ]] || {
-                echo "!! runtime has a malformed built-panel record" >&2; return 1; }
+            # The release build links jammy's Qt 6.2 and records exactly that,
+            # so the canonical form is pinned and any other version is refused.
+            # The Nix package links whatever Qt 6 its nixpkgs carries, so on a
+            # runtime that identifies itself as nix the record names the version
+            # actually built against instead.
+            if [ "$(ableton_pipeasio_build_info_value "$info" dist-version)" = nix ]; then
+                [[ "$record" =~ ^([0-9a-f]{64})\ \(Qt\ [0-9]+\.[0-9]+(\.[0-9]+)?\ link\)$ ]] || {
+                    echo "!! runtime has a malformed built-panel record" >&2; return 1; }
+            else
+                [[ "$record" =~ ^([0-9a-f]{64})\ \(Qt\ 6\.2\ link\)$ ]] || {
+                    echo "!! runtime has a malformed built-panel record" >&2; return 1; }
+            fi
             expected="${BASH_REMATCH[1]}"
             [ "$count" -eq 3 ] && [ -x "$runtime/bin/pipeasio-settings" ] \
                 && [ -s "$runtime/share/applications/pipeasio-settings.desktop" ] \

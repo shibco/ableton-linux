@@ -9,6 +9,7 @@
   unzip,
   desktop-file-utils,
   xdg-utils,
+  qt6,
   pipewire,
   pkg-config,
   # The frozen patch manifest (patches/): stamped into the tree and diffed
@@ -429,7 +430,7 @@ stdenv.mkDerivation {
     patch-stack:  $stack_sha
     pipeasio:     1.5.0
     pipeasio-panel: built
-    pipeasio-settings: $(sha_of bin/pipeasio-settings) (Qt6 Widgets link)
+    pipeasio-settings: $(sha_of bin/pipeasio-settings) (Qt ${lib.versions.majorMinor qt6.qtbase.version} link)
     pipewire:     pinned in the closure via RUNPATH (the .run resolves the host's)
     gst-decoders: base/good/bad/ugly/libav pinned in the closure (the .run uses the host's)
     ntsync:       yes (vendored linux/ntsync.h, gated in nix/wine.nix)
