@@ -148,6 +148,19 @@ ableton_legacy_project_evidence()
         && grep -qF 'Ableton Live launcher for the patched Wine stack' "$launcher"
 }
 
+# A prefix this project configured before the ownership marker existed. The
+# tarball evidence above cannot see a Nix install: that path stages no VERSION
+# and no launcher under $HOME, so it has nothing to recognise. What a Nix setup
+# does leave in the prefix is PipeASIO's CLSID, which only this project
+# registers. The runtime link corroborates when it is there, but a prefix
+# created before runtime-link.sh existed has none, so it cannot be required.
+ableton_legacy_nix_evidence()
+{
+    local prefix="${1:?prefix required}"
+    [ -f "$prefix/system.reg" ] && [ ! -L "$prefix/system.reg" ] \
+        && grep -q '2D3CA9E2-1193-4C5D-B5FD-38798F3DC074' "$prefix/system.reg"
+}
+
 ableton_legacy_default_runtime_valid()
 {
     local runtime="$1" expected info pe_count unix_count pe_hash unix_hash
@@ -177,11 +190,14 @@ ableton_legacy_default_prefix_valid()
 {
     local prefix="$1" expected registry
     expected="$(ableton_realpath_m "$HOME/.wine-ableton")" || return 1
-    [ "$prefix" = "$expected" ] && ableton_legacy_project_evidence \
+    [ "$prefix" = "$expected" ] \
         && [ -d "$prefix" ] && [ ! -L "$prefix" ] \
         && [ ! -e "$prefix/.ableton-linux-prefix" ] \
         && [ ! -L "$prefix/.ableton-linux-prefix" ] \
         && [ -d "$prefix/drive_c/windows/system32" ] || return 1
+    # Either the tarball footprint under $HOME, or, for a Nix setup that leaves
+    # none, this project's own registration inside the prefix.
+    ableton_legacy_project_evidence || ableton_legacy_nix_evidence "$prefix" || return 1
     for registry in system.reg user.reg userdef.reg; do
         [ -f "$prefix/$registry" ] && [ ! -L "$prefix/$registry" ] \
             && [ "$(sed -n '1p' "$prefix/$registry" 2>/dev/null)" = 'WINE REGISTRY Version 2' ] \
