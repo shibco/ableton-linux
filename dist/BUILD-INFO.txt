@@ -2,15 +2,15 @@ dist-version: 2026.08.19.1
 wine:         wine-11.13
 base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c
 prefix:       /opt/wine-d2d1-nspa-11.13 (configure-time only; tarball is relocatable, see relocation gate)
-patches:      106
-wine-patches: 97
+patches:      98
+wine-patches: 89
 pipeasio-patches: 9
-patch-head:   d3a0b4b42070898decb880174bfdee52cc6596d1
-patch-stack:  035d6706b8b0051dcecbf9c6ce9a0ed259d16f80fe80c9c40e507f15ab511ed5
-source-tree:  7573a9e16dab4acd448df929b506622e24ed6a133ce1f7d55b6107b09f8b3339
+patch-head:   43220ade534aa8fd80d03a8ba7308a91edbd3da2
+patch-stack:  ac1ac433839c6d2096fafc9d35c0374c0a992622af0dfaa1c49abeb43c90af15
+source-tree:  12d7776127d181831c38a3a80d41eeea373fdfcac2438dff85b2522d58f92440
 builder-packages: 1dcd332ce0fa5ccbf47b1a26d6288e11c6de0584571d7239e7e63ba641a4187c
 cabextract-static: 7943e60673f029eeb7150dd201f39a8cdefa16b7995a948540789d659b1bc92b
-ableton-linkd: e35b809e7fe05b30c7383f20076dab751bb191159ff7159cbf1d3ce9cb4297e6
+ableton-linkd: f7a879256133f0fe709170111806ce3dc573f8b6ebbd2da8b1f6a273ee4aac8b
 pipeasio:     1.5.0
 pipewire-floor: 1.4.2 (required for both client library and daemon at install and driver startup)
 pipewire-version-probe: 4ea7a631decb71c0c9dfa562c916efeb82df8b5d7187b06e942f74dbbb63c31f
@@ -21,9 +21,9 @@ pipeasio-tests: CTest non-integration scope passed (unit, registration/layout, A
 pipeasio-no-qt: CMake driver build/install + non-integration CTest passed
 pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed
 ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
-libusb-pe:    ba84f36427a5b5a4929eed42abc45ce68acfcf8cf6275f146a7ee73492b5a69d
+libusb-pe:    e780610fa50238f8b71866942dff686a57e760ce9d68fbafec6025979644c7e9
 libusb-unix:  5c18dc48b25ce6dc14b38c40eec3e640378bd80490a8ec63ac0aaf6f227b842e
 portal-unix:  2bc1af44d3aa5452d8ecee3c1cea3fd948cd1019222ac46eb00b17b251b8fa57
 pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
-pipeasio-unix: 489df05f69c5a0abd0fe21cc18a95f0f44cbfb5d8a504709ee9a9517f39f61b0
+pipeasio-unix: 6215a0be63d7692db5c530611f8d9d1e4f7e921f9c4c470e962c111b4bf88336
 built-on:     Ubuntu 22.04 (glibc 2.35)

@@ -1,51 +1,32 @@
-# Pointer behaviour and checks
+# Pointer behaviour and tests
 
-Wine uses 120 units for one wheel step.
+Wine uses its X11 driver for Ableton Live sessions on Xorg and XWayland. The
+driver provides precise scrolling, gestures, inertia, and drag recovery.
 
-## Defaults
+Wine assigns the `unknown` source class to each XI2 smooth scroll device. The
+enabled inertia setting therefore applies to touchpads and high-resolution
+wheels.
 
-By default, Live provides:
+## Default behaviour
 
-- fine vertical and horizontal scrolling;
-- pinch zoom;
-- middle-button drag navigation that moves content with the pointer;
-- Ctrl held during a middle-button drag zooms instead of panning, and a drag
-  towards the top of the screen zooms in;
-- scrolling inertia after a quick release;
-- continued movement after releasing a moving middle-button drag; and
-- normal mouse-wheel clicks while another button is held, except during
-  middle-button navigation.
+The default X11 configuration provides:
 
-`TouchpadInertia` affects scrolling after release. `MiddleDragThrow` affects
-middle-button movement after release. Turning either one off leaves direct
-scrolling and direct middle-button navigation unchanged.
+- precise vertical and horizontal scrolling
+- pinch zoom through Ctrl-tagged wheel input
+- middle-button navigation and release throw
+- scrolling inertia after a quick gesture
+- physical wheel input during another button press
+- drag recovery across windows and focus changes
+- XWayland pointer correction after 2 pointer warps leave the pointer at its
+  source position
+- cursor recovery after focus moves to another process
 
-`SmoothScrolling` defaults to `precise`. Selecting XI2 motion and button
-events on our own windows stops core event delivery for the device on those
-windows, and a button press then creates an implicit XI2 device grab.
-`X11DRV_SetCursorPos` and `grab_clipping_window` both take a core
-`XGrabPointer`, which fails against that grab, so while a button is held every
-warp is refused and cursor clipping is never established. Live drags a fader by
-re-anchoring the pointer with `SetCursorPos`, so each refused re-anchor left it
-accumulating raw physical motion and the control crossed its whole range from a
-small movement.
+One wheel notch equals 120 Windows wheel units. Wine preserves partial units.
+Wine divides large reports into signed packets whose total matches the source.
 
-The XI2 selection is dropped for the duration of a core drag, so a button press
-leaves the X server holding its stock grab and the core `XGrabPointer`
-succeeds. `precise` and `notched` therefore no longer refuse warps, and
-fractional scrolling is the default again.
+## Configuration
 
-The XWayland correction for faders and knobs defaults to `auto`: it engages
-only after Wine observes failed pointer warps, never preemptively, so desktops
-whose warps work see no behaviour change. A button release is reported in the
-corrected coordinate space only when the drag's own motion was delivered
-there; a drag whose motion went out uncorrected ends with an uncorrected
-release. COSMIC/XWayland, KDE/XWayland, GNOME/XWayland and Xorg checks remain
-open.
-
-## Settings
-
-| Setting | Launch variable | Default | Choices |
+| Registry setting | Launch variable | Default | Accepted values |
 | --- | --- | --- | --- |
 | `SmoothScrolling` | `WINE_X11_SMOOTH_SCROLLING` | `precise` | `disabled`, `precise`, `notched` |
 | `TouchpadInertia` | `WINE_X11_TOUCHPAD_INERTIA` | `enabled` | `disabled`, `auto`, `enabled` |
@@ -56,86 +37,113 @@ open.
 | `InertiaCurve` | `WINE_X11_INERTIA_CURVE` | `exponential` | `exponential`, `linear` |
 | `InertiaRate` | `WINE_X11_INERTIA_RATE` | `4.0` | 0.5 to 16.0 |
 | `WarpEmulation` | `WINE_X11_WARP_EMULATION` | `auto` | `disabled`, `auto`, `enabled` |
-| (all of the above) | `WINE_X11_POINTER_FEATURES` | unset | `disabled`, `off` or `0` turns every pointer feature off |
+| all pointer features | `WINE_X11_POINTER_FEATURES` | enabled | `disabled`, `off`, `0` |
 
-The launcher sets none of these variables. A launch variable overrides a saved
-choice for that launch. Named values ignore letter case. `off` and `0` mean
-`disabled` where supported. Wine reports an invalid value in the normal launch
-log, then tries the saved choice or default.
+Wine reads the registry settings when its X11 driver starts. A launch variable
+overrides its registry setting for one launch. Wine accepts lower-case and
+upper-case named values.
 
-`TouchpadInertia=auto` currently behaves like `disabled` on X11.
-Lower `InertiaRate` values keep continued movement going for longer. Higher
-values stop it sooner.
+`TouchpadInertia=auto` selects direct scrolling for XI2.
+`TouchpadInertia=enabled` uses a repeated cumulative value or a 90 ms pause as
+an end signal. Lower `InertiaRate` values give a longer coast.
 
-`WINE_X11_POINTER_FEATURES` is the master switch. Set it to `disabled`, `off`
-or `0` and every pointer feature above turns off regardless of any other
-source, restoring stock pointer behaviour for baseline comparisons. Wine
-reports the switch in the normal launch log.
+Set `WINE_X11_POINTER_FEATURES=disabled` to select Wine's standard pointer
+handling for one launch.
 
-## Primary solution to issues associated with inertia work
+## Smooth scrolling
 
-Pressing any ordinary mouse button suspends every optimisation in this series
-for the whole drag, on every desktop, from the moment Live loads. While a
-button is held there is no XInput2 involvement at all: the X server owns its
-stock grab and delivers ordinary core motion, smooth scrolling and pinch are
-suspended, inertia and throw cannot start, and the XWayland correction stays
-off unless its warps verifiably fail. We forcefully prevent smoothing, acceleration,
-a sensitivity change or a coordinate rewrite to a held-button drag. The same
-applies at release: the release is delivered in the same coordinate space the
-drag's motion used.
+XI2 reports a cumulative value and an increment for each scroll axis. Wine
+converts each value change into Windows wheel units.
 
-## Mitigations
+Wine stores one baseline for each XI2 source and axis. It preserves every
+fractional remainder. Wine treats each finite value change as movement. Wine
+splits large output at the signed Windows packet limit.
 
-- A mouse-button press stops older scrolling inertia or middle-drag throw.
-- Adding a second touch and scrolling cannot speed up a left- or right-button
-  control drag. Normal one-finger dragging and middle-button navigation remain
-  available. Touchpad scrolling and pinch cannot change the held control.
-  Wine does not send ignored movement after release.
-- A physical mouse wheel still works while another button is held, except
-  during middle-button navigation. Set `WheelWhileButtonHeld=disabled` to
-  block it.
-- Middle-button navigation works only while its own middle button remains held.
-  Another button press stops it.
-- Continued movement stays at the window and point where it began. It cannot
-  follow the pointer to another control.
-- New pointer or key input stops continued movement. Focus or window changes
-  and removed devices also stop it.
-- Wine keeps at most one continued update waiting. Movement does not build up or
-  replay after a pause.
+Wine drops duplicate core wheel events from the same XI2 scroll report. Wine
+sends direct movement through its standard input path.
 
-## Limits
+A 241-unit report produces 241 units. One 480-unit report produces the same
+total as 4 120-unit reports.
 
-| Behaviour | Limit |
-| --- | --- |
-| Direct smooth scroll | 120 units per axis for one update |
-| Direct middle-button drag | 120 units per axis for one update |
-| Pinch update | 120 units |
-| Largest accepted scroll jump | 240 units |
-| Normal inertia start speed | 240 units per second |
-| Start speed after 100 ms without more scrolling | 480 units per second |
-| Maximum starting speed | 19,200 units per second |
-| Largest continued update | 300 units per axis |
-| Maximum continued travel | 4,800 units per axis, 7,200 units in total |
-| Maximum continued updates sent to Live | 384 |
-| Maximum continued time | 4 seconds |
-| Movement used to judge a middle-drag throw | Latest 100 ms |
-| Longest gap between movements or before release | 80 ms |
-| Minimum timed movement span | 10 ms |
-| Time assigned when movement updates share one time | 24 ms |
-| Minimum movement when updates share one time | 4 pixels |
+## Drag recovery
 
-If Wine receives no clear end report, `TouchpadInertia=enabled` may begin
-inertia after 100 ms without more scrolling. This requires the higher start
-speed shown above.
+During a drag, Wine routes pointer motion through core X11 for mouse buttons 1
+to 3. Wine restores XI2 motion after these events:
 
-Middle-drag throw uses all movement in the final 100 ms when it spans at least
-10 ms. A gap longer than 80 ms starts a new final movement, and a pause longer
-than 80 ms before release prevents the throw. When the desktop sends one
-movement update, or several updates with the same time, Wine assigns a 24 ms
-span and requires four pixels of movement. A cancelled drag or extra button
-press stops the throw.
+- the matching button release
+- a release on another window
+- a focus or capture change
+- window destruction
+- a device hierarchy change
+- later motion or wheel input that reports released buttons
 
-## Source checks
+Wine reads the physical X button state when the release differs from the saved
+drag. Wine then restores XI2 motion and clears the saved drag state.
+
+## Pinch zoom
+
+Wine captures the target window at gesture start. Each update converts the
+absolute XI2 scale into logarithmic Ctrl-tagged wheel movement.
+
+Wine provides Ctrl state during the gesture for applications that query
+keyboard state. Every gesture end and input reset restores that state. A
+cancelled gesture keeps the zoom already applied.
+
+## Middle button navigation
+
+Wine delays the middle-button press until movement crosses the system drag
+distance. Movement inside that distance produces one middle click.
+
+A drag converts the complete horizontal and vertical pixel distance into
+wheel movement. Wine stores each fractional remainder for the next event. One
+48-pixel event therefore matches 2 24-pixel events.
+
+A moving release starts middle-button throw when its speed meets the threshold.
+`MiddleDragThrow=disabled` ends movement at release.
+
+## Scrolling inertia
+
+The process uses one timer for one active coast. The timer posts one update to
+the owning window thread.
+
+Wine uses up to 12 samples from the final 110 ms. It merges equal timestamps.
+A backward timestamp starts a new sample history. A final direction reversal
+selects the later samples.
+
+Wine calculates each position from the complete elapsed time. Timer delay
+changes update timing. The analytic calculation keeps final travel consistent.
+
+Keyboard input, pointer input, focus changes, capture changes, window changes,
+thread exit, and device changes end the coast.
+
+| Coast limit | Value |
+| --- | ---: |
+| start speed | 180 wheel units per second |
+| stop speed | 60 wheel units per second |
+| maximum start speed | 19,200 wheel units per second |
+| packet movement | 300 wheel units per axis |
+| travel per axis | 4,800 wheel units |
+| combined travel | 7,200 wheel units |
+| message count | 384 |
+| duration | 4 seconds |
+
+## XWayland pointer correction
+
+Live repeatedly moves the pointer during relative fader and knob drags.
+`WarpEmulation=auto` starts correction after 2 pointer moves leave the pointer
+at its source position.
+
+Wine uses its standard path when Xorg or XWayland moves the pointer. Wine resets
+correction after button, focus, capture, cursor, device, and thread changes. A
+release uses the same coordinate model as its drag motion.
+
+## Drag and drop
+
+Patch 0101 uses a separate Windows drag transaction. It releases the target
+after drag leave and every drop. The first X11 status uses the effect from the
+initial target entry.
+
+## Automated tests
 
 Run these commands from the repository root:
 
@@ -144,66 +152,53 @@ make check
 make verify
 ```
 
-`make check` reads the pointer patches and tests their maths. `make verify`
-also checks the saved source files. Neither command starts Wine or Live. The
-hands-on checks below remain required.
+`make check` tests input calculations and conversion rules. Cases include
+119, 120, 121, 239, 240, and 241-unit boundaries. The tests cover report
+grouping, fractions, pinch scale, drag recovery, inertia, and timer delays.
 
-## Hands-on checks
+`make verify` checks vendor files and stored hashes. Physical hardware
+completes the XI2 scroll and pinch tests.
 
-Mute or disconnect monitoring before a check that can change volume. Start
-with Live's Master fader low.
+## Live tests
 
-1. Drag faders and knobs. Their values must follow the pointer without jumps.
-2. Load an affected Max for Live device without clicking its panel. A Live
-   fader must still follow the pointer. Repeat after clicking the device once.
-3. Hold a fader with the left or right button. Drag with one finger, then add a
-   second touch and scroll. The drag must not speed up. Touchpad scrolling and
-   pinch must not change the fader during the drag or after release.
-4. Hold the left or right mouse button and turn a physical mouse wheel. The
-   wheel must work with the default setting. Repeat with
-   `WheelWhileButtonHeld=disabled`; the wheel must stop.
-5. Make a fast smooth scroll. The view must keep moving, slow gradually and stay
-   within the limits above. New input must stop it. Repeat with
-   `TouchpadInertia=disabled`; direct scrolling must feel the same but stop with
-   the touchpad or wheel.
-6. Release a moving middle-button drag. Repeat with a short drag and a gentle
-   curve. Direct navigation and the throw must move content with the pointer
-   on both axes. The view must keep moving only after release. A click, a drag
-   held still for more than 80 ms, a cancelled drag or an extra button press
-   must not start a throw. Repeat with `MiddleDragThrow=disabled`; direct
-   navigation must remain unchanged and stop at release.
-7. Pinch in and out, including while holding Ctrl. Live must zoom and leave the
-   physical Ctrl state unchanged. A cancelled pinch must stop zooming.
-8. If Live pauses while loading a plug-in or browser folder during a fast
-   scroll, it must not replay missed movement when it responds.
-9. Repeat the held-control, inertia and throw checks in Live's main window and
-   in a separate plug-in window.
-10. Run the fader and knob checks on COSMIC/XWayland, KDE/XWayland,
-    GNOME/XWayland and Xorg. On XWayland, compare `WarpEmulation=disabled`,
-    `auto` and `enabled` with the pointer shown and hidden. No setting may
-    double the control's movement.
-11. COSMIC/XWayland, from a fresh Live launch, with no window resize first:
-    drag one fader. Sensitivity must match the pointer and the fader must keep
-    its value on release. With `WINEDEBUG=+cursor,+event`, the log must show
-    `X server delivered core MotionNotify while XI scroll motion is suspended`
-    during the drag, proving the server owned the drag. Setting
-    `SmoothScrolling=disabled` removes that line, because no XI scroll motion
-    is selected for the drag to suspend. Repeat with
-    `WINE_X11_POINTER_FEATURES=disabled`; behaviour must be identical and
-    equally free of acceleration or snap-back. Then repeat checks 1-5 for
-    two-finger scroll, pinch, middle-drag pan and inertia outside drags.
+Mute or disconnect monitoring before a volume test. Set the Live Master fader
+to a low value.
 
-Record the pointing device, Linux distribution, desktop, Xorg or XWayland,
-Live version, setting and result for each check.
+Run the tests in this order.
 
-## Limitations and additional notes
+1. Scroll slowly and quickly in the Arrangement and Browser views.
+   Confirm that faster input gives equal or greater direct movement.
+2. Move the same distance with one fast gesture and several slower gestures.
+   Confirm the same final content distance.
+3. Start a drag in one child window and release over another child window.
+   Confirm immediate smooth scrolling and middle-button navigation.
+4. Open a dialogue during a drag. Confirm pointer recovery.
+5. Close a plug-in window during a drag. Confirm pointer recovery.
+6. Hold the left or right button and turn a physical wheel.
+   Confirm standard wheel movement.
+7. Pinch with physical Ctrl released, then repeat with physical Ctrl pressed.
+   Confirm that Ctrl returns to its original state.
+8. Compare one 48-pixel middle drag with 2 24-pixel movements.
+   Confirm equal content travel and a release throw.
+9. Make slow and fast 2-finger scrolls.
+   Confirm immediate direct movement and a coast after a quick release.
+10. Test faders and knobs with each `WarpEmulation` value.
+   Confirm that control travel follows pointer travel.
+11. Start Live with `WINE_X11_POINTER_FEATURES=disabled`.
+    Confirm Wine's standard wheel, button, capture, and focus routing.
+12. Repeat accepted and rejected external file drops 500 times.
+    Confirm that each drop completes with the expected result.
 
-- Wine cannot tell whether smooth scrolling came from a touchpad, a precision
-  mouse wheel or a free-spinning wheel. All three may keep moving after input
-  stops. Set `TouchpadInertia=disabled` to turn this off.
-- On KDE/XWayland, inertia may start 100 ms after scrolling stops because the
-  desktop may omit the end report.
-- This work applies when Live runs through Xorg or XWayland. It does not apply
-  when Live runs directly through Wayland.
-- Testing the Max for Live pointer repair on the affected Fedora computer
-  remains open.
+Record the device, desktop, session type, scale, Live version, setting, trace
+sequence, and result.
+
+## Hardware coverage
+
+Wine assigns `unknown` to every XI2 smooth source. The enabled inertia setting
+therefore adds a coast to high-resolution and free-spinning wheels.
+
+Middle-button navigation uses raw virtual-screen pixels. Display scale
+determines content distance for the same raw pixel movement.
+
+XTEST covers core-button cases. Physical devices provide XI2 scroll and pinch
+coverage. The issue 122 test requires the affected Fedora computer.

@@ -1,17 +1,10 @@
 #define _POSIX_C_SOURCE 200809L
 
-/*
- * Deterministic source and maths checks for pointer-output safety.
- *
- * Wine is carried here as a patch stack rather than directly linkable source.
- * The checker reads guarded delivery from 0092, warp handling from 0094,
- * lifecycle rules from 0095, final gesture changes from 0097, and the
- * core-button ownership override from 0098. It ignores removed lines and
- * commit prose.
- */
+/* Deterministic reducer and source checks for the consolidated input patches. */
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,26 +12,26 @@
 #include <sys/types.h>
 
 #define WHEEL_DELTA_VALUE 120
-#define MAX_FRAME_MS_VALUE 16
-#define MAX_PACKET_VALUE 300
-#define MAX_TRAVEL_VALUE (40 * WHEEL_DELTA_VALUE)
-#define MAX_TOTAL_VALUE (60 * WHEEL_DELTA_VALUE)
-#define MAX_MESSAGES_VALUE 384
-#define MAX_SPEED_VALUE 19200.0
-#define START_SPEED_VALUE 240.0
-#define DEFAULT_INERTIA_RATE_VALUE 4.0
-#define MIDDLE_THROW_HISTORY_MS_VALUE 100
-#define MIDDLE_THROW_MAX_GAP_MS_VALUE 80
-#define MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE 24
-#define MIDDLE_THROW_MIN_DISTANCE_VALUE 4.0
-#define INERTIA_MIN_SPAN_MS_VALUE 10
-#define MIDDLE_DRAG_STEP_VALUE 24.0
 
 struct text
 {
     char *data;
     size_t length;
     size_t capacity;
+};
+
+struct scroll_axis
+{
+    double increment;
+    double value;
+    int valid;
+};
+
+struct lease
+{
+    unsigned long window;
+    unsigned int buttons;
+    unsigned int restores;
 };
 
 static unsigned int failures;
@@ -74,7 +67,7 @@ static int append(struct text *text, const char *data, size_t length)
     return 1;
 }
 
-/* Append the source represented by context and added hunk lines. */
+/* Reconstruct context and additions while excluding removed code and prose. */
 static int read_patch_new_side(const char *path, struct text *result)
 {
     FILE *file;
@@ -90,25 +83,11 @@ static int read_patch_new_side(const char *path, struct text *result)
     }
     while ((length = getline(&line, &capacity, file)) >= 0)
     {
-        if (!strncmp(line, "diff --git ", 11))
-        {
-            in_hunk = 0;
-            continue;
-        }
-        if (!strncmp(line, "@@ ", 3) || !strncmp(line, "@@-", 3))
-        {
-            in_hunk = 1;
-            continue;
-        }
+        if (!strncmp(line, "diff --git ", 11)) { in_hunk = 0; continue; }
+        if (!strncmp(line, "@@ ", 3)) { in_hunk = 1; continue; }
         if (!in_hunk || !length || line[0] == '-' || line[0] == '\\') continue;
         if ((line[0] == '+' && strncmp(line, "+++ ", 4)) || line[0] == ' ')
-        {
-            if (!append(result, line + 1, (size_t)length - 1))
-            {
-                ok = 0;
-                break;
-            }
-        }
+            if (!append(result, line + 1, (size_t)length - 1)) { ok = 0; break; }
     }
     free(line);
     fclose(file);
@@ -132,1930 +111,424 @@ static size_t count_occurrences(const char *text, const char *needle)
 {
     size_t count = 0, length = strlen(needle);
 
-    while ((text = strstr(text, needle)))
-    {
-        count++;
-        text += length;
-    }
+    while ((text = strstr(text, needle))) { count++; text += length; }
     return count;
 }
 
-static size_t count_occurrences_between(const char *text, const char *begin,
-                                        const char *end, const char *needle)
+static int require_source(const char *source, const char *needle)
 {
-    const char *first = strstr(text, begin), *last, *match;
-    size_t count = 0, length = strlen(needle);
-
-    if (!first || !(last = strstr(first, end))) return (size_t)-1;
-    for (match = first; (match = strstr(match, needle)) && match < last; match += length)
-        count++;
-    return count;
+    if (strstr(source, needle)) return 1;
+    fail("source contract", needle);
+    return 0;
 }
 
-static int require_text(const char *test, const char *text, const char *needle)
+static int forbid_source(const char *source, const char *needle)
 {
-    if (!strstr(text, needle))
+    if (!strstr(source, needle)) return 1;
+    fail("removed mechanism returned", needle);
+    return 0;
+}
+
+/* Mirrors smooth_scroll_delta(): one bounded packet, residual retained. */
+static int scroll_packet(struct scroll_axis *axis, double value, int notched)
+{
+    const int limit = notched ? SHRT_MAX / WHEEL_DELTA_VALUE * WHEEL_DELTA_VALUE : SHRT_MAX;
+    double units;
+    int delta;
+
+    if (!axis->valid)
     {
-        fail(test, needle);
+        axis->value = value;
+        axis->valid = 1;
         return 0;
     }
-    return 1;
+    units = WHEEL_DELTA_VALUE * (value - axis->value) / axis->increment;
+    if (!isfinite(units)) { axis->value = value; return 0; }
+    if (units > limit) delta = limit;
+    else if (units < -limit) delta = -limit;
+    else delta = (int)round(units);
+    if (notched) delta = delta / WHEEL_DELTA_VALUE * WHEEL_DELTA_VALUE;
+    axis->value += (double)delta * axis->increment / WHEEL_DELTA_VALUE;
+    return delta;
 }
 
-static int forbid_text(const char *test, const char *text, const char *needle)
+static long long drain_scroll(struct scroll_axis *axis, double value, int notched)
 {
-    if (strstr(text, needle))
+    long long total = 0;
+    int packet, count = 0;
+
+    while ((packet = scroll_packet(axis, value, notched)))
     {
-        fail(test, needle);
-        return 0;
-    }
-    return 1;
-}
-
-static int text_between_has(const char *text, const char *begin, const char *end,
-                            const char *needle)
-{
-    const char *first = strstr(text, begin), *last;
-
-    if (!first || !(last = strstr(first, end))) return -1;
-    first = strstr(first, needle);
-    return first && first < last;
-}
-
-static int require_text_between(const char *test, const char *text, const char *begin,
-                                const char *end, const char *needle)
-{
-    int found = text_between_has(text, begin, end, needle);
-
-    if (found == 1) return 1;
-    fail(test, found < 0 ? "expected code section was not found" : needle);
-    return 0;
-}
-
-static int forbid_text_between(const char *test, const char *text, const char *begin,
-                               const char *end, const char *needle)
-{
-    int found = text_between_has(text, begin, end, needle);
-
-    if (found == 0) return 1;
-    fail(test, found < 0 ? "expected code section was not found" : needle);
-    return 0;
-}
-
-static int require_order(const char *test, const char *text, const char *first,
-                         const char *second)
-{
-    const char *a = strstr(text, first), *b;
-
-    if (a && (b = strstr(a, second)) && b > a) return 1;
-    fail(test, !a ? first : second);
-    return 0;
-}
-
-static void check_pointer_setting_fallback(const char *stack, const char *safety,
-                                           const char *lifecycle, const char *final)
-{
-    int ok = 1;
-
-    ok &= require_text("pointer settings use safe source fallback", safety,
-                       "staticconstchar*constsources[]={\"environment\",\"AppDefaultsregistry\","
-                       "\"globalregistry\"};");
-    ok &= require_text("application and global settings are read separately", safety,
-                       "key=source_index==1?appkey:defkey;");
-    if (count_occurrences(safety, "for(source_index=0;source_index<3;source_index++)") != 2)
-    {
-        fail("pointer settings try every available source",
-             "expected one loop for named settings and one for InertiaRate");
-        ok = 0;
-    }
-    if (count_occurrences(stack, "pointer_option_enum(defkey,appkey,") < 6)
-    {
-        fail("the original six named pointer settings use fallback",
-             "one or more named settings bypass fallback");
-        ok = 0;
-    }
-    ok &= require_text("SmoothScrolling uses named-setting fallback", stack,
-                       "pointer_option_enum(defkey,appkey,\"SmoothScrolling\","
-                       "\"WINE_X11_SMOOTH_SCROLLING\"");
-    ok &= require_text("TouchpadInertia uses named-setting fallback", stack,
-                       "pointer_option_enum(defkey,appkey,\"TouchpadInertia\","
-                       "\"WINE_X11_TOUCHPAD_INERTIA\"");
-    ok &= require_text("PinchZoom uses named-setting fallback", stack,
-                       "pointer_option_enum(defkey,appkey,\"PinchZoom\",\"WINE_X11_PINCH_ZOOM\"");
-    ok &= require_text("MiddleDrag uses named-setting fallback", stack,
-                       "pointer_option_enum(defkey,appkey,\"MiddleDrag\",\"WINE_X11_MIDDLE_DRAG\"");
-    ok &= require_text("InertiaCurve uses named-setting fallback", stack,
-                       "pointer_option_enum(defkey,appkey,\"InertiaCurve\","
-                       "\"WINE_X11_INERTIA_CURVE\"");
-    ok &= require_text("WarpEmulation uses named-setting fallback", stack,
-                       "pointer_option_enum(defkey,appkey,\"WarpEmulation\","
-                       "\"WINE_X11_WARP_EMULATION\"");
-    ok &= require_text("named settings are case-insensitive", lifecycle,
-                       "if(strcasecmp(buffer,names[i]))continue;");
-    ok &= require_text("off and zero alias a disabled setting", lifecycle,
-                       "if(!strcasecmp(names[0],\"disabled\")&&"
-                       "(!strcasecmp(buffer,\"off\")||!strcmp(buffer,\"0\")))");
-    ok &= require_text("invalid named settings use the diagnostic channel", lifecycle,
-                       "WARN_(winediag)(\"unrecognized%svalue%sfromthe%s,ignoringit\\n\","
-                       "name,debugstr_a(buffer),source);");
-    ok &= require_text("invalid inertia rates use the diagnostic channel", lifecycle,
-                       "WARN_(winediag)(\"InertiaRatevalue%sfromthe%sisnotadecimalin[0.5,16.0],ignoringit\\n\","
-                       "debugstr_a(buffer),source);continue;");
-    ok &= require_text("a valid inertia rate ends the search", safety,
-                       "pointer_config.inertia_rate=parsed;"
-                       "TRACE(\"InertiaRate=%.2f(%s)\\n\",parsed,source);break;");
-    ok &= require_text("disabled remains a valid inertia setting", stack,
-                       "staticconstchar*constinertia_names[]={\"disabled\",\"auto\",\"enabled\"};");
-    ok &= require_text("middle throw has an independent setting", lifecycle,
-                       "pointer_option_enum(defkey,appkey,\"MiddleDragThrow\","
-                       "\"WINE_X11_MIDDLE_DRAG_THROW\"");
-    ok &= require_text("held-button wheel input has an independent setting", lifecycle,
-                       "pointer_option_enum(defkey,appkey,\"WheelWhileButtonHeld\","
-                       "\"WINE_X11_WHEEL_WHILE_BUTTON_HELD\"");
-    ok &= require_text("precise scrolling is enabled by default", stack,
-                       ".smooth_scrolling=POINTER_SCROLL_PRECISE");
-    ok &= require_text("fine inertia is enabled by default", lifecycle,
-                       ".touchpad_inertia=POINTER_INERTIA_ENABLED");
-    ok &= require_text("pinch zoom is enabled by default", stack,
-                       ".pinch_zoom=POINTER_PINCH_LEGACY_WHEEL");
-    ok &= require_text("middle drag navigation is enabled by default", stack,
-                       ".middle_drag=POINTER_MIDDLE_DRAG_NAVIGATE");
-    ok &= require_text("middle throw is enabled by default", lifecycle,
-                       ".middle_drag_throw=POINTER_MIDDLE_DRAG_THROW_ENABLED");
-    ok &= require_text("physical wheel input while held remains enabled by default", lifecycle,
-                       ".wheel_while_button_held=POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED");
-    ok &= require_text("the final default decay rate is four per second", final,
-                       ".inertia_rate=4.0,");
-    if (ok) pass("all eight named settings plus InertiaRate preserve safe source fallback");
-}
-
-static void check_warp_emulation(const char *stack, const char *warp, const char *ownership)
-{
-    int ok = 1;
-
-    ok &= require_text("warp state is process-wide and locked", warp,
-                       "staticpthread_mutex_twarp_emulation_mutex=PTHREAD_MUTEX_INITIALIZER;");
-    ok &= forbid_text("warp state does not return to the X11 thread struct", warp,
-                      "warp_have_last");
-    ok &= forbid_text("warp state has no event-count timeout", warp, "warp_idle");
-    ok &= forbid_text("warp state has no polling-rate-dependent event limit", warp, ">512");
-
-    ok &= require_text("warp emulation is automatic by default", ownership,
-                       ".warp_emulation=POINTER_WARP_AUTO");
-    ok &= forbid_text("warp emulation is never forced on by default", ownership,
-                      ".warp_emulation=POINTER_WARP_ENABLED");
-    ok &= require_text("a release is remapped only after emulated drag motion", ownership,
-                       "if(button_up_flags[button]&&warp_emulation_delivered_this_drag())");
-    ok &= require_text("emulated drag motion is tracked for the release", ownership,
-                       "if(allow_probe)warp_emulation.delivered_this_drag=TRUE;");
-    ok &= require_text("native drag motion keeps the release native", ownership,
-                       "if(allow_probe)warp_emulation.delivered_this_drag=FALSE;");
-    ok &= require_text("a master switch disables every pointer feature", ownership,
-                       "getenv(\"WINE_X11_POINTER_FEATURES\")");
-    ok &= require_order("the master switch is evaluated before individual settings", ownership,
-                        "WINE_X11_POINTER_FEATURES", "value=pointer_config.smooth_scrolling;");
-    ok &= require_text("the master switch forces warp emulation off", ownership,
-                       "pointer_config.warp_emulation=POINTER_WARP_DISABLED;");
-    ok &= require_text("the master switch reports on the diagnostic channel", ownership,
-                       "WINE_X11_POINTER_FEATURES=%sdisableseverypointerfeature");
-    ok &= require_text("warp emulation has a registry setting and environment escape hatch", stack,
-                       "pointer_option_enum(defkey,appkey,\"WarpEmulation\","
-                       "\"WINE_X11_WARP_EMULATION\"");
-    ok &= require_text("warp setting exposes disabled auto and forced modes", stack,
-                       "staticconstchar*constwarp_names[]={\"disabled\",\"auto\",\"enabled\"};");
-    ok &= require_text("automatic warp handling is limited to XWayland", warp,
-                       "XQueryExtension(display,\"XWAYLAND\"");
-
-    ok &= require_order("the pre-warp server point is sampled before XWarpPointer", warp,
-                        "XQueryPointer(data->display,root_window", "XWarpPointer(data->display");
-    ok &= require_text("extended held buttons survive the core-mask reconciliation", warp,
-                       "buttons|=warp_emulation.buttons&~7u;");
-    ok &= require_text("only one ordinary held button can arm a warp", warp,
-                       "if(!(buttons&7u)||(buttons&(buttons-1)))");
-    ok &= require_text_between("every new button press resets warp evidence", warp,
-                               "staticvoidwarp_emulation_button_press(",
-                               "staticvoidwarp_emulation_button_release(",
-                               "warp_emulation.failed_votes=0;");
-    ok &= require_text_between("every button release resets warp evidence", warp,
-                               "staticvoidwarp_emulation_button_release(",
-                               "staticBOOLwarp_emulation_available(",
-                               "warp_emulation.failed_votes=0;");
-    ok &= require_text_between("wheel presses cancel probes without becoming held buttons", warp,
-                               "staticvoidwarp_emulation_button_press(",
-                               "staticvoidwarp_emulation_button_release(",
-                               "if(button_up_flags[index]){bit=1u<<index;"
-                               "warp_emulation.buttons|=bit;}");
-    ok &= require_text_between("wheel releases cannot disturb held-button ownership", warp,
-                               "staticvoidwarp_emulation_button_release(",
-                               "staticBOOLwarp_emulation_available(",
-                               "if(button_up_flags[index]){bit=1u<<index;"
-                               "warp_emulation.buttons&=~bit;}");
-    ok &= require_text("every warp keeps a fixed pre-warp baseline", warp,
-                       "warp_emulation.prewarp=prewarp;");
-    ok &= require_text("raw correlation uses accelerated XI2 values", warp,
-                       "warp_emulation_raw_motion(event->display,event->sourceid,event->time,"
-                       "x_value*x_scale,y_value*y_scale);");
-    ok &= require_text("failed-warp expectation includes the raw delta", warp,
-                       "failed.x=warp_emulation.prewarp.x+round(warp_emulation.raw_dx);");
-    ok &= require_text("server-applied expectation includes the same raw delta", warp,
-                       "applied.x=warp_emulation.target.x+round(warp_emulation.raw_dx);");
-    ok &= require_text("raw evidence is tied to one warp generation", warp,
-                       "warp_emulation.raw_generation!=warp_emulation.generation");
-    ok &= require_text("raw evidence is tied to the cooked event connection", warp,
-                       "warp_emulation.raw_display!=display||warp_emulation.raw_time!=time");
-    ok &= require_text("conflicting raw sources keep automatic mode native", warp,
-                       "elsewarp_emulation.raw_conflict=TRUE;");
-    ok &= require_text("automatic mode needs two failed correlations", warp,
-                       "#defineWARP_EMULATION_FAILURE_VOTES2");
-    ok &= require_text("successful or ambiguous evidence returns to native mapping", warp,
-                       "warp_emulation.failed_votes=0;warp_emulation.reporting=FALSE;");
-    ok &= require_text("mapped motion uses the fixed pre-warp point without losing a delta", warp,
-                       "warp_emulation.reported.x=warp_emulation.target.x+pos.x-"
-                       "warp_emulation.prewarp.x;");
-
-    ok &= require_order("synthetic warp motion is rejected before it can vote", warp,
-                        "if(is_old_motion_event(event->serial))", "warp_emulation_reconcile_motion");
-    ok &= require_order("cross-thread synthetic warp motion is rejected before reconciliation", warp,
-                        "if(warp_emulation_ignore_synthetic(pt))returnFALSE;",
-                        "warp_emulation_reconcile_motion(event->state);");
-    ok &= require_text("every cross-thread synthetic target copy is rejected", warp,
-                       "warp_emulation.synthetic_pending&&pos.x==warp_emulation.target.x&&"
-                       "pos.y==warp_emulation.target.y)ignore=TRUE;");
-    ok &= require_text("the first non-target cooked motion ends synthetic filtering", warp,
-                       "elseif(warp_emulation.synthetic_pending)"
-                       "warp_emulation.synthetic_pending=FALSE;");
-    ok &= require_order("middle navigation consumes native coordinates before warp mapping", warp,
-                        "if(middle_drag_motion(event,pt,time))returnTRUE;",
-                        "pt=map_emulated_warp_coords(event->display,pt,event->time,TRUE);");
-    ok &= require_order("release coordinates are mapped before warp state is cleared", warp,
-                        "pt=map_emulated_warp_coords(event->display,pt,event->time,FALSE);",
-                        "warp_emulation_button_release(event->button);");
-    ok &= require_order("middle release cannot leave warp emulation armed", warp,
-                        "warp_emulation_button_release(event->button);",
-                        "if(middle_drag_end(event,pt,time))");
-    ok &= require_text("extended press buttons are checked before warp bookkeeping", warp,
-                       "if(button>=NB_BUTTONS)warp_emulation_cancel();"
-                       "elsewarp_emulation_button_press(event->button);");
-    ok &= require_text("release mapping is limited to real held buttons", warp,
-                       "if(button>=NB_BUTTONS)warp_emulation_cancel();else{"
-                       "if(button_up_flags[button])"
-                       "pt=map_emulated_warp_coords(event->display,pt,event->time,FALSE);"
-                       "warp_emulation_button_release(event->button);}");
-    ok &= require_order("extended release buttons are checked before array lookup", warp,
-                        "if(button>=NB_BUTTONS)warp_emulation_cancel();else{",
-                        "if(button_up_flags[button])");
-    ok &= require_text("a keyboard-grab refusal disarms an older transform", warp,
-                       "if(keyboard_grabbed){warp_emulation_disarm();"
-                       "WARN(\"refusingtowarpto%u,%u\\n\",pos.x,pos.y);returnFALSE;}");
-    ok &= require_text("a pointer-grab refusal disarms an older transform", warp,
-                       "!=GrabSuccess){warp_emulation_disarm();"
-                       "WARN(\"refusingtowarppointerto%u,%uwithoutexclusivegrab\\n\","
-                       "pos.x,pos.y);returnFALSE;}");
-
-    ok &= require_text("clip release cancels warp state before an early return", warp,
-                       "warp_emulation_cancel();if(!clip_window)return;");
-    ok &= require_text("capture transitions cancel before the flags early return", warp,
-                       "warp_emulation_cancel();"
-                       "if(!(flags&(GUI_INMOVESIZE|GUI_INMENUMODE)))return;");
-    ok &= require_text("FocusOut cancellation runs before focus guards", warp,
-                       "if(event->detail!=NotifyPointer)warp_emulation_cancel();"
-                       "if(event->detail==NotifyPointer)");
-    ok &= require_text("device replacement cancels warp state", warp,
-                       "if(event->deviceid!=data->xinput2_pointer)returnFALSE;"
-                       "warp_emulation_cancel();update_relative_valuators");
-    ok &= require_text("thread detach cancels process warp state", warp,
-                       "if(data){warp_emulation_cancel();");
-
-    if (ok) pass("XWayland warp emulation activates only from correlated failed warps");
-}
-
-static void check_held_and_direct_input(const char *stack, const char *safety,
-                                        const char *lifecycle, const char *final)
-{
-    int ok = 1;
-
-    ok &= require_text("held valuators advance the baseline and emit zero", stack,
-                       "if(!axis->value_valid||reseed){axis->value=value;axis->value_valid=TRUE;return0;");
-    ok &= require_text("all XI button state controls reseeding", stack,
-                       "buttons_down=xinput2_any_button_down(event);");
-    ok &= require_text("horizontal held movement is reseeded", stack,
-                       "smooth_scroll_delta(&src->scroll_x,value_x,buttons_down,quantize,&discontinuity);");
-    ok &= require_text("vertical held movement is reseeded", stack,
-                       "smooth_scroll_delta(&src->scroll_y,value_y,buttons_down,quantize,&discontinuity);");
-    ok &= require_text("button state cannot select an output mode", stack,
-                       "quantize=pointer_config.smooth_scrolling==POINTER_SCROLL_NOTCHED;");
-    ok &= forbid_text("held movement cannot become notched output", safety,
-                      "POINTER_SCROLL_NOTCHED||buttons_down");
-    ok &= require_text("held wheel input requires enabled mode and exact provenance", lifecycle,
-                       "if(pointer_config.wheel_while_button_held=="
-                       "POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED&&event_button_mask&&"
-                       "event_button_mask==held_button_mask&&"
-                       "!x11drv_thread_data()->middle_drag.active)");
-    ok &= require_text_between("only a stable held physical wheel uses the stock input path", lifecycle,
-                               "staticBOOLsend_discrete_wheel_input(",
-                               "/*Middle-dragnavigation",
-                               "returnsend_mouse_input(hwnd,pt,MOUSEEVENTF_ABSOLUTE|flags,"
-                               "delta,time,NULL);");
-    ok &= require_text_between("the driver suppresses wheel input for mismatched held state", lifecycle,
-                               "staticBOOLsend_discrete_wheel_input(",
-                               "/*Middle-dragnavigation",
-                               "if(event_button_mask||held_button_mask||"
-                               "x11drv_thread_data()->middle_drag.active)");
-    ok &= require_text_between("unheld physical wheel input retains guarded positioning", lifecycle,
-                               "staticBOOLsend_discrete_wheel_input(",
-                               "/*Middle-dragnavigation",
-                               "returnsend_wheel_at_input(hwnd,pt,flags,delta,time,NULL,FALSE);");
-    ok &= require_text("core wheel provenance includes core and extended-button masks", lifecycle,
-                       "core_event_button_mask(event->state)|"
-                       "(pointer_button_mask()&((1u<<3)|(1u<<4)))");
-    ok &= require_text("native XI wheel provenance maps all ordinary buttons", lifecycle,
-                       "staticconstunsignedintbuttons[]={1,2,3,8,9};");
-    ok &= require_text("native XI wheel provenance preserves each mapped bit", lifecycle,
-                       "XIMaskIsSet(event->buttons.mask,buttons[i]))mask|=1u<<i;");
-    ok &= require_text("native XI wheel uses the full event button mask", lifecycle,
-                       "send_discrete_wheel_input(hwnd,pt,button_down_flags[button],"
-                       "(int)button_down_data[button],time,xinput2_ordinary_button_mask(event));");
-    ok &= require_text("direct XI scroll separates cursor and wheel submission", safety,
-                       "if(!send_mouse_input(hwnd,pt,MOUSEEVENTF_ABSOLUTE,0,time,NULL))returnFALSE;"
-                       "returnsend_wheel_at_input(hwnd,pt,flags,delta,time,NULL,FALSE);");
-    ok &= forbid_text_between("cursor movement cannot inherit fixed-wheel flags", safety,
-                              "staticBOOLsend_xinput2_wheel_input(", "/*Addboundedinertia",
-                              "MOUSEEVENTF_ABSOLUTE|flags");
-    ok &= require_text("held smooth valuators still reseed without gesture output", lifecycle,
-                       "if(buttons_down||discontinuity){");
-    ok &= require_text("the driver forwards ordinary XI motion with no scroll axes", stack,
-                       "if(!have_x&&!have_y)returnforward_xinput2_core_event(hwnd,event,FALSE);");
-    ok &= require_order("the driver reads held state before handling pointer motion in a scroll report", final,
-                        "buttons_down=xinput2_any_button_down(event);",
-                        "if(saw_motion&&(!buttons_down||data->middle_drag.active))");
-    ok &= require_text("the driver forwards held pointer motion from a scroll report only during middle navigation", final,
-                       "if(saw_motion&&(!buttons_down||data->middle_drag.active))"
-                       "forward_xinput2_core_event(hwnd,event,TRUE);"
-                       "elseif(saw_motion)TRACE(\"Wineignorespointermotionfromascrollreportwhileabuttonisheld\\n\");");
-    if (ok) pass("only provenance-matched physical wheel input bypasses fixed gesture delivery");
-}
-
-static void check_core_button_ownership(const char *ownership)
-{
-    int ok = 1;
-
-    ok &= require_text("smooth observation selects XI motion outside drags", ownership,
-                       "XISetMask(mask_bits,XI_Motion);");
-    if (count_occurrences(ownership, "XISetMask(mask_bits,XI_ButtonPress);") != 1)
-    {
-        fail("application-window smooth observation does not select XI button presses",
-             "only the pre-existing root raw-input selection may remain");
-        ok = 0;
-    }
-    ok &= forbid_text("application-window smooth observation does not select XI button releases",
-                      ownership, "XISetMask(mask_bits,XI_ButtonRelease);");
-    ok &= require_text("the smooth generic-event dispatch accepts motion", ownership,
-                       "caseXI_Motion:ret=X11DRV_SmoothScrollEvent(event);");
-    ok &= forbid_text("the smooth generic-event dispatch cannot accept button presses",
-                      ownership, "caseXI_ButtonPress:");
-    ok &= forbid_text("the smooth generic-event dispatch cannot accept button releases",
-                      ownership, "caseXI_ButtonRelease:");
-    ok &= require_text("XI forwarding is motion-only", ownership,
-                       "staticBOOLforward_xinput2_core_motion(HWNDhwnd,XIDeviceEvent*event,");
-    ok &= forbid_text("XI forwarding does not reconstruct core button structures",
-                      ownership, "core.xbutton");
-    ok &= forbid_text("XI forwarding cannot call the core button-press handler",
-                      ownership, "X11DRV_ButtonPress(hwnd,&core)");
-    ok &= forbid_text("XI forwarding cannot call the core button-release handler",
-                      ownership, "X11DRV_ButtonRelease(hwnd,&core)");
-    ok &= require_text("each X11 thread records the window whose core drag owns motion", ownership,
-                       "Windowxinput2_core_drag_window;");
-    ok &= require_text("each X11 thread records all ordinary buttons in that grab", ownership,
-                       "unsignedintxinput2_core_drag_buttons;");
-    ok &= require_text("each X11 thread records the first accepted core drag motion", ownership,
-                       "BOOLxinput2_core_drag_motion_seen;");
-    ok &= require_text("the application XI mask excludes motion throughout a recorded core drag",
-                       ownership,
-                       "if(xinput2_smooth_scroll&&!(data->xinput2_core_drag_buttons&&"
-                       "data->xinput2_core_drag_window==window)){");
-    ok &= require_text("a core press replaces and flushes the XI mask without motion", ownership,
-                       "data->xinput2_core_drag_buttons|=bit;"
-                       "x11drv_xinput2_enable(display,window);XFlush(display);");
-    ok &= require_text("only the final core release reaches XI restoration", ownership,
-                       "data->xinput2_core_drag_buttons&=~bit;"
-                       "if(data->xinput2_core_drag_buttons)return;");
-    ok &= require_order("the final core release reports actual delivery before clearing its state",
-                        ownership,
-                        "corebutton%ucompleteddragonwindow%lx;servercoremotionseen%u",
-                        "data->xinput2_core_drag_window=None;");
-    ok &= require_text("the final core release clears measurement state and flushes XI restoration",
-                       ownership,
-                       "data->xinput2_core_drag_window=None;"
-                       "data->xinput2_core_drag_motion_seen=FALSE;"
-                       "x11drv_xinput2_enable(display,window);XFlush(display);");
-    ok &= require_text("accepted core motion has a once-per-drag runtime marker", ownership,
-                       "if(!event->send_event&&!co_reported_scroll&&"
-                       "data->xinput2_core_drag_buttons&&"
-                       "data->xinput2_core_drag_window==event->window&&"
-                       "!data->xinput2_core_drag_motion_seen){"
-                       "data->xinput2_core_drag_motion_seen=TRUE;"
-                       "TRACE(\"XserverdeliveredcoreMotionNotifywhileXIscrollmotionis"
-                       "suspendedonwindow%lx\\n\",event->window);}");
-    ok &= require_order("synthetic warp motion cannot satisfy the core-delivery marker", ownership,
-                        "if(warp_emulation_ignore_synthetic(pt))returnFALSE;",
-                        "XserverdeliveredcoreMotionNotifywhileXIscrollmotionissuspended");
-    ok &= require_text("XI motion queued across the press boundary cannot be reconstructed", ownership,
-                       "if(data->xinput2_core_drag_buttons&&"
-                       "data->xinput2_core_drag_window==event->event){"
-                       "TRACE(\"discardingXImotionqueuedbeforecore-dragsuspensiononwindow%lx\\n\","
-                       "event->event);returnTRUE;}");
-    ok &= require_order("core motion is deselected before the press boundary is invalidated", ownership,
-                        "xinput2_core_drag_transition(event->display,event->window,event->button,TRUE);",
-                        "corebutton%ubeginsexclusivestockpointerownership;"
-                        "invalidatingXIscrollbaselines");
-    ok &= require_order("release invalidation happens before XI motion is restored", ownership,
-                        "corebutton%uendsexclusivestockpointerownership;"
-                        "invalidatingXIscrollbaselines",
-                        "xinput2_core_drag_transition(event->display,event->window,event->button,FALSE);");
-    ok &= require_text("ordinary core presses invalidate hidden XI scroll movement", ownership,
-                       "corebutton%ubeginsexclusivestockpointerownership;"
-                       "invalidatingXIscrollbaselines");
-    ok &= require_text("ordinary core releases invalidate hidden XI scroll movement", ownership,
-                       "corebutton%uendsexclusivestockpointerownership;"
-                       "invalidatingXIscrollbaselines");
-    if (count_occurrences(ownership, "pointer_scroll_invalidate_baselines();") != 2)
-    {
-        fail("core drag boundaries each invalidate scroll baselines",
-             "expected one invalidation on ordinary press and one on ordinary release");
-        ok = 0;
-    }
-    if (ok) pass("XI scroll selection is suspended while the X server owns each core drag");
-}
-
-static void check_legacy_wheel_copy_guard(const char *stack, const char *ownership)
-{
-    int ok = 1;
-
-    ok &= require_text("legacy wheel-copy correlation remains per X11 thread", stack,
-                       "structx11drv_legacy_wheel_copylegacy_wheel_copy;");
-    ok &= require_text_between("legacy wheel-copy tags retain raw X time", stack,
-                               "structx11drv_legacy_wheel_copy{",
-                               "externvoidpointer_scroll_invalidate_baselines", "Timetime;");
-    ok &= require_text_between("legacy wheel-copy tags retain expected directions", stack,
-                               "structx11drv_legacy_wheel_copy{",
-                               "externvoidpointer_scroll_invalidate_baselines",
-                               "unsignedintwheel_buttons;");
-    ok &= require_text_between("legacy wheel-copy tags retain the held mask", stack,
-                               "structx11drv_legacy_wheel_copy{",
-                               "externvoidpointer_scroll_invalidate_baselines",
-                               "unsignedintheld_buttons;");
-    ok &= require_text_between("legacy wheel-copy tags retain the X target window", stack,
-                               "structx11drv_legacy_wheel_copy{",
-                               "externvoidpointer_scroll_invalidate_baselines", "Windowwindow;");
-    ok &= forbid_text("normal no-button smooth scrolling may arm duplicate suppression",
-                      ownership, "if(!held_buttons)");
-    ok &= require_text("vertical legacy directions come from the changed XI axis", stack,
-                       "legacy_wheel_copy_direction(&src->scroll_y,value_y,4,5)");
-    ok &= require_text("horizontal legacy directions come from the changed XI axis", stack,
-                       "legacy_wheel_copy_direction(&src->scroll_x,value_x,6,7)");
-    ok &= require_text("a tag generation is keyed by time held mask and target window", ownership,
-                       "if(!copy->valid||copy->time!=event->time||"
-                       "copy->held_buttons!=held_buttons||copy->window!=event->event)");
-    ok &= require_text("a new native tag generation clears all prior correlation state", ownership,
-                       "if(copy->valid)legacy_wheel_copy_reset(\"newnativeXIscrollreport\");"
-                       "copy->time=event->time;");
-    ok &= require_text("a later directionless native report expires an older tag", ownership,
-                       "if(copy->valid&&copy->time!=event->time)legacy_wheel_copy_reset("
-                       "\"newnativeXIscrollreporthasnolegacycopy\");");
-    ok &= require_text("a tag stores the raw XI time mask and target", stack,
-                       "copy->time=event->time;copy->held_buttons=held_buttons;"
-                       "copy->window=event->event;copy->wheel_buttons=0;copy->valid=TRUE;");
-    ok &= forbid_text_between("an emulated physical-wheel XI report cannot arm suppression",
-                              ownership, "if(emulated){", "/*Nativesmoothinput",
-                              "legacy_wheel_copy_tag(");
-    ok &= require_order("native smooth input arms suppression before delivery baselines advance",
-                        ownership,
-                        "legacy_wheel_copy_tag(event,src,have_x,value_x,have_y,value_y);",
-                        "buttons_down=xinput2_any_button_down(event);");
-
-    ok &= require_text("a different raw X timestamp expires the tag", stack,
-                       "if(event->time!=copy->time){legacy_wheel_copy_reset("
-                       "\"legacycorewheeltimechanged\");returnFALSE;}");
-    ok &= require_text("only matching direction time window held state and server events suppress", ownership,
-                       "if(event->send_event||event->window!=copy->window||"
-                       "!(copy->wheel_buttons&button_bit)||"
-                       "held_buttons!=copy->held_buttons)");
-    ok &= forbid_text("one same-time smooth report may suppress all of its legacy copies",
-                      ownership, "copy->wheel_buttons&=");
-    if (count_occurrences(ownership,
-                          "legacy_wheel_copy_suppress(event,event_button_mask)") != 2)
-    {
-        fail("matching legacy press and release copies are both suppressed",
-             "expected one early guard in each core wheel handler");
-        ok = 0;
-    }
-    ok &= require_order("tagged legacy presses are rejected before pointer side effects", ownership,
-                        "legacy_wheel_copy_suppress(event,event_button_mask)",
-                        "if((data=get_win_data(hwnd)))");
-    ok &= require_text("tagged legacy releases return before release bookkeeping", ownership,
-                       "if(pinch_button_is_wheel(event->button)&&"
-                       "legacy_wheel_copy_suppress(event,event_button_mask))returnTRUE;"
-                       "if(pinch_button_is_wheel(event->button))"
-                       "legacy_wheel_copy_button_release(event);else{");
-    ok &= require_order("release baseline invalidation precedes coordinate side effects", ownership,
-                        "corebutton%uendsexclusivestockpointerownership;"
-                        "invalidatingXIscrollbaselines",
-                        "pt=map_event_coords(hwnd,event->window,event->root,root,pt);");
-    if (ok) pass("native smooth reports suppress only their correlated legacy core copies");
-}
-
-static void check_direct_packet_bounds(const char *stack, const char *safety,
-                                       const char *final)
-{
-    int ok = 1;
-
-    if (count_occurrences(safety, "staticconstintmax_delta=WHEEL_DELTA;") != 2)
-    {
-        fail("smooth and pinch reports are each limited to one notch",
-             "expected one exact limit in each final decoder");
-        ok = 0;
-    }
-    ok &= require_text("large smooth jumps reset their baseline", safety,
-                       "if(fabs(units)>2.0*max_delta){axis->value=value;"
-                       "if(discontinuity)*discontinuity=TRUE;return0;}");
-    ok &= require_text("smooth excess is discarded after one notch", stack,
-                       "if((delta=round(units))>max_delta||delta<-max_delta){axis->value=value;"
-                       "returndelta>0?max_delta:-max_delta;}");
-    ok &= require_text("middle-drag horizontal input is inverted", final,
-                       "move_x=drag->last.x-pt.x;");
-    ok &= require_text("middle-drag vertical input is inverted", final,
-                       "move_y=drag->last.y-pt.y;");
-    ok &= require_text("middle-drag vertical movement is bounded before delivery", final,
-                       "delta_y=middle_drag_delta(&drag->accum_y,notched);");
-    ok &= require_text("middle-drag horizontal movement is bounded before delivery", final,
-                       "delta_x=middle_drag_delta(&drag->accum_x,notched);");
-    ok &= require_text("Ctrl inverts the vertical middle-drag sign", final,
-                       "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_y=-delta_y;");
-    ok &= require_text_between("Ctrl inverts only after the vertical bound", final,
-                               "delta_y=middle_drag_delta(&drag->accum_y,notched);",
-                               "if(delta_y)",
-                               "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_y=-delta_y;");
-    ok &= forbid_text("Ctrl does not touch the horizontal sign", final,
-                      "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_x=-delta_x;");
-    ok &= require_text_between("pinch reports are limited to one notch", stack,
-                               "staticBOOLX11DRV_GesturePinchEvent(",
-                               "pthread_mutex_lock(&pinch_mutex);",
-                               "staticconstintmax_delta=WHEEL_DELTA;");
-    ok &= require_text("pinch cancellation is limited to one notch", stack,
-                       "if(delta>max_delta)delta=max_delta;elseif(delta<-max_delta)delta=-max_delta;");
-    ok &= require_text("live pinch updates are limited to one notch", stack,
-                       "if((delta=round(units))>max_delta)delta=max_delta;"
-                       "elseif(delta<-max_delta)delta=-max_delta;");
-    ok &= require_text("pinch output stays at its begin point", stack,
-                       "send_wheel_control_input(hwnd,anchor,delta,time);");
-    ok &= require_text("unknown mouse buttons also block pinch output", safety,
-                       "returnpinch_state.buttons_down||pinch_state.other_buttons_down||"
-                       "pinch_state.wheel_requests;");
-    ok &= require_text("unknown button counts cannot wrap", safety,
-                       "elseif(pinch_state.other_buttons_down!=~0u)pinch_state.other_buttons_down++;");
-    if (ok) pass("direct scroll, middle drag, and pinch packets are bounded");
-}
-
-static void check_continuation_sources(const char *lifecycle, const char *final)
-{
-    int ok = 1;
-
-    ok &= require_text("middle continuation has independent enablement", lifecycle,
-                       "if(kind==POINTER_INERTIA_KIND_MIDDLE_DRAG)returnpointer_config."
-                       "middle_drag_throw==POINTER_MIDDLE_DRAG_THROW_ENABLED;");
-    ok &= require_text("fine continuation requires enabled mode", lifecycle,
-                       "returnpointer_config.touchpad_inertia==POINTER_INERTIA_ENABLED;");
-    ok &= require_text("middle throw records raw pointer movement", final,
-                       "middle_drag_throw_sample(x11drv_thread_data(),drag->hwnd,drag->origin,"
-                       "move_x,-move_y,time);");
-    if (count_occurrences(final, "middle_drag_throw_sample(") != 1)
-    {
-        fail("the final override has one post-slop middle sample site",
-             "a press anchor or additional motion sample site remains");
-        ok = 0;
-    }
-    ok &= require_order("middle history begins only after drag slop is crossed", final,
-                        "if(!drag->moved){", "if(move_x||move_y)middle_drag_throw_sample(");
-    ok &= require_order("the slop-crossing motion becomes the first middle sample", final,
-                        "drag->moved=TRUE;}", "if(move_x||move_y)middle_drag_throw_sample(");
-    ok &= require_text("a completed middle drag evaluates its release", lifecycle,
-                       "middle_drag_throw_release(data,drag->hwnd,time);");
-    ok &= require_text("a middle click cancels continuation state", lifecycle,
-                       "elsepointer_inertia_cancel();");
-    ok &= require_text("middle throw uses an explicit Button2 release reason", lifecycle,
-                       "pointer_inertia_release(data,POINTER_INERTIA_KIND_MIDDLE_DRAG,"
-                       "INERTIA_SOURCE_MIDDLE_DRAG,hwnd,time,"
-                       "POINTER_INERTIA_END_MIDDLE_RELEASE);");
-    ok &= require_text("fine estimator retains its ten-millisecond timing floor", final,
-                       "#defineINERTIA_MIN_SPAN_MS10");
-    ok &= require_text("middle estimator uses a 100 ms terminal suffix", final,
-                       "#defineMIDDLE_THROW_HISTORY_MS100");
-    ok &= require_text("middle estimator permits at most an 80 ms terminal gap", final,
-                       "#defineMIDDLE_THROW_MAX_GAP_MS80");
-    ok &= require_text("untimed coalesced middle motion receives a 24 ms span", final,
-                       "#defineMIDDLE_THROW_FALLBACK_SPAN_MS24");
-    ok &= require_text("middle throw requires four pixels of net terminal motion", final,
-                       "#defineMIDDLE_THROW_MIN_DISTANCE4.0");
-    ok &= require_text("middle estimator starts at the newest raw sample", final,
-                       "start=si->count-1;j=(si->pos+start)%INERTIA_HISTORY_SIZE;"
-                       "last=previous=si->history[j].time;");
-    ok &= require_text("middle estimator rejects release after its terminal gap", lifecycle,
-                       "if(release_time-last>MIDDLE_THROW_MAX_GAP_MS)");
-    ok &= require_text("middle estimator walks backward through one contiguous suffix", final,
-                       "if(last-si->history[j].time>MIDDLE_THROW_HISTORY_MS||"
-                       "previous-si->history[j].time>MIDDLE_THROW_MAX_GAP_MS)break;"
-                       "previous=si->history[j].time;start--;");
-    ok &= require_text("middle estimator sums every selected terminal delta", final,
-                       "for(i=start;i<si->count;i++){"
-                       "j=(si->pos+i)%INERTIA_HISTORY_SIZE;sum_x+=si->history[j].dx;"
-                       "sum_y+=si->history[j].dy;}");
-    ok &= require_text("only one or all-same-time samples enter the fallback", final,
-                       "if(si->count-start<2||!span){distance=hypot(sum_x,sum_y);");
-    ok &= require_text("the fallback alone applies distance and 24 ms", final,
-                       "if(distance<MIDDLE_THROW_MIN_DISTANCE){"
-                       "TRACE(\"middlethrowfallbackrejected:terminaldistance%.3fpixels\\n\",distance);"
-                       "returnFALSE;}span=MIDDLE_THROW_FALLBACK_SPAN_MS;}"
-                       "elseif(span<INERTIA_MIN_SPAN_MS)");
-    if (count_occurrences(final, "distance=hypot(sum_x,sum_y);") != 1 ||
-        count_occurrences(final, "span=MIDDLE_THROW_FALLBACK_SPAN_MS;") != 1)
-    {
-        fail("distance and fallback span apply only to untimed middle input",
-             "the final override contains another distance or fallback path");
-        ok = 0;
-    }
-    ok &= require_text("two or more timed samples require a ten-millisecond span", final,
-                       "elseif(span<INERTIA_MIN_SPAN_MS){"
-                       "TRACE(\"middlethrowrejected:%utimedsamplesover%ums\\n\","
-                       "si->count-start,span);returnFALSE;}");
-    ok &= require_text("fine velocity includes the first selected fractional delta", final,
-                       "if(!used)first=si->history[j].time;last=si->history[j].time;"
-                       "sum_x+=si->history[j].dx;sum_y+=si->history[j].dy;");
-    ok &= require_text("raw middle motion converts to wheel units only after estimation", lifecycle,
-                       "*vx=sum_x*1000.0*WHEEL_DELTA/(span*MIDDLE_DRAG_STEP);"
-                       "*vy=sum_y*1000.0*WHEEL_DELTA/(span*MIDDLE_DRAG_STEP);");
-    ok &= require_text("middle release uses its own terminal-gap gate", lifecycle,
-                       "UINTrelease_gate=kind==POINTER_INERTIA_KIND_MIDDLE_DRAG?"
-                       "MIDDLE_THROW_MAX_GAP_MS:INERTIA_RELEASE_GATE_MS;");
-    ok &= require_text_between("middle tracking never arms the inactivity timer", lifecycle,
-                               "staticvoidpointer_inertia_record(",
-                               "staticvoidpointer_scroll_inertia_activity(",
-                               "if(kind==POINTER_INERTIA_KIND_FINE_SCROLL)"
-                               "inertia_nudge_arm(hwnd,si->input_serial,INERTIA_DEADLINE_MS);");
-    ok &= require_text("stray timer ticks cannot release a middle throw", lifecycle,
-                       "if(si->kind==POINTER_INERTIA_KIND_MIDDLE_DRAG){"
-                       "TRACE(\"middlethrowignoresstraytimertick;awaitingButton2release\\n\");"
-                       "return;}");
-
-    ok &= require_text("unchanged scroll input remains the preferred explicit marker", lifecycle,
-                       "stop_marker=(have_x||have_y)&&");
-    ok &= require_text("changed cumulative valuators are tracked before baselines advance", final,
-                       "scroll_changed=(have_x&&src->scroll_x.last_value_valid&&"
-                       "value_x!=src->scroll_x.last_value)||"
-                       "(have_y&&src->scroll_y.last_value_valid&&"
-                       "value_y!=src->scroll_y.last_value);");
-    ok &= require_order("changed-but-rounded-zero XI2 activity is not discarded", final,
-                        "scroll_changed=(have_x&&", "if(have_x){src->scroll_x.last_value=value_x;");
-    ok &= require_order("the driver records raw horizontal units before advancing their baseline", final,
-                        "units_x=WHEEL_DELTA*(value_x-src->scroll_x.last_value)/"
-                        "src->scroll_x.increment;",
-                        "if(have_x){src->scroll_x.last_value=value_x;");
-    ok &= require_order("the driver records raw vertical units before advancing their baseline", final,
-                        "units_y=WHEEL_DELTA*(value_y-src->scroll_y.last_value)/"
-                        "src->scroll_y.increment;",
-                        "if(have_y){src->scroll_y.last_value=value_y;");
-    ok &= require_text("explicit marker wins over changed-scroll activity", final,
-                       "if(stop_marker)pointer_inertia_stop_marker(data,event->sourceid,hwnd,time);"
-                       "elseif(scroll_changed)pointer_scroll_inertia_activity(");
-    ok &= require_text("fine activity records raw fractional units rather than rounded output", final,
-                       "pointer_scroll_inertia_activity(data,event->sourceid,hwnd,pt,"
-                       "units_x,-units_y,time);");
-    ok &= require_text("fine activity retains double-precision samples", lifecycle,
-                       "staticvoidpointer_scroll_inertia_activity(structx11drv_thread_data*data,"
-                       "intsourceid,HWNDhwnd,POINTanchor,doubledx,doubledy,UINTtime)");
-    ok &= require_text("fine activity records every accepted fractional sample", lifecycle,
-                       "pointer_inertia_record(data,POINTER_INERTIA_KIND_FINE_SCROLL,sourceid,hwnd,"
-                       "anchor,dx,dy,time);");
-    ok &= require_text_between("every accepted activity sample stores its terminal axis and time", lifecycle,
-                               "staticvoidpointer_inertia_record(",
-                               "staticvoidpointer_scroll_inertia_activity(",
-                               "si->history[i].dy=dy;si->history[i].time=time;");
-    ok &= require_text_between("a discontinuity cancels only prior fine-scroll history", lifecycle,
-                               "if(buttons_down||discontinuity){",
-                               "elseif(pointer_config.smooth_scrolling==POINTER_SCROLL_PRECISE)",
-                               "if(!data->middle_drag.active)pointer_inertia_cancel();");
-    ok &= require_text_between("a discontinuity zeros both output axes", lifecycle,
-                               "if(buttons_down||discontinuity){",
-                               "elseif(pointer_config.smooth_scrolling==POINTER_SCROLL_PRECISE)",
-                               "if(discontinuity)delta_x=delta_y=0;");
-    ok &= require_text("fine inactivity fallback requires enabled mode", lifecycle,
-                       "if(si->kind==POINTER_INERTIA_KIND_FINE_SCROLL&&"
-                       "pointer_inertia_enabled(POINTER_INERTIA_KIND_FINE_SCROLL)&&"
-                       "now-si->last_time<=2*INERTIA_DEADLINE_MS)");
-    ok &= require_text("late inactivity abandons rather than fabricating a coast", lifecycle,
-                       "else{TRACE(\"%strackingabandonedafter%umsinactive\\n\",");
-    ok &= require_text("inactivity fallback uses its distinct conservative reason", lifecycle,
-                       "pointer_inertia_evaluate(data,now,POINTER_INERTIA_END_XI2_INACTIVITY);");
-    ok &= require_text("inactivity needs twice the explicit-marker starting speed", lifecycle,
-                       "if(reason==POINTER_INERTIA_END_XI2_INACTIVITY)start_speed*=2.0;");
-    ok &= require_text("motion from the same scroll report keeps the continuation history", lifecycle,
-                       "if(!co_reported_scroll)pointer_inertia_cancel();");
-    ok &= require_text("the driver applies the held-button rule to native XI motion in its scroll report", final,
-                       "if(saw_motion&&(!buttons_down||data->middle_drag.active))"
-                       "forward_xinput2_core_event(hwnd,event,TRUE);");
-    ok &= require_text("an emulated XI duplicate preserves an active middle throw", lifecycle,
-                       "if(!data->middle_drag.active)pointer_inertia_cancel();returnTRUE;");
-    if (ok) pass("fine inertia and middle throw have independent, explicit end policies");
-}
-
-static void check_inertia_timer_initialization(const char *final)
-{
-    int ok = 1;
-
-    ok &= require_text("the inertia condition starts as uninitialised storage", final,
-                       "staticpthread_cond_tinertia_nudge_cond;");
-    ok &= forbid_text("the inertia condition is not statically and dynamically initialised", final,
-                      "PTHREAD_COND_INITIALIZER");
-    if (count_occurrences(final, "pthread_cond_init(&inertia_nudge_cond,&attr)") != 1)
-    {
-        fail("the inertia condition is initialised exactly once",
-             "expected one dynamic condition-variable initialisation");
-        ok = 0;
-    }
-
-    ok &= require_order("condition attributes are created before selecting a clock", final,
-                        "pthread_condattr_init(&attr)",
-                        "pthread_condattr_setclock(&attr,CLOCK_MONOTONIC)");
-    ok &= require_order("the monotonic clock is selected before condition initialisation", final,
-                        "pthread_condattr_setclock(&attr,CLOCK_MONOTONIC)",
-                        "pthread_cond_init(&inertia_nudge_cond,&attr)");
-    ok &= require_order("condition attributes are destroyed after condition initialisation", final,
-                        "pthread_cond_init(&inertia_nudge_cond,&attr)",
-                        "pthread_condattr_destroy(&attr)");
-
-    ok &= require_text("attribute initialisation failure disables the timer", final,
-                       "if((ret=pthread_condattr_init(&attr))){"
-                       "WARN(\"failedtoinitialiseinertiaconditionattributes(%d),"
-                       "inertiadisabled\\n\",ret);inertia_nudge.failed=TRUE;}");
-    ok &= require_text("clock or condition initialisation failure disables the timer", final,
-                       "if((ret=pthread_condattr_setclock(&attr,CLOCK_MONOTONIC))||"
-                       "(ret=pthread_cond_init(&inertia_nudge_cond,&attr))){"
-                       "WARN(\"failedtoinitialisemonotonicinertiacondition(%d),"
-                       "inertiadisabled\\n\",ret);inertia_nudge.failed=TRUE;}"
-                       "pthread_condattr_destroy(&attr);");
-    ok &= require_text("timer setup failure prevents worker creation", final,
-                       "if(!inertia_nudge.failed&&NtCreateThreadEx(&thread,THREAD_ALL_ACCESS,NULL,"
-                       "NtCurrentProcess(),inertia_nudge_thread,NULL,0,0,0,0,NULL))");
-    ok &= require_text("a failed setup cannot enter the worker-success branch", final,
-                       "elseif(!inertia_nudge.failed)");
-    ok &= require_order("only the guarded worker-success branch marks the timer running", final,
-                        "elseif(!inertia_nudge.failed)", "inertia_nudge.running=TRUE;");
-    if (ok) pass("the inertia timer uses one monotonic condition and disables itself on failure");
-}
-
-static void check_one_shot_inertia_ticks(const char *final)
-{
-    static const char tick_begin[] =
-        "voidpointer_inertia_tick(LONGinput_serial){"
-        "structx11drv_thread_data*data=x11drv_thread_data();";
-    static const char coast_begin[] = "caseINERTIA_COASTING:break;}";
-    static const char tick_end[] = "UINTtime=EVENT_x11_time_to_win32_time(event->time);";
-    size_t count;
-    int ok = 1;
-
-    ok &= require_text_between("each timer slot carries its tracker generation", final,
-                               "staticpthread_cond_tinertia_nudge_cond;staticstruct{",
-                               "for(i=0;i<INERTIA_NUDGE_SLOTS;i++)", "LONGinput_serial;");
-    ok &= forbid_text_between("timer slots carry no repeating interval", final,
-                              "staticpthread_cond_tinertia_nudge_cond;staticstruct{",
-                              "for(i=0;i<INERTIA_NUDGE_SLOTS;i++)", "UINTinterval;");
-    ok &= forbid_text_between("timer slots carry no repeating mode", final,
-                              "staticpthread_cond_tinertia_nudge_cond;staticstruct{",
-                              "for(i=0;i<INERTIA_NUDGE_SLOTS;i++)", "BOOLrepeating;");
-    ok &= forbid_text("the final timer has no repeating scheduler state", final, "repeating");
-    ok &= require_text("timer arms require an explicit generation", final,
-                       "staticvoidinertia_nudge_arm(HWNDhwnd,LONGinput_serial,UINTinterval)");
-    ok &= forbid_text("the repeating timer signature cannot return", final,
-                      "inertia_nudge_arm(HWNDhwnd,UINTinterval,BOOL");
-    ok &= forbid_text("coast arms cannot request a repeating timer", final,
-                      "INERTIA_TICK_MS,TRUE");
-    ok &= forbid_text("tracking arms cannot use the former Boolean timer mode", final,
-                      "INERTIA_DEADLINE_MS,FALSE");
-
-    ok &= require_text_between("the worker snapshots a due slot generation", final,
-                               "for(i=0;i<INERTIA_NUDGE_SLOTS;i++){"
-                               "HWNDhwnd=inertia_nudge.slots[i].hwnd;LONGinput_serial;BOOLok;",
-                               "staticvoidinertia_nudge_arm(",
-                               "input_serial=inertia_nudge.slots[i].input_serial;");
-    ok &= require_order("the worker snapshots the generation before consuming its slot", final,
-                        "input_serial=inertia_nudge.slots[i].input_serial;",
-                        "inertia_nudge.slots[i].hwnd=0;");
-    ok &= require_order("the worker consumes the slot before posting", final,
-                        "inertia_nudge.slots[i].hwnd=0;",
-                        "NtUserPostMessage(hwnd,WM_X11DRV_POINTER_TICK,"
-                        "(WPARAM)(ULONG)input_serial,0)");
-    ok &= require_text("the posted tick carries the captured generation in WPARAM", final,
-                       "ok=NtUserPostMessage(hwnd,WM_X11DRV_POINTER_TICK,"
-                       "(WPARAM)(ULONG)input_serial,0);");
-    ok &= require_text("a post failure only records the consumed generation", final,
-                       "if(!ok)TRACE(\"failedtopostpointertickforhwnd%pserial%ld\\n\","
-                       "hwnd,(long)input_serial);");
-    ok &= forbid_text_between("a post failure cannot clear a replacement schedule", final,
-                              "if(!ok)TRACE(", "staticvoidinertia_nudge_arm(",
-                              "inertia_nudge.slots[");
-
-    ok &= require_text("the real tick handler accepts a generation", final, tick_begin);
-    ok &= forbid_text("the untagged tick handler signature cannot return", final,
-                      "pointer_inertia_tick(void)");
-    ok &= require_text("the public tick declaration carries the generation", final,
-                       "externvoidpointer_inertia_tick(LONGinput_serial);");
-    ok &= require_text("the window dispatcher forwards the tick generation", final,
-                       "caseWM_X11DRV_POINTER_TICK:pointer_inertia_tick((LONG)wp);return0;");
-    ok &= require_text("idle or locally stale ticks return without touching state", final,
-                       "if(si->state==INERTIA_IDLE||si->input_serial!=input_serial){"
-                       "TRACE(\"stalepointertickserial%ld,current%ldstate%u\\n\","
-                       "(long)input_serial,(long)si->input_serial,si->state);return;}");
-    ok &= require_order("local stale-tick rejection precedes the process generation check", final,
-                        "if(si->state==INERTIA_IDLE||si->input_serial!=input_serial)",
-                        "if(si->input_serial!=InterlockedCompareExchange("
-                        "&pointer_input_serial,0,0))");
-    ok &= forbid_text_between("local stale-tick rejection cannot mutate tracker state", final,
-                              "if(si->state==INERTIA_IDLE||si->input_serial!=input_serial)",
-                              "if(si->input_serial!=InterlockedCompareExchange(",
-                              "si->state=INERTIA_");
-
-    if (count_occurrences(final, "inertia_nudge_arm(") != 6 ||
-        count_occurrences(final, "inertia_nudge_arm(hwnd,si->input_serial,") != 1 ||
-        count_occurrences(final, "inertia_nudge_arm(si->hwnd,si->input_serial,") != 4)
-    {
-        fail("every timer arm carries the current tracker generation",
-             "expected one definition and five generation-tagged arm calls");
-        ok = 0;
-    }
-    ok &= require_text("a new fine-scroll deadline carries its generation", final,
-                       "inertia_nudge_arm(hwnd,si->input_serial,INERTIA_DEADLINE_MS);");
-    ok &= require_text("a newly accepted coast tick carries its generation", final,
-                       "inertia_nudge_arm(si->hwnd,si->input_serial,INERTIA_TICK_MS);");
-    ok &= require_text("an early tracking tick rearms its generation only", final,
-                       "inertia_nudge_arm(si->hwnd,si->input_serial,"
-                       "INERTIA_DEADLINE_MS-(now-si->last_time));return;");
-
-    ok &= require_text("an elapsed-zero coast rearms before returning", final,
-                       "if(!(elapsed_ms=now-si->last_tick)){"
-                       "inertia_nudge_arm(si->hwnd,si->input_serial,INERTIA_TICK_MS);return;}");
-    ok &= require_text("a continuing coast rearms only at the handler end", final,
-                       "elseinertia_nudge_arm(si->hwnd,si->input_serial,INERTIA_TICK_MS);}");
-    count = count_occurrences_between(final, coast_begin, tick_end,
-                                      "inertia_nudge_arm(si->hwnd,si->input_serial,"
-                                      "INERTIA_TICK_MS)");
-    if (count != 2)
-    {
-        fail("coasting rearms only for elapsed-zero and continued output",
-             count == (size_t)-1 ? "coasting handler section was not found" :
-                                   "unexpected coast rearm site count");
-        ok = 0;
-    }
-    count = count_occurrences_between(final, tick_begin, tick_end, "inertia_nudge_arm(");
-    if (count != 3)
-    {
-        fail("the tick handler has only tracking, elapsed-zero, and terminal rearm sites",
-             count == (size_t)-1 ? "tick handler section was not found" :
-                                   "unexpected tick-handler arm site count");
-        ok = 0;
-    }
-    if (ok) pass("generation-tagged one-shot ticks cannot backlog or perturb replacement state");
-}
-
-static void check_inertia_lifecycle_cancellation(const char *final)
-{
-    int ok = 1;
-
-    ok &= require_text("DestroyWindow cancels continuation before an unknown-window return", final,
-                       "structx11drv_thread_data*thread_data=x11drv_thread_data();"
-                       "structx11drv_win_data*data;pointer_inertia_cancel();"
-                       "if(!(data=get_win_data(hwnd)))return;");
-    ok &= require_text("DestroyNotify cancels continuation before an unknown-window return", final,
-                       "structx11drv_win_data*data;BOOLembedded;pointer_inertia_cancel();"
-                       "if(!(data=get_win_data(hwnd)))returnFALSE;");
-    ok &= require_text("every capture transition cancels continuation before early return", final,
-                       "TRACE(\"hwnd%p,flags%#x,previous%p\\n\",hwnd,flags,previous);"
-                       "pointer_inertia_cancel();warp_emulation_cancel();"
-                       "if(!(flags&(GUI_INMOVESIZE|GUI_INMENUMODE)))return;");
-    if (ok) pass("capture and window destruction unconditionally cancel continuation state");
-}
-
-static void check_accumulator_routing(const char *safety)
-{
-    int ok = 1;
-
-    ok &= require_text("accumulated motion has an explicit pending state", safety,
-                       "BOOLmouse_motion_pending;");
-    ok &= require_text("accumulated motion remembers its routing flags", safety,
-                       "UINTmouse_motion_flags;");
-    ok &= require_text("empty pending state is checked explicitly", safety,
-                       "if(!info->mouse_motion_pending)returnSTATUS_SUCCESS;");
-    ok &= require_text("pending motion is flushed with its own flags", safety,
-                       "if(info->mouse_motion_pending&&flags!=info->mouse_motion_flags){"
-                       "NTSTATUSstatus=send_mouse_motion(info->mouse_motion_flags);if(status)returnstatus;}");
-    ok &= require_text("new pending motion stores its flags", safety,
-                       "info->mouse_motion_flags=flags;info->mouse_motion_pending=TRUE;");
-    ok &= require_text("submitted motion clears its pending state", safety,
-                       "info->mouse_motion_flags=0;info->mouse_motion_pending=FALSE;");
-    if (ok) pass("queued cursor movement keeps its own routing flags");
-}
-
-static void check_inertia_limits(const char *stack, const char *lifecycle, const char *final)
-{
-    int ok = 1;
-
-    ok &= require_text("coast integration is limited to 16 ms", final,
-                       "#defineINERTIA_MAX_FRAME_MS16");
-    ok &= require_text("the driver limits one coast packet to 300 units", final,
-                       "#defineINERTIA_MAX_PACKET300");
-    ok &= require_text("the driver limits each coast axis to 4,800 units", final,
-                       "#defineINERTIA_MAX_TRAVEL(40*WHEEL_DELTA)");
-    ok &= require_text("the driver limits combined coast travel to 7,200 units", final,
-                       "#defineINERTIA_MAX_TOTAL_TRAVEL(60*WHEEL_DELTA)");
-    ok &= require_text("the driver limits one coast to 384 messages", final,
-                       "#defineINERTIA_MAX_MESSAGES384");
-    ok &= require_text("both continuation sources use the configured decay rate directly", stack,
-                       "doubleelapsed_dt,frame_dt,k=pointer_config.inertia_rate;");
-    ok &= require_text("the final policy selects the rate-four default", final,
-                       ".inertia_rate=4.0,");
-    ok &= forbid_text("middle throw has no hidden decay-scale constant", stack,
-                      "MIDDLE_THROW_DECAY_SCALE");
-    ok &= forbid_text_between("middle throw has no direct conditional rate multiplier", lifecycle,
-                              "voidpointer_inertia_tick(LONGinput_serial){"
-                              "structx11drv_thread_data*data=x11drv_thread_data();",
-                              "BOOLstop_marker=FALSE,scroll_changed=FALSE;",
-                              "POINTER_INERTIA_KIND_MIDDLE_DRAG?k");
-    ok &= forbid_text_between("middle throw has no conditional rate-assignment block", lifecycle,
-                              "voidpointer_inertia_tick(LONGinput_serial){"
-                              "structx11drv_thread_data*data=x11drv_thread_data();",
-                              "BOOLstop_marker=FALSE,scroll_changed=FALSE;",
-                              "POINTER_INERTIA_KIND_MIDDLE_DRAG){k");
-    if (count_occurrences_between(lifecycle, "voidpointer_inertia_tick(LONGinput_serial){"
-                                  "structx11drv_thread_data*data=x11drv_thread_data();",
-                                  "BOOLstop_marker=FALSE,scroll_changed=FALSE;",
-                                  "si->kind==POINTER_INERTIA_KIND_MIDDLE_DRAG") != 3)
-    {
-        fail("the tick has no extra middle-specific decay branch",
-             "expected only tracking and diagnostic middle-kind checks");
-        ok = 0;
-    }
-    ok &= require_text("the final policy uses the shared-travel packet helper", final,
-                       "staticintpointer_inertia_packet(double*remainder,double*velocity,"
-                       "int*travel,int*travel_total)");
-    ok &= require_text("the final policy retains the guarded timer tick", lifecycle,
-                       "voidpointer_inertia_tick(LONGinput_serial)");
-    ok &= require_text("the driver limits coast starting speed to 19,200 units per second", final,
-                       "#defineINERTIA_MAX_SPEED19200.0");
-    ok &= require_text("the coast state stores one shared message counter", final,
-                       "unsignedintmessage_count;");
-    ok &= require_text("combined coast travel has explicit state", final,
-                       "inttravel_total;");
-    ok &= require_text("a new coast resets axis total and message counts", final,
-                       "si->travel_x=si->travel_y=0;si->travel_total=0;"
-                       "si->message_count=0;");
-    ok &= require_text("the packet helper discards whole-unit excess", final,
-                       "intavailable=(int)*remainder;"
-                       "intremaining=min(INERTIA_MAX_TRAVEL-*travel,"
-                       "INERTIA_MAX_TOTAL_TRAVEL-*travel_total);intdelta;"
-                       "*remainder-=available;");
-    ok &= require_text("packet output uses the configured limit", stack,
-                       "if(available>INERTIA_MAX_PACKET)delta=INERTIA_MAX_PACKET;"
-                       "elseif(available<-INERTIA_MAX_PACKET)delta=-INERTIA_MAX_PACKET;");
-    ok &= require_text("the packet helper counts travel per axis and across both axes", final,
-                       "*travel+=abs(delta);*travel_total+=abs(delta);"
-                       "if(*travel>=INERTIA_MAX_TRAVEL||"
-                       "*travel_total>=INERTIA_MAX_TOTAL_TRAVEL)"
-                       "*remainder=*velocity=0.0;");
-    ok &= require_text("measured starting speed is clamped before coasting", stack,
-                       "if(speed>INERTIA_MAX_SPEED){vx*=INERTIA_MAX_SPEED/speed;"
-                       "vy*=INERTIA_MAX_SPEED/speed;}");
-    ok &= require_text("an elapsed-zero tick returns only after rearming", lifecycle,
-                       "if(!(elapsed_ms=now-si->last_tick)){"
-                       "inertia_nudge_arm(si->hwnd,si->input_serial,INERTIA_TICK_MS);return;}");
-    ok &= require_text("the tick integrates only the newest bounded frame", lifecycle,
-                       "frame_ms=elapsed_ms>INERTIA_MAX_FRAME_MS?INERTIA_MAX_FRAME_MS:elapsed_ms;"
-                       "elapsed_dt=elapsed_ms/1000.0;frame_dt=frame_ms/1000.0;");
-    ok &= require_text("vertical output checks the message and combined-travel budgets", final,
-                       "if(si->message_count<INERTIA_MAX_MESSAGES&&"
-                       "(delta=pointer_inertia_packet(&si->rem_y,&si->vy,"
-                       "&si->travel_y,&si->travel_total)))"
-                       "{si->message_count++;");
-    ok &= require_text("horizontal output checks the remaining shared budgets", final,
-                       "if(si->message_count<INERTIA_MAX_MESSAGES&&"
-                       "(delta=pointer_inertia_packet(&si->rem_x,&si->vx,"
-                       "&si->travel_x,&si->travel_total)))"
-                       "{si->message_count++;");
-    if (count_occurrences(final, "si->message_count++;") != 2)
-    {
-        fail("each coast packet consumes one total message slot", "expected exactly two guarded send paths");
-        ok = 0;
-    }
-    ok &= require_text("coasting stops when the message limit is used", final,
-                       "if(si->message_count>=INERTIA_MAX_MESSAGES||");
-    ok &= require_text("coasting retains the independent four-second limit", lifecycle,
-                       "now-si->start_time>INERTIA_CAP_MS+1000");
-    if (ok) pass("coasting retains frame, packet, axis, total-travel, and message limits");
-}
-
-static void check_inertia_generation(const char *stack, const char *safety,
-                                     const char *final)
-{
-    int ok = 1;
-
-    ok &= require_text("pointer input uses one process-wide generation", stack,
-                       "staticpthread_mutex_tpointer_input_mutex=PTHREAD_MUTEX_INITIALIZER;"
-                       "staticvolatileLONGpointer_input_serial;");
-    ok &= require_text("a sample compares its prior generation and continuation kind", final,
-                       "previous_serial=InterlockedCompareExchange(&pointer_input_serial,0,0);"
-                       "current=si->state==INERTIA_TRACKING&&si->kind==kind&&si->sourceid==sourceid&&"
-                       "si->hwnd==hwnd&&si->input_serial==previous_serial;");
-    ok &= require_text("an accepted sample advances the generation", final,
-                       "input_serial=InterlockedIncrement(&pointer_input_serial);"
-                       "pthread_mutex_unlock(&pointer_input_mutex);");
-    ok &= require_text("a non-current sample clears old history", safety,
-                       "if(!current&&si->state!=INERTIA_IDLE){HWNDold_hwnd=si->hwnd;"
-                       "si->state=INERTIA_IDLE;si->count=0;si->pos=0;");
-    ok &= require_text("a new sequence stores only its own point", safety,
-                       "if(new_sequence)si->anchor=anchor;");
-    ok &= require_text("release validates kind source window and generation", final,
-                       "current=si->state==INERTIA_TRACKING&&si->kind==kind&&"
-                       "si->sourceid==sourceid&&si->hwnd==hwnd&&si->input_serial==input_serial;"
-                       "input_serial=InterlockedIncrement(&pointer_input_serial);");
-    ok &= require_text("ticks reject a superseded process generation", final,
-                       "if(si->input_serial!=InterlockedCompareExchange(&pointer_input_serial,0,0)){"
-                       "si->state=INERTIA_IDLE;si->count=0;");
-    ok &= require_text("superseded process generations stop their scheduled tracker", stack,
-                       "si->state=INERTIA_IDLE;si->count=0;"
-                       "inertia_nudge_stop(si->hwnd);return;");
-    ok &= require_text("guarded submission rejects a stale generation", safety,
-                       "if(*expected_serial!=InterlockedCompareExchange(&pointer_input_serial,0,0))"
-                       "{pthread_mutex_unlock(&pointer_input_mutex);returnFALSE;}");
-    ok &= require_text("hardware-input status is normalised to Boolean success", safety,
-                       "ret=!NtUserSendHardwareInput(hwnd,SEND_HWMSG_RAWINPUT|SEND_HWMSG_FIXED_POSITION|");
-    ok &= require_text("vertical coast output carries the saved generation", safety,
-                       "send_wheel_at_input(si->hwnd,si->anchor,MOUSEEVENTF_WHEEL,delta,now,"
-                       "&si->input_serial,FALSE)");
-    ok &= require_text("horizontal coast output carries the saved generation", safety,
-                       "send_wheel_at_input(si->hwnd,si->anchor,MOUSEEVENTF_HWHEEL,delta,now,"
-                       "&si->input_serial,FALSE)");
-    ok &= forbid_text_between("stale output cannot invalidate newer input", safety,
-                              "staticBOOLsend_wheel_at_input(", "staticBOOLpointer_button_down(",
-                              "InterlockedIncrement(");
-    if (ok) pass("new pointer input invalidates older tracking and coast output");
-}
-
-static void check_button_serial_and_middle_mode(const char *safety)
-{
-    int ok = 1;
-
-    ok &= require_text("the driver reports every physical button early", safety,
-                       "SERVER_START_REQ(update_driver_button){req->win=wine_server_user_handle(hwnd);"
-                       "req->button=button;req->state=pinch_button_is_wheel(button)?-1:down;");
-    ok &= require_text_between("every core press is recorded before range handling", safety,
-                               "TRACE(\"hwnd%p/%lxbutton%upos%s\\n\"",
-                               "if(button>=NB_BUTTONS)returnFALSE;",
-                               "notify_button_transition(hwnd,event->button,TRUE);");
-    if (count_occurrences(safety, "notify_button_transition(hwnd,event->button,FALSE);") != 3)
-    {
-        fail("every core release path clears early state",
-             "expected unknown-button, middle-drag, and ordinary release notifications");
-        ok = 0;
-    }
-    ok &= require_text("the server accepts early button updates", safety,
-                       "DECL_HANDLER(update_driver_button)");
-    ok &= require_text("invalid early button reports are rejected", safety,
-                       "if(!req->button||req->state<-1||req->state>1){"
-                       "set_error(STATUS_INVALID_PARAMETER);return;}");
-    ok &= require_text("all physical buttons map to a tracked bucket", safety,
-                       "case1:return0;case2:return1;case3:return2;case8:return3;"
-                       "case9:return4;default:return5;");
-    ok &= require_text("early button counts cannot wrap to released", safety,
-                       "if(shared->driver_button_count[bucket]!=0xff)"
-                       "shared->driver_button_count[bucket]++;"
-                       "elseshared->driver_button_overflow|=1u<<bucket;");
-    ok &= require_text("overflowed early state remains held", safety,
-                       "elseif(!(shared->driver_button_overflow&(1u<<bucket))&&"
-                       "shared->driver_button_count[bucket])shared->driver_button_count[bucket]--;");
-    ok &= require_text("every early report advances the serial", safety,
-                       "advance_mouse_button_serial(desktop);release_object(desktop);");
-
-    if (count_occurrences(safety, "time,NULL,TRUE);") != 2)
-    {
-        fail("only two live middle-drag sends request the exception",
-             "expected vertical and horizontal middle_drag_motion sends only");
-        ok = 0;
-    }
-    ok &= require_text("vertical live middle drag requests the exception", safety,
-                       "send_wheel_at_input(drag->hwnd,drag->origin,MOUSEEVENTF_WHEEL,-delta_y,"
-                       "time,NULL,TRUE)");
-    ok &= require_text("horizontal live middle drag requests the exception", safety,
-                       "send_wheel_at_input(drag->hwnd,drag->origin,MOUSEEVENTF_HWHEEL,delta_x,"
-                       "time,NULL,TRUE)");
-    ok &= require_text("the helper adds the middle-drag flag only on request", safety,
-                       "(middle_drag?SEND_HWMSG_MIDDLE_DRAG:0),&input,0);");
-    ok &= require_text("the server derives the narrow middle-drag mode", safety,
-                       "boolmiddle_drag=!!(req->flags&SEND_HWMSG_MIDDLE_DRAG);"
-                       "unsignedintfixed_position=req->flags&SEND_HWMSG_FIXED_POSITION?"
-                       "(middle_drag?HWMSG_FIXED_POSITION_MIDDLE_DRAG:"
-                       "HWMSG_FIXED_POSITION_NO_BUTTONS):HWMSG_FIXED_POSITION_NONE;");
-    ok &= require_text("invalid middle-drag flag combinations are rejected", safety,
-                       "if(middle_drag&&(!(req->flags&SEND_HWMSG_FIXED_POSITION)||force_mk_control||"
-                       "origin!=IMO_HARDWARE||req->input.type!=INPUT_MOUSE||"
-                       "(req->input.mouse.flags!=MOUSEEVENTF_WHEEL&&"
-                       "req->input.mouse.flags!=MOUSEEVENTF_HWHEEL))){"
-                       "set_error(STATUS_INVALID_PARAMETER);return;}");
-    ok &= require_text("ordinary fixed output requires no early buttons", safety,
-                       "if(fixed_position==HWMSG_FIXED_POSITION_NO_BUTTONS)expected_mask=0;");
-    ok &= require_text("middle-drag output requires exactly the middle mask", safety,
-                       "elseif(fixed_position==HWMSG_FIXED_POSITION_MIDDLE_DRAG)expected_mask=1u<<1;"
-                       "elsereturn1;");
-    ok &= require_text("server gates require unchanged serial and exact mask", safety,
-                       "if(button_serial!=current_serial||desktop_shm->driver_button_mask!=expected_mask)"
-                       "return1;");
-    ok &= require_text("server gates reject all Win32 button state", safety,
-                       "(desktop_shm->keystate[VK_LBUTTON]|desktop_shm->keystate[VK_MBUTTON]|"
-                       "desktop_shm->keystate[VK_RBUTTON]|desktop_shm->keystate[VK_XBUTTON1]|"
-                       "desktop_shm->keystate[VK_XBUTTON2])&0x80)return1;");
-    ok &= require_text("server middle mode requires one non-overflowed Button2", safety,
-                       "if(expected_mask&&(desktop_shm->driver_button_count[1]!=1||"
-                       "(desktop_shm->driver_button_overflow&expected_mask)))return1;");
-    ok &= require_text("client gates require the same exact mask", safety,
-                       "stale=desktop_shm->mouse_button_serial!=button_serial||"
-                       "desktop_shm->driver_button_mask!=expected_mask||");
-    ok &= require_text("client middle mode requires one non-overflowed Button2", safety,
-                       "(expected_mask&&(desktop_shm->driver_button_count[1]!=1||"
-                       "(desktop_shm->driver_button_overflow&expected_mask)));");
-    if (count_occurrences(safety, "fixed_wheel_is_stale(fixed_position,fixed_button_serial)") != 4)
-    {
-        fail("client delivery rechecks fixed wheel mode after every delay",
-             "expected entry, two process-return, and post-hook checks");
-        ok = 0;
-    }
-    if (count_occurrences(safety, "fixed_wheel_is_stale(") < 8)
-    {
-        fail("server and client both enforce fixed wheel mode",
-             "expected definitions plus initial, post-hook, dequeue, and client checks");
-        ok = 0;
-    }
-    ok &= require_text("fixed messages carry their mode and button serial", safety,
-                       "msg->fixed_button_serial=desktop->mouse_button_serial;"
-                       "msg_data->fixed_position=fixed_position;"
-                       "msg_data->fixed_button_serial=msg->fixed_button_serial;");
-    if (ok) pass("only an exact live Button2 drag can use the middle-drag exception");
-}
-
-struct safe_axis
-{
-    double velocity;
-    double remainder;
-    unsigned int travel;
-};
-
-enum reference_warp_probe
-{
-    REFERENCE_WARP_AMBIGUOUS,
-    REFERENCE_WARP_FAILED,
-    REFERENCE_WARP_APPLIED,
-};
-
-static double reference_warp_distance(double ax, double ay, double bx, double by)
-{
-    return fmax(fabs(ax - bx), fabs(ay - by));
-}
-
-static enum reference_warp_probe reference_warp_probe(
-    double pre_x, double pre_y, double target_x, double target_y,
-    double raw_x, double raw_y, double cooked_x, double cooked_y,
-    int raw_seen, unsigned int raw_time, unsigned int cooked_time)
-{
-    double span = reference_warp_distance(pre_x, pre_y, target_x, target_y);
-    double failed_x, failed_y, applied_x, applied_y;
-    double failed_error, applied_error, tolerance;
-
-    if (span < 8.0 || !raw_seen || raw_time != cooked_time) return REFERENCE_WARP_AMBIGUOUS;
-    failed_x = pre_x + round(raw_x);
-    failed_y = pre_y + round(raw_y);
-    applied_x = target_x + round(raw_x);
-    applied_y = target_y + round(raw_y);
-    failed_error = reference_warp_distance(cooked_x, cooked_y, failed_x, failed_y);
-    applied_error = reference_warp_distance(cooked_x, cooked_y, applied_x, applied_y);
-    tolerance = fmin(8.0, fmax(2.0, span / 8.0));
-    if (failed_error <= tolerance && applied_error >= failed_error + span / 2.0)
-        return REFERENCE_WARP_FAILED;
-    if (applied_error <= tolerance && failed_error >= applied_error + span / 2.0)
-        return REFERENCE_WARP_APPLIED;
-    return REFERENCE_WARP_AMBIGUOUS;
-}
-
-static int reference_ignore_synthetic(
-    double target_x, double target_y, double cooked_x, double cooked_y,
-    int *pending)
-{
-    if (!*pending) return 0;
-    if (cooked_x == target_x && cooked_y == target_y) return 1;
-    *pending = 0;
-    return 0;
-}
-
-static void check_warp_probe_math(void)
-{
-    unsigned int votes = 0;
-    enum reference_warp_probe probe;
-    int synthetic_pending = 1;
-    double mapped;
-
-    probe = reference_warp_probe(100, 20, 50, 20, 5, 0, 105, 20, 1, 10, 10);
-    mapped = 50 + 105 - 100;
-    if (probe != REFERENCE_WARP_FAILED || mapped != 55)
-        fail("a failed warp preserves its first physical delta",
-             "the first cooked motion was lost or classified incorrectly");
-    else
-        pass("a failed warp preserves its first physical delta");
-
-    /* At steady velocity a server-applied cooked point can equal the old
-     * pre-warp point. Coordinate proximity alone misclassifies this case;
-     * the shared raw delta identifies target + delta correctly. */
-    probe = reference_warp_probe(60, 20, 50, 20, 10, 0, 60, 20, 1, 11, 11);
-    if (probe != REFERENCE_WARP_APPLIED)
-        fail("server-handled steady motion is not double-emulated",
-             "raw/cooked correlation did not identify target plus delta");
-    else
-        pass("server-handled steady motion is not double-emulated");
-
-    if (!reference_ignore_synthetic(50, 20, 50, 20, &synthetic_pending) ||
-        !reference_ignore_synthetic(50, 20, 50, 20, &synthetic_pending) ||
-        reference_ignore_synthetic(50, 20, 51, 20, &synthetic_pending) || synthetic_pending ||
-        reference_ignore_synthetic(50, 20, 50, 20, &synthetic_pending))
-        fail("cross-thread synthetic warps are isolated", "copies survived or filtering stayed armed");
-    else
-        pass("cross-thread synthetic warps are isolated");
-
-    if (reference_warp_probe(100, 20, 50, 20, 5, 0, 105, 20, 0, 12, 12) !=
-            REFERENCE_WARP_AMBIGUOUS ||
-        reference_warp_probe(100, 20, 50, 20, 5, 0, 105, 20, 1, 12, 13) !=
-            REFERENCE_WARP_AMBIGUOUS ||
-        reference_warp_probe(55, 20, 50, 20, 5, 0, 60, 20, 1, 14, 14) !=
-            REFERENCE_WARP_AMBIGUOUS)
-        fail("incomplete warp evidence stays native", "an unavailable correlation activated emulation");
-    else
-        pass("incomplete warp evidence stays native");
-
-    probe = reference_warp_probe(100, 20, 50, 20, 5, 0, 105, 20, 1, 15, 15);
-    if (probe == REFERENCE_WARP_FAILED) votes++;
-    if (votes >= 2)
-        fail("one failed correlation cannot activate automatic emulation", "hysteresis was bypassed");
-    else
-        pass("one failed correlation cannot activate automatic emulation");
-    if (probe == REFERENCE_WARP_FAILED) votes++;
-    if (votes != 2)
-        fail("two failed correlations activate automatic emulation", "failure votes did not converge");
-    else
-        pass("two failed correlations activate automatic emulation");
-}
-
-/* Apply the production limits to one axis. */
-static int safe_axis_tick(struct safe_axis *axis, unsigned int *total_travel,
-                          unsigned int elapsed_ms, double rate)
-{
-    unsigned int frame_ms, remaining;
-    double post_velocity, pre_frame_velocity, displacement;
-    int raw, packet;
-
-    if (!elapsed_ms || !axis->velocity) return 0;
-    if (axis->travel >= MAX_TRAVEL_VALUE || *total_travel >= MAX_TOTAL_VALUE)
-    {
-        axis->velocity = axis->remainder = 0.0;
-        return 0;
-    }
-    frame_ms = elapsed_ms < MAX_FRAME_MS_VALUE ? elapsed_ms : MAX_FRAME_MS_VALUE;
-    post_velocity = axis->velocity * exp(-rate * elapsed_ms / 1000.0);
-    pre_frame_velocity = post_velocity * exp(rate * frame_ms / 1000.0);
-    displacement = (pre_frame_velocity - post_velocity) / rate;
-    axis->velocity = post_velocity;
-    axis->remainder += displacement;
-
-    raw = (int)axis->remainder;
-    if (raw > MAX_PACKET_VALUE)
-    {
-        packet = MAX_PACKET_VALUE;
-        axis->remainder = 0.0;
-    }
-    else if (raw < -MAX_PACKET_VALUE)
-    {
-        packet = -MAX_PACKET_VALUE;
-        axis->remainder = 0.0;
-    }
-    else
-    {
-        packet = raw;
-        axis->remainder -= raw;
-    }
-    remaining = MAX_TRAVEL_VALUE - axis->travel;
-    if (remaining > MAX_TOTAL_VALUE - *total_travel)
-        remaining = MAX_TOTAL_VALUE - *total_travel;
-    if ((unsigned int)abs(packet) > remaining)
-    {
-        packet = packet < 0 ? -(int)remaining : (int)remaining;
-        axis->remainder = 0.0;
-    }
-    axis->travel += (unsigned int)abs(packet);
-    *total_travel += (unsigned int)abs(packet);
-    if (axis->travel == MAX_TRAVEL_VALUE || *total_travel == MAX_TOTAL_VALUE)
-        axis->velocity = axis->remainder = 0.0;
-    return packet;
-}
-
-enum reference_wheel_route
-{
-    REFERENCE_WHEEL_FIXED,
-    REFERENCE_WHEEL_STOCK,
-    REFERENCE_WHEEL_SUPPRESSED,
-};
-
-static enum reference_wheel_route reference_wheel_route(
-    int enabled, unsigned int event_mask, unsigned int held_mask, int middle_drag)
-{
-    if (enabled && event_mask && event_mask == held_mask && !middle_drag)
-        return REFERENCE_WHEEL_STOCK;
-    if (event_mask || held_mask || middle_drag) return REFERENCE_WHEEL_SUPPRESSED;
-    return REFERENCE_WHEEL_FIXED;
-}
-
-static void check_held_wheel_provenance(void)
-{
-    unsigned int i;
-    int ok = 1;
-
-    for (i = 0; i < 5; i++)
-        if (reference_wheel_route(1, 1u << i, 1u << i, 0) != REFERENCE_WHEEL_STOCK)
-            ok = 0;
-    if (reference_wheel_route(1, 5u, 5u, 0) != REFERENCE_WHEEL_STOCK ||
-        reference_wheel_route(1, 1u, 2u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(1, 1u, 0u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(1, 0u, 1u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(0, 1u, 1u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(1, 2u, 2u, 1) != REFERENCE_WHEEL_SUPPRESSED ||
-        reference_wheel_route(1, 0u, 0u, 0) != REFERENCE_WHEEL_FIXED)
-        ok = 0;
-    if (!ok)
-        fail("held-wheel routing requires exact physical provenance",
-             "an unstable, disabled, or middle-drag case reached stock delivery");
-    else
-        pass("held-wheel routing requires exact physical provenance");
-}
-
-static int reference_legacy_copy_suppress(
-    int valid, unsigned int tag_time, unsigned int event_time,
-    unsigned long tag_window, unsigned long event_window,
-    unsigned int wheel_buttons, unsigned int tag_held, unsigned int event_held,
-    unsigned int button, int send_event)
-{
-    unsigned int button_bit;
-
-    if (!valid || event_time != tag_time) return 0;
-    button_bit = button <= 7 ? 1u << button : 0;
-    return !send_event && event_window == tag_window &&
-           (wheel_buttons & button_bit) && event_held == tag_held;
-}
-
-static void check_legacy_wheel_copy_model(void)
-{
-    const unsigned int vertical_up = 1u << 4;
-    const unsigned int horizontal_left = 1u << 6;
-    const unsigned int held = 1u << 0;
-    int ok = 1;
-
-    /* Normal smooth scrolling has no held buttons. Direction bits deliberately
-     * survive repeated generated notches carrying one X timestamp; all other
-     * identity fields remain exact, including a non-zero held mask if present. */
-    if (!reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 4, 0) ||
-        !reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 4, 0) ||
-        !reference_legacy_copy_suppress(1, 100, 100, 9, 9, horizontal_left, 0, 0, 6, 0) ||
-        !reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 4, 0) ||
-        reference_legacy_copy_suppress(0, 100, 100, 9, 9, vertical_up, 0, 0, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 101, 9, 9, vertical_up, 0, 0, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 10, vertical_up, 0, 0, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 5, 0) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, 2u, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, 0u, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 4, 1) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 8, 0))
-        ok = 0;
-    if (!ok)
-        fail("legacy wheel-copy model admits only an exact generated event",
-             "time, window, direction, held mask, or send_event isolation failed");
-    else
-        pass("legacy wheel-copy model admits only an exact generated event");
-}
-
-enum reference_touchpad_inertia_mode
-{
-    REFERENCE_TOUCHPAD_INERTIA_DISABLED,
-    REFERENCE_TOUCHPAD_INERTIA_AUTO,
-    REFERENCE_TOUCHPAD_INERTIA_ENABLED,
-};
-
-enum reference_middle_throw_mode
-{
-    REFERENCE_MIDDLE_THROW_DISABLED,
-    REFERENCE_MIDDLE_THROW_ENABLED,
-};
-
-static int reference_continuation_enabled(
-    int middle_drag, enum reference_touchpad_inertia_mode touchpad,
-    enum reference_middle_throw_mode middle_throw)
-{
-    if (middle_drag) return middle_throw == REFERENCE_MIDDLE_THROW_ENABLED;
-    return touchpad == REFERENCE_TOUCHPAD_INERTIA_ENABLED;
-}
-
-static void check_default_continuation_matrix(void)
-{
-    const enum reference_touchpad_inertia_mode default_touchpad =
-        REFERENCE_TOUCHPAD_INERTIA_ENABLED;
-    const enum reference_middle_throw_mode default_middle =
-        REFERENCE_MIDDLE_THROW_ENABLED;
-
-    if (!reference_continuation_enabled(0, default_touchpad, default_middle) ||
-        !reference_continuation_enabled(1, default_touchpad, default_middle) ||
-        reference_continuation_enabled(0, REFERENCE_TOUCHPAD_INERTIA_AUTO, default_middle) ||
-        reference_continuation_enabled(0, REFERENCE_TOUCHPAD_INERTIA_DISABLED, default_middle) ||
-        reference_continuation_enabled(1, default_touchpad, REFERENCE_MIDDLE_THROW_DISABLED) ||
-        !reference_continuation_enabled(0, REFERENCE_TOUCHPAD_INERTIA_ENABLED,
-                                        REFERENCE_MIDDLE_THROW_DISABLED) ||
-        !reference_continuation_enabled(1, REFERENCE_TOUCHPAD_INERTIA_DISABLED,
-                                        REFERENCE_MIDDLE_THROW_ENABLED))
-        fail("default continuation matrix enables both independent sources",
-             "a default was disabled, auto became active, or source controls were coupled");
-    else
-        pass("default continuation matrix enables fine inertia and middle throw; auto stays inert");
-}
-
-struct reference_middle_sample
-{
-    double dx;
-    double dy;
-    unsigned int time;
-};
-
-/* Apply the middle-drag estimator to chronological samples. */
-static int reference_middle_throw_velocity(const struct reference_middle_sample *samples,
-                                           size_t count, unsigned int release_time,
-                                           double *vx, double *vy, unsigned int *measured_span)
-{
-    double sum_x = 0.0, sum_y = 0.0, distance;
-    unsigned int first, last, previous, span;
-    size_t i, start;
-
-    if (!count) return 0;
-    start = count - 1;
-    last = previous = samples[start].time;
-    if (release_time - last > MIDDLE_THROW_MAX_GAP_MS_VALUE) return 0;
-    while (start)
-    {
-        const struct reference_middle_sample *sample = &samples[start - 1];
-
-        if (last - sample->time > MIDDLE_THROW_HISTORY_MS_VALUE ||
-            previous - sample->time > MIDDLE_THROW_MAX_GAP_MS_VALUE)
-            break;
-        previous = sample->time;
-        start--;
-    }
-
-    first = samples[start].time;
-    span = last - first;
-    for (i = start; i < count; i++)
-    {
-        sum_x += samples[i].dx;
-        sum_y += samples[i].dy;
-    }
-
-    if (count - start < 2 || !span)
-    {
-        distance = hypot(sum_x, sum_y);
-        if (distance < MIDDLE_THROW_MIN_DISTANCE_VALUE) return 0;
-        span = MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE;
-    }
-    else if (span < INERTIA_MIN_SPAN_MS_VALUE) return 0;
-
-    *vx = sum_x * 1000.0 * WHEEL_DELTA_VALUE / (span * MIDDLE_DRAG_STEP_VALUE);
-    *vy = sum_y * 1000.0 * WHEEL_DELTA_VALUE / (span * MIDDLE_DRAG_STEP_VALUE);
-    if (measured_span) *measured_span = span;
-    return 1;
-}
-
-static int reference_middle_throw_starts(const struct reference_middle_sample *samples,
-                                         size_t count, unsigned int release_time)
-{
-    double vx, vy;
-
-    return reference_middle_throw_velocity(samples, count, release_time, &vx, &vy, NULL) &&
-           hypot(vx, vy) >= START_SPEED_VALUE;
-}
-
-static void check_middle_throw_estimator_math(void)
-{
-    static const struct reference_middle_sample single[] =
-    {
-        {6.0, 0.0, 200},
-    };
-    static const struct reference_middle_sample same_time[] =
-    {
-        {3.0, 0.0, 100}, {3.0, 0.0, 100},
-    };
-    static const struct reference_middle_sample two_timed[] =
-    {
-        {8.0, 0.0, 0}, {8.0, 0.0, 16},
-    };
-    static const struct reference_middle_sample three_timed[] =
-    {
-        {5.0, 0.0, 0}, {5.0, 0.0, 8}, {5.0, 0.0, 16},
-    };
-    static const struct reference_middle_sample short_timed[] =
-    {
-        {8.0, 0.0, 0}, {8.0, 0.0, 9},
-    };
-    static const struct reference_middle_sample three_pixels[] =
-    {
-        {3.0, 0.0, 100},
-    };
-    static const struct reference_middle_sample four_pixels[] =
-    {
-        {4.0, 0.0, 100},
-    };
-    static const struct reference_middle_sample release_boundary[] =
-    {
-        {6.0, 0.0, 100},
-    };
-    static const struct reference_middle_sample below_start_speed[] =
-    {
-        {1.5, 0.0, 0}, {1.5, 0.0, 80},
-    };
-    static const struct reference_middle_sample short_distance_timed[] =
-    {
-        {0.5, 0.0, 0}, {0.5, 0.0, 10},
-    };
-    static const struct reference_middle_sample terminal_suffix[] =
-    {
-        {-50.0, 0.0, 0}, {6.0, 0.0, 200},
-    };
-    double vx, vy;
-    unsigned int span;
-
-    if (!reference_middle_throw_velocity(single, 1, 250, &vx, &vy, &span) ||
-        span != MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE || fabs(vx - 1250.0) > 0.000001 || vy)
-        fail("one movement update can seed a middle throw",
-             "the estimator lost its 24 ms assignment");
-    else
-        pass("one movement update uses the 24 ms assignment");
-
-    if (!reference_middle_throw_velocity(same_time, 2, 180, &vx, &vy, &span) ||
-        span != MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE || fabs(vx - 1250.0) > 0.000001 || vy)
-        fail("same-time middle samples retain a finite velocity", "the estimator used a zero span");
-    else
-        pass("same-time middle samples use the 24 ms assignment");
-
-    if (!reference_middle_throw_velocity(two_timed, 2, 50, &vx, &vy, &span) ||
-        span != 16 || fabs(vx - 5000.0) > 0.000001 || vy ||
-        !reference_middle_throw_velocity(three_timed, 3, 50, &vx, &vy, &span) ||
-        span != 16 || fabs(vx - 4687.5) > 0.000001 || vy)
-        fail("timed middle samples include every selected delta", "the measured speed changed");
-    else
-        pass("timed middle samples include every selected delta");
-
-    if (reference_middle_throw_velocity(short_timed, 2, 20, &vx, &vy, NULL))
-        fail("distinct timestamps require ten milliseconds", "a nine-millisecond span passed");
-    else
-        pass("distinct timestamps require ten milliseconds");
-
-    if (reference_middle_throw_velocity(three_pixels, 1, 100, &vx, &vy, NULL) ||
-        !reference_middle_throw_velocity(four_pixels, 1, 100, &vx, &vy, NULL))
-        fail("untimed movement requires four pixels", "the four-pixel boundary changed");
-    else
-        pass("untimed movement requires four pixels");
-
-    if (!reference_middle_throw_velocity(release_boundary, 1, 180, &vx, &vy, NULL) ||
-        reference_middle_throw_velocity(release_boundary, 1, 181, &vx, &vy, NULL))
-        fail("middle release has an exact 80 ms freshness boundary",
-             "the estimator did not accept 80 ms and reject 81 ms");
-    else
-        pass("middle release accepts 80 ms of rest and rejects 81 ms");
-
-    if (!reference_middle_throw_velocity(below_start_speed, 2, 80, &vx, &vy, NULL) ||
-        reference_middle_throw_starts(below_start_speed, 2, 80) ||
-        !reference_middle_throw_velocity(short_distance_timed, 2, 10, &vx, &vy, NULL) ||
-        fabs(vx - 500.0) > 0.000001)
-        fail("timed movement uses speed rather than the untimed distance rule",
-             "a slow timed path started or a short fast timed path failed");
-    else
-        pass("timed movement uses speed rather than the untimed distance rule");
-
-    if (!reference_middle_throw_velocity(terminal_suffix, 2, 250, &vx, &vy, &span) ||
-        span != MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE || vx <= 0.0 || vy)
-        fail("middle throw uses the newest suffix after a pause",
-             "old opposite motion contaminated the terminal estimate");
-    else
-        pass("a pause discards old motion before the newest terminal suffix");
-}
-
-struct coast_result
-{
-    struct safe_axis axes[2];
-    unsigned int total_travel;
-    unsigned int messages;
-    unsigned int elapsed_ms;
-    unsigned int maximum_packet;
-    int first_packets[2];
-    int stopped_by_speed;
-    int stopped_by_travel;
-    int stopped_by_messages;
-    int stopped_by_time;
-};
-
-static struct coast_result run_reference_coast(double vx, double vy, double rate)
-{
-    struct coast_result result = {0};
-    unsigned int i, axis;
-
-    result.axes[0].velocity = vx;
-    result.axes[1].velocity = vy;
-    for (i = 0; i < 1000; i++)
-    {
-        double tick_rate;
-
-        if (hypot(result.axes[0].velocity, result.axes[1].velocity) < 60.0)
+        if (abs(packet) > SHRT_MAX || ++count > 10000)
         {
-            result.stopped_by_speed = 1;
+            fail("bounded scroll drain", "invalid packet or non-terminating residual");
             break;
         }
-        if (result.messages >= MAX_MESSAGES_VALUE)
-        {
-            result.stopped_by_messages = 1;
-            break;
-        }
-        if (result.total_travel >= MAX_TOTAL_VALUE)
-        {
-            result.stopped_by_travel = 1;
-            break;
-        }
-        if (result.elapsed_ms > 4000)
-        {
-            result.stopped_by_time = 1;
-            break;
-        }
-
-        result.elapsed_ms += 8;
-        tick_rate = result.elapsed_ms > 3000 && rate < 14.0 ? 14.0 : rate;
-        for (axis = 0; axis < 2 && result.messages < MAX_MESSAGES_VALUE; axis++)
-        {
-            int packet = safe_axis_tick(&result.axes[axis], &result.total_travel, 8, tick_rate);
-            unsigned int magnitude = (unsigned int)abs(packet);
-
-            if (i == 0) result.first_packets[axis] = packet;
-            if (!packet) continue;
-            if (magnitude > result.maximum_packet) result.maximum_packet = magnitude;
-            result.messages++;
-        }
+        total += packet;
     }
-    if (result.messages >= MAX_MESSAGES_VALUE) result.stopped_by_messages = 1;
-    if (result.total_travel >= MAX_TOTAL_VALUE) result.stopped_by_travel = 1;
-    if (result.elapsed_ms > 4000) result.stopped_by_time = 1;
-    return result;
+    return total;
 }
 
-static int coast_within_limits(const struct coast_result *result)
+static void check_scroll_reducer(void)
 {
-    return result->maximum_packet <= MAX_PACKET_VALUE &&
-           result->axes[0].travel <= MAX_TRAVEL_VALUE &&
-           result->axes[1].travel <= MAX_TRAVEL_VALUE &&
-           result->total_travel <= MAX_TOTAL_VALUE &&
-           result->messages <= MAX_MESSAGES_VALUE && result->elapsed_ms <= 4000;
-}
-
-static void check_math_limits(void)
-{
-    const double diagonal = MAX_SPEED_VALUE / sqrt(2.0);
-    struct safe_axis normal = {MAX_SPEED_VALUE, 0.0, 0};
-    struct safe_axis full_frame = {MAX_SPEED_VALUE, 0.0, 0};
-    struct safe_axis stalled = {MAX_SPEED_VALUE, 0.0, 0};
-    struct safe_axis overflow = {1000000000.0, 0.0, 0};
-    struct safe_axis reverse = {-1000000000.0, 0.0, 0};
-    struct coast_result medium, fast, default_single, default_diagonal, slow_diagonal, message_limited;
-    double expected_velocity, expected_normal;
-    unsigned int total = 0, angle, largest_default_messages = 0;
-    int packet, next;
-
-    packet = safe_axis_tick(&normal, &total, 8, DEFAULT_INERTIA_RATE_VALUE);
-    expected_normal = MAX_SPEED_VALUE / DEFAULT_INERTIA_RATE_VALUE *
-                      (1.0 - exp(-DEFAULT_INERTIA_RATE_VALUE * 0.008));
-    if (packet != (int)expected_normal || abs(packet) > MAX_PACKET_VALUE)
-        fail("maximum starting speed stays below the packet ceiling", "normal first packet was too large");
-    else
-        pass("maximum starting speed produces a bounded normal first packet");
-
-    total = 0;
-    packet = safe_axis_tick(&full_frame, &total, 16, DEFAULT_INERTIA_RATE_VALUE);
-    if (packet != 297 || packet > MAX_PACKET_VALUE)
-        fail("a full accepted frame stays within the packet limit", "the maximum frame changed");
-    else
-        pass("a full accepted frame stays within the packet limit");
-
-    total = 0;
-    packet = safe_axis_tick(&stalled, &total, 1000, DEFAULT_INERTIA_RATE_VALUE);
-    expected_velocity = MAX_SPEED_VALUE * exp(-DEFAULT_INERTIA_RATE_VALUE);
-    if (abs(packet) > MAX_PACKET_VALUE || fabs(stalled.velocity - expected_velocity) > 0.000001)
-        fail("a delayed tick cannot catch up missed movement", "the delayed tick exceeded its limits");
-    else
-        pass("a delayed tick decays fully without replaying missed frames");
-
-    total = 0;
-    packet = safe_axis_tick(&overflow, &total, 8, DEFAULT_INERTIA_RATE_VALUE);
-    overflow.velocity = 0.0;
-    next = safe_axis_tick(&overflow, &total, 8, DEFAULT_INERTIA_RATE_VALUE);
-    if (packet != MAX_PACKET_VALUE || next || overflow.remainder != 0.0)
-        fail("positive packet excess is discarded", "excess survived as later output");
-    else
-        pass("positive packet excess is discarded");
-
-    total = 0;
-    packet = safe_axis_tick(&reverse, &total, 8, DEFAULT_INERTIA_RATE_VALUE);
-    reverse.velocity = 0.0;
-    next = safe_axis_tick(&reverse, &total, 8, DEFAULT_INERTIA_RATE_VALUE);
-    if (packet != -MAX_PACKET_VALUE || next || reverse.remainder != 0.0)
-        fail("negative packet excess is discarded", "excess survived as later output");
-    else
-        pass("negative packet excess is discarded");
-
-    medium = run_reference_coast(4000.0, 0.0, DEFAULT_INERTIA_RATE_VALUE);
-    fast = run_reference_coast(9600.0, 0.0, DEFAULT_INERTIA_RATE_VALUE);
-    default_single = run_reference_coast(MAX_SPEED_VALUE, 0.0, DEFAULT_INERTIA_RATE_VALUE);
-    default_diagonal = run_reference_coast(diagonal, diagonal, DEFAULT_INERTIA_RATE_VALUE);
-    if (!coast_within_limits(&medium) || !medium.stopped_by_speed ||
-        medium.first_packets[0] != 31 || medium.elapsed_ms < 1048 || medium.elapsed_ms > 1064 ||
-        medium.axes[0].travel < 984 || medium.axes[0].travel > 986 ||
-        !coast_within_limits(&fast) || !fast.stopped_by_speed ||
-        fast.first_packets[0] != 75 || fast.elapsed_ms < 1264 || fast.elapsed_ms > 1280 ||
-        fast.axes[0].travel < 2384 || fast.axes[0].travel > 2386 ||
-        !coast_within_limits(&default_single) || !default_single.stopped_by_speed ||
-        default_single.stopped_by_messages || default_single.stopped_by_travel ||
-        default_single.first_packets[0] != 151 ||
-        default_single.elapsed_ms < 1440 || default_single.elapsed_ms > 1456 ||
-        default_single.axes[0].travel < 4784 || default_single.axes[0].travel > 4786 ||
-        default_single.messages < 170 || default_single.messages > 178 ||
-        !coast_within_limits(&default_diagonal) || !default_diagonal.stopped_by_speed ||
-        default_diagonal.stopped_by_messages || default_diagonal.stopped_by_travel ||
-        default_diagonal.elapsed_ms < 1440 || default_diagonal.elapsed_ms > 1456 ||
-        default_diagonal.axes[0].travel < 3382 || default_diagonal.axes[0].travel > 3384 ||
-        default_diagonal.axes[1].travel < 3382 || default_diagonal.axes[1].travel > 3384 ||
-        default_diagonal.total_travel < 6764 || default_diagonal.total_travel > 6768 ||
-        default_diagonal.messages < 330 || default_diagonal.messages > 338)
-        fail("rate-four coasting keeps the expected packet, time, travel and update counts",
-             "a first packet, duration, travel, or message count changed");
-    else
-        pass("rate-four coasting keeps the expected packet, time, travel and update counts");
-
-    for (angle = 0; angle <= 90; angle++)
+    static const int boundaries[] =
     {
-        double radians = angle * 3.14159265358979323846 / 180.0;
-        struct coast_result result = run_reference_coast(MAX_SPEED_VALUE * cos(radians),
-                                                         MAX_SPEED_VALUE * sin(radians),
-                                                         DEFAULT_INERTIA_RATE_VALUE);
+        -480, -241, -240, -239, -121, -120, -119, -30, -1,
+        1, 30, 119, 120, 121, 239, 240, 241, 480
+    };
+    size_t i;
 
-        if (!coast_within_limits(&result) || !result.stopped_by_speed ||
-            result.stopped_by_messages || result.stopped_by_travel)
+    for (i = 0; i < sizeof(boundaries) / sizeof(boundaries[0]); i++)
+    {
+        struct scroll_axis axis = {.increment = 1.0, .value = 0.0, .valid = 1};
+        long long output = drain_scroll(&axis, (double)boundaries[i] / WHEEL_DELTA_VALUE, 0);
+
+        if (output != boundaries[i])
         {
-            fail("every default direction reaches its stop speed", "a limit shortened the movement");
+            fail("precise scroll conservation", "a threshold changed or discarded output");
             break;
         }
-        if (result.messages > largest_default_messages) largest_default_messages = result.messages;
     }
-    if (angle > 90)
+    if (i == sizeof(boundaries) / sizeof(boundaries[0]))
+        pass("precise scroll conserves threshold and coalesced deltas");
+
+    for (i = 1; i <= 600; i++)
     {
-        if (largest_default_messages > 336)
-            fail("default directions stay below the message limit", "the message count increased");
-        else
-            pass("default directions stay below the message limit");
+        struct scroll_axis axis = {.increment = 1.0, .value = 0.0, .valid = 1};
+        if (drain_scroll(&axis, (double)i / WHEEL_DELTA_VALUE, 0) != (long long)i)
+        {
+            fail("monotonic direct transfer", "larger same-direction input reduced output");
+            break;
+        }
+    }
+    if (i == 601) pass("direct scroll transfer is monotonic");
+
+    {
+        struct scroll_axis coalesced = {.increment = 1.0, .value = 0.0, .valid = 1};
+        struct scroll_axis sampled = {.increment = 1.0, .value = 0.0, .valid = 1};
+        long long one = drain_scroll(&coalesced, 4.0, 0), many = 0;
+
+        for (i = 1; i <= 4; i++) many += drain_scroll(&sampled, (double)i, 0);
+        if (one != 480 || many != one) fail("coalescing invariance", "480 != 4 * 120");
+        else pass("coalescing changes packet count, not direct distance");
     }
 
-    slow_diagonal = run_reference_coast(diagonal, diagonal, 0.5);
-    if (!coast_within_limits(&slow_diagonal) || !slow_diagonal.stopped_by_travel ||
-        slow_diagonal.total_travel != MAX_TOTAL_VALUE)
-        fail("slow custom curves stop at the combined travel limit", "the travel limit changed");
-    else
-        pass("slow custom curves stop at the combined travel limit");
+    {
+        struct scroll_axis precise = {.increment = 1.0, .value = 0.0, .valid = 1};
+        struct scroll_axis notched = {.increment = 1.0, .value = 0.0, .valid = 1};
+        long long precise_total = 0, notched_total = 0;
 
-    message_limited = run_reference_coast(240.0 * cos(18.0 * 3.14159265358979323846 / 180.0),
-                                          240.0 * sin(18.0 * 3.14159265358979323846 / 180.0),
-                                          0.5);
-    if (!coast_within_limits(&message_limited) || !message_limited.stopped_by_messages ||
-        message_limited.messages != MAX_MESSAGES_VALUE)
-        fail("the message limit stops long custom curves", "the model did not reach 384 messages");
+        for (i = 1; i <= 4; i++)
+        {
+            precise_total += drain_scroll(&precise, (double)i / 4.0, 0);
+            notched_total += drain_scroll(&notched, (double)i / 4.0, 1);
+        }
+        if (precise_total != 120 || notched_total != 120)
+            fail("fractional residual", "four 30-unit reports did not total 120");
+        else pass("precise and notched modes retain fractional residuals");
+    }
+
+    {
+        struct scroll_axis axis = {.increment = 1.0, .value = 0.0, .valid = 1};
+        long long expected = 4LL * SHRT_MAX;
+
+        if (drain_scroll(&axis, (double)expected / WHEEL_DELTA_VALUE, 0) != expected)
+            fail("large report chunking", "signed packet bounds discarded distance");
+        else pass("large reports split at packet width without losing distance");
+    }
+}
+
+static int middle_delta(long long *accum, int notched)
+{
+    const int quantum = notched ? WHEEL_DELTA_VALUE : WHEEL_DELTA_VALUE / 24;
+    const int limit = SHRT_MAX / quantum * quantum;
+    long long units = *accum * WHEEL_DELTA_VALUE / 24;
+    int delta;
+
+    if (notched) units = units / WHEEL_DELTA_VALUE * WHEEL_DELTA_VALUE;
+    if (units > limit) delta = limit;
+    else if (units < -limit) delta = -limit;
+    else delta = (int)units;
+    *accum -= delta * 24 / WHEEL_DELTA_VALUE;
+    return delta;
+}
+
+static long long drain_middle(long long *accum, int notched)
+{
+    long long total = 0;
+    int delta;
+
+    while ((delta = middle_delta(accum, notched))) total += delta;
+    return total;
+}
+
+static void check_middle_reducer(void)
+{
+    long long once = 48, twice = 24, total;
+    long long pixels = 0, precise = 0, large = 4LL * SHRT_MAX;
+    int i;
+
+    total = drain_middle(&twice, 0);
+    twice += 24;
+    total += drain_middle(&twice, 0);
+    if (drain_middle(&once, 0) != total || total != 240)
+        fail("middle coalescing", "one 48-pixel report differs from two 24-pixel reports");
+    else pass("middle navigation conserves coalesced movement");
+
+    for (i = 0; i < 24; i++) { pixels++; precise += middle_delta(&pixels, 0); }
+    if (precise != 120 || pixels)
+        fail("middle residual", "one-pixel reports did not conserve one notch");
+    else pass("middle navigation retains sub-notch movement");
+
+    {
+        long long expected = 4LL * SHRT_MAX * 5;
+        long long output = drain_middle(&large, 0);
+
+        if (output != expected || large)
+        {
+            char detail[128];
+
+            snprintf(detail, sizeof(detail), "output=%lld expected=%lld residual=%lld",
+                     output, expected, large);
+            fail("middle large-report chunking", detail);
+        }
+        else pass("middle navigation splits large reports without losing distance");
+    }
+}
+
+static int pinch_delta(double *delivered_log_scale, double scale)
+{
+    const double step = 1.1;
+    double units = WHEEL_DELTA_VALUE * (log(scale) - *delivered_log_scale) / log(step);
+    int delta = (int)round(units);
+
+    if (delta) *delivered_log_scale += (double)delta / WHEEL_DELTA_VALUE * log(step);
+    return delta;
+}
+
+static void check_pinch_reducer(void)
+{
+    double one_scale = 0.0, split_scale = 0.0, large_scale = 0.0;
+    int one = pinch_delta(&one_scale, 2.0);
+    int split = pinch_delta(&split_scale, sqrt(2.0));
+    int large;
+
+    split += pinch_delta(&split_scale, 2.0);
+    large = pinch_delta(&large_scale, 1e100);
+    if (abs(one - split) > 1 ||
+        fabs(WHEEL_DELTA_VALUE * (log(2.0) - one_scale) / log(1.1)) > 0.5)
+        fail("pinch conservation", "split updates changed the logarithmic total");
+    else pass("pinch retains complete logarithmic scale movement");
+    if (abs(large) <= WHEEL_DELTA_VALUE ||
+        fabs(WHEEL_DELTA_VALUE * (log(1e100) - large_scale) / log(1.1)) > 0.5)
+        fail("large final pinch", "the final update was capped or left unreported scale");
+    else pass("one large final pinch update is not capped to one notch");
+}
+
+static void lease_restore(struct lease *lease)
+{
+    if (!lease->window) return;
+    lease->window = 0;
+    lease->buttons = 0;
+    lease->restores++;
+}
+
+static void lease_transition(struct lease *lease, unsigned long window,
+                             unsigned int bit, int down)
+{
+    if (down)
+    {
+        if (lease->buttons && lease->window != window) lease_restore(lease);
+        if (!lease->buttons) lease->window = window;
+        lease->buttons |= bit;
+    }
+    else if (lease->window != window || !(lease->buttons & bit)) lease_restore(lease);
     else
-        pass("the message limit stops long custom curves");
+    {
+        lease->buttons &= ~bit;
+        if (!lease->buttons) lease_restore(lease);
+    }
+}
+
+static void check_lease_reducer(void)
+{
+    struct lease lease = {0};
+
+    lease_transition(&lease, 10, 1, 1);
+    lease_transition(&lease, 11, 1, 0);
+    if (lease.window || lease.buttons || lease.restores != 1)
+        fail("release mismatch recovery", "the lease remained suspended");
+    else pass("a release on another window restores the drag lease");
+
+    lease_transition(&lease, 10, 1, 1);
+    lease_transition(&lease, 10, 2, 1);
+    lease_transition(&lease, 10, 1, 0);
+    if (!lease.window || lease.buttons != 2) fail("multi-button lease", "released too early");
+    lease_restore(&lease);
+    if (lease.window || lease.buttons || lease.restores != 2)
+        fail("lifecycle lease recovery", "focus/capture cleanup left state behind");
+    else pass("lifecycle cancellation restores a multi-button lease exactly once");
+
+    lease_transition(&lease, 10, 1, 1);
+    lease_restore(&lease); /* later input reports that no physical button remains */
+    if (lease.window || lease.buttons || lease.restores != 3)
+        fail("lost release recovery", "physical state reconciliation left the lease suspended");
+    else pass("later input recovers a completely lost drag release");
+}
+
+static double regression_velocity(const double *position, const int *time, size_t count)
+{
+    double sw = 0, st = 0, sp = 0, mt, mp, covariance = 0, variance = 0;
+    size_t i;
+
+    for (i = 0; i < count; i++)
+    {
+        double weight = i + 1;
+
+        sw += weight;
+        st += weight * time[i] / 1000.0;
+        sp += weight * position[i];
+    }
+    mt = st / sw;
+    mp = sp / sw;
+    for (i = 0; i < count; i++)
+    {
+        double weight = i + 1;
+        double dt = time[i] / 1000.0 - mt;
+
+        covariance += weight * dt * (position[i] - mp);
+        variance += weight * dt * dt;
+    }
+    return covariance / variance;
+}
+
+static void check_inertia_reducer(void)
+{
+    static const int time[] = {0, 10, 20, 30};
+    static const double position[] = {0, 10, 20, 30};
+    static const int schedules[][5] =
+    {
+        {8, 16, 24, 500, 1000},
+        {16, 32, 48, 64, 1000},
+        {100, 250, 500, 750, 1000},
+    };
+    const double velocity = 1200.0, rate = 4.0;
+    double expected = velocity * (1.0 - exp(-rate)) / rate;
+    size_t i, j;
+
+    if (fabs(regression_velocity(position, time, 4) - 1000.0) > 0.001)
+        fail("inertia estimator", "constant cumulative motion has sampling-rate bias");
+    else pass("inertia estimates velocity from cumulative position and time");
+
+    for (i = 0; i < sizeof(schedules) / sizeof(schedules[0]); i++)
+    {
+        double model = 0, delivered = 0;
+
+        for (j = 0; j < 5; j++)
+        {
+            double seconds = schedules[i][j] / 1000.0;
+            double target = velocity * (1.0 - exp(-rate * seconds)) / rate;
+
+            delivered += target - model;
+            model = target;
+        }
+        if (fabs(delivered - expected) > 0.001)
+        {
+            fail("analytic inertia", "timer cadence changed final coast distance");
+            return;
+        }
+    }
+    pass("analytic inertia distance is independent of timer cadence and stalls");
+}
+
+static void check_source_contracts(const char *pointer, const char *dnd)
+{
+    static const char *const required[] =
+    {
+        "pointer_config.enabled=FALSE;",
+        ".touchpad_inertia=POINTER_INERTIA_ENABLED,",
+        ".middle_drag_throw=POINTER_MIDDLE_DRAG_THROW_ENABLED,",
+        "xinput2_gestures=pointer_config.enabled&&",
+        "xinput2_smooth_scroll=pointer_config.enabled&&",
+        "if(pointer_config.enabled&&pinch_button_is_wheel(event->button)&&",
+        "if(xinput2_smooth_scroll){unsignedcharhier_bits",
+        "if(pointer_config.enabled)ungrab_clipping_window();",
+        "src->scroll_y.value=src->scroll_y.last_value=val->value;",
+        "while(have_y&&(delta_y=smooth_scroll_delta(",
+        "xinput2_core_drag_restore(display,\"release-mismatch\");",
+        "xinput2_core_drag_reconcile(event->display,\"wheel-release-without-buttons\");",
+        "xinput2_core_drag_restore(event->display,\"motion-without-buttons\");",
+        "send_mouse_input(hwnd,pt,MOUSEEVENTF_ABSOLUTE|flags,delta,time,NULL);",
+        "send_mouse_input(hwnd,(POINT){0},MOUSEEVENTF_WHEEL,packet,time,NULL);",
+        "pinch_hold_control_locked(event->display)",
+        "pinch_reset_locked(event->display);",
+        "log(event->scale)-pinch.log_scale",
+        "while((delta_y=middle_drag_delta(&drag->accum_y,notched)))",
+        "pointer_inertia_evaluate(si,now,\"inactivity\");",
+        "target_x=si->v0x*(1.0-factor)/k;",
+        "WM_X11DRV_POINTER_TICK",
+        "pointer_input_reset();",
+    };
+    static const char *const forbidden[] =
+    {
+        "SEND_HWMSG_FIXED_POSITION", "update_driver_button", "notify_button_transition",
+        "pointer_scroll_resync", "INERTIA_NUDGE_SLOTS", "nudge_thread",
+        "pointer_input_serial", "pinch_keyboard", "send_message(hwnd,WM_MOUSEWHEEL"
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(required) / sizeof(required[0]); i++) require_source(pointer, required[i]);
+    for (i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) forbid_source(pointer, forbidden[i]);
+    if (!failures) pass("pointer source keeps one compact interaction owner without private protocol state");
+
+    require_source(dnd, "object->target_effect=target_effect;");
+    require_source(dnd, "data_object_release_drop_target(object,TRUE);");
+    require_source(dnd, "data_object_release_drop_target(object,FALSE);");
+    if (count_occurrences(dnd, "data_object_release_drop_target(object,TRUE);") < 3 ||
+        count_occurrences(dnd, "data_object_release_drop_target(object,FALSE);") < 2)
+        fail("drop-target lifecycle", "not every leave/drop path uses the shared terminal helper");
+    else if (!failures) pass("drag target acceptance and lifetime share one terminal path");
 }
 
 int main(int argc, char **argv)
 {
-    static const char *const defaults[] =
-    {
-        "patches/0090-winex11-preserve-precision-scrolling-from-XInput2-scroll-.patch",
-        "patches/0091-winex11-coast-scrolling-and-thrown-middle-drags-after-rel.patch",
-        "patches/0074-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch",
-        "patches/0072-winex11-registry-pointer-settings-and-middle-button-dra.patch",
-        "patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch",
-        "patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch",
-        "patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch",
-        "patches/0095-winex11-separate-pointer-coast-sources.patch",
-        "patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch",
-        "patches/0098-winex11-suspend-XI-scroll-selection-during-core-drags.patch"
-    };
-    struct text stack_source = {0}, safety_source = {0}, warp_source = {0};
-    struct text lifecycle_source = {0}, final_source = {0}, ownership_source = {0};
-    const char *paths[10];
-    char *stack, *safety, *warp, *lifecycle, *final, *ownership;
-    int i;
+    const char *pointer_path = "patches/0100-winex11-conserve-pointer-input-and-recover-core-drags.patch";
+    const char *dnd_path = "patches/0101-user32-release-drop-target-and-store-DragEnter-effect.patch";
+    struct text pointer_text = {0}, dnd_text = {0};
+    char *pointer, *dnd;
 
-    if (argc != 1 && argc != 11)
+    if (argc != 1 && argc != 3)
     {
-        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092 0093 0094 0095 0097 0098]\n",
-                argv[0]);
+        fprintf(stderr, "usage: %s [pointer-patch dnd-patch]\n", argv[0]);
         return 2;
     }
-    for (i = 0; i < 10; i++) paths[i] = argc == 11 ? argv[i + 1] : defaults[i];
-    for (i = 0; i < 10; i++)
-        if (!read_patch_new_side(paths[i], &stack_source)) return 2;
-    if (!read_patch_new_side(paths[4], &safety_source)) return 2;
-    if (!read_patch_new_side(paths[6], &warp_source)) return 2;
-    if (!read_patch_new_side(paths[7], &lifecycle_source)) return 2;
-    if (!read_patch_new_side(paths[8], &final_source)) return 2;
-    if (!read_patch_new_side(paths[9], &ownership_source)) return 2;
-
-    stack = compact(stack_source.data ? stack_source.data : "");
-    safety = compact(safety_source.data ? safety_source.data : "");
-    warp = compact(warp_source.data ? warp_source.data : "");
-    lifecycle = compact(lifecycle_source.data ? lifecycle_source.data : "");
-    final = compact(final_source.data ? final_source.data : "");
-    ownership = compact(ownership_source.data ? ownership_source.data : "");
-    if (!stack || !safety || !warp || !lifecycle || !final || !ownership)
+    if (argc == 3) { pointer_path = argv[1]; dnd_path = argv[2]; }
+    if (!read_patch_new_side(pointer_path, &pointer_text) || !read_patch_new_side(dnd_path, &dnd_text))
+        return 2;
+    pointer = compact(pointer_text.data ? pointer_text.data : "");
+    dnd = compact(dnd_text.data ? dnd_text.data : "");
+    if (!pointer || !dnd)
     {
-        fprintf(stderr, "FAIL: out of memory while compacting patch sources\n");
-        free(stack_source.data);
-        free(safety_source.data);
-        free(warp_source.data);
-        free(lifecycle_source.data);
-        free(final_source.data);
-        free(ownership_source.data);
-        free(stack);
-        free(safety);
-        free(warp);
-        free(lifecycle);
-        free(final);
-        free(ownership);
+        fprintf(stderr, "FAIL: out of memory while compacting patch source\n");
         return 2;
     }
 
-    check_pointer_setting_fallback(stack, safety, lifecycle, final);
-    check_warp_emulation(stack, warp, ownership);
-    check_held_and_direct_input(stack, safety, lifecycle, final);
-    check_core_button_ownership(ownership);
-    check_legacy_wheel_copy_guard(stack, ownership);
-    check_direct_packet_bounds(stack, safety, final);
-    check_continuation_sources(lifecycle, final);
-    check_inertia_timer_initialization(lifecycle);
-    check_one_shot_inertia_ticks(lifecycle);
-    check_inertia_lifecycle_cancellation(lifecycle);
-    check_accumulator_routing(safety);
-    check_inertia_limits(stack, lifecycle, final);
-    check_inertia_generation(stack, safety, lifecycle);
-    check_button_serial_and_middle_mode(safety);
-    check_held_wheel_provenance();
-    check_legacy_wheel_copy_model();
-    check_default_continuation_matrix();
-    check_middle_throw_estimator_math();
-    check_warp_probe_math();
-    check_math_limits();
+    check_scroll_reducer();
+    check_middle_reducer();
+    check_pinch_reducer();
+    check_lease_reducer();
+    check_inertia_reducer();
+    check_source_contracts(pointer, dnd);
 
-    free(stack_source.data);
-    free(safety_source.data);
-    free(warp_source.data);
-    free(lifecycle_source.data);
-    free(final_source.data);
-    free(ownership_source.data);
-    free(stack);
-    free(safety);
-    free(warp);
-    free(lifecycle);
-    free(final);
-    free(ownership);
+    free(pointer_text.data);
+    free(dnd_text.data);
+    free(pointer);
+    free(dnd);
     if (failures)
     {
-        fprintf(stderr, "pointer safety checks: %u failure%s\n",
-                failures, failures == 1 ? "" : "s");
+        fprintf(stderr, "%u pointer safety check(s) failed\n", failures);
         return 1;
     }
-    puts("pointer safety checks: PASS");
+    puts("All pointer safety checks passed.");
     return 0;
 }

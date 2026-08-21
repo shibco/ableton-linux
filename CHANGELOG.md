@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+The pending release includes:
+
+- the X11 pointer code uses one consolidated patch
+- fast smooth-scroll reports preserve the complete movement across all packet
+  sizes
+- drag recovery restores XI2 motion after release, focus, capture, window, and
+  device changes
+- scrolling inertia remains enabled by default
+- middle-button throw remains enabled by default
+- scrolling inertia and middle-button throw calculate travel from elapsed time
+- pinch zoom preserves every scale update
+- pinch zoom restores Ctrl state after each gesture
+- the pointer master switch selects Wine's standard pointer handling
+- external drag and drop releases each target
+- external drag and drop reports first-position acceptance correctly
+
 ## 2026.08.19.1
 
 - Fixed a slew of problems introduced by redesigning the new Installer too defensively, therefore **breaking it** for lots of people :( :
