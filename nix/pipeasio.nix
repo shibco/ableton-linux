@@ -8,6 +8,7 @@
   cmake,
   ninja,
   pkg-config,
+  qt6,
 }:
 
 let
@@ -47,21 +48,37 @@ stdenv.mkDerivation {
 
   # 1.5.0 builds with CMake (cmake/WineDLL.cmake drives winebuild/winegcc from
   # the patched Wine); libpipewire backs the unix half. Same production
-  # configuration as scripts/container-build.sh, minus the Qt panel (not used
-  # inside Wine; the runtime stays driver-only and BUILD-INFO records it) and
-  # the test rig (the container runs the CTest scope; nothing here would).
+  # configuration as scripts/container-build.sh, minus the test rig (the
+  # container runs the CTest scope; nothing here would).
+  #
+  # The Qt settings panel is built. Live's Hardware Setup button reaches it
+  # through the driver: patch pipeasio/0011 looks up pipeasio-settings on PATH
+  # and posix_spawns it, and without the binary the driver falls through to the
+  # dialog telling the user to edit config.ini by hand.
+  #
+  # No wrapQtAppsHook: nixpkgs' Qt6 resolves its platform plugin from the store
+  # without environment injection (checked by running the panel under env -i
+  # with only DISPLAY and XAUTHORITY set), and a wrapper would put a libc-only
+  # binary under the plain name, where build-audit.sh reads the Qt6 link.
   nativeBuildInputs = [
     cmake
     ninja
     pkg-config
     wine
   ];
-  buildInputs = [ pipewire ];
+  buildInputs = [
+    pipewire
+    qt6.qtbase
+  ];
+
+  # nixpkgs requires an explicit choice from anything depending on qtbase. The
+  # panel needs no wrapping: see the nativeBuildInputs note above.
+  dontWrapQtApps = true;
 
   cmakeFlags = [
     "-DWINEBUILD=${wine}/bin/winebuild"
     "-DWINEGCC=${wine}/bin/winegcc"
-    "-DBUILD_SETTINGS_PANEL=OFF"
+    "-DBUILD_SETTINGS_PANEL=ON"
     "-DBUILD_TESTS=OFF"
   ];
 
@@ -87,7 +104,13 @@ stdenv.mkDerivation {
     readelf -d $out/lib/wine/x86_64-unix/pipeasio64.dll.so \
       | grep -E 'RUNPATH|RPATH' | grep -F '${lib.getLib pipewire}/lib' \
       || { echo "unix half lacks the nixpkgs pipewire RUNPATH"; exit 1; }
-    echo "PipeASIO files present, libpipewire linked and rpath'd"
+    # The panel is what Live's Hardware Setup button spawns; a silent Qt
+    # detection failure would leave BUILD_SETTINGS_PANEL=ON building nothing.
+    [ -x $out/bin/pipeasio-settings ] \
+      || { echo "settings panel missing — Qt was not detected at configure time"; exit 1; }
+    readelf -d $out/bin/pipeasio-settings | grep -qF 'libQt6Widgets.so.6' \
+      || { echo "settings panel does not link Qt6 Widgets"; exit 1; }
+    echo "PipeASIO files present, libpipewire linked and rpath'd, settings panel built"
   '';
 
   meta = with lib; {

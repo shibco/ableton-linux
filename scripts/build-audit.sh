@@ -690,10 +690,17 @@ if command -v readelf >/dev/null; then
         else
             bad "pipeasio-settings DT_NEEDED" "libQt6Widgets.so.6 not linked"
         fi
-        if readelf -d "$tree/bin/pipeasio-settings" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
-            bad "pipeasio-settings rpath" "carries a build-container rpath"
-        else
+        # Same packaging split as the two checks above: the tarball panel
+        # resolves the host's Qt and carries no rpath, the Nix one is linked
+        # against its closure's. Anything else is a build-container path.
+        panel_rpath="$(readelf -d "$tree/bin/pipeasio-settings" 2>/dev/null \
+            | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
+        if [ -z "$panel_rpath" ]; then
             ok "pipeasio-settings rpath" "none"
+        elif printf '%s' "$panel_rpath" | tr ':' '\n' | grep -qv '^/nix/store/'; then
+            bad "pipeasio-settings rpath" "carries a build-container rpath: $panel_rpath"
+        else
+            ok "pipeasio-settings rpath" "nix store pin"
         fi
     fi
     readelf -d "$tree/lib/wine/x86_64-unix/winegstreamer.so" 2>/dev/null \

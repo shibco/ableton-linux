@@ -113,6 +113,18 @@ stdenv.mkDerivation {
           cp -f ${pipeasio}/lib/wine/$dir/$file $out/lib/wine/$dir/
           ln -sfn $file $out/lib/wine/$dir/''${file/pipeasio64/pipeasio}
         done
+        # The settings panel. Live's Hardware Setup button does not open a
+        # window of its own: patch pipeasio/0011 looks up pipeasio-settings on
+        # PATH and posix_spawns it, and without the binary the driver shows the
+        # dialog telling the user to edit config.ini by hand instead. $out/bin
+        # is what the launch shim puts on PATH, so that is where it goes; the
+        # name is this project's own and collides with nothing in a profile.
+        install -m755 ${pipeasio}/bin/pipeasio-settings $out/bin/pipeasio-settings
+        install -Dm644 ${pipeasio}/share/applications/pipeasio-settings.desktop \
+                       $out/share/applications/pipeasio-settings.desktop
+        install -Dm644 ${pipeasio}/share/icons/hicolor/scalable/apps/pipeasio.svg \
+                       $out/share/icons/hicolor/scalable/apps/pipeasio.svg
+
         # Build-time-only files pipeasio consumed: headers and winegcc/winebuild
         # drove its compile, the import libs (*.a) its link.
         rm -rf $out/include $out/share/man
@@ -416,8 +428,8 @@ stdenv.mkDerivation {
     pipeasio-patches: $n_asio
     patch-stack:  $stack_sha
     pipeasio:     1.5.0
-    pipeasio-panel: skipped
-    pipeasio-settings: skipped (disabled)
+    pipeasio-panel: built
+    pipeasio-settings: $(sha_of bin/pipeasio-settings) (Qt6 Widgets link)
     pipewire:     pinned in the closure via RUNPATH (the .run resolves the host's)
     gst-decoders: base/good/bad/ugly/libav pinned in the closure (the .run uses the host's)
     ntsync:       yes (vendored linux/ntsync.h, gated in nix/wine.nix)
