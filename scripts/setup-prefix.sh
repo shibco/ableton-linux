@@ -349,12 +349,32 @@ final_name="$(basename "$final_prefix")"
 safe_final="$(ableton_path_is_safe_delete_target "$final_prefix")" || {
     echo "!! unsafe Wine prefix path: $final_prefix" >&2; exit 2; }
 [ ! -L "$final_prefix" ] || { echo "!! refusing symlink Wine prefix: $final_prefix" >&2; exit 2; }
-if [ -e "$final_prefix" ] \
-   && ! ableton_prefix_marker_valid "$final_prefix" "$safe_final" \
-   && ! ableton_legacy_default_prefix_valid "$final_prefix"; then
-    echo "!! refusing to transactionally replace unrecognised custom prefix: $final_prefix" >&2
-    echo "!! create it once with this installer so it carries .ableton-linux-prefix" >&2
-    exit 2
+if [ -e "$final_prefix" ] && ! ableton_prefix_marker_valid "$final_prefix" "$safe_final"; then
+    if ableton_legacy_default_prefix_valid "$final_prefix"; then
+        # Adopt it here, before any transaction opens. The run below moves this
+        # prefix aside as its rollback backup, and the commit checks that backup
+        # for the same ownership marker, so a prefix adopted any later than this
+        # leaves a backup that can never satisfy it: the promotion succeeds and
+        # the commit then fails with the backup unrecognised.
+        adopt_marker="$final_prefix/.ableton-linux-prefix"
+        [ ! -L "$adopt_marker" ] && [ ! -e "$adopt_marker" ] || {
+            echo "!! existing Wine prefix has an unsafe ownership marker: $adopt_marker" >&2; exit 2; }
+        adopt_tmp="$(mktemp "$final_prefix/.prefix-marker.XXXXXX")" || {
+            echo "!! cannot write into the existing Wine prefix: $final_prefix" >&2; exit 2; }
+        if ! printf 'format=1\nprefix=%s\n' "$safe_final" > "$adopt_tmp" \
+           || ! chmod 600 "$adopt_tmp" \
+           || ! mv -T -f -- "$adopt_tmp" "$adopt_marker" \
+           || ! ableton_prefix_marker_valid "$final_prefix" "$safe_final"; then
+            rm -f -- "$adopt_tmp"
+            echo "!! could not adopt the existing Wine prefix: $final_prefix" >&2
+            exit 2
+        fi
+        echo ":: adopted the existing prefix at $final_prefix (it predates the ownership marker)"
+    else
+        echo "!! refusing to transactionally replace unrecognised custom prefix: $final_prefix" >&2
+        echo "!! create it once with this project's setup so it carries .ableton-linux-prefix" >&2
+        exit 2
+    fi
 fi
 mkdir -p -- "$final_parent"
 own_prefix_transaction=0
