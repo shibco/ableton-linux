@@ -23,6 +23,7 @@ test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-release-policy.sh
 	./scripts/test-shortcut-hold.sh
 	./scripts/test-desktop-integration.sh
+	./scripts/test-nix-packaging.sh
 	./scripts/test-installer-lifecycle.sh
 	./scripts/test-pipeasio-installer.sh
 

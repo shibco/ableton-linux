@@ -323,6 +323,42 @@ runtime_fails_validation "$base/runtime-2" "$base/BUILD-INFO-2.txt" \
     || fail "arbitrary skipped-panel reason was accepted"
 ok "panel BUILD-INFO accepts only the declared built/skipped grammar"
 
+# The Nix package links whatever Qt 6 its nixpkgs carries, so on a runtime that
+# identifies itself as nix the panel record names the version actually built
+# against.  The release pin above is unchanged; only "dist-version: nix"
+# reaches the relaxed grammar, and the record must still be a version.
+base="$(new_env nix-panel-grammar)"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+# Rewrites both records outright, so repeated calls do not depend on what the
+# previous one left behind.
+nixify()   # <panel record tail>
+{
+    awk -v tail="$1" '
+        /^dist-version: / { print "dist-version: nix"; next }
+        /^pipeasio-settings: / { print $1, $2, tail; next }
+        { print }
+    ' "$base/runtime/ABLETON-WINE-BUILD-INFO.txt" > "$base/info.rewritten"
+    mv -- "$base/info.rewritten" "$base/runtime/ABLETON-WINE-BUILD-INFO.txt"
+    cp -- "$base/runtime/ABLETON-WINE-BUILD-INFO.txt" "$base/BUILD-INFO.txt"
+}
+nixify '(Qt 6.9 link)'
+ableton_pipeasio_validate_panel "$base/runtime" >/dev/null 2>&1 \
+    || fail "a nix runtime's own Qt version was refused by the panel record"
+# The bug this grammar exists to catch: a builder that writes the link name
+# instead of the version passes its own build and then breaks setup-prefix.
+nixify '(Qt6 Widgets link)'
+if ableton_pipeasio_validate_panel "$base/runtime" >/dev/null 2>&1; then
+    fail "a panel record naming the Qt library instead of its version was accepted"
+fi
+nixify '(Qt 6.9 link)'
+ok "the nix panel record takes any Qt 6 version but still has to be a version"
+
+# "nix" is not a release version, and the store path is what corroborates it:
+# a runtime outside the store may not use the name to skip the version check.
+runtime_fails_validation "$base/runtime" "$base/BUILD-INFO.txt" \
+    || fail "dist-version nix was accepted for a runtime outside the nix store"
+ok "dist-version nix is refused for a runtime that is not in the store"
+
 base="$(new_env probe-seal)"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" skipped
 printf '# mutation\n' >> "$base/runtime/bin/pipewire-version-probe"
