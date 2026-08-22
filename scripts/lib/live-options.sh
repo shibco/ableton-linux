@@ -154,6 +154,107 @@ ableton_prepare_live_preferences()
     [ -d "$prefs_path" ] || mkdir -- "$prefs_path" || return 1
 )
 
+# Replace a line the launcher wrote itself, so a second opt-in launch can change
+# the count. Refuses unless the marker is valid, records a different count, and
+# Options.txt holds exactly one -MaxAudioThreads line that is still the one the
+# marker names: every other state is a user edit and is left alone.
+#
+# Both files are opened and inode-checked before use, and every read and write
+# goes through the resulting descriptor. A name checked here is a different file
+# by the time anything is written to it: replacing Options.txt with a symlink
+# between the check and the write redirects the write outside the Wine prefix.
+#
+# Options.txt and the marker must never disagree. A marker recording a count the
+# file does not contain matches nothing on the next launch, so the directory is
+# declined for good. The old bytes go back if the marker cannot be replaced, and
+# any failure returns 1 so the launcher reports it.
+ableton_max_audio_rewrite_seeded()
+{
+    local prefs_io="$1" option="$2"
+    local marker="$prefs_io/.ableton-linux-max-audio-threads-v1"
+    local options="$prefs_io/Options.txt"
+    local seeded line total=0 matched=0
+    local marker_token marker_fd marker_io
+    local options_token options_fd options_io saved staged staged_marker
+
+    [ -f "$marker" ] && [ ! -L "$marker" ] || return 0
+    marker_token="$(stat -c '%d:%i' -- "$marker")" || return 0
+    exec {marker_fd}<"$marker" || return 0
+    marker_io="/proc/$BASHPID/fd/$marker_fd"
+    if [ ! -f "$marker_io" ] \
+       || [ "$(stat -Lc '%d:%i' -- "$marker_io")" != "$marker_token" ]; then
+        exec {marker_fd}<&-
+        return 0
+    fi
+    if ableton_max_audio_marker_valid "$marker_io"; then
+        seeded="$(sed -n '2s/^default=//p' "$marker_io")"
+    fi
+    exec {marker_fd}<&-
+    [ -n "$seeded" ] && [ "$seeded" != "$option" ] || return 0
+
+    [ -f "$options" ] && [ ! -L "$options" ] || return 0
+    options_token="$(stat -c '%d:%i' -- "$options")" || return 0
+    exec {options_fd}<>"$options" || return 0
+    options_io="/proc/$BASHPID/fd/$options_fd"
+    if [ ! -f "$options_io" ] \
+       || [ "$(stat -Lc '%d:%i' -- "$options_io")" != "$options_token" ]; then
+        exec {options_fd}>&-
+        return 0
+    fi
+
+    # Count every -MaxAudioThreads line, not just the seeded one: a second value
+    # the user added is an edit, and rewriting around it would leave two.
+    # CR stripped so a CRLF-edited copy is caught too.
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+            -MaxAudioThreads|-MaxAudioThreads[=[:space:]]*)
+                total=$((total + 1))
+                [ "$line" = "$seeded" ] && matched=$((matched + 1)) ;;
+        esac
+    done < "$options_io"
+    if [ "$total" -ne 1 ] || [ "$matched" -ne 1 ]; then
+        exec {options_fd}>&-
+        return 0
+    fi
+
+    saved="$(mktemp "$prefs_io/.Options.txt.XXXXXX")" || {
+        exec {options_fd}>&-; return 0; }
+    staged="$(mktemp "$prefs_io/.Options.txt.XXXXXX")" || {
+        rm -f -- "$saved"; exec {options_fd}>&-; return 0; }
+    staged_marker="$(mktemp "$prefs_io/.max-audio-threads-marker.XXXXXX")" || {
+        rm -f -- "$saved" "$staged"; exec {options_fd}>&-; return 0; }
+
+    # Stage everything before touching the file, so a failure costs nothing.
+    if ! cat "$options_io" > "$saved" \
+       || ! awk -v old="$seeded" -v new="$option" \
+              '{ l = $0; sub(/\r$/, "", l) } l == old { print new; next } { print }' \
+              "$options_io" > "$staged" \
+       || ! printf 'format=1\ndefault=%s\n' "$option" > "$staged_marker" \
+       || ! chmod 600 "$staged_marker"; then
+        rm -f -- "$saved" "$staged" "$staged_marker"
+        exec {options_fd}>&-
+        return 1
+    fi
+
+    # Write through the pinned descriptor: keeps the file's permissions, and a
+    # swapped pathname cannot redirect it.
+    if ! cat "$staged" > "$options_io"; then
+        rm -f -- "$saved" "$staged" "$staged_marker"
+        exec {options_fd}>&-
+        return 1
+    fi
+    if ! mv -T -f -- "$staged_marker" "$marker"; then
+        cat "$saved" > "$options_io"
+        rm -f -- "$saved" "$staged" "$staged_marker"
+        exec {options_fd}>&-
+        return 1
+    fi
+    rm -f -- "$saved" "$staged"
+    exec {options_fd}>&-
+    echo "   The launcher changed Live to use ${option#*=} audio threads."
+}
+
 ableton_seed_max_audio_threads_in_dir()
 (
     local users_root="$1" prefs="$2" option="$3"
@@ -181,8 +282,13 @@ ableton_seed_max_audio_threads_in_dir()
     options="$prefs_io/Options.txt"
     marker="$prefs_io/.ableton-linux-max-audio-threads-v1"
 
-    # The marker preserves later user edits.
-    [ ! -e "$marker" ] && [ ! -L "$marker" ] || return 0
+    # The marker preserves later user edits. While it still describes the file,
+    # nothing has touched the line since the launcher wrote it, so a changed
+    # request may replace that one line.
+    if [ -e "$marker" ] || [ -L "$marker" ]; then
+        ableton_max_audio_rewrite_seeded "$prefs_io" "$option" || return 1
+        return 0
+    fi
     if [ -L "$options" ] || { [ -e "$options" ] && [ ! -f "$options" ]; }; then
         echo "ableton-live: Use a regular file inside the Wine prefix for Live settings: '$prefs/Options.txt'." >&2
         return 0
