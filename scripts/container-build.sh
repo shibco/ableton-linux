@@ -209,7 +209,7 @@ mkdir -p "$(dirname "$CONFIGURE_PREFIX")"
 ln -s "$PREFIX_ROOT" "$CONFIGURE_PREFIX"
 "$PREFIX_ROOT/bin/wine" --version
 
-bridge_pe="$PREFIX_ROOT/lib/wine/$ARCH-windows/libusb-1.0.dll"
+bridge_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/libusb-1.0.dll"
 bridge_unix="$PREFIX_ROOT/lib/wine/$ARCH-unix/libusb-1.0.so"
 portal_unix="$PREFIX_ROOT/lib/wine/$ARCH-unix/comdlg32.so"
 i386_bridge_pe="$PREFIX_ROOT/lib/wine/i386-windows/libusb-1.0.dll"
@@ -406,19 +406,21 @@ echo "   pipewire-version-probe: client stub + ASan/UBSan verification passed"
 pipeasio_cmake_configure() {
     local build_dir="$1"
     shift
-    PKG_CONFIG_PATH="$PW_SDK/usr/lib/$ARCH-linux-gnu/pkgconfig" \
-    PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
-    CC=gcc CXX=g++ \
-    cmake -S . -B "$build_dir" -G Ninja \
-        -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
-        -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
-        "$@"
+        PKG_CONFIG_PATH="$PW_SDK/usr/lib/$ARCH-linux-gnu/pkgconfig" \
+        PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
+        CC=winegcc CXX=wineg++ \
+        cmake -S . -B "$build_dir" -G Ninja \
+            -DCMAKE_C_FLAGS="--target=aarch64-windows -ffixed-x18" \
+            -DCMAKE_CXX_FLAGS="--target=aarch64-windows -ffixed-x18" \
+            -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
+            -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
+            "$@"
 }
 
-## The SDK's libpipewire was built against a newer glibc than this reproducible
-## jammy container.  The selected unit tests use PipeWire types but make no
-## runtime pw_* calls, so give their loader a tiny symbol-compatible stub.  The
-## real driver is still linked by soname and the artifact gate below verifies it.
+# The SDK's libpipewire was built against a newer glibc than this reproducible
+# jammy container.  The selected unit tests use PipeWire types but make no
+# runtime pw_* calls, so give their loader a tiny symbol-compatible stub.  The
+# real driver is still linked by soname and the artifact gate below verifies it.
 pipeasio_make_test_stub() {
     local build_dir="$1"
     local stub_dir="$2"
@@ -546,7 +548,7 @@ pipeasio_cmake_configure build-asan \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
     -DBUILD_SETTINGS_PANEL="$PIPEASIO_BUILD_SETTINGS_PANEL" \
     -DBUILD_TESTS=ON \
-    -DPIPEASIO_ASAN=ON 
+    -DPIPEASIO_ASAN=ON
 cmake --build build-asan -j "$JOBS"
 pipeasio_ctest_nonintegration build-asan \
     ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0 \
@@ -690,9 +692,9 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "wine:         $("$PREFIX_ROOT/bin/wine" --version)"
     echo "base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c"
     echo "prefix:       $CONFIGURE_PREFIX (configure-time only; tarball is relocatable, see relocation gate)"
-    #echo "patches:      $((npatch + nasio))"     # wine series + pipeasio series
+    echo "patches:      $((npatch + nasio))"     # wine series + pipeasio series
     echo "wine-patches: $npatch"
-    #echo "pipeasio-patches: $nasio"
+    echo "pipeasio-patches: $nasio"
     echo "patch-head:   $patch_head"
     echo "patch-stack:  $stack_sha"
     echo "source-tree:  $SOURCE_TREE_SHA"
@@ -735,7 +737,7 @@ install -m755 "$pipewire_probe" "$OUT/pipewire-version-probe"
 test "$(sha256sum "$OUT/pipewire-version-probe" | awk '{print $1}')" = "$pipewire_probe_sha"
 tarball="$OUT/${NAME}-${VERSION}.tar.zst"
 # --long=27 (128 MiB window, zstd's default decode limit: no flags needed to unpack)
-# lets the i386/$ARCH builtin pairs dedup against each other.
+# lets the i386/x86_64 builtin pairs dedup against each other.
 tar -C "$(dirname "$PREFIX_ROOT")" -c "$NAME" | zstd -T0 -19 --long=27 -q -f -o "$tarball"
 ( cd "$OUT" && sha256sum "$(basename "$tarball")" > "$(basename "$tarball").sha256" )
 
