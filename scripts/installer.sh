@@ -6,6 +6,7 @@ set -euo pipefail
 export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+
 if [ -d "$here/../bin" ]; then
     kit_bin="$(cd "$here/../bin" && pwd)"
     export PATH="$kit_bin:$PATH"
@@ -14,6 +15,7 @@ fi
 . "$here/lib/lifecycle.sh"
 . "$here/lib/pipeasio.sh"
 . "$here/lib/manifest.sh"
+ARCH="${ARCH:-$(uname -m)}"
 
 usage()
 {
@@ -80,7 +82,7 @@ case "${1:-}" in
     install|update|uninstall)
         command_name="$1"; explicit_command=1; shift ;;
     runtime|prefix|link)
-        command_name="$1"; explicit_command=1; shift 
+        command_name="$1"; explicit_command=1; shift
         subcommand="${1:-}"
         [ -n "$subcommand" ] || {
             echo "!! $command_name needs a subcommand" >&2; usage >&2; exit 2; }
@@ -377,9 +379,10 @@ host_preflight()
 {
     case "$command_name:$subcommand" in
         install:|update:|runtime:install|prefix:create|prefix:update|link:enable)
-            [ "$(uname -m)" = x86_64 ] \
-                || { echo "lmao :3"; } ;;
-            #    || { echo "!! this command requires x86_64" >&2; return 1; } ;;
+            if [ "$(uname -m)" != "x86_64" ] \
+                && [ "$(uname -m)" != "aarch64" ]; then \ 
+                    { echo "!! this command requires x86_64 or aarch64" >&2; return 1; }
+            fi
     esac
     # repair-live11 runs no bounded external command, so it does not need GNU
     # timeout.  This only helps an extracted kit: the .run header needs timeout
@@ -424,24 +427,24 @@ esac
 # Gate only commands that replace the PipeASIO-bearing runtime or register it.
 # Plans, help, extraction transport, Link operations, and uninstall remain
 # available without a running PipeWire daemon.
-#if [ "$dry_run" -eq 0 ]; then
-#    pipewire_probe=""
-#    case "$command_name:$subcommand" in
-#        install:|update:|runtime:install)
-#            pipewire_probe="$root/bin/pipewire-version-probe"
-#            for pipewire_probe_candidate in \
-#                "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
-#                [ -x "$pipewire_probe_candidate" ] || continue
-#                pipewire_probe="$pipewire_probe_candidate"
-#                break
-#            done ;;
-#        prefix:create|prefix:update)
-#            pipewire_probe="$ABLETON_WINE_ROOT/bin/pipewire-version-probe" ;;
-#    esac
-#    if [ -n "$pipewire_probe" ]; then
-#        ableton_pipewire_preflight "$pipewire_probe" "changing PipeASIO"
-#    fi
-#fi
+if [ "$dry_run" -eq 0 ]; then
+    pipewire_probe=""
+    case "$command_name:$subcommand" in
+        install:|update:|runtime:install)
+            pipewire_probe="$root/bin/pipewire-version-probe"
+            for pipewire_probe_candidate in \
+                "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
+                [ -x "$pipewire_probe_candidate" ] || continue
+                pipewire_probe="$pipewire_probe_candidate"
+                break
+            done ;;
+        prefix:create|prefix:update)
+            pipewire_probe="$ABLETON_WINE_ROOT/bin/pipewire-version-probe" ;;
+    esac
+    if [ -n "$pipewire_probe" ]; then
+        ableton_pipewire_preflight "$pipewire_probe" "changing PipeASIO"
+    fi
+fi
 
 install_args=()
 [ "$assume_yes" -eq 0 ] || install_args+=(--yes)

@@ -4,6 +4,8 @@
 # reversible.  User-owned panel paths are never replaced or removed.
 set -euo pipefail
 
+ARCH="${ARCH:-$(uname -m)}"
+
 here="$(cd "$(dirname "$0")" && pwd)"
 for lib in "$here/lib/config.sh" "$here/config.sh" \
            "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
@@ -58,8 +60,8 @@ while IFS= read -r -d '' candidate; do
 done < <(find "$runtime_parent" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
 [ -n "$saved" ] || { echo "!! no completed runtime rollback is available" >&2; exit 1; }
 for required in bin/wine bin/wineserver \
-    lib/wine/x86_64-windows/pipeasio64.dll \
-    lib/wine/x86_64-unix/pipeasio64.dll.so; do
+    lib/wine/$ARCH-windows/pipeasio64.dll \
+    lib/wine/$ARCH-unix/pipeasio64.dll.so; do
     [ -s "$saved/$required" ] || { echo "!! saved runtime is incomplete: $required" >&2; exit 1; }
 done
 

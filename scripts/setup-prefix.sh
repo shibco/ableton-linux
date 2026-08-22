@@ -12,6 +12,8 @@
 # ABLETON_LIVE_VERSION=11|12 pins the winetricks recipe; unpinned, an opted-in
 # auto-install derives it from the chosen zip's filename (default 12).
 set -euo pipefail
+
+ARCH="${ARCH:-$(uname -m)}"
 here="$(cd "$(dirname "$0")" && pwd)"
 for config_lib in "$here/lib/config.sh" "$here/config.sh" \
                   "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
@@ -319,20 +321,20 @@ fi
     exit 1
 }
 command -v cabextract >/dev/null || { echo "!! cabextract is required for prefix setup" >&2; exit 1; }
-#for required in \
-#    bin/pipewire-version-probe \
-#    ABLETON-WINE-BUILD-INFO.txt \
-#    lib/wine/x86_64-unix/comdlg32.so \
-#    lib/wine/x86_64-windows/libusb-1.0.dll \
-#    lib/wine/x86_64-unix/libusb-1.0.so \
-#    lib/wine/x86_64-windows/pipeasio64.dll \
-#    lib/wine/x86_64-windows/pipeasio.dll \
-#    lib/wine/x86_64-unix/pipeasio64.dll.so \
-#    lib/wine/x86_64-unix/pipeasio.dll.so; do
-#    [ -s "$WINE_ROOT/$required" ] || { echo "!! packaged runtime is missing $required"; exit 1; }
-#done
-#ableton_pipeasio_validate_runtime "$WINE_ROOT"
-#ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "configuring PipeASIO"
+for required in \
+    bin/pipewire-version-probe \
+    ABLETON-WINE-BUILD-INFO.txt \
+    lib/wine/$ARCH-unix/comdlg32.so \
+    lib/wine/$ARCH-windows/libusb-1.0.dll \
+    lib/wine/$ARCH-unix/libusb-1.0.so \
+    lib/wine/$ARCH-windows/pipeasio64.dll \
+    lib/wine/$ARCH-windows/pipeasio.dll \
+    lib/wine/$ARCH-unix/pipeasio64.dll.so \
+    lib/wine/$ARCH-unix/pipeasio.dll.so; do
+    [ -s "$WINE_ROOT/$required" ] || { echo "!! packaged runtime is missing $required"; exit 1; }
+done
+ableton_pipeasio_validate_runtime "$WINE_ROOT"
+ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "configuring PipeASIO"
 
 # Prefix changes are made against a sibling staging copy, then promoted in one
 # rename.  Existing prefixes use reflink cloning where the filesystem supports
@@ -1028,7 +1030,7 @@ else
     for f in "$vc_tmp"/*/*.dll_amd64 "$vc_tmp"/*/*.dll_x86; do
         [ -e "$f" ] || continue
         case "$f" in
-            *_amd64) name="$(basename "$f" _amd64)"; wdir=system32; barch=x86_64-windows ;;
+            *_amd64) name="$(basename "$f" _amd64)"; wdir=system32; barch=$ARCH-windows ;;
             *)       name="$(basename "$f" _x86)";   wdir=syswow64; barch=i386-windows ;;
         esac
         dest="$WINEPREFIX/drive_c/windows/$wdir/$name"

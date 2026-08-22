@@ -13,6 +13,7 @@ ABLETON_PIPEWIRE_CLIENT_VERSION=""
 ABLETON_PIPEWIRE_DAEMON_VERSION=""
 ABLETON_PIPEASIO_PANEL_STATE=""
 ABLETON_PIPEASIO_DIAGNOSTIC_NOTICE_SHOWN=0
+ARCH="${ARCH:-$(uname -m)}"
 
 ableton_pipewire_version_core()
 {
@@ -205,8 +206,8 @@ ableton_pipeasio_validate_runtime()
         return 1
     fi
     for canonical in \
-        lib/wine/x86_64-windows/pipeasio64.dll \
-        lib/wine/x86_64-unix/pipeasio64.dll.so; do
+        lib/wine/$ARCH-windows/pipeasio64.dll \
+        lib/wine/$ARCH-unix/pipeasio64.dll.so; do
         [ -s "$runtime/$canonical" ] || { echo "!! runtime is missing $canonical" >&2; return 1; }
     done
     pe_record="$(ableton_pipeasio_build_info_value "$info" pipeasio-pe)" || {
@@ -215,8 +216,8 @@ ableton_pipeasio_validate_runtime()
         echo "!! runtime has no unique PipeASIO Unix digest" >&2; return 1; }
     [[ "$pe_record" =~ ^[0-9a-f]{64}$ ]] && [[ "$unix_record" =~ ^[0-9a-f]{64}$ ]] || {
         echo "!! runtime has a malformed PipeASIO digest" >&2; return 1; }
-    pe_hash="$(sha256sum -- "$runtime/lib/wine/x86_64-windows/pipeasio64.dll" | awk '{print $1}')"
-    unix_hash="$(sha256sum -- "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so" | awk '{print $1}')"
+    pe_hash="$(sha256sum -- "$runtime/lib/wine/$ARCH-windows/pipeasio64.dll" | awk '{print $1}')"
+    unix_hash="$(sha256sum -- "$runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so" | awk '{print $1}')"
     [ "$pe_hash" = "$pe_record" ] && [ "$unix_hash" = "$unix_record" ] || {
         echo "!! PipeASIO binaries do not match runtime build information" >&2
         return 1
@@ -229,8 +230,8 @@ ableton_pipeasio_validate_runtime()
             return 1
         fi
     done <<'EOF'
-lib/wine/x86_64-windows/pipeasio64.dll|lib/wine/x86_64-windows/pipeasio.dll
-lib/wine/x86_64-unix/pipeasio64.dll.so|lib/wine/x86_64-unix/pipeasio.dll.so
+lib/wine/$ARCH-windows/pipeasio64.dll|lib/wine/$ARCH-windows/pipeasio.dll
+lib/wine/$ARCH-unix/pipeasio64.dll.so|lib/wine/$ARCH-unix/pipeasio.dll.so
 EOF
     [ -x "$runtime/bin/pipewire-version-probe" ] || {
         echo "!! runtime is missing its PipeWire compatibility check" >&2; return 1; }
@@ -393,7 +394,7 @@ ableton_pipeasio_qt_advice()
         path="$(qtpaths6 --plugin-dir 2>/dev/null || true)"
         [ -z "$path" ] || roots+=("$path")
     fi
-    roots+=(/usr/lib/x86_64-linux-gnu/qt6/plugins /usr/lib64/qt6/plugins /usr/lib/qt6/plugins)
+    roots+=(/usr/lib/$ARCH-linux-gnu/qt6/plugins /usr/lib64/qt6/plugins /usr/lib/qt6/plugins)
     for entry in "${roots[@]}"; do
         [ -n "$entry" ] || continue
         case "$entry" in */platforms) base="$entry" ;; *) base="$entry/platforms" ;; esac

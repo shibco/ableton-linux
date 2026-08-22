@@ -3,6 +3,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-pipeasio-installer-test.XXXXXX")"
+ARCH="${ARCH:-$(uname -m)}"
 cleanup()
 {
     [ "${ABLETON_KEEP_TEST_WORK:-0}" -eq 0 ] || { printf 'kept test work: %s\n' "$work" >&2; return; }
@@ -30,10 +31,10 @@ fail()
 # replace an inherited value rather than allowing the environment to lower it.
 ABLETON_PIPEWIRE_FLOOR=0.3.56
 # shellcheck disable=SC1091
-#. "$here/lib/pipeasio.sh"
+. "$here/lib/pipeasio.sh"
 [ "$ABLETON_PIPEWIRE_FLOOR" = 1.4.2 ] || fail "environment overrode the hard PipeWire floor"
-#declare -F ableton_pipewire_preflight >/dev/null || fail "PipeWire preflight API is missing"
-#declare -F ableton_pipeasio_validate_runtime >/dev/null || fail "runtime validation API is missing"
+declare -F ableton_pipewire_preflight >/dev/null || fail "PipeWire preflight API is missing"
+declare -F ableton_pipeasio_validate_runtime >/dev/null || fail "runtime validation API is missing"
 ok "PipeWire 1.4.2 is a hard release floor"
 
 new_env()
@@ -205,8 +206,8 @@ EOF
         printf 'dist-version: 2026.08.12.999\n'
         printf 'pipeasio: 1.5.0\n'
         printf 'pipewire-floor: 1.4.2\n'
-        printf 'pipeasio-pe: %s\n' "$(sha256sum -- "$runtime/lib/wine/x86_64-windows/pipeasio64.dll" | awk '{print $1}')"
-        printf 'pipeasio-unix: %s\n' "$(sha256sum -- "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so" | awk '{print $1}')"
+        printf 'pipeasio-pe: %s\n' "$(sha256sum -- "$runtime/lib/wine/$ARCH-windows/pipeasio64.dll" | awk '{print $1}')"
+        printf 'pipeasio-unix: %s\n' "$(sha256sum -- "$runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so" | awk '{print $1}')"
         printf 'pipewire-version-probe: %s\n' "$(sha256sum -- "$runtime/bin/pipewire-version-probe" | awk '{print $1}')"
         printf 'pipeasio-panel: %s\n' "$mode"
         if [ "$mode" = built ]; then
@@ -222,12 +223,12 @@ make_runtime()
 {
     local runtime="$1" external="$2" mode="$3"
     mkdir -p -- "$runtime/bin" \
-        "$runtime/lib/wine/x86_64-windows" \
-        "$runtime/lib/wine/x86_64-unix"
-    printf 'PE PipeASIO fixture\n' > "$runtime/lib/wine/x86_64-windows/pipeasio64.dll"
-    ln -s -- pipeasio64.dll "$runtime/lib/wine/x86_64-windows/pipeasio.dll"
-    printf 'Unix PipeASIO fixture\n' > "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so"
-    ln -s -- pipeasio64.dll.so "$runtime/lib/wine/x86_64-unix/pipeasio.dll.so"
+        "$runtime/lib/wine/$ARCH-windows" \
+        "$runtime/lib/wine/$ARCH-unix"
+    printf 'PE PipeASIO fixture\n' > "$runtime/lib/wine/$ARCH-windows/pipeasio64.dll"
+    ln -s -- pipeasio64.dll "$runtime/lib/wine/$ARCH-windows/pipeasio.dll"
+    printf 'Unix PipeASIO fixture\n' > "$runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so"
+    ln -s -- pipeasio64.dll.so "$runtime/lib/wine/$ARCH-unix/pipeasio.dll.so"
     write_probe "$runtime/bin/pipewire-version-probe"
     write_build_info "$runtime" "$external" "$mode"
 }
@@ -276,20 +277,20 @@ ok "skipped panel requires an empty artifact set"
 
 base="$(new_env alias-mismatch)"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
-rm -f -- "$base/runtime/lib/wine/x86_64-windows/pipeasio.dll"
-printf 'different alias\n' > "$base/runtime/lib/wine/x86_64-windows/pipeasio.dll"
+rm -f -- "$base/runtime/lib/wine/$ARCH-windows/pipeasio.dll"
+printf 'different alias\n' > "$base/runtime/lib/wine/$ARCH-windows/pipeasio.dll"
 runtime_fails_validation "$base/runtime" "$base/BUILD-INFO.txt" || fail "mismatched PipeASIO PE aliases were accepted"
 ok "PipeASIO aliases must be byte-identical"
 
 base="$(new_env alias-partial)"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
-rm -f -- "$base/runtime/lib/wine/x86_64-unix/pipeasio.dll.so"
+rm -f -- "$base/runtime/lib/wine/$ARCH-unix/pipeasio.dll.so"
 runtime_fails_validation "$base/runtime" "$base/BUILD-INFO.txt" || fail "partial PipeASIO alias set was accepted"
 ok "PipeASIO aliases are all-or-none"
 
 base="$(new_env driver-digest-mismatch)"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
-printf 'post-build mutation\n' >> "$base/runtime/lib/wine/x86_64-unix/pipeasio64.dll.so"
+printf 'post-build mutation\n' >> "$base/runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so"
 runtime_fails_validation "$base/runtime" "$base/BUILD-INFO.txt" \
     || fail "modified canonical PipeASIO binary was accepted with a stale BUILD-INFO digest"
 ok "PipeASIO PE and Unix binaries must match their unique BUILD-INFO digests"
@@ -372,8 +373,8 @@ make_runtime_only_kit()
     local kit="$base/kit" runtime_name=wine-d2d1-nspa-11.13
     local payload="$base/payload"
     mkdir -p -- "$kit/scripts/lib" "$kit/dist" "$kit/bin" \
-        "$payload/$runtime_name/lib/wine/x86_64-windows" \
-        "$payload/$runtime_name/lib/wine/x86_64-unix"
+        "$payload/$runtime_name/lib/wine/$ARCH-windows" \
+        "$payload/$runtime_name/lib/wine/$ARCH-unix"
     cp -- "$here/install.sh" "$here/installer.sh" "$here/setup-prefix.sh" \
         "$kit/scripts/"
     cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
@@ -392,14 +393,14 @@ EOF
 exit 0
 EOF
     chmod 755 "$payload/$runtime_name/bin/wine" "$payload/$runtime_name/bin/wineserver"
-    #for required in \
-    #    lib/wine/x86_64-windows/libusb-1.0.dll \
-    #    lib/wine/x86_64-unix/libusb-1.0.so \
-    #    lib/wine/x86_64-unix/comdlg32.so \
-    #    lib/wine/x86_64-unix/winealsa.so \
-    #    lib/wine/x86_64-unix/winegstreamer.so; do
-    #    printf 'runtime fixture: %s\n' "$required" > "$payload/$runtime_name/$required"
-    #done
+    for required in \
+        lib/wine/$ARCH-windows/libusb-1.0.dll \
+        lib/wine/$ARCH-unix/libusb-1.0.so \
+        lib/wine/$ARCH-unix/comdlg32.so \
+        lib/wine/$ARCH-unix/winealsa.so \
+        lib/wine/$ARCH-unix/winegstreamer.so; do
+        printf 'runtime fixture: %s\n' "$required" > "$payload/$runtime_name/$required"
+    done
     cp -- "$base/BUILD-INFO.txt" "$kit/dist/BUILD-INFO-$version.txt"
     cp -- "$payload/$runtime_name/bin/pipewire-version-probe" "$kit/bin/pipewire-version-probe"
     tar -C "$payload" -I zstd -cf "$kit/dist/$runtime_name-$version.tar.zst" "$runtime_name"

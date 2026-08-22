@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ARCH="${ARCH:-$(uname -m)}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/lib/tsan.sh
 source "$here/scripts/lib/tsan.sh"
@@ -46,7 +47,7 @@ pipeasio_tsan_log_is_infrastructure_failure "$tmp/reexec.log" \
     || fail 'LLVM high-ASLR/personality failure was not classified as infrastructure'
 
 printf '%s\n' \
-    'setarch: failed to set personality to x86_64: Function not implemented' \
+    'setarch: failed to set personality to $ARCH: Function not implemented' \
     > "$tmp/setarch.log"
 pipeasio_tsan_log_is_infrastructure_failure "$tmp/setarch.log" \
     || fail 'container personality denial was not classified as infrastructure'

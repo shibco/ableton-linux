@@ -59,19 +59,17 @@ source_actual="$(bash "$root/scripts/source-tree-digest.sh")"
 if [ "$source_record_count" -ne 1 ] \
    || [[ ! "$source_record" =~ ^[0-9a-f]{64}$ ]] \
    || [ "$source_record" != "$source_actual" ]; then
-    echo mmmkayyyy
-    #echo "!! $info does not identify the current source candidate" >&2
-    #echo "!! recorded=${source_record:-missing} current=$source_actual" >&2
-    #exit 1
+    echo "!! $info does not identify the current source candidate" >&2
+    echo "!! recorded=${source_record:-missing} current=$source_actual" >&2
+    exit 1
 fi
 
 record_count="$(grep -c -- '^pipeasio-sanitizers:' "$info" || true)"
 if [ "$record_count" != 1 ] || ! grep -qxF -- "$official_record" "$info"; then
-    echo mmmkayyyy
-    #echo "!! $info is not eligible for release" >&2
-    #echo "!! expected exactly one official sanitizer attestation:" >&2
-    #echo "   $official_record" >&2
-    #exit 1
+    echo "!! $info is not eligible for release" >&2
+    echo "!! expected exactly one official sanitizer attestation:" >&2
+    echo "   $official_record" >&2
+    exit 1
 fi
 for helper_record in cabextract-static ableton-linkd; do
     helper_count="$(grep -c "^${helper_record}:" "$info" || true)"
@@ -91,23 +89,23 @@ if [ -n "$runtime" ]; then
         exit 1
     }
     runtime_checksum="$runtime.sha256"
-    #[ -f "$runtime_checksum" ] && [ ! -L "$runtime_checksum" ] || {
-    #    echo "!! release runtime checksum is missing: $runtime_checksum" >&2
-    #    exit 1
-    #}
-    #[ "$(wc -l < "$runtime_checksum")" -eq 1 ] || {
-    #    echo "!! release runtime checksum must contain exactly one record" >&2
-    #    exit 1
-    #}
-    #read -r checksum_hash checksum_name checksum_extra < "$runtime_checksum"
-    #checksum_name="${checksum_name#\*}"
-    #[[ "$checksum_hash" =~ ^[0-9a-f]{64}$ ]] \
-    #    && [ -z "$checksum_extra" ] \
-    #    && [ "$checksum_name" = "$(basename "$runtime")" ] \
-    #    && [ "$checksum_hash" = "$(sha256sum "$runtime" | awk '{print $1}')" ] || {
-    #    echo "!! release runtime checksum does not bind $(basename "$runtime")" >&2
-    #    exit 1
-    #}
+    [ -f "$runtime_checksum" ] && [ ! -L "$runtime_checksum" ] || {
+        echo "!! release runtime checksum is missing: $runtime_checksum" >&2
+        exit 1
+    }
+    [ "$(wc -l < "$runtime_checksum")" -eq 1 ] || {
+        echo "!! release runtime checksum must contain exactly one record" >&2
+        exit 1
+    }
+    read -r checksum_hash checksum_name checksum_extra < "$runtime_checksum"
+    checksum_name="${checksum_name#\*}"
+    [[ "$checksum_hash" =~ ^[0-9a-f]{64}$ ]] \
+        && [ -z "$checksum_extra" ] \
+        && [ "$checksum_name" = "$(basename "$runtime")" ] \
+        && [ "$checksum_hash" = "$(sha256sum "$runtime" | awk '{print $1}')" ] || {
+        echo "!! release runtime checksum does not bind $(basename "$runtime")" >&2
+        exit 1
+    }
     member='wine-d2d1-nspa-11.13/ABLETON-WINE-BUILD-INFO.txt'
     member_count="$(tar -I zstd -tf "$runtime" | awk -v member="$member" '$0 == member { ++count } END { print count + 0 }')"
     if [ "$member_count" != 1 ]; then

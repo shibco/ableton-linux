@@ -9,9 +9,16 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 cd "$here"
 
+if [ "$(uname -m)" != "x86_64" ] \
+    && [ "$(uname -m)" != "aarch64" ]; then \ 
+        { echo "!! this command requires x86_64 or aarch64" >&2; return 1; }
+fi
+
 ENGINE="${ENGINE:-podman}"
 IMAGE="${IMAGE:-ableton-wine-build:22.04}"
 JOBS="${JOBS:-$(nproc)}"
+ARCH="${ARCH:-$(uname -m)}"
+
 # Default auto; see scripts/container-build.sh for why releases stay fail-closed
 # without it. CI sets require explicitly.
 PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-skip}"
@@ -35,33 +42,33 @@ source_paths="$(mktemp /tmp/ableton-source-paths.XXXXXX)"
 source_snapshot="$(mktemp -d /tmp/ableton-source-snapshot.XXXXXX)"
 output_stage="$(mktemp -d /tmp/ableton-build-output.XXXXXX)"
 promotion_stage=""
-#cleanup_build_stages()
-#{
-#    if [ -n "$promotion_stage" ]; then
-#        case "$promotion_stage" in
-#            "$here"/dist/.promote.*)
-#                rm -rf -- "${promotion_stage:?}"
-#                ;;
-#            *) echo "!! refusing to remove unexpected promotion path: $promotion_stage" >&2 ;;
-#        esac
-#    fi
-#    case "$source_snapshot" in
-#        /tmp/ableton-source-snapshot.*)
-#            chmod -R u+w -- "$source_snapshot" 2>/dev/null || true
-#            rm -rf -- "${source_snapshot:?}"
-#            ;;
-#        *) echo "!! refusing to remove unexpected source snapshot: $source_snapshot" >&2 ;;
-#    esac
-#    case "$output_stage" in
-#        /tmp/ableton-build-output.*) rm -rf -- "${output_stage:?}" ;;
-#        *) echo "!! refusing to remove unexpected output stage: $output_stage" >&2 ;;
-#    esac
-#    case "$source_paths" in
-#        /tmp/ableton-source-paths.*) rm -f -- "${source_paths:?}" ;;
-#        *) echo "!! refusing to remove unexpected source path list: $source_paths" >&2 ;;
-#    esac
-#}
-#trap cleanup_build_stages EXIT
+cleanup_build_stages()
+{
+    if [ -n "$promotion_stage" ]; then
+        case "$promotion_stage" in
+            "$here"/dist/.promote.*)
+                rm -rf -- "${promotion_stage:?}"
+                ;;
+            *) echo "!! refusing to remove unexpected promotion path: $promotion_stage" >&2 ;;
+        esac
+    fi
+    case "$source_snapshot" in
+        /tmp/ableton-source-snapshot.*)
+            chmod -R u+w -- "$source_snapshot" 2>/dev/null || true
+            rm -rf -- "${source_snapshot:?}"
+            ;;
+        *) echo "!! refusing to remove unexpected source snapshot: $source_snapshot" >&2 ;;
+    esac
+    case "$output_stage" in
+        /tmp/ableton-build-output.*) rm -rf -- "${output_stage:?}" ;;
+        *) echo "!! refusing to remove unexpected output stage: $output_stage" >&2 ;;
+    esac
+    case "$source_paths" in
+        /tmp/ableton-source-paths.*) rm -f -- "${source_paths:?}" ;;
+        *) echo "!! refusing to remove unexpected source path list: $source_paths" >&2 ;;
+    esac
+}
+trap cleanup_build_stages EXIT
 
 echo "== [0/7] freeze the current source candidate =="
 git ls-files -z --cached --others --exclude-standard -- . ':(exclude)dist' \
@@ -113,7 +120,11 @@ echo "== [1/7] verify vendored inputs against pinned checksums =="
     bitstream-vera.sha256 llvm-apt-key.sha256 )
 
 echo "== [2/7] build container image ($IMAGE) =="
-"$ENGINE" build -t "$IMAGE" -f "$source_snapshot/Containerfile" "$source_snapshot" --platform linux/arm64
+if [ "$ARCH" = "aarch64" ]; then
+    "$ENGINE" build -t "$IMAGE" -f "$source_snapshot/Containerfile" "$source_snapshot" --build-arg ARCH=$ARCH --platform linux/arm64/v8
+else
+    "$ENGINE" build -t "$IMAGE" -f "$source_snapshot/Containerfile" "$source_snapshot" --build-arg ARCH=$ARCH
+fi
 
 mkdir -p dist "$here/.ccache"
 echo "== [3/7] build installer helpers in the configured image =="
@@ -138,7 +149,8 @@ if [ -f /sys/fs/selinux/enforce ]; then relabel=",Z"; fi
     -e SOURCE_TREE_SHA="$SOURCE_TREE_SHA" \
     -e CABEXTRACT_STATIC_SHA="$CABEXTRACT_STATIC_SHA" \
     -e ABLETON_LINKD_SHA="$ABLETON_LINKD_SHA" \
-    -e "INSTALL_PREFIX=$INSTALL_PREFIX" \
+    -e INSTALL_PREFIX="$INSTALL_PREFIX" \
+    -e ARCH="$ARCH" \
     "$IMAGE" \
     /src/scripts/container-build.sh
 

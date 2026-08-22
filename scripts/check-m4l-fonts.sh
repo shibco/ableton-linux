@@ -13,6 +13,7 @@
 set -uo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 FONTDIR="$ROOT/vendor/fonts/bitstream-vera"
+ARCH="${ARCH:-$(uname -m)}"
 
 # The three families MaxPlug falls back to. Hardcoded in MaxPlug.dll; these
 # exact names are the whole point of the fix, so they are asserted, not derived.
@@ -169,7 +170,7 @@ else
     #    fc-list cannot see registration state and has given wrong answers.
     if [ ! -x "$PROBE" ] && [ ! -f "$PROBE" ]; then
         skipt "fallback chain resolves (authoritative)" \
-              "build it: x86_64-w64-mingw32-gcc -O2 -o tools/fontprobe.exe tools/fontprobe.c -lgdi32"
+              "build it: $ARCH-w64-mingw32-gcc -O2 -o tools/fontprobe.exe tools/fontprobe.c -lgdi32"
     else
         if WINEPREFIX="$PREFIX" WINEDEBUG=-all "$WINE" "$PROBE" \
              "${FALLBACKS[@]}" >/dev/null 2>&1; then

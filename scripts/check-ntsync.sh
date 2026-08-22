@@ -18,6 +18,7 @@ else
     PROBE="$here/../beta/tester-kit/probes/windows/ntsyncprobe.exe"
 fi
 TIMEOUT="${ABLETON_CHECK_TIMEOUT:-120}"
+ARCH="${ARCH:-$(uname -m)}"
 
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "!! no wine at $WINE_ROOT" >&2; exit 1; }
 [ -f "$PROBE" ]              || { echo "!! ntsync semantics probe not found at $PROBE" >&2; exit 1; }
@@ -34,7 +35,7 @@ done
 # stripped ntdll has zero; the dynamic check below proves the client half
 # (the server only opens the device when a client uses in-process syncs).
 srv=$(strings "$WINE_ROOT/bin/wineserver" 2>/dev/null | grep -c ntsync)
-ntd=$(strings "$WINE_ROOT/lib/wine/x86_64-unix/ntdll.so" 2>/dev/null | grep -c ntsync)
+ntd=$(strings "$WINE_ROOT/lib/wine/$ARCH-unix/ntdll.so" 2>/dev/null | grep -c ntsync)
 echo "== static: wineserver ntsync refs: $srv (ntdll.so: $ntd, informational; 0 on stripped builds)"
 if [ "$srv" -eq 0 ]; then
     echo "!! FAIL: ntsync not compiled in (no linux/ntsync.h at build time); every wait is a wineserver round trip" >&2

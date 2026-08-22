@@ -18,6 +18,7 @@ ARG LLVM_PKG_VERSION=1:21.1.8~++20251221032842+2078da43e25a-1~exp1~2025122115300
 # Ubuntu archive state used for every jammy package below (snapshot.ubuntu.com).
 ARG UBUNTU_SNAPSHOT=20260718T000000Z
 ARG CA_CERTIFICATES_VERSION=20260601~22.04.1
+ARG ARCH
 
 # 1. Establish every package source before the first apt operation. The pinned
 # base image carries Ubuntu's archive key but not a CA bundle. The one bootstrap
@@ -139,15 +140,15 @@ RUN for d in /tmp/pipewire-sdk/*.deb; do dpkg-deb -x "$d" /opt/pipewire-sdk; don
 
 # 5 FEX ARM64EC Stuff
 COPY vendor/llvm-mingw-arm64ec-aarch64.tar.xz /tmp/llvm-mingw-ucrt-aarch64.tar.xz
-RUN mkdir -p /opt/llvm-mingw-ucrt-aarch64 \
- && tar -xf /tmp/llvm-mingw-ucrt-aarch64.tar.xz --directory /opt/llvm-mingw-ucrt-aarch64 \
- && mv /opt/llvm-mingw-ucrt-aarch64/llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64/* /opt/llvm-mingw-ucrt-aarch64 \
- && rm -rf /opt/llvm-mingw-ucrt-aarch64/llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64 \
- && rm -rf /tmp/llvm-mingw-ucrt-aarch64.tar.xz \
- && test -e /opt/llvm-mingw-ucrt-aarch64/bin/arm64ec-w64-mingw32-clang
+RUN if [ "$ARCH" = "aarch64" ]; then \
+    mkdir -p /opt/llvm-mingw-ucrt-aarch64 \
+    && tar -xf /tmp/llvm-mingw-ucrt-aarch64.tar.xz --directory /opt/llvm-mingw-ucrt-aarch64 \
+    && mv /opt/llvm-mingw-ucrt-aarch64/llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64/* /opt/llvm-mingw-ucrt-aarch64 \
+    && rm -rf /opt/llvm-mingw-ucrt-aarch64/llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64 \
+    && rm -rf /tmp/llvm-mingw-ucrt-aarch64.tar.xz \
+    && test -e /opt/llvm-mingw-ucrt-aarch64/bin/arm64ec-w64-mingw32-clang \
+;fi
 
 WORKDIR /work
 
-RUN git clone --single-branch --branch=FEX-2608 --recursive --depth=1 https://github.com/FEX-Emu/FEX \
- && test -e /work/FEX/Source/Common/cpp-optparse/LICENSE
 

@@ -6,6 +6,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 NAME="wine-d2d1-nspa-11.13"
 SERIES="$root/patches/SERIES.sha256"
+ARCH="${ARCH:-$(uname -m)}"
 
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
@@ -256,11 +257,11 @@ panel_mode=""
 pipewire_probe_hash=""
 builder_packages_hash=""
 declare -A recorded_binary_hashes=()
-readonly RECORDED_BINARIES='libusb-pe|lib/wine/x86_64-windows/libusb-1.0.dll
-libusb-unix|lib/wine/x86_64-unix/libusb-1.0.so
-portal-unix|lib/wine/x86_64-unix/comdlg32.so
-pipeasio-pe|lib/wine/x86_64-windows/pipeasio64.dll
-pipeasio-unix|lib/wine/x86_64-unix/pipeasio64.dll.so'
+readonly RECORDED_BINARIES='libusb-pe|lib/wine/$ARCH-windows/libusb-1.0.dll
+libusb-unix|lib/wine/$ARCH-unix/libusb-1.0.so
+portal-unix|lib/wine/$ARCH-unix/comdlg32.so
+pipeasio-pe|lib/wine/$ARCH-windows/pipeasio64.dll
+pipeasio-unix|lib/wine/$ARCH-unix/pipeasio64.dll.so'
 if [ -f "$binfo" ]; then
     panel_mode="$(sed -n 's/^pipeasio-panel: *//p' "$binfo")"
     panel_record="$(sed -n 's/^pipeasio-settings: *//p' "$binfo")"
@@ -342,60 +343,68 @@ fi
 # --- [3/4] patch artifact fingerprints -----------------------------------------
 # FINGERPRINTS: patch|encoding(ascii|wide=UTF-16LE)|module|pattern. STAMP_ONLY: patch|reason.
 FINGERPRINTS='
-0001|ascii|lib/wine/x86_64-windows/wined3d.dll|WINED3D_DCOMP_FORCE_FULL_REDRAW
-0003|ascii|lib/wine/x86_64-unix/winex11.so|_NET_FRAME_EXTENTS
-0016|wide|lib/wine/x86_64-windows/dcomp.dll|__wine_dcomp_origproc
-0022|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_last_present
-0031|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.portal.FileChooser
-0031|wide|lib/wine/x86_64-windows/comdlg32.dll|FileDialogPortal
-0032|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|libusb_submit_transfer
-0033|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_DISABLE_UNIX_MOUNT_REPARSE
-0035|ascii|lib/wine/x86_64-windows/wined3d.dll|Arc(tm) B580
-0036|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_null_device
-0041|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_reblit_tries
-0038|ascii|lib/wine/x86_64-unix/winex11.so|Ignoring FocusOut on %p during menu tracking
-0039|ascii|lib/wine/x86_64-unix/winex11.so|is mapped, refusing to make it managed
-0043|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.portal.OpenURI
-0043|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_show_item
-0045|ascii|lib/wine/x86_64-windows/ole32.dll|revoke for another process windows is disabled
-0055|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DISABLE_GL_PRESENT
-0056|ascii|lib/wine/x86_64-windows/dxgi.dll|Re-blit skipped (hidden ancestry)
-0057|ascii|lib/wine/x86_64-windows/wined3d.dll|Arc(tm) Graphics (MTL)
-0058|ascii|lib/wine/x86_64-windows/wined3d.dll|Present-time client rect disagrees
-0059|ascii|lib/wine/x86_64-windows/wined3d.dll|Flip client rect queried in the window DPI context
-0060|ascii|lib/wine/x86_64-windows/shell32.dll|IFileOperation DeleteItem via SHFileOperation
-0061|ascii|lib/wine/x86_64-windows/wined3d.dll|is not in the description table
-0062|ascii|lib/wine/x86_64-unix/winex11.so|WINE_X11_FORCE_OFFSCREEN_CLASS
-0063|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.FileManager1
-0064|ascii|lib/wine/x86_64-unix/comdlg32.so|ShowFolders
-0064|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_open_folder
-0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
-0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
-0066|ascii|lib/wine/x86_64-windows/wined3d.dll|Intel(R) UHD Graphics P630
-0068|ascii|lib/wine/x86_64-windows/wined3d.dll|WINE_D3D_FORCE_GPU_RENDERING
-0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
-0071|ascii|lib/wine/x86_64-windows/wined3d.dll|Sustained present-size mismatch
-0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
-0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
-0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
-0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
-0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
-0096|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
+0001|ascii|lib/wine/$ARCH-windows/wined3d.dll|WINED3D_DCOMP_FORCE_FULL_REDRAW
+0003|ascii|lib/wine/$ARCH-unix/winex11.so|_NET_FRAME_EXTENTS
+0016|wide|lib/wine/$ARCH-windows/dcomp.dll|__wine_dcomp_origproc
+0022|wide|lib/wine/$ARCH-windows/dxgi.dll|__wine_dcomp_last_present
+0031|ascii|lib/wine/$ARCH-unix/comdlg32.so|org.freedesktop.portal.FileChooser
+0031|wide|lib/wine/$ARCH-windows/comdlg32.dll|FileDialogPortal
+0032|ascii|lib/wine/$ARCH-windows/libusb-1.0.dll|libusb_submit_transfer
+0033|ascii|lib/wine/$ARCH-unix/ntdll.so|WINE_DISABLE_UNIX_MOUNT_REPARSE
+0035|ascii|lib/wine/$ARCH-windows/wined3d.dll|Arc(tm) B580
+0036|wide|lib/wine/$ARCH-windows/dxgi.dll|__wine_dcomp_null_device
+0041|wide|lib/wine/$ARCH-windows/dxgi.dll|__wine_dcomp_reblit_tries
+0038|ascii|lib/wine/$ARCH-unix/winex11.so|Ignoring FocusOut on %p during menu tracking
+0039|ascii|lib/wine/$ARCH-unix/winex11.so|is mapped, refusing to make it managed
+0043|ascii|lib/wine/$ARCH-unix/comdlg32.so|org.freedesktop.portal.OpenURI
+0043|ascii|lib/wine/$ARCH-windows/shell32.dll|__wine_portal_show_item
+0045|ascii|lib/wine/$ARCH-windows/ole32.dll|revoke for another process windows is disabled
+0055|wide|lib/wine/$ARCH-windows/dxgi.dll|WINE_DISABLE_GL_PRESENT
+0056|ascii|lib/wine/$ARCH-windows/dxgi.dll|Re-blit skipped (hidden ancestry)
+0057|ascii|lib/wine/$ARCH-windows/wined3d.dll|Arc(tm) Graphics (MTL)
+0058|ascii|lib/wine/$ARCH-windows/wined3d.dll|Present-time client rect disagrees
+0059|ascii|lib/wine/$ARCH-windows/wined3d.dll|Flip client rect queried in the window DPI context
+0060|ascii|lib/wine/$ARCH-windows/shell32.dll|IFileOperation DeleteItem via SHFileOperation
+0061|ascii|lib/wine/$ARCH-windows/wined3d.dll|is not in the description table
+0062|ascii|lib/wine/$ARCH-unix/winex11.so|WINE_X11_FORCE_OFFSCREEN_CLASS
+0063|ascii|lib/wine/$ARCH-unix/comdlg32.so|org.freedesktop.FileManager1
+0064|ascii|lib/wine/$ARCH-unix/comdlg32.so|ShowFolders
+0064|ascii|lib/wine/$ARCH-windows/shell32.dll|__wine_portal_open_folder
+0065|ascii|lib/wine/$ARCH-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
+0065|ascii|lib/wine/$ARCH-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
+0066|ascii|lib/wine/$ARCH-windows/wined3d.dll|Intel(R) UHD Graphics P630
+0068|ascii|lib/wine/$ARCH-windows/wined3d.dll|WINE_D3D_FORCE_GPU_RENDERING
+0069|ascii|lib/wine/$ARCH-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
+0071|ascii|lib/wine/$ARCH-windows/wined3d.dll|Sustained present-size mismatch
+0072|ascii|lib/wine/$ARCH-unix/winex11.so|MiddleDrag
+0074|ascii|lib/wine/$ARCH-unix/winex11.so|pinch begin on
+0075|ascii|lib/wine/$ARCH-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
+0076|ascii|lib/wine/$ARCH-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
+0080|ascii|lib/wine/$ARCH-windows/ninput.dll|pointer_count %u
+0084|ascii|lib/wine/$ARCH-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
+0088|ascii|lib/wine/$ARCH-unix/win32u.so|DesktopUIFont
+0090|ascii|lib/wine/$ARCH-unix/winex11.so|smooth scroll delta
+0091|ascii|lib/wine/$ARCH-unix/winex11.so|nudge slots full, dropping the schedule
+0092|ascii|lib/wine/$ARCH-unix/winex11.so|pinch table full, dropping begin from source
+0093|ascii|lib/wine/$ARCH-unix/winex11.so|lost X focus to another client while clipping
+0094|ascii|lib/wine/$ARCH-unix/winex11.so|XWayland warp emulation activated after observed failed warps
+0095|ascii|lib/wine/$ARCH-unix/winex11.so|MiddleDragThrow
+0096|ascii|lib/wine/$ARCH-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
 0100|ascii|lib/wine/x86_64-unix/winex11.so|ptr lease event=restore
 0101|ascii|lib/wine/x86_64-windows/user32.dll|dnd target=%p event=release
 0105|ascii|lib/wine/x86_64-unix/winealsa.so|WINE MIDI topology
 0105|ascii|lib/wine/x86_64-windows/winmm.dll|Out of memory refreshing %s mappings
 0106|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
-pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
-pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
-pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
-pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-converge
-pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
-pipeasio/0006|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clock-domains
-pipeasio/0008|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-daemon-version
-pipeasio/0009|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-honest-realtime
+pipeasio/0001|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
+pipeasio/0002|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-midi-timebase
+pipeasio/0004|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-any-buffer-size
+pipeasio/0005|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-quantum-converge
+pipeasio/0005|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
+pipeasio/0006|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-clock-domains
+pipeasio/0008|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-daemon-version
+pipeasio/0009|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-honest-realtime
 pipeasio/0010|wide|bin/pipeasio-settings|pick a preset or type any value
-pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
+pipeasio/0011|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
 pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotplug
 '
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
@@ -404,8 +413,6 @@ pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotpl
 # Patch 0105 supplies the MIDI device path used for Push 3 discovery. Its
 # winealsa and winmm fingerprints above verify that implementation.
 PIPEASIO_MARKER_TODO='
-0012
-0013
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
 # Wine loads the unix half under the spec-file name pipeasio.dll.so, so the
@@ -545,14 +552,14 @@ say "== [4/4] structural invariants =="
 must() { [ -s "$tree/$1" ] && ok "$1" "present" || bad "$1" "missing/empty"; }
 must bin/wine
 must bin/wineserver
-must lib/wine/x86_64-unix/winealsa.so
-must lib/wine/x86_64-unix/winegstreamer.so
-must lib/wine/x86_64-windows/winegstreamer.dll
-must lib/wine/x86_64-unix/comdlg32.so
-must lib/wine/x86_64-windows/pipeasio64.dll
-must lib/wine/x86_64-unix/pipeasio64.dll.so
-must lib/wine/x86_64-windows/pipeasio.dll
-must lib/wine/x86_64-unix/pipeasio.dll.so
+must lib/wine/$ARCH-unix/winealsa.so
+must lib/wine/$ARCH-unix/winegstreamer.so
+must lib/wine/$ARCH-windows/winegstreamer.dll
+must lib/wine/$ARCH-unix/comdlg32.so
+must lib/wine/$ARCH-windows/pipeasio64.dll
+must lib/wine/$ARCH-unix/pipeasio64.dll.so
+must lib/wine/$ARCH-windows/pipeasio.dll
+must lib/wine/$ARCH-unix/pipeasio.dll.so
 must bin/pipewire-version-probe
 must ABLETON-WINE-BUILD-PACKAGES.txt
 
@@ -610,8 +617,8 @@ fi
 # links proves the packaging used that install contract and keeps relocation
 # safe; a copied or absolute alias can silently diverge from the versioned DLL.
 for alias_spec in \
-    'lib/wine/x86_64-windows/pipeasio.dll|pipeasio64.dll' \
-    'lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio64.dll.so'; do
+    'lib/wine/$ARCH-windows/pipeasio.dll|pipeasio64.dll' \
+    'lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio64.dll.so'; do
     alias_path="${alias_spec%%|*}"
     alias_target="${alias_spec#*|}"
     if [ -L "$tree/$alias_path" ] && [ "$(readlink "$tree/$alias_path")" = "$alias_target" ]; then
@@ -667,18 +674,18 @@ elif [ "$panel_built" = 0 ]; then
 else
     bad "settings panel payload" "cannot reconcile malformed BUILD-INFO provenance"
 fi
-must lib/wine/x86_64-windows/libusb-1.0.dll
-must lib/wine/x86_64-unix/libusb-1.0.so
+must lib/wine/$ARCH-windows/libusb-1.0.dll
+must lib/wine/$ARCH-unix/libusb-1.0.so
 for absent in lib/wine/i386-windows/libusb-1.0.dll lib/wine/i386-unix/libusb-1.0.so; do
     [ ! -e "$tree/$absent" ] && ok "$absent" "correctly absent (64-bit only)" \
                              || bad "$absent" "present — bridge must be 64-bit only"
 done
 if command -v readelf >/dev/null; then
-    readelf -d "$tree/lib/wine/x86_64-unix/libusb-1.0.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/$ARCH-unix/libusb-1.0.so" 2>/dev/null \
         | grep -qF 'Shared library: [libusb-1.0.so.0]' \
         && ok "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0" \
         || bad "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0 not linked"
-    readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/$ARCH-unix/pipeasio.dll.so" 2>/dev/null \
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
         && ok "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
         || bad "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
@@ -706,7 +713,7 @@ if command -v readelf >/dev/null; then
         fi
         rpath_check "pipeasio-settings rpath" "$tree/bin/pipeasio-settings"
     fi
-    readelf -d "$tree/lib/wine/x86_64-unix/winegstreamer.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/$ARCH-unix/winegstreamer.so" 2>/dev/null \
         | grep -qF 'Shared library: [libgstreamer-1.0.so.0]' \
         && ok "winegstreamer.so DT_NEEDED" "host libgstreamer-1.0.so.0" \
         || bad "winegstreamer.so DT_NEEDED" "host libgstreamer-1.0.so.0 not linked"
