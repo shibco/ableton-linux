@@ -98,6 +98,23 @@ AUDIT_PROFILE="${ABLETON_AUDIT_PROFILE:-release}"
 case "$AUDIT_PROFILE" in release|nix) ;;
     *) fail "ABLETON_AUDIT_PROFILE must be release or nix (got '$AUDIT_PROFILE')" ;;
 esac
+# A build-container rpath resolves on no user's machine and must never ship.
+# An empty one is the tarball's case, which resolves through the host loader;
+# a store-only one is the Nix package pinning its own closure. Anything else
+# fails. Used for every binary whose rpath differs between the two packagings.
+rpath_check() {   # <label> <file> [empty-case detail]
+    local label="$1" file="$2" empty="${3:-none}" value
+    value="$(readelf -d "$file" 2>/dev/null \
+        | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
+    if [ -z "$value" ]; then
+        ok "$label" "$empty"
+    elif printf '%s' "$value" | tr ':' '\n' | grep -qv '^/nix/store/'; then
+        bad "$label" "carries a build-container rpath: $value"
+    else
+        ok "$label" "nix store pin ($value)"
+    fi
+}
+
 pipeline_bad() {   # container-pipeline provenance: FAIL on release, skipped on nix
     if [ "$AUDIT_PROFILE" = release ]; then
         bad "$1" "$2"
@@ -647,19 +664,8 @@ if command -v readelf >/dev/null; then
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
         && ok "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
         || bad "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
-    # The tarball must resolve the HOST's libpipewire, so it carries no rpath;
-    # the Nix package deliberately pins the closure's (nix/pipeasio.nix gates
-    # that RUNPATH). Both are right for their packaging. What must never ship
-    # is a path from the build container, which resolves on no user's machine.
-    asio_rpath="$(readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null \
-        | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
-    if [ -z "$asio_rpath" ]; then
-        ok "pipeasio.dll.so rpath" "none (resolves via host loader)"
-    elif printf '%s' "$asio_rpath" | tr ':' '\n' | grep -qv '^/nix/store/'; then
-        bad "pipeasio.dll.so rpath" "carries a build-container rpath: $asio_rpath"
-    else
-        ok "pipeasio.dll.so rpath" "nix store pin ($asio_rpath)"
-    fi
+    rpath_check "pipeasio.dll.so rpath" \
+        "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" "none (resolves via host loader)"
     pipewire_probe_needed="$(
         readelf -d "$tree/bin/pipewire-version-probe" 2>/dev/null \
             | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' \
@@ -672,17 +678,7 @@ if command -v readelf >/dev/null; then
         bad "pipewire-version-probe DT_NEEDED" \
             "unexpected libraries: ${pipewire_probe_needed//$'\n'/, }"
     fi
-    # Same packaging split as pipeasio.dll.so above: the tarball probe resolves
-    # the host's libpipewire (no rpath), the Nix package pins its closure's.
-    probe_rpath="$(readelf -d "$tree/bin/pipewire-version-probe" 2>/dev/null \
-        | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
-    if [ -z "$probe_rpath" ]; then
-        ok "pipewire-version-probe rpath" "none"
-    elif printf '%s' "$probe_rpath" | tr ':' '\n' | grep -qv '^/nix/store/'; then
-        bad "pipewire-version-probe rpath" "carries a build/SDK rpath: $probe_rpath"
-    else
-        ok "pipewire-version-probe rpath" "nix store pin ($probe_rpath)"
-    fi
+    rpath_check "pipewire-version-probe rpath" "$tree/bin/pipewire-version-probe"
     if [ "$panel_built" = 1 ]; then
         if readelf -d "$tree/bin/pipeasio-settings" 2>/dev/null \
                 | grep -qF 'Shared library: [libQt6Widgets.so.6]'; then
@@ -690,18 +686,7 @@ if command -v readelf >/dev/null; then
         else
             bad "pipeasio-settings DT_NEEDED" "libQt6Widgets.so.6 not linked"
         fi
-        # Same packaging split as the two checks above: the tarball panel
-        # resolves the host's Qt and carries no rpath, the Nix one is linked
-        # against its closure's. Anything else is a build-container path.
-        panel_rpath="$(readelf -d "$tree/bin/pipeasio-settings" 2>/dev/null \
-            | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
-        if [ -z "$panel_rpath" ]; then
-            ok "pipeasio-settings rpath" "none"
-        elif printf '%s' "$panel_rpath" | tr ':' '\n' | grep -qv '^/nix/store/'; then
-            bad "pipeasio-settings rpath" "carries a build-container rpath: $panel_rpath"
-        else
-            ok "pipeasio-settings rpath" "nix store pin"
-        fi
+        rpath_check "pipeasio-settings rpath" "$tree/bin/pipeasio-settings"
     fi
     readelf -d "$tree/lib/wine/x86_64-unix/winegstreamer.so" 2>/dev/null \
         | grep -qF 'Shared library: [libgstreamer-1.0.so.0]' \

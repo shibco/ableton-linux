@@ -158,7 +158,7 @@ ableton_legacy_nix_evidence()
 {
     local prefix="${1:?prefix required}"
     [ -f "$prefix/system.reg" ] && [ ! -L "$prefix/system.reg" ] \
-        && grep -q '2D3CA9E2-1193-4C5D-B5FD-38798F3DC074' "$prefix/system.reg"
+        && grep -qF '2D3CA9E2-1193-4C5D-B5FD-38798F3DC074' "$prefix/system.reg"
 }
 
 ableton_legacy_default_runtime_valid()
