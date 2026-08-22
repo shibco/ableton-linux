@@ -19,7 +19,7 @@ AG** and respects the Ableton terms of service.
 - Local-network Ableton Link support
 - Experimental support for Ableton's forthcoming Extensions SDK
 - Compatibility with Ableton's Splice integration
-- Automatic recovery when startup-detected MIDI controllers briefly disconnect
+- Automatic reconnection for MIDI controllers that are present when Live starts
 - Low-latency PipeASIO audio for live performance
 - Linux desktop integration with native file types and dialogs
 - Automatic light and dark desktop theme detection

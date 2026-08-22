@@ -1,20 +1,17 @@
 # August 2026 hotplug prototypes
 
-These files preserve the uncommitted August 2 MIDI experiment after replaying
-it onto current `main`. They are evidence, not part of the numbered production
-patch series.
+These files record the uncommitted MIDI experiment from 2 August 2026. The
+release build uses the main patch list, which ends at patch 0099.
 
-- `0067-prototype-winealsa-mmdevapi-dynamic-midi.patch` reserves 32 winealsa
-  slots, adds a port on `PORT_START`, invalidates one on `PORT_EXIT`, and
-  broadcasts `DBT_DEVNODES_CHANGED`.
-- `0068-prototype-winmm-refresh-midi-count.patch` re-asks lower MIDI drivers
-  for a count increase and grows WinMM's table.
+- the `0067-prototype-winealsa-mmdevapi-dynamic-midi.patch` file adds entries and marks disconnected addresses as inactive.
+- the `0068-prototype-winmm-refresh-midi-count.patch` file increases the Windows MIDI count for each new entry.
 
-Together they made `midiwatch` observe a `fakectl` count increase from 3 to 4
-in roughly 450 ms. They were never tested with Live or physical USB hardware.
-They must not ship because they retain name-only identity, fixed-capacity and
-lifetime-count behavior, unsafe shared-table lifetimes, and the announce
-monitor's dependency on an open MIDI input.
+Together they changed the `midiwatch` count from 3 to 4 in about 450
+milliseconds. The test used `fakectl`. The final patch tests will use Live and
+USB hardware.
 
-The complete replacement design is in
-[`../ABLETON-WINE-DEVICE-HOTPLUG.md`](../ABLETON-WINE-DEVICE-HOTPLUG.md).
+The current design replaces fixed capacity and name matching with stable
+device records. It also starts device watching before a MIDI input opens.
+
+The [reliable MIDI and audio hotplug plan](../ABLETON-WINE-DEVICE-HOTPLUG.md)
+describes the release design.
