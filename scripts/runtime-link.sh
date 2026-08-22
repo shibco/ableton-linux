@@ -27,9 +27,9 @@ ableton_runtime_link() {   # <runtime-root> -> stable path naming that runtime
     link="${ABLETON_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine}/runtime"
     target="$(cd -- "$root" && pwd -P)" || return 1
     # Already current: skip the daemon round trip every launch would otherwise
-    # pay. -e follows the link, so a dangling one is rebuilt (and re-rooted)
-    # instead of being reported as good.
-    if [ "$(readlink "$link" 2>/dev/null)" = "$target" ] && [ -e "$link" ]; then
+    # pay. A runtime a garbage collection removed fails the -d test above, so
+    # reaching this line means the target is there and the link resolves.
+    if [ "$(readlink "$link" 2>/dev/null)" = "$target" ]; then
         printf '%s\n' "$link"
         return 0
     fi

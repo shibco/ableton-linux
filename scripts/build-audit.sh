@@ -104,8 +104,15 @@ esac
 # fails. Used for every binary whose rpath differs between the two packagings.
 rpath_check() {   # <label> <file> [empty-case detail]
     local label="$1" file="$2" empty="${3:-none}" value
+    # A file that is not there is a failure to report, not an absent rpath to
+    # wave through: an unreadable readelf and a clean binary both yield an
+    # empty value, and only one of them is a pass.
+    [ -f "$file" ] || { bad "$label" "missing: $file"; return 0; }
+    # readelf exits non-zero on anything it cannot parse; pipefail turns that
+    # into a failed assignment and set -e would end the audit mid-run, with no
+    # summary line and no indication which check stopped it.
     value="$(readelf -d "$file" 2>/dev/null \
-        | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
+        | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p' || true)"
     if [ -z "$value" ]; then
         ok "$label" "$empty"
     elif printf '%s' "$value" | tr ':' '\n' | grep -qv '^/nix/store/'; then
