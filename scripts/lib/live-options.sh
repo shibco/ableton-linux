@@ -154,6 +154,52 @@ ableton_prepare_live_preferences()
     [ -d "$prefs_path" ] || mkdir -- "$prefs_path" || return 1
 )
 
+# Replace a line the launcher wrote itself, so a second opt-in launch can change
+# the count. Refuses unless the marker is valid, records a different count, and
+# Options.txt still holds exactly the line that marker names: every other state
+# is a user edit and is left alone. Returns 1 only when the rewrite itself fails.
+ableton_max_audio_rewrite_seeded()
+{
+    local prefs_io="$1" option="$2"
+    local marker="$prefs_io/.ableton-linux-max-audio-threads-v1"
+    local options="$prefs_io/Options.txt"
+    local seeded line seen=0 tmp
+
+    [ -f "$marker" ] && [ ! -L "$marker" ] || return 0
+    ableton_max_audio_marker_valid "$marker" || return 0
+    seeded="$(sed -n '2s/^default=//p' "$marker")"
+    [ -n "$seeded" ] && [ "$seeded" != "$option" ] || return 0
+
+    [ -f "$options" ] && [ ! -L "$options" ] || return 0
+    # Exactly one occurrence, CR stripped so a CRLF-edited copy is caught too.
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ "${line%$'\r'}" = "$seeded" ] && seen=$((seen + 1))
+    done < "$options"
+    [ "$seen" -eq 1 ] || return 0
+
+    tmp="$(mktemp "$prefs_io/.Options.txt.XXXXXX")" || return 0
+    if ! awk -v old="$seeded" -v new="$option" \
+        '{ l = $0; sub(/\r$/, "", l) } l == old { print new; next } { print }' \
+        "$options" > "$tmp"; then
+        rm -f -- "$tmp"
+        return 0
+    fi
+    # Write through the existing inode: keeps the file's permissions.
+    if ! cat "$tmp" > "$options"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    rm -f -- "$tmp"
+
+    tmp="$(mktemp "$prefs_io/.max-audio-threads-marker.XXXXXX")" || return 0
+    if ! printf 'format=1\ndefault=%s\n' "$option" > "$tmp" || ! chmod 600 "$tmp" \
+       || ! mv -T -f -- "$tmp" "$marker"; then
+        rm -f -- "$tmp"
+        return 0
+    fi
+    echo "   The launcher changed Live to use ${option#*=} audio threads."
+}
+
 ableton_seed_max_audio_threads_in_dir()
 (
     local users_root="$1" prefs="$2" option="$3"
@@ -181,8 +227,13 @@ ableton_seed_max_audio_threads_in_dir()
     options="$prefs_io/Options.txt"
     marker="$prefs_io/.ableton-linux-max-audio-threads-v1"
 
-    # The marker preserves later user edits.
-    [ ! -e "$marker" ] && [ ! -L "$marker" ] || return 0
+    # The marker preserves later user edits. While it still describes the file,
+    # nothing has touched the line since the launcher wrote it, so a changed
+    # request may replace that one line.
+    if [ -e "$marker" ] || [ -L "$marker" ]; then
+        ableton_max_audio_rewrite_seeded "$prefs_io" "$option" || return 1
+        return 0
+    fi
     if [ -L "$options" ] || { [ -e "$options" ] && [ ! -f "$options" ]; }; then
         echo "ableton-live: Use a regular file inside the Wine prefix for Live settings: '$prefs/Options.txt'." >&2
         return 0

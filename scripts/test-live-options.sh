@@ -294,6 +294,32 @@ done
     || fail 'The tested values outside one to 63 preserve the initial Live settings.'
 ok 'The tested values outside one to 63 preserve the initial Live settings.'
 
+prefix="$work/change-count"
+prefs="$(make_prefs "$prefix")"
+printf '%s\n' '-ExistingOption=yes' > "$prefs/Options.txt"
+chmod 644 "$prefs/Options.txt"
+ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
+grep -qx -- '-MaxAudioThreads=8' "$prefs/Options.txt" \
+    || fail 'A later launch applies a different count for audio threads.'
+[ "$(grep -c '^-MaxAudioThreads=' "$prefs/Options.txt")" -eq 1 ] \
+    || fail 'The settings file contains one entry for audio threads after a changed count.'
+grep -qx -- '-ExistingOption=yes' "$prefs/Options.txt" \
+    || fail 'A changed count retains the other settings in the file.'
+[ "$(stat -c '%a' "$prefs/Options.txt")" = 644 ] \
+    || fail 'A changed count retains the mode of the settings file.'
+ok 'A later launch applies a different count for audio threads. It retains the other settings and the file mode.'
+
+printf '%s\n' '-MaxAudioThreads=24' > "$prefs/Options.txt"
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
+[ "$(cat "$prefs/Options.txt")" = '-MaxAudioThreads=24' ] \
+    || fail "A later launch retains the user's own count for audio threads."
+printf '\n' > "$prefs/Options.txt"
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
+[ -z "$(tr -d '[:space:]' < "$prefs/Options.txt")" ] \
+    || fail "A later launch retains the user's choice to let Live select the count."
+ok "A later launch retains the user's own count. It retains the user's choice to let Live select the count."
+
 ableton_seed_max_audio_threads "$work/missing-prefix" 16 >/dev/null
 ok 'The settings script accepts a partial Wine prefix.'
 
