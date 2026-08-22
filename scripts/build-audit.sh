@@ -10,7 +10,7 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0100-dwrite-use-outlines-for-cleartype-glyphs.patch'
+readonly REQUIRED_WINE_TAIL='0101-dwrite-preserve-fractional-glyph-positions.patch'
 readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
 
 check_required_series_tails()
@@ -409,6 +409,7 @@ STAMP_ONLY='
 0079|logic-only (standalone-surface window search gated on a private-data marker; adds no string literal)
 0099|logic-only (reserved pool grown with further arenas once map_reserved_area declines, keeping anonymous views ascending; new TRACE only, adds no string literal)
 0100|ClearType uses glyph outlines. The audit checks the patch and patch list.
+0101|Natural rendering uses 16 horizontal positions and stores each result.
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
