@@ -1,0 +1,39 @@
+Subject: d2d1: preserve the target pixel format across resize
+
+An hwnd target can use an opaque pixel format. Resize rebuilt its bitmap with
+default properties, which changed the alpha mode to premultiplied. Direct2D
+then selected greyscale text for the target.
+
+Reuse the target pixel format and bitmap settings during resize.
+
+diff --git a/dlls/d2d1/hwnd_render_target.c b/dlls/d2d1/hwnd_render_target.c
+index b60cb30..f334051 100644
+--- a/dlls/d2d1/hwnd_render_target.c
++++ b/dlls/d2d1/hwnd_render_target.c
+@@ -693,6 +693,7 @@ static D2D1_WINDOW_STATE STDMETHODCALLTYPE d2d_hwnd_render_target_CheckWindowSta
+ static HRESULT STDMETHODCALLTYPE d2d_hwnd_render_target_Resize(ID2D1HwndRenderTarget *iface, const D2D1_SIZE_U *size)
+ {
+     struct d2d_hwnd_render_target *render_target = impl_from_ID2D1HwndRenderTarget(iface);
++    D2D1_BITMAP_PROPERTIES1 bitmap_desc = {0};
+     IDXGISurface1 *dxgi_surface;
+     ID2D1DeviceContext *context;
+     ID2D1Bitmap1 *bitmap;
+@@ -700,6 +701,8 @@ static HRESULT STDMETHODCALLTYPE d2d_hwnd_render_target_Resize(ID2D1HwndRenderTa
+ 
+     TRACE("iface %p, width %u, height %u.\n", iface, size->width, size->height);
+ 
++    bitmap_desc.pixelFormat = ID2D1RenderTarget_GetPixelFormat(render_target->dxgi_target);
++    bitmap_desc.bitmapOptions = D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW;
+     ID2D1RenderTarget_QueryInterface(render_target->dxgi_target, &IID_ID2D1DeviceContext, (void **)&context);
+     ID2D1DeviceContext_SetTarget(context, NULL);
+ 
+@@ -714,7 +717,8 @@ static HRESULT STDMETHODCALLTYPE d2d_hwnd_render_target_Resize(ID2D1HwndRenderTa
+             return hr;
+         }
+ 
+-        hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface(context, (IDXGISurface *)dxgi_surface, NULL, &bitmap);
++        hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface(context, (IDXGISurface *)dxgi_surface,
++                &bitmap_desc, &bitmap);
+         IDXGISurface1_Release(dxgi_surface);
+         if (FAILED(hr))
+         {

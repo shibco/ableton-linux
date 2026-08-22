@@ -10,7 +10,7 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0101-dwrite-preserve-fractional-glyph-positions.patch'
+readonly REQUIRED_WINE_TAIL='0102-d2d1-keep-target-pixel-format-on-resize.patch'
 readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
 
 check_required_series_tails()
@@ -410,6 +410,7 @@ STAMP_ONLY='
 0099|logic-only (reserved pool grown with further arenas once map_reserved_area declines, keeping anonymous views ascending; new TRACE only, adds no string literal)
 0100|ClearType uses glyph outlines. The audit checks the patch and patch list.
 0101|Natural rendering uses 16 horizontal positions and stores each result.
+0102|Resize reuses the target pixel format and bitmap settings.
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
