@@ -1,0 +1,383 @@
+Subject: [PROTOTYPE ONLY] winealsa,mmdevapi: add MIDI devices that appear after startup
+
+alsa_midi_init() enumerates the sequencer once per process, so a
+controller plugged in after an application started was invisible to it
+until it restarted (issue 46). Patch 0028 re-points an existing table
+entry at a returning device but cannot create one, because port_add()
+reallocs the srcs/dests arrays and callers hold entry pointers across
+the sequencer lock.
+
+Reserve slots past the startup enumeration and freeze the tables, so a
+runtime add writes into a stable slot and publishes it with a release
+store: a reader without the lock sees either the old count or a fully
+built entry. handle_port_start() then adds a port whose display name
+matches nothing in the table instead of ignoring it, and the new
+handle_port_exit() invalidates the address of a port that went away
+while keeping its entry, so device ids stay stable and the existing
+re-match by name still works when it returns.
+
+Ports belonging to another Wine process's own sequencer client are
+skipped: they are not devices, and adding them would fill every
+process's list with entries that come and go as unrelated applications
+start and stop.
+
+Finally, tell the process the list moved. The unixlib posts a
+device_change notify through the notify thread that already exists for
+MIDI callbacks, and mmdevapi turns it into a WM_DEVICECHANGE
+DBT_DEVNODES_CHANGED broadcast. That is the only device-change
+notification that can be broadcast as-is: it needs no registration and
+its lparam is 0, where an interface arrival carries a pointer that must
+be valid in the receiving process.
+---
+ dlls/mmdevapi/main.c         |  21 ++++-
+ dlls/mmdevapi/unixlib.h      |   3 +
+ dlls/winealsa.drv/alsamidi.c | 152 +++++++++++++++++++++++++++++++++--
+ 3 files changed, 167 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/mmdevapi/main.c b/dlls/mmdevapi/main.c
+index 70eace863e..4e068e3847 100644
+--- a/dlls/mmdevapi/main.c
++++ b/dlls/mmdevapi/main.c
+@@ -25,6 +25,8 @@
+ #include "windef.h"
+ #include "winbase.h"
+ #include "wingdi.h"
++#include "winuser.h"
++#include "dbt.h"
+
+ #include "ole2.h"
+ #include "olectl.h"
+@@ -351,6 +353,21 @@ static void notify_client(struct notify_context *notify)
+                     notify->instance, notify->param_1, notify->param_2 );
+ }
+
++/* The MIDI device list changed under us. Ask every top-level window in the
++ * session to re-enumerate, the way the PnP manager does on Windows when the
++ * device tree changes. DBT_DEVNODES_CHANGED is the only device-change
++ * notification that can be broadcast as-is: it needs no registration and its
++ * lparam is 0, where an interface arrival would carry a pointer that has to
++ * be valid in the receiving process. */
++static void notify_device_change(void)
++{
++    DWORD recipients = BSM_APPLICATIONS;
++
++    TRACE( "broadcasting DBT_DEVNODES_CHANGED\n" );
++    BroadcastSystemMessageW( BSF_POSTMESSAGE, &recipients, WM_DEVICECHANGE,
++                             DBT_DEVNODES_CHANGED, 0 );
++}
++
+ static DWORD WINAPI notify_thread( void *p )
+ {
+     struct midi_notify_wait_params params;
+@@ -365,7 +382,9 @@ static DWORD WINAPI notify_thread( void *p )
+     {
+         MIDI_CALL( midi_notify_wait, &params );
+         if (quit) break;
+-        if (notify.send_notify) notify_client(&notify);
++        if (!notify.send_notify) continue;
++        if (notify.device_change) notify_device_change();
++        else notify_client(&notify);
+     }
+     return 0;
+ }
+diff --git a/dlls/mmdevapi/unixlib.h b/dlls/mmdevapi/unixlib.h
+index ddb6bd1005..eb5cd3fe12 100644
+--- a/dlls/mmdevapi/unixlib.h
++++ b/dlls/mmdevapi/unixlib.h
+@@ -271,6 +271,9 @@ struct midi_init_params
+ struct notify_context
+ {
+     BOOL send_notify;
++    /* Set instead of a callback: the device list changed and the PE side
++     * should tell the process about it rather than call a MIDI client. */
++    BOOL device_change;
+     WORD dev_id;
+     WORD msg;
+     UINT_PTR param_1;
+diff --git a/dlls/winealsa.drv/alsamidi.c b/dlls/winealsa.drv/alsamidi.c
+index 4b65307305..6294f0592c 100644
+--- a/dlls/winealsa.drv/alsamidi.c
++++ b/dlls/winealsa.drv/alsamidi.c
+@@ -81,6 +81,15 @@ static pthread_mutex_t in_buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
+ static unsigned int num_dests, num_srcs;
+ static struct midi_dest *dests;
+ static struct midi_src *srcs;
++/* Slots held in reserve past the startup enumeration so a device that appears
++ * later can be added without reallocating the tables.  Callers all over this
++ * file hold a struct midi_dest/midi_src pointer across the sequencer lock, so
++ * a realloc that moved the block would leave them dangling.  Once
++ * table_frozen is set the tables never move again and a runtime add either
++ * fits in the reserve or is refused. */
++#define MIDI_RUNTIME_SLOTS 32
++static unsigned int cap_dests, cap_srcs;
++static BOOL table_frozen;
+ static snd_seq_t *midi_seq;
+ static unsigned int seq_refs;
+ static int port_in = -1;
+@@ -202,6 +211,19 @@ static void notify_post(struct notify_context *notify)
+     pthread_mutex_unlock(&notify_mutex);
+ }
+
++/* Tell the PE side the device list moved.  It rides the existing notify
++ * thread rather than a new one, and carries no callback: mmdevapi turns it
++ * into a WM_DEVICECHANGE broadcast instead of a DriverCallback. */
++static void notify_device_change(void)
++{
++    struct notify_context notify;
++
++    memset(&notify, 0, sizeof(notify));
++    notify.send_notify = TRUE;
++    notify.device_change = TRUE;
++    notify_post(&notify);
++}
++
+ static snd_seq_t *seq_open(int *port_in_ret)
+ {
+     static int midi_warn;
+@@ -307,13 +329,48 @@ static unsigned int port_display_name(snd_seq_client_info_t *cinfo, snd_seq_port
+     return len;
+ }
+
+-static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, unsigned int cap, unsigned int type)
++/* Reserve room for runtime additions and stop the tables from ever moving
++ * again.  Called once, at the end of the startup enumeration, while this is
++ * still the only thread touching them. */
++static void midi_tables_freeze(void)
++{
++    struct midi_dest *new_dests = realloc( dests, (num_dests + MIDI_RUNTIME_SLOTS) * sizeof(*dests) );
++    struct midi_src *new_srcs = realloc( srcs, (num_srcs + MIDI_RUNTIME_SLOTS) * sizeof(*srcs) );
++
++    if (new_dests)
++    {
++        dests = new_dests;
++        cap_dests = num_dests + MIDI_RUNTIME_SLOTS;
++        memset( dests + num_dests, 0, MIDI_RUNTIME_SLOTS * sizeof(*dests) );
++    }
++    else cap_dests = num_dests;
++
++    if (new_srcs)
++    {
++        srcs = new_srcs;
++        cap_srcs = num_srcs + MIDI_RUNTIME_SLOTS;
++        memset( srcs + num_srcs, 0, MIDI_RUNTIME_SLOTS * sizeof(*srcs) );
++    }
++    else cap_srcs = num_srcs;
++
++    table_frozen = TRUE;
++    TRACE("tables frozen: %u/%u MidiOut, %u/%u MidiIn\n",
++          num_dests, cap_dests, num_srcs, cap_srcs);
++}
++
++/* want restricts which directions may be added, so a hotplug re-attach that
++ * matched one direction by name does not duplicate the other.  The startup
++ * enumeration passes ~0 and behaves exactly as before. */
++static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, unsigned int cap, unsigned int type,
++                     unsigned int want)
+ {
+     char name[MAXPNAMELEN];
+     unsigned int len;
+     struct midi_dest *dest;
+     struct midi_src *src;
+
++    cap &= want;
++
+     if (cap & SND_SEQ_PORT_CAP_WRITE) {
+         TRACE("OUT (%d:%s:%s:%d:%s:%x)\n",snd_seq_client_info_get_client(cinfo),
+               snd_seq_client_info_get_name(cinfo),
+@@ -325,7 +382,17 @@ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, u
+         if (!type)
+             return;
+
+-        dests = realloc( dests, (num_dests + 1) * sizeof(*dests) );
++        if (num_dests >= cap_dests)
++        {
++            if (table_frozen)
++            {
++                WARN("no MidiOut slot left for %d:%d, ignoring\n",
++                     snd_seq_client_info_get_client(cinfo), snd_seq_port_info_get_port(pinfo));
++                return;
++            }
++            dests = realloc( dests, (num_dests + 1) * sizeof(*dests) );
++            cap_dests = num_dests + 1;
++        }
+         dest = dests + num_dests;
+         memset( dest, 0, sizeof(*dest) );
+         dest->addr = *snd_seq_port_info_get_addr(pinfo);
+@@ -379,7 +446,9 @@ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, u
+               dest->caps.wChannelMask, (unsigned)dest->caps.dwSupport,
+               type);
+
+-        num_dests++;
++        /* Publish last: a reader that has not taken a lock either sees the old
++         * count or a fully built entry, never a half-written one. */
++        __atomic_store_n( &num_dests, num_dests + 1, __ATOMIC_RELEASE );
+     }
+     if (cap & SND_SEQ_PORT_CAP_READ) {
+         TRACE("IN  (%d:%s:%s:%d:%s:%x)\n",snd_seq_client_info_get_client(cinfo),
+@@ -392,7 +461,17 @@ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, u
+         if (!type)
+             return;
+
+-        srcs = realloc( srcs, (num_srcs + 1) * sizeof(*srcs) );
++        if (num_srcs >= cap_srcs)
++        {
++            if (table_frozen)
++            {
++                WARN("no MidiIn slot left for %d:%d, ignoring\n",
++                     snd_seq_client_info_get_client(cinfo), snd_seq_port_info_get_port(pinfo));
++                return;
++            }
++            srcs = realloc( srcs, (num_srcs + 1) * sizeof(*srcs) );
++            cap_srcs = num_srcs + 1;
++        }
+         src = srcs + num_srcs;
+         memset( src, 0, sizeof(*src) );
+         src->addr = *snd_seq_port_info_get_addr(pinfo);
+@@ -418,7 +497,7 @@ static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, u
+               "\tALSA info: midi dev-type=%x, capa=0\n",
+               num_srcs, wine_dbgstr_w(src->caps.szPname), (unsigned)src->caps.dwSupport, type);
+
+-        num_srcs++;
++        __atomic_store_n( &num_srcs, num_srcs + 1, __ATOMIC_RELEASE );
+     }
+ }
+
+@@ -451,7 +530,7 @@ static UINT alsa_midi_init(void)
+             unsigned int cap = snd_seq_port_info_get_capability(pinfo);
+             unsigned int type = snd_seq_port_info_get_type(pinfo);
+             if (!(type & SND_SEQ_PORT_TYPE_PORT))
+-                port_add(cinfo, pinfo, cap, type);
++                port_add(cinfo, pinfo, cap, type, ~0u);
+         }
+     }
+
+@@ -464,13 +543,15 @@ static UINT alsa_midi_init(void)
+             unsigned int cap = snd_seq_port_info_get_capability(pinfo);
+             unsigned int type = snd_seq_port_info_get_type(pinfo);
+             if (type & SND_SEQ_PORT_TYPE_PORT)
+-                port_add(cinfo, pinfo, cap, type);
++                port_add(cinfo, pinfo, cap, type, ~0u);
+         }
+     }
+     seq_close();
+     free( cinfo );
+     free( pinfo );
+
++    midi_tables_freeze();
++
+     TRACE("End\n");
+
+     return NOERROR;
+@@ -1070,7 +1151,8 @@ static void handle_port_start(snd_seq_addr_t addr)
+     snd_seq_port_info_t *pinfo;
+     char name[MAXPNAMELEN];
+     WCHAR nameW[MAXPNAMELEN];
+-    unsigned int cap, type, len;
++    unsigned int cap, type, len, add = 0;
++    unsigned int old_dests = num_dests, old_srcs = num_srcs;
+     struct midi_dest *dest;
+     struct midi_src *src;
+     int ret = 0;
+@@ -1092,6 +1174,16 @@ static void handle_port_start(snd_seq_addr_t addr)
+     if (!type || (cap & SND_SEQ_PORT_CAP_NO_EXPORT))
+         goto done;
+
++    /* Another Wine process in this session, opening MIDI, creates its own
++     * sequencer client.  Those ports are not devices; adding them would fill
++     * every other process's list with entries that come and go as unrelated
++     * applications start and stop. */
++    if (!strcmp(snd_seq_client_info_get_name(cinfo), "WINE midi driver"))
++    {
++        TRACE("skipping another Wine client's port %d:%d\n", addr.client, addr.port);
++        goto done;
++    }
++
+     len = port_display_name(cinfo, pinfo, name);
+     ntdll_umbstowcs(name, len + 1, nameW, ARRAY_SIZE(nameW));
+
+@@ -1114,6 +1206,9 @@ static void handle_port_start(snd_seq_addr_t addr)
+             }
+             break;
+         }
++        /* No table entry carries this name: the device was not present when
++         * this process enumerated, so add it now rather than ignoring it. */
++        if (src == srcs + num_srcs) add |= SND_SEQ_PORT_CAP_READ;
+     }
+     if (cap & SND_SEQ_PORT_CAP_WRITE)
+     {
+@@ -1134,6 +1229,18 @@ static void handle_port_start(snd_seq_addr_t addr)
+             }
+             break;
+         }
++        if (dest == dests + num_dests) add |= SND_SEQ_PORT_CAP_WRITE;
++    }
++
++    if (add)
++    {
++        port_add(cinfo, pinfo, cap, type, add);
++        if (num_srcs != old_srcs || num_dests != old_dests)
++        {
++            TRACE("added '%s' at %d:%d (%u MidiIn, %u MidiOut)\n",
++                  name, addr.client, addr.port, num_srcs, num_dests);
++            notify_device_change();
++        }
+     }
+
+ done:
+@@ -1141,6 +1248,31 @@ done:
+     free( pinfo );
+ }
+
++/* A port went away.  The entry stays in the table so its device id stays
++ * stable and handle_port_start() can re-match it by name when it comes back,
++ * which is what patch 0028 relies on; only the address is invalidated so
++ * nothing is sent to a dead port in the meantime. */
++static void handle_port_exit(snd_seq_addr_t addr)
++{
++    struct midi_dest *dest;
++    struct midi_src *src;
++
++    for (src = srcs; src < srcs + num_srcs; src++)
++    {
++        if (src->addr.client != addr.client || src->addr.port != addr.port) continue;
++        TRACE("MidiIn %u went away from %d:%d\n",
++              (unsigned int)(src - srcs), addr.client, addr.port);
++        src->addr.client = SND_SEQ_ADDRESS_UNKNOWN;
++    }
++    for (dest = dests; dest < dests + num_dests; dest++)
++    {
++        if (dest->addr.client != addr.client || dest->addr.port != addr.port) continue;
++        TRACE("MidiOut %u went away from %d:%d\n",
++              (unsigned int)(dest - dests), addr.client, addr.port);
++        dest->addr.client = SND_SEQ_ADDRESS_UNKNOWN;
++    }
++}
++
+ static void midi_handle_event(snd_seq_event_t *ev)
+ {
+     struct midi_src *src;
+@@ -1149,6 +1281,8 @@ static void midi_handle_event(snd_seq_event_t *ev)
+     {
+         if (ev->type == SND_SEQ_EVENT_PORT_START)
+             handle_port_start(ev->data.addr);
++        else if (ev->type == SND_SEQ_EVENT_PORT_EXIT)
++            handle_port_exit(ev->data.addr);
+         return;
+     }
+
+@@ -1621,6 +1755,7 @@ typedef UINT PTR32;
+ struct notify_context32
+ {
+     BOOL send_notify;
++    BOOL device_change;
+     WORD dev_id;
+     WORD msg;
+     UINT param_1;
+@@ -1635,6 +1770,7 @@ static void notify_to_notify32(struct notify_context32 *notify32,
+                                const struct notify_context *notify)
+ {
+     notify32->send_notify = notify->send_notify;
++    notify32->device_change = notify->device_change;
+     notify32->dev_id = notify->dev_id;
+     notify32->msg = notify->msg;
+     notify32->param_1 = notify->param_1;
