@@ -60,6 +60,11 @@
         program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/setup-prefix.sh";
         meta.description = "Create or refresh the Ableton Wine prefix (ABLETON_LIVE_AUTOINSTALL=1 also installs Live from ~/Proprietary)";
       };
+      audio-report = {
+        type = "app";
+        program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/audio-report.sh";
+        meta.description = "Print the read-only audio diagnostic snapshot an issue report is expected to carry";
+      };
       setup-realtime = {
         type = "app";
         program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/setup-realtime.sh";

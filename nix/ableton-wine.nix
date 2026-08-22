@@ -232,6 +232,11 @@ stdenv.mkDerivation {
         # The launcher starts the Learn View heal helper when staged here.
         install -m644 ${../tools/learnheal.exe}          $out/share/ableton-wine/learnheal.exe
         install -m755 ${../scripts/setup-realtime.sh}    $out/share/ableton-wine/scripts/setup-realtime.sh
+        # The read-only diagnostic snapshot .github/ISSUE_TEMPLATE/bug-report.md
+        # asks every reporter to run, and TROUBLESHOOTING.md names three times.
+        # install.sh stages it under $HOME; without it here a Nix user cannot
+        # produce the report an issue is expected to carry.
+        install -m755 ${../scripts/audio-report.sh}      $out/share/ableton-wine/scripts/audio-report.sh
         install -m755 ${../scripts/setup-link.sh}        $out/share/ableton-wine/scripts/setup-link.sh
         # setup-prefix.sh, setup-link.sh and ableton-linkctl source these from
         # $here/lib before falling back to the user's staging.
@@ -413,9 +418,13 @@ stdenv.mkDerivation {
         # a bug report can name the runtime it came from. Regenerated from the
         # patches this build applied, never copied from the manifest — a copy
         # would only agree with itself.
-        ( cd ${patchesDir} && sha256sum 00*.patch pipeasio/*.patch ) \
+        # Same glob as container-build.sh and build-audit.sh's --freeze. A
+        # two-digit prefix glob stops matching at 0100 and would drop that
+        # patch from the stamp while wine.nix still applied it, so the audit
+        # would reject the tree over a stamp that is the only thing wrong.
+        ( cd ${patchesDir} && sha256sum [0-9][0-9][0-9][0-9]-*.patch pipeasio/*.patch ) \
           > $out/ABLETON-WINE-PATCH-STACK.txt
-        n_wine=$(ls ${patchesDir}/00*.patch | wc -l)
+        n_wine=$(ls ${patchesDir}/[0-9][0-9][0-9][0-9]-*.patch | wc -l)
         n_asio=$(ls ${patchesDir}/pipeasio/*.patch | wc -l)
         stack_sha=$(sha256sum $out/ABLETON-WINE-PATCH-STACK.txt | awk '{print $1}')
         sha_of() { sha256sum "$out/$1" | awk '{print $1}'; }
@@ -499,6 +508,12 @@ stdenv.mkDerivation {
       || { echo "pipewire-version-probe is not staged"; exit 1; }
     LC_ALL=C $out/bin/pipewire-version-probe >/dev/null 2>&1 || [ $? -ne 127 ] \
       || { echo "pipewire-version-probe cannot resolve its libraries"; exit 1; }
+    # The diagnostic an issue report is expected to carry. It resolves
+    # lib/config.sh beside itself, which is staged in the same scripts dir.
+    [ -x $out/share/ableton-wine/scripts/audio-report.sh ] \
+      || { echo "audio-report.sh is not staged; a bug report cannot include the audio snapshot"; exit 1; }
+    ${stdenv.shell} -n $out/share/ableton-wine/scripts/audio-report.sh \
+      || { echo "audio-report.sh has a syntax error"; exit 1; }
     # Both launchers fall back to this Link controller when installer.sh has
     # staged nothing under ~/.local/share.
     [ -x $out/share/ableton-wine/scripts/ableton-linkctl ] \

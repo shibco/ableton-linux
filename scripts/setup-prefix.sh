@@ -671,11 +671,14 @@ installer_dir="${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
 # "suite" 12, and 12.4.3 above 12.10.0. Sort on a key cut from the basename
 # instead; a name carrying no version keys to 0 and can only be chosen when it
 # is the only candidate.
+# An unreadable directory makes find exit 1, which pipefail propagates and
+# set -e would turn into a silent abort of the whole prefix setup; no candidate
+# is the same answer either way.
 newest_live_zip() {   # <dir> <case-insensitive glob>
-    find "$1" -maxdepth 1 -iname "$2" -print 2>/dev/null \
+    find "$1" -maxdepth 1 -type f -iname "$2" -print 2>/dev/null \
         | awk '{ n = $0; sub(/.*\//, "", n)
                  print (match(n, /[0-9]+(\.[0-9]+)+/) ? substr(n, RSTART, RLENGTH) : "0") "\t" $0 }' \
-        | sort -V | tail -n 1 | cut -f2-
+        | sort -V | tail -n 1 | cut -f2- || true
 }
 live_zip=""
 # The .run installs Ableton Live itself, from the payload given to it, and marks

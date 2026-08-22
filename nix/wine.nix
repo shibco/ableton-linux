@@ -138,10 +138,16 @@ stdenv.mkDerivation rec {
       echo "$series" | grep -qx "$(basename $f)" \
         || { echo "!! $(basename $f) on disk but not in SERIES.sha256 — update the manifest" >&2; exit 1; }
     done
+    # --fuzz=0: container-build.sh applies the same series with `git am
+    # --3way`, which never places a hunk it cannot match. patch(1) defaults to
+    # fuzz 2 and would apply a drifted hunk at exit 0, producing a tree that
+    # differs from the released one with no gate on the difference (the [3/4]
+    # fingerprints only grep for strings). -N and --no-backup-if-mismatch keep
+    # a reversed hunk and a .orig file out of the build.
     n=0
     for p in $series; do
       echo "  $p"
-      patch -p1 < ${patchesDir}/$p
+      patch -p1 --fuzz=0 -N --no-backup-if-mismatch < ${patchesDir}/$p
       n=$((n+1))
     done
     echo "Applied $n wine patches"
