@@ -158,6 +158,11 @@ set -u
 
 version() {
     versionfile="${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/VERSION"
+    # Packaged installs (nix) stage it under the runtime root instead of $HOME.
+    # This runs before the configuration helper loads, so it reads the variable
+    # the launch shim exports rather than the resolved $WINE_ROOT.
+    [ -f "$versionfile" ] \
+        || versionfile="${ABLETON_WINE_ROOT:-}/share/ableton-wine/VERSION"
     if [ -f "$versionfile" ]; then
         cat "$versionfile"
     else

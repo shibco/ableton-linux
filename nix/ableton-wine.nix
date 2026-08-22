@@ -247,6 +247,10 @@ stdenv.mkDerivation {
         # (which a garbage collection can delete and an upgrade renames). Same
         # $HOME-then-$WINE_ROOT lookup as the detection libs.
         install -m755 ${../scripts/runtime-link.sh}      $out/share/ableton-wine/scripts/runtime-link.sh
+        # `ableton-live --version` reads this. The .run stages it into
+        # $ABLETON_DATA_HOME; nothing stages anything there for a packaged
+        # install, so it lives beside the rest of the runtime's own files.
+        install -m644 ${../VERSION}                     $out/share/ableton-wine/VERSION
         # install.sh / uninstall.sh / installer.sh are tarball tools — not shipped.
 
         # -- PipeWire compatibility probe --
