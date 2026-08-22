@@ -320,6 +320,60 @@ ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
     || fail "A later launch retains the user's choice to let Live select the count."
 ok "A later launch retains the user's own count. It retains the user's choice to let Live select the count."
 
+prefix="$work/rewrite-swap"
+prefs="$(make_prefs "$prefix")"
+ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
+outside="$work/rewrite-swap-outside"
+printf '%s\n' '-MaxAudioThreads=16' > "$outside"
+outside_before="$(stat -c '%i:%s' "$outside")"
+swap_flag="$work/rewrite-swap-fired"
+mktemp()
+{
+    if [[ "${1:-}" == /proc/*/fd/*/.Options.txt.* ]] && [ ! -e "$swap_flag" ]; then
+        : > "$swap_flag"
+        command rm -f -- "$prefs/Options.txt"
+        command ln -s -- "$outside" "$prefs/Options.txt"
+    fi
+    command mktemp "$@"
+}
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null 2>&1 || true
+unset -f mktemp
+[ -e "$swap_flag" ] || fail 'The test replaces the settings file during the rewrite.'
+# Content alone cannot show this: the replacement holds no line the rewrite
+# matches, so a write that followed the name would copy the same bytes back.
+[ "$(stat -c '%i:%s' "$outside")" = "$outside_before" ] \
+    && [ "$(cat "$outside")" = '-MaxAudioThreads=16' ] \
+    || fail 'A settings file replaced during the rewrite keeps every write inside the Wine prefix.'
+ok 'A settings file replaced during the rewrite keeps every write inside the Wine prefix.'
+
+prefix="$work/rewrite-record-fails"
+prefs="$(make_prefs "$prefix")"
+ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
+mv() { return 1; }
+record_rc=0
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null 2>&1 || record_rc=$?
+unset -f mv
+[ "$record_rc" -ne 0 ] \
+    || fail 'A settings script that cannot record the choice reports the failure.'
+[ "$(tr -d '\n' < "$prefs/Options.txt")" \
+    = "$(sed -n '2s/^default=//p' "$prefs/.ableton-linux-max-audio-threads-v1")" ] \
+    || fail 'The settings file and the recorded choice hold the same count.'
+ableton_seed_max_audio_threads "$prefix" 4 >/dev/null
+grep -qx -- '-MaxAudioThreads=4' "$prefs/Options.txt" \
+    || fail 'A later launch applies a count after a failed record.'
+ok 'A failed record reports the failure, leaves one count in both files, and a later launch still applies.'
+
+prefix="$work/rewrite-duplicate"
+prefs="$(make_prefs "$prefix")"
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
+printf '%s\n%s\n' '-MaxAudioThreads=8' '-MaxAudioThreads=24' > "$prefs/Options.txt"
+ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
+[ "$(grep -c '^-MaxAudioThreads=' "$prefs/Options.txt")" -eq 2 ] \
+    && grep -qx -- '-MaxAudioThreads=8' "$prefs/Options.txt" \
+    && grep -qx -- '-MaxAudioThreads=24' "$prefs/Options.txt" \
+    || fail "A second count the user added declines the rewrite."
+ok "A second count the user added declines the rewrite and leaves the file unchanged."
+
 ableton_seed_max_audio_threads "$work/missing-prefix" 16 >/dev/null
 ok 'The settings script accepts a partial Wine prefix.'
 
