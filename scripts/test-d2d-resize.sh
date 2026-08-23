@@ -32,14 +32,22 @@ fail()
 [ -r "$probe_src" ] || fail "probe source missing at $probe_src"
 command -v x86_64-w64-mingw32-gcc >/dev/null \
     || fail "x86_64-w64-mingw32-gcc is missing; install the mingw-w64 cross compiler"
+command -v timeout >/dev/null || fail "timeout is missing; install GNU coreutils"
 
 tmp="$(mktemp -d /tmp/ableton-d2d-resize-test.XXXXXX)"
+export WINEPREFIX="$tmp/prefix"
+export WINEDEBUG=-all
 cleanup()
 {
-    [ -z "$xvfb_pid" ] || kill "$xvfb_pid" 2>/dev/null || true
     case "$tmp" in
         /tmp/ableton-d2d-resize-test.*)
-            "$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
+            if [ -d "$WINEPREFIX" ]; then
+                timeout --kill-after=2s 10s "$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
+            fi
+            if [ -n "$xvfb_pid" ]; then
+                kill "$xvfb_pid" 2>/dev/null || true
+                wait "$xvfb_pid" 2>/dev/null || true
+            fi
             rm -rf -- "${tmp:?}"
             ;;
         *) printf 'refusing to remove unexpected test path: %s\n' "$tmp" >&2; return 1 ;;
@@ -62,29 +70,30 @@ if [ -z "${DISPLAY:-}" ]; then
     kill -0 "$xvfb_pid" 2>/dev/null || fail "Xvfb did not start on $DISPLAY"
 fi
 
-x86_64-w64-mingw32-gcc -Wall -O1 "$probe_src" -o "$tmp/probe.exe" \
+x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -O1 "$probe_src" -o "$tmp/probe.exe" \
     -ld2d1 -ldwrite -lole32 -lgdi32 -luser32 || fail "probe did not build"
 
-export WINEPREFIX="$tmp/prefix"
-export WINEDEBUG=-all
 mkdir -p "$WINEPREFIX"
-"$runtime/bin/wine" wineboot -u >/dev/null 2>&1 || fail "wineboot failed in the test prefix"
-"$runtime/bin/wine" reg add 'HKCU\Control Panel\Desktop' \
+timeout --kill-after=10s 60s "$runtime/bin/wine" wineboot -u >/dev/null 2>&1 \
+    || fail "wineboot failed or timed out in the test prefix"
+timeout --kill-after=5s 30s "$runtime/bin/wine" reg add 'HKCU\Control Panel\Desktop' \
     /v FontSmoothingType /t REG_DWORD /d 2 /f >/dev/null 2>&1 \
-    || fail "could not seed FontSmoothingType"
-"$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
+    || fail "could not seed FontSmoothingType before the timeout"
+timeout --kill-after=2s 10s "$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
 
 printf 'runtime: %s\n' "$runtime"
 [ -r "$runtime/ABLETON-WINE-BUILD-INFO.txt" ] &&
     grep -E 'dist-version|wine-patches|patch-stack' "$runtime/ABLETON-WINE-BUILD-INFO.txt" || true
 
 out="$tmp/out.txt"
-if "$runtime/bin/wine" "$tmp/probe.exe" --check >"$out" 2>/dev/null; then
+if timeout --kill-after=10s 90s "$runtime/bin/wine" "$tmp/probe.exe" --check >"$out" 2>/dev/null; then
     cat "$out"
     printf 'ok - hwnd render target keeps its pixel format and GDI compatibility across Resize\n'
 else
     status=$?
     cat "$out"
     [ "$status" = 2 ] && fail "probe could not run; see the line above"
+    [ "$status" = 124 ] && fail "probe timed out after 90 seconds"
+    [ "$status" = 137 ] && fail "probe ignored the timeout and was killed"
     fail "hwnd render target regressed across Resize; see the not ok lines above"
 fi

@@ -118,7 +118,7 @@ static double draw_and_measure(ID2D1HwndRenderTarget *rt, IDWriteTextFormat *fmt
         ctx->lpVtbl->GetTarget(ctx, (struct ID2D1Image **)&target);
         if (target && SUCCEEDED(IUnknown_QueryInterface(target, &IID_ID2D1Bitmap, (void **)&src))
                 && SUCCEEDED(ID2D1Bitmap_CopyFromBitmap((ID2D1Bitmap *)cpu, &origin, src, NULL))
-                && SUCCEEDED(ID2D1Bitmap1_Map(cpu, D2D1_MAP_OPTIONS_READ, &mapped)))
+                && SUCCEEDED(cpu->lpVtbl->Map(cpu, D2D1_MAP_OPTIONS_READ, &mapped)))
         {
             for (y = 0; y < h; y++) {
                 const BYTE *row = mapped.bits + (size_t)y * mapped.pitch;
@@ -129,7 +129,7 @@ static double draw_and_measure(ID2D1HwndRenderTarget *rt, IDWriteTextFormat *fmt
                     if (mx) { lit++; sum += (unsigned)(mx - mn); }
                 }
             }
-            ID2D1Bitmap1_Unmap(cpu);
+            cpu->lpVtbl->Unmap(cpu);
             out = lit ? (double)sum / lit : -1.0;
         }
         if (src) ID2D1Bitmap_Release(src);
