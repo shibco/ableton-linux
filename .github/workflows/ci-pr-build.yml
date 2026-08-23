@@ -131,16 +131,18 @@ jobs:
       - name: Test installer and launcher lifecycle
         run: make test
 
-      # The glyph path is a property of the built runtime, so `make test`
-      # cannot assert it: its suites are all host-side. The tarball exists by
-      # this point, so extract it and run the gate against that.
-      - name: Test dwrite glyph path
+      # These are properties of the built runtime, so `make test` cannot assert
+      # them: its suites are all host-side. The tarball exists by this point, so
+      # extract it once and run both gates against it. The resize probe draws,
+      # so it needs a display; its suite starts an Xvfb when DISPLAY is unset.
+      - name: Test dwrite glyph path and hwnd render target resize
         run: |
-          sudo apt-get install --yes gcc-mingw-w64-x86-64
+          sudo apt-get install --yes gcc-mingw-w64-x86-64 xvfb
           version="$(cat VERSION)"
-          rt="$(mktemp -d /tmp/ableton-glyph-rt.XXXXXX)"
+          rt="$(mktemp -d /tmp/ableton-runtime-gates.XXXXXX)"
           tar --zstd -xf "dist/wine-d2d1-nspa-11.13-$version.tar.zst" -C "$rt"
           make test-glyph-path RUNTIME="$rt/wine-d2d1-nspa-11.13"
+          make test-d2d-resize RUNTIME="$rt/wine-d2d1-nspa-11.13"
 
       # The generic artifact format permits an explicitly recorded no-Qt
       # driver build. The official release image installs Qt, so its artifact
