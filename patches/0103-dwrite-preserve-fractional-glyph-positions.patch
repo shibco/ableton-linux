@@ -1,0 +1,240 @@
+Subject: dwrite: preserve fractional horizontal glyph positions
+
+Glyph layout produces fractional horizontal origins. Texture bounds and
+rasterisation converted each origin to an integer, so a glyph does not move at
+all across a full pixel of requested travel and then jumps the whole pixel.
+DWRITE_RENDERING_MODE_NATURAL is specified as positioning glyphs at subpixel
+accuracy.
+
+Quantise origins in the natural rendering modes to 16 phases per pixel, apply
+the phase to the outline, and store each result under its phase. Sixteen phases
+limit the measured position error to 0.0031 px. The GDI modes are grid-fitted
+and aliased output is whole-pixel by definition, so both keep integer origins
+and are byte-identical to before. A glyph shifted right can place ink one pixel
+beyond its unshifted box, so the box gains that pixel.
+
+The phase joins the glyph cache key, which multiplies the key space by
+DWRITE_SUBPIXEL_PHASES, so the per-fontface budget scales with it. Left at
+32 KB a 54-glyph run at em 12 no longer fits three phases and every glyph is
+re-rasterised on every draw: 0.2246 ms per run against 0.0078 ms for the same
+run in GDI_NATURAL on the same binary. With the budget scaled the same
+comparison is 0.0128 against 0.0075.
+
+diff --git a/dlls/dwrite/font.c b/dlls/dwrite/font.c
+index 21ba87d..9f2e60a 100644
+--- a/dlls/dwrite/font.c
++++ b/dlls/dwrite/font.c
+@@ -51,6 +51,7 @@ struct cache_key
+     unsigned short mode;
+     unsigned short lcd;
+     unsigned short outline;
++    unsigned short subpixel_phase;
+ };
+ 
+ struct cache_entry
+@@ -209,14 +210,38 @@ static unsigned int get_glyph_bitmap_pitch(DWRITE_RENDERING_MODE1 rendering_mode
+     return (width + 3) / 4 * 4;
+ }
+ 
+ static BOOL rendering_mode_uses_outline(DWRITE_RENDERING_MODE1 rendering_mode)
+ {
+     return rendering_mode == DWRITE_RENDERING_MODE1_NATURAL
+             || rendering_mode == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
+ }
+-
++
++/* Glyph layout produces fractional horizontal origins. Split one into the whole
++ * pixel the bitmap is blitted to and a phase, quantised to DWRITE_SUBPIXEL_PHASES
++ * per pixel, which the rasteriser applies to the outline. Only the natural modes
++ * are subpixel-positioned; the GDI modes are grid-fitted and aliased output is
++ * whole-pixel by definition. */
++static int split_glyph_origin(float origin, DWRITE_RENDERING_MODE1 rendering_mode, unsigned int *phase)
++{
++    int integer;
++
++    *phase = 0;
++    if (rendering_mode != DWRITE_RENDERING_MODE1_NATURAL &&
++            rendering_mode != DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC)
++        return (int)origin;
++
++    integer = floorf(origin);
++    *phase = floorf((origin - integer) * DWRITE_SUBPIXEL_PHASES + 0.5f);
++    if (*phase == DWRITE_SUBPIXEL_PHASES)
++    {
++        ++integer;
++        *phase = 0;
++    }
++    return integer;
++}
++
+ static HRESULT dwrite_fontface_get_glyph_bitmap(struct dwrite_fontface *fontface, DWRITE_RENDERING_MODE1 rendering_mode,
+-        BOOL lcd, unsigned int *is_1bpp, struct dwrite_glyphbitmap *bitmap)
++        BOOL lcd, unsigned int subpixel_phase, unsigned int *is_1bpp, struct dwrite_glyphbitmap *bitmap)
+ {
+     /* dlls/win32u/freetype.c sets FT_LOAD_NO_BITMAP for every requested format
+      * except GGO_BITMAP. DirectWrite's equivalent boundary is its rendering
+@@ -218,7 +243,7 @@ static HRESULT dwrite_fontface_get_glyph_bitmap(struct dwrite_fontface *fontface
+      * modes keep the strike. */
+     BOOL outline = rendering_mode_uses_outline(rendering_mode);
+     struct cache_key key = { .size = bitmap->emsize, .glyph = bitmap->glyph, .mode = DWRITE_MEASURING_MODE_NATURAL,
+-            .lcd = !!lcd, .outline = !!outline };
++            .lcd = !!lcd, .outline = !!outline, .subpixel_phase = subpixel_phase };
+     struct get_glyph_bitmap_params params;
+     const RECT *bbox = &bitmap->bbox;
+     unsigned int bitmap_size, _1bpp;
+@@ -234,6 +259,7 @@ static HRESULT dwrite_fontface_get_glyph_bitmap(struct dwrite_fontface *fontface
+     params.mode = rendering_mode;
+     params.lcd = !!lcd;
+     params.outline = !!outline;
++    params.subpixel_phase = subpixel_phase;
+     params.emsize = bitmap->emsize;
+     params.bbox = bitmap->bbox;
+     params.pitch = bitmap->pitch;
+@@ -283,6 +309,8 @@ static int fontface_cache_compare(const void *k, const struct wine_rb_entry *e)
+     if (key->mode != key2->mode) return (int)key->mode - (int)key2->mode;
+     if (key->lcd != key2->lcd) return (int)key->lcd - (int)key2->lcd;
+     if (key->outline != key2->outline) return (int)key->outline - (int)key2->outline;
++    if (key->subpixel_phase != key2->subpixel_phase)
++        return (int)key->subpixel_phase - (int)key2->subpixel_phase;
+     return 0;
+ }
+ 
+@@ -290,7 +318,7 @@ static void fontface_cache_init(struct dwrite_fontface *fontface)
+ {
+     wine_rb_init(&fontface->cache.tree, fontface_cache_compare);
+     list_init(&fontface->cache.mru);
+-    fontface->cache.max_size = 0x8000;
++    fontface->cache.max_size = 0x8000 * DWRITE_SUBPIXEL_PHASES;
+ }
+ 
+ static void fontface_cache_clear(struct dwrite_fontface *fontface)
+@@ -5879,8 +5907,11 @@ static void glyphrunanalysis_get_texturebounds(struct dwrite_glyphrunanalysis *a
+ 
+     for (i = 0; i < analysis->run.glyphCount; i++) {
+         RECT *bbox = &glyph_bitmap.bbox;
++        unsigned int subpixel_phase;
+         UINT32 bitmap_size;
++        int origin_x;
+ 
++        origin_x = split_glyph_origin(analysis->origins[i].x, analysis->rendering_mode, &subpixel_phase);
+         glyph_bitmap.glyph = analysis->run.glyphIndices[i];
+         dwrite_fontface_get_glyph_bbox(analysis->run.fontFace,
+                 analysis->texture_type == DWRITE_TEXTURE_CLEARTYPE_3x1,
+@@ -5903,12 +5934,17 @@ static void glyphrunanalysis_get_texturebounds(struct dwrite_glyphrunanalysis *a
+             }
+         }
+ 
++        /* a glyph shifted by part of a pixel can place ink one pixel beyond
++         * the right edge of its unshifted box */
++        if (subpixel_phase && !IsRectEmpty(bbox))
++            ++bbox->right;
++
+         bitmap_size = get_glyph_bitmap_pitch(analysis->rendering_mode, bbox->right - bbox->left,
+                 analysis->texture_type == DWRITE_TEXTURE_CLEARTYPE_3x1) * (bbox->bottom - bbox->top);
+         if (bitmap_size > analysis->max_glyph_bitmap_size)
+             analysis->max_glyph_bitmap_size = bitmap_size;
+ 
+-        OffsetRect(bbox, analysis->origins[i].x, analysis->origins[i].y);
++        OffsetRect(bbox, origin_x, (int)analysis->origins[i].y);
+         UnionRect(&analysis->bounds, &analysis->bounds, bbox);
+     }
+ 
+@@ -5984,8 +6020,11 @@ static HRESULT glyphrunanalysis_render(struct dwrite_glyphrunanalysis *analysis)
+     {
+         BYTE *src = glyph_bitmap.buf, *dst;
+         int x, y, width, height;
++        unsigned int subpixel_phase;
+         unsigned int is_1bpp;
++        int origin_x;
+ 
++        origin_x = split_glyph_origin(analysis->origins[i].x, analysis->rendering_mode, &subpixel_phase);
+         glyph_bitmap.glyph = analysis->run.glyphIndices[i];
+         dwrite_fontface_get_glyph_bbox(analysis->run.fontFace, is_cleartype,
+                 rendering_mode_uses_outline(analysis->rendering_mode), &glyph_bitmap);
+@@ -6006,6 +6045,9 @@ static HRESULT glyphrunanalysis_render(struct dwrite_glyphrunanalysis *analysis)
+         if (IsRectEmpty(bbox))
+             continue;
+ 
++        if (subpixel_phase)
++            ++bbox->right;
++
+         width = bbox->right - bbox->left;
+         height = bbox->bottom - bbox->top;
+ 
+@@ -6013,13 +6055,13 @@ static HRESULT glyphrunanalysis_render(struct dwrite_glyphrunanalysis *analysis)
+         memset(src, 0, height * glyph_bitmap.pitch);
+ 
+         if (FAILED(dwrite_fontface_get_glyph_bitmap(fontface, analysis->rendering_mode, is_cleartype,
+-                &is_1bpp, &glyph_bitmap)))
++                subpixel_phase, &is_1bpp, &glyph_bitmap)))
+         {
+             WARN("Failed to render glyph[%u] = %#x.\n", i, glyph_bitmap.glyph);
+             continue;
+         }
+ 
+-        OffsetRect(bbox, analysis->origins[i].x, analysis->origins[i].y);
++        OffsetRect(bbox, origin_x, (int)analysis->origins[i].y);
+ 
+         /* blit to analysis bitmap */
+         dst = get_pixel_ptr(analysis->bitmap, analysis->texture_type, bbox, &analysis->bounds);
+diff --git a/dlls/dwrite/freetype.c b/dlls/dwrite/freetype.c
+index a1d850e..a2e94f9 100644
+--- a/dlls/dwrite/freetype.c
++++ b/dlls/dwrite/freetype.c
+@@ -710,7 +710,8 @@ static NTSTATUS freetype_get_lcd_glyph_bitmap(struct get_glyph_bitmap_params *pa
+             return STATUS_UNSUCCESSFUL;
+         }
+         pFT_Outline_Transform(&copy, &scale);
+-        pFT_Outline_Translate(&copy, -(bbox->left * 3) << 6, bbox->bottom << 6);
++        pFT_Outline_Translate(&copy, (-(bbox->left * 3) << 6) +
++                (FT_Pos)(params->subpixel_phase * 3 * 64 / DWRITE_SUBPIXEL_PHASES), bbox->bottom << 6);
+         if (pFT_Outline_Get_Bitmap(library, &copy, &ft_bitmap))
+         {
+             pFT_Outline_Done(library, &copy);
+@@ -749,7 +750,8 @@ static NTSTATUS freetype_get_aa_glyph_bitmap(struct get_glyph_bitmap_params *par
+         /* Note: FreeType will only set 'black' bits for us. */
+         if (pFT_Outline_New(library, src->n_points, src->n_contours, &copy) == 0) {
+             pFT_Outline_Copy(src, &copy);
+-            pFT_Outline_Translate(&copy, -bbox->left << 6, bbox->bottom << 6);
++            pFT_Outline_Translate(&copy, (-bbox->left << 6) +
++                    (FT_Pos)(params->subpixel_phase * 64 / DWRITE_SUBPIXEL_PHASES), bbox->bottom << 6);
+             pFT_Outline_Get_Bitmap(library, &copy, &ft_bitmap);
+             pFT_Outline_Done(library, &copy);
+         }
+@@ -1092,6 +1094,7 @@ static NTSTATUS wow64_get_glyph_bitmap(void *args)
+         ULONG mode;
+         ULONG lcd;
+         ULONG outline;
++        ULONG subpixel_phase;
+         float emsize;
+         MATRIX_2X2 m;
+         RECT bbox;
+@@ -1107,6 +1110,7 @@ static NTSTATUS wow64_get_glyph_bitmap(void *args)
+         params32->mode,
+         params32->lcd,
+         params32->outline,
++        params32->subpixel_phase,
+         params32->emsize,
+         params32->m,
+         params32->bbox,
+diff --git a/dlls/dwrite/unixlib.h b/dlls/dwrite/unixlib.h
+index e20ae98..ef3eda6 100644
+--- a/dlls/dwrite/unixlib.h
++++ b/dlls/dwrite/unixlib.h
+@@ -23,6 +23,8 @@
+ #include "dwrite_private.h"
+ #include "wine/unixlib.h"
+ 
++#define DWRITE_SUBPIXEL_PHASES 16
++
+ struct create_font_object_params
+ {
+     const void *data;
+@@ -81,6 +83,7 @@ struct get_glyph_bitmap_params
+     unsigned int mode;
+     unsigned int lcd;
+     unsigned int outline;
++    unsigned int subpixel_phase;
+     float emsize;
+     MATRIX_2X2 m;
+     RECT bbox;

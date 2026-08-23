@@ -11,7 +11,7 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The Wine series contains 89 patch files and ends at 0101. The absent numbers
+The Wine series contains 92 patch files and ends at 0104. The absent numbers
 are 0027, 0044, 0072, 0074, 0090 through 0095, 0097, and 0098; their reasons
 are declared in `SERIES_GAPS` in `scripts/build-audit.sh`. Patch 0073 keeps
 the wheel coordinate fix separate. Patch 0100 combines 10 pointer patches.
@@ -399,3 +399,12 @@ Apply them in sequence with the rest of the series.
 - `0101` releases each Windows drop target after drag leave and every drop.
   Patch 0101 uses upstream Wine commit `8ca473d0`. The first X11 status uses
   the effect from the initial target entry.
+- `0102` uses glyph outlines for DirectWrite's natural and natural-symmetric
+  rendering modes, even when the font provides an embedded bitmap strike.
+  GDI classic, GDI natural, and aliased modes retain those bitmap strikes.
+- `0103` retains fractional horizontal glyph origins in natural rendering
+  modes, quantised to 16 subpixel phases. The glyph cache budget scales by
+  the same phase count so the added key dimension does not reduce capacity.
+- `0104` preserves a Direct2D hwnd render target's pixel format across
+  `Resize` and derives the replacement bitmap options from its DXGI surface.
+  This retains both opaque-target ClearType and GDI-compatible `GetDC`.
