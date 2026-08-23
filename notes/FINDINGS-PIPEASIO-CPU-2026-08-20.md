@@ -1,0 +1,187 @@
+# PipeASIO and Wine CPU report
+
+Date: 20 August 2026
+
+## Measured result
+
+A 16-worker limit reduced Live's CPU use by 36.77% in the tested 64-frame empty
+Set. Voluntary context switches fell by 42.42%. Wine reported 32 logical CPUs.
+Live had access to all 32 Linux CPUs.
+
+The result applies to the measured empty Set. Plug-ins and graphics add costs
+that depend on the Set. Scheduling affects when audio threads receive processor
+time.
+
+The main comparison ran Live with real-time Linux scheduling at priority 10.
+Both runs used the same Live version, audio settings, CPU access, and 30-second
+window. The CPU share uses one logical CPU as 100%.
+
+| Live setting | Worker threads | CPU use | Voluntary switches each second | Warning lines added | PipeWire ERR added |
+|---|---:|---:|---:|---:|---:|
+| Live default | 31 | 48.11% | 80,601 | 0 | 0 |
+| 16-worker limit | 16 | 30.42% | 46,407 | 0 | 0 |
+
+A voluntary context switch records a Live thread that enters a wait or yields
+its processor.
+
+The warning column counts PipeASIO log lines. The number on each line is the
+total missed periods since PipeASIO started the current audio processing. The
+line count and missed-period count measure different quantities. PipeWire ERR
+counts graph errors after the Ableton node starts. A node represents one program
+or device in the graph.
+
+Live used standard Linux scheduling in an earlier comparison. Each lower worker
+count reduced CPU use. Each lower count reduced thread waits. The warning-line
+rate fell. The ERR rate fell.
+
+| Live setting | Worker threads | CPU use | Voluntary switches each second | Warning lines each second | ERR added each second |
+|---|---:|---:|---:|---:|---:|
+| Live default | 31 | 40.61% | 77,293 | 0.167 | 10.33 |
+| 16-worker limit | 16 | 31.22% | 43,623 | 0.100 | 5.06 |
+| 8-worker limit | 8 | 18.22% | 23,130 | 0.033 | 2.53 |
+
+16 matches the physical core count on the test host. 8 gave a further
+reduction in the empty Set. The package provides a user-selected limit.
+
+## Audio processing path
+
+The PipeWire graph connects audio inputs, programs, and outputs. One graph
+period processes one audio block through these connections.
+
+1. PipeWire starts an audio block after a device or timer event.
+2. PipeASIO receives the block on PipeWire's data-loop thread.
+3. PipeASIO calls Live inside the Live process.
+4. Live divides the block between its audio worker threads.
+5. Wine sleeps and wakes those threads through Windows wait operations.
+6. PipeASIO returns the completed audio to PipeWire.
+
+PipeWire waits for graph events between blocks. PipeASIO runs its callback on
+that data-loop thread. At 48 kHz, a 64-frame block gives Live 1.33 ms. This block
+size creates 750 calls each second. Each call repeats worker wake requests,
+waits, clock reads, and audio port work.
+
+The package writes 256 frames into each new PipeASIO configuration. That value
+creates 187.5 calls each second at 48 kHz. PipeASIO's built-in 1024-frame value
+creates 46.875 calls each second. Use 128 or 256 frames when the extra latency
+suits your work.
+
+Live 12.4.3 created 31 workers when Wine reported 32 logical CPUs. Live created
+30 workers when Wine reported 16 logical CPUs.
+
+## Cause review and Wine CPU experiment
+
+The review compared these possible causes:
+
+| Possible cause | Evidence |
+|---|---|
+| Continuous graph work | PipeWire waited for graph events. PipeASIO ran its callback on that data-loop thread. |
+| Different block sizes | PipeWire and Live both used 64 frames. |
+| Wine thread waits | The Wine build supports ntsync, a Linux driver for Windows thread waits. |
+| Wine time read | PipeASIO made one Wine clock read per Live call. |
+| Driver start and stop | The measured driver stayed active. |
+| Live worker count | Each lower Live limit reduced CPU use. Each lower limit reduced thread waits. |
+
+PipeWire waited for each graph event. During stable audio processing, equal
+block sizes produced one Live call per graph period. Lower Live limits reduced
+CPU use. They reduced thread waits. The package therefore offers a user-selected
+worker limit.
+
+The launcher requests real-time priority 10 when the host grants real-time
+rights. PipeASIO requests standard scheduling for its audio callback by default.
+
+An experimental Wine patch changed the logical CPU count that Wine reported.
+The patch also restricted Live to the same number of Linux CPUs.
+
+| Wine CPU count | Linux CPUs available | Live workers | CPU share of one logical CPU | ERR added each second |
+|---:|---:|---:|---:|---:|
+| 32 | 32 | 31 | 40.61% | 10.33 |
+| 16 | 16 | 30 | 47.21% | 18.66 |
+| 12 | 12 | 22 | 38.28% | 61.80 |
+
+The Wine patch changed worker creation and processor access together. The
+16-CPU test created 30 workers and raised the error rate. The 12-CPU test
+reduced workers and raised the error rate further.
+
+The Live setting created 16 workers while Wine reported 32 CPUs. The package
+uses that setting.
+
+## Package option
+
+The launcher accepts `off` or a value from one to 63. `off` preserves the current
+Live setting. Before the next cold Live start, the launcher calculates Live's
+normal worker count from Linux's online CPU count. It repeats the calculation
+with the CPUs available to the launcher. The requested value applies below both
+calculated counts.
+
+Existing worker settings and later file contents take priority. A fresh user
+profile receives the value before Live starts. For an older profile, Live first
+transfers its settings. The user then repeats the opt-in launch. On that later
+launch, the requested value applies when the profile uses Live's calculated
+count.
+
+The selected executable supplies the Live version. A Live 11 executable
+preserves each Live 12 profile. The prefix registry selects the Live edition for
+Ableton URLs and `.auz` licence files.
+
+The script opens each preferences directory before a write. During directory
+replacement, it continues to write to the opened directory. New files use mode
+600. The script prepares each new file before it gives the file its final name.
+The installer and its ownership record include the script.
+
+## Sources and test records
+
+The review used these versions:
+
+- the work started from commit `ee464eb379dec6f4f7664b3860ccf6fd766f9ef0`.
+- Ableton Live was version 12.4.3.
+- PipeASIO was version 1.5.0 with 9 package patches.
+- the PipeASIO build used Ubuntu's PipeWire 1.6.2 development package.
+- the host PipeWire service was version 1.6.8.
+- the reviewed PipeWire 1.6.2 tag was `95da54a482b68475958bbc3fa572a9c20df0df74`.
+- the reviewed PipeWire 1.6.8 tag was `b741e0c74f5436f0c925f7741140db0efd32cf4e`.
+- the Wine runtime included the project's patches through patch 0099.
+
+The comparison runs used separate Wine prefix copies. A Wine prefix stores one
+Windows installation. The 7 comparisons used 48 kHz and matching 64-frame
+blocks. Each measurement window lasted 30.014 to 30.017 seconds. The PipeASIO
+configuration requested real-time scheduling.
+
+The fresh-profile test used settings script SHA-256
+`cf4d99335489f00e56f251051c43cabeba427c6a9ac301306f3367c95856daa3`.
+It created 16 workers. Live saved `Preferences.cfg`. The final real-time run used
+an earlier script with SHA-256
+`49c5d24a28c381d442ec7c345f920b37fed166ee4f614f2e2c459bab2e8b1b53`.
+The current script changes comments and messages from that earlier script. Its
+SHA-256 is `03c1b6ba84c89f3ca5c8ba4b9e0f10c778290ca1b4e133413be7c71b546d82e6`.
+
+The implementation passed the full repository suite before the prose edits.
+That run included 72 installer lifecycle cases. The current source passed these
+focused checks after the edits:
+
+- the settings script passed 19 focused cases.
+- the desktop entry test passed 3 Ableton URL and licence file cases.
+- the release policy test passed 7 cases.
+- the PipeASIO installer test passed 84 cases.
+- the shell syntax and whitespace checks passed.
+
+The retained run directories start from the worktree root:
+
+- the native run with standard scheduling is in `../.pipeasio-live-ab-cpu-evidence/n32-native-20260820T050957`.
+- the 16-worker run with standard scheduling is in `../.pipeasio-live-ab-cpu-evidence/n32-maxaudio16-20260820T051432b`.
+- the 8-worker run with standard scheduling is in `../.pipeasio-live-ab-cpu-evidence/n32-maxaudio8-20260820T051949`.
+- the 16-CPU Wine run is in `../.pipeasio-live-ab-cpu-evidence/n16-exact-20260820T050418`.
+- the 12-CPU Wine run is in `../.pipeasio-live-ab-cpu-evidence/n12-exact-20260820T050640`.
+- the real-time native run is in `../.pipeasio-live-ab-cpu-evidence/rtdefault-native32-20260820T061633`.
+- the 16-worker run with real-time scheduling is in `../.pipeasio-live-ab-cpu-evidence/rtdefault-optin-max16-20260820T062946`.
+- the fresh-profile run is in `../.pipeasio-live-ab-cpu-evidence/first-launch-finalcf4d-20260820T055435`.
+
+Future release decisions require these tests:
+
+- compare 16 workers with Live's calculated value on 24 to 32 independent tracks that process audio at the same time.
+- compare standard and real-time scheduling for both Live and PipeASIO.
+- measure the same Set at 64, 128, and 256 frames.
+- record which wait driver Wine uses at start-up.
+- record each audio stall with its missed-period count.
+- measure CPU use while PipeASIO starts and stops with its graph node active.
+- measure the Wine clock read's CPU cost.
+- check MIDI timing during the clock-read comparison.

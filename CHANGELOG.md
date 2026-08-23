@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Updates replace project-managed launcher and Live menu files when their saved checksums differ (#251).
+- CPU optimisation via a provided limit for audio workers with small PipeASIO buffers.
+
 ## 2026.08.19.1
 
 - Fixed a slew of problems introduced by redesigning the new Installer too defensively, therefore **breaking it** for lots of people :( :
