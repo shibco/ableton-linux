@@ -35,6 +35,7 @@ xclose
 xdrag
 xsettle
 !/tools/learnheal.exe
+build-analysis
 
 # hang captures from tools/m4l-hang-capture.sh
 m4l-hang-*/

@@ -2,22 +2,19 @@
 
 ## Unreleased
 
-The pending release includes:
-
-- the X11 pointer code uses one consolidated patch
-- fast smooth-scroll reports preserve the complete movement across all packet
-  sizes
-- drag recovery restores XI2 motion after release, focus, capture, window, and
-  device changes
-- scrolling inertia remains enabled by default
-- middle-button throw remains enabled by default
-- scrolling inertia and middle-button throw calculate travel from elapsed time
-- pinch zoom preserves every scale update
-- pinch zoom restores Ctrl state after each gesture
-- the pointer master switch disables optional pointer features while retaining
-  the issue 122 clipping-state repair
-- external drag and drop releases each target
-- external drag and drop reports first-position acceptance correctly
+- Another big pass on the input system. It's now simplified massively with one consolidated patch that features:
+  - fast smooth-scroll reports preserve the complete movement across all packet sizes
+  - drag recovery that restores XI2 motion after release, focus, capture, window, and device changes
+  - revised scrolling inertia that also remains enabled by default
+  - revised middle-button throw, also remaining enabled by default
+  - scrolling inertia and middle-button throw have a new algorithm that calculate travel from elapsed time
+  - pinch zoom preserves every scale update
+  - pinch zoom restores Ctrl state after each gesture
+  - the pointer master switch disables optional pointer features while retaining the issue 122 clipping-state repair
+  - external drag and drop that releases each target
+  - external drag and drop reports first-position acceptance correctly
+- Updates replace project-managed launcher and Live menu files when their saved checksums differ (#251).
+- CPU optimisation via a provided limit for audio workers with small PipeASIO buffers.
 
 ## 2026.08.19.1
 

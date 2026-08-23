@@ -65,7 +65,16 @@ After saving, select None and then PipeASIO again in Live. The configuration is
 MIDI timestamps use the Wine clock and continue forwards across the 32-bit
 millisecond wrap after about 49.7 days.
 
-PipeASIO 1.5 does not reduce Live or plug-in CPU use. Smaller buffers give the
-engine less processing time. The driver cannot maintain uninterrupted audio
-when the machine is overloaded, a device disappears, or PipeWire stops.
-Upstream has not yet confirmed PipeASIO 1.5 with Ableton Live.
+During stable periods with matching block sizes, PipeASIO calls Live's audio
+engine once per PipeWire graph period. A 48 kHz rate with 64 frames produces
+750 calls each second. Smaller buffers make Live wake and wait for its workers
+more often.
+
+Ableton Linux provides a Live 12 limit for audio workers. Users select the
+value. The tested value was 16. Wine reported 32 logical CPUs. Live had access
+to 32 Linux CPUs. The worker count changed from 31 to 16. The
+[CPU troubleshooting guide](../TROUBLESHOOTING.md#live-uses-high-cpu-on-small-sets)
+explains how to apply and test the value.
+
+Audio continuity depends on available processor time, an attached device, and
+a running PipeWire service. The CPU tests used PipeASIO 1.5 with Live 12.4.3.
