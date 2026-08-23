@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **MIDI and audio devices now recover while Live stays open (#245):**
+  - Wine updates Live's MIDI list when a controller appears after startup.
+    Open MIDI inputs and outputs reconnect when the device identity gives one
+    clear match, even when ALSA assigns new device numbers.
+  - Removing a MIDI input ends held notes, sustain, and incomplete long
+    messages before Wine waits for the device to return.
+  - PipeASIO remembers selected interfaces and channel routes across device
+    disconnects, delayed PipeWire startup, and PipeWire restarts. It sends
+    silence until the full route returns. New interfaces appear in PipeASIO
+    Settings while Live runs.
+  - Automatic audio routing follows the PipeWire default. Explicit selections
+    wait for the same interface. Serial numbers, hardware paths, and channel
+    details distinguish duplicate devices where Linux provides them.
+  - USB MIDI ports now use Windows-style display names. Existing Live device
+    and control-surface assignments may need selection again after the update.
+  - Hardware release testing remains open for 100 USB reconnect cycles, a full
+    performance session, and a supported Ableton Live build.
 - Another big pass on the input system. It's now simplified massively with one consolidated patch that features:
   - fast smooth-scroll reports preserve the complete movement across all packet sizes
   - drag recovery that restores XI2 motion after release, focus, capture, window, and device changes
@@ -13,6 +30,13 @@
   - the pointer master switch disables optional pointer features while retaining the issue 122 clipping-state repair
   - external drag and drop that releases each target
   - external drag and drop reports first-position acceptance correctly
+- **Refined the custom text renderer again:**
+  - Small DirectWrite text now keeps antialiased or colour-subpixel edges when
+    a font also supplies an embedded one-bit bitmap strike.
+  - Natural rendering preserves horizontal glyph positions in 1/16-pixel
+    steps, so text moves and spaces smoothly between whole pixels.
+  - Resized Direct2D windows keep ClearType and GDI-compatible bitmap settings
+    for the rest of the window's life.
 - Updates replace project-managed launcher and Live menu files when their saved checksums differ (#251).
 
 This release turns on two features that already shipped behind launcher
