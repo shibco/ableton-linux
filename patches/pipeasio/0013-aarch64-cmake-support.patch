@@ -1,14 +1,13 @@
-From e8ad70b14b2b95f9d0fc2023950b85bee64006c9 Mon Sep 17 00:00:00 2001
+From 6fe69e7dc06124d114a92edafd65825fdef83ad9 Mon Sep 17 00:00:00 2001
 From: Paul Sajna <hello@paulsajna.com>
 Date: Mon, 17 Aug 2026 20:56:17 -0700
 Subject: [PATCH] aarch64 cmake support
 
 ---
- CMakeLists.txt                     | 24 ++++++++++++---
- cmake/WineDLL.cmake                | 47 +++++++++++++++---------------
- tests/asio_loopback/CMakeLists.txt | 13 +++++++++
- tests/asio_probe/CMakeLists.txt    | 16 ++++++++++
- 4 files changed, 73 insertions(+), 27 deletions(-)
+ CMakeLists.txt            | 24 ++++++++++++++++----
+ cmake/WineDLL.cmake       | 47 ++++++++++++++++++++-------------------
+ tests/unit/CMakeLists.txt |  2 +-
+ 3 files changed, 45 insertions(+), 28 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 1453500..25e7173 100644
@@ -172,68 +171,19 @@ index 48d7435..9722b76 100644
 +                \"${PA_WINE_DEST_ABS}/${WINE_UNIX_ARCH}/pipeasio.dll.so\")")
      endif()
  endfunction()
-diff --git a/tests/asio_loopback/CMakeLists.txt b/tests/asio_loopback/CMakeLists.txt
-index 93ce6dd..830a8d7 100644
---- a/tests/asio_loopback/CMakeLists.txt
-+++ b/tests/asio_loopback/CMakeLists.txt
-@@ -19,10 +19,23 @@ endforeach()
- set(LOOP_SRC  "${CMAKE_CURRENT_SOURCE_DIR}/asio_loopback.c")
- set(LOOP_OUT  "${CMAKE_CURRENT_BINARY_DIR}/asio_loopback.exe.so")
- 
-+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-+    set(WINE_WIN_ARCH "aarch64-windows")
-+    set(WINE_UNIX_ARCH "aarch64-unix")
-+    set(WINE_TARGET_WIN_FLAG "--target=aarch64-windows")
-+    set(WINE_BUILD_TARGET_FLAG "-b" "aarch64-windows")
-+else()
-+    set(WINE_WIN_ARCH "x86_64-windows")
-+    set(WINE_UNIX_ARCH "x86_64-unix")
-+    set(WINE_TARGET_WIN_FLAG "")
-+    set(WINE_BUILD_TARGET_FLAG "")
-+endif()
-+
- add_custom_command(
-     OUTPUT  "${LOOP_OUT}"
-     COMMAND ${WINEGCC} -m64 -mno-cygwin -mconsole
-                        ${_loop_wine_includes}
-+		       ${WINE_TARGET_WIN_FLAG}
-                        -O0 -g -Wall -Wextra
-                        "${LOOP_SRC}"
-                        -lole32
-diff --git a/tests/asio_probe/CMakeLists.txt b/tests/asio_probe/CMakeLists.txt
-index e3703ee..b5d5c40 100644
---- a/tests/asio_probe/CMakeLists.txt
-+++ b/tests/asio_probe/CMakeLists.txt
-@@ -18,6 +18,21 @@ endforeach()
- set(PROBE_SRC  "${CMAKE_CURRENT_SOURCE_DIR}/asio_probe.c")
- set(PROBE_OUT  "${CMAKE_CURRENT_BINARY_DIR}/asio_probe.exe.so")
- set(PROBE_PE   "${CMAKE_CURRENT_BINARY_DIR}/asio_probe.exe")
-+
-+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-+    set(WINE_WIN_ARCH "aarch64-windows")
-+    set(WINE_UNIX_ARCH "aarch64-unix")
-+    set(WINE_TARGET_WIN_FLAG "--target=aarch64-windows")
-+    set(WINE_BUILD_TARGET_FLAG "-b" "aarch64-windows")
-+else()
-+    set(WINE_WIN_ARCH "x86_64-windows")
-+    set(WINE_UNIX_ARCH "x86_64-unix")
-+    set(WINE_TARGET_WIN_FLAG "")
-+    set(WINE_BUILD_TARGET_FLAG "")
-+endif()
-+
-+
-+
- add_wine_dll(
-     NAME      pipeasio64_stop_test
-     SPEC      ${CMAKE_SOURCE_DIR}/pipeasio.dll.spec
-@@ -40,6 +55,7 @@ add_custom_command(
-     OUTPUT  "${PROBE_OUT}"
-     COMMAND ${WINEGCC} -m64 -mno-cygwin -mconsole
-                        ${_probe_wine_includes}
-+		       ${WINE_TARGET_WIN_FLAG}
-                        -O0 -g -Wall -Wextra
-                        "${PROBE_SRC}"
-                        -lole32
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 793ad65..d066f79 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -25,7 +25,7 @@ endfunction()
+ pipeasio_add_unit_test(test_offsets test_offsets.c)
+ pipeasio_add_unit_test(test_config test_config.c ${CMAKE_SOURCE_DIR}/src/config.c)
+ pipeasio_add_unit_test(test_rate_state test_rate_state.c)
+-find_package(Threads REQUIRED)
++find_package(Threads)
+ pipeasio_add_unit_test(test_admission_gate test_admission_gate.c)
+ target_link_libraries(test_admission_gate PRIVATE Threads::Threads)
+ set_tests_properties(test_admission_gate PROPERTIES TIMEOUT 10)
 -- 
-2.34.1
+2.55.0
 

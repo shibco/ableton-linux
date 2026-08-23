@@ -134,7 +134,7 @@ COPY vendor/ntsync-uapi/linux/ntsync.h /opt/ntsync-uapi/linux/ntsync.h
 # own 0.3.48 is too old to compile it.
 COPY vendor/pipewire-sdk/*.deb /tmp/pipewire-sdk/
 RUN for d in /tmp/pipewire-sdk/*.deb; do dpkg-deb -x "$d" /opt/pipewire-sdk; done \
- && ln -sf libpipewire-0.3.so.0 /opt/pipewire-sdk/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so \
+ && ln -sf libpipewire-0.3.so.0 /opt/pipewire-sdk/usr/lib/$ARCH-linux-gnu/libpipewire-0.3.so \
  && rm -rf /tmp/pipewire-sdk \
  && test -e /opt/pipewire-sdk/usr/include/pipewire-0.3/pipewire/pipewire.h
 

@@ -1030,7 +1030,7 @@ else
     for f in "$vc_tmp"/*/*.dll_amd64 "$vc_tmp"/*/*.dll_x86; do
         [ -e "$f" ] || continue
         case "$f" in
-            *_amd64) name="$(basename "$f" _amd64)"; wdir=system32; barch=$ARCH-windows ;;
+            *_amd64) name="$(basename "$f" _amd64)"; wdir=system32; barch=x86_64-windows ;;
             *)       name="$(basename "$f" _x86)";   wdir=syswow64; barch=i386-windows ;;
         esac
         dest="$WINEPREFIX/drive_c/windows/$wdir/$name"

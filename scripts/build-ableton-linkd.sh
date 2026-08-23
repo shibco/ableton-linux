@@ -57,7 +57,7 @@ if [ -f /sys/fs/selinux/enforce ]; then relabel=",Z"; fi
 }
 "$build_dir/ableton-linkd" --help >/dev/null 2>&1 || {
     echo "!! built ableton-linkd does not run on this host" >&2
-    #exit 1
+    exit 1
 }
 install -m755 "$build_dir/ableton-linkd" "$install_tmp"
 mv -fT -- "$install_tmp" "$output"

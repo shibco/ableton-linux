@@ -412,6 +412,9 @@ pipeasio_cmake_configure() {
         cmake -S . -B "$build_dir" -G Ninja \
             -DCMAKE_C_FLAGS="--target=aarch64-windows -ffixed-x18" \
             -DCMAKE_CXX_FLAGS="--target=aarch64-windows -ffixed-x18" \
+            -DCMAKE_DISABLE_FIND_PACKAGE_Threads=TRUE \
+            -DThreads_FOUND=TRUE \
+            -DCMAKE_INSTALL_LIBDIR=lib \
             -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
             -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
             "$@"
