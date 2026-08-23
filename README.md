@@ -29,7 +29,7 @@ This project fully supports the full set of Ableton's offering:
    - **Hardware:**
       - **Push 1**
       - **Push 2**
-      - **Push 3 in controller mode**
+      - **Push 3**
 
 _**Ableton Move** support is coming soon._
 
