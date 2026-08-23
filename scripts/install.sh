@@ -731,7 +731,8 @@ desktop_entry_is_foreign()
 {
     local target="$1" owner="$2"
     [ -e "$target" ] || return 1
-    ! grep -qF "$owner" "$target"
+    ! grep -qxF "Exec=$owner %f" "$target" \
+        && ! grep -qxF "Exec=$owner %u" "$target"
 }
 
 install_integration()
@@ -746,7 +747,9 @@ install_integration()
     for tool in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
-    ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live"
+    # An update refreshes this project launcher when its saved checksum differs.
+    # The update preserves a symlink.
+    ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live" file refresh-stale-record
     for tool in detect-scale.sh detect-theme.sh shortcut-hold.sh; do
         ableton_install_file 644 "$here/$tool" "$data/$tool"
     done
@@ -797,9 +800,9 @@ install_integration()
         echo "   preserving foreign $apps/ableton-live.desktop"
         echo "   the Live file types stay with their current application"
     else
-        # The launcher rewrites this generated entry after Live starts.
-        # A stale manifest digest must not stop a later install or update.
-        ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop" file replace-modified
+        # The launcher updates this generated entry after Live starts. An update
+        # refreshes the entry when its saved checksum differs.
+        ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop" file refresh-stale-record
     fi
     rm -f -- "$tmp"
 
@@ -1033,10 +1036,10 @@ elif [ "$want_integration" -eq 1 ]; then
         if ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT" >/dev/null 2>&1; then
             ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install
         else
-            echo "   kept existing PipeASIO panel links; this runtime uses a different contract"
+            echo "   kept existing PipeASIO panel links because this runtime uses another panel format"
         fi
     else
-        echo "   no current PipeASIO panel contract; launcher integration continues without it"
+        echo "   launcher integration continues with the available PipeASIO files"
     fi
 fi
 

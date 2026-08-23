@@ -508,12 +508,10 @@ if [ -e "$shortcut_state" ] || [ -e "$legacy_shortcut_state" ]; then
     fi
 fi
 
-# The launcher heals the managed Live desktop entry on each cold start (name,
-# icon, window class) and leaves the ownership digest stale, so a mismatch
-# there is normal.  Accept only the shape the shared recogniser pins: template
-# lines intact and Exec still routing through this project's launcher, with
-# the healed fields free to differ.  Anything else is hand-made and stays
-# kept.  The path guard keeps every other manifest row on the digest gate.
+# The launcher updates the name, icon, and window class in the managed Live
+# desktop entry. The saved checksum then describes the earlier file. The shared
+# recogniser confirms the template fields and project launcher path. The path
+# check limits this instruction to the Live desktop entry.
 live_entry_launcher_updated()
 {
     local path="$1"

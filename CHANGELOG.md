@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+Updates replace project-managed launcher and Live menu files when their saved
+checksums differ (#251).
+
 This release changes Live CPU settings:
 
 - the launcher provides a Live 12 limit for audio workers with small PipeASIO

@@ -865,13 +865,13 @@ ableton_legacy_owned_path()
 
 ableton_persist_file_prestate()
 {
-    local target="$1" source="${2:-}" collision_policy="${3:-protect-modified}"
+    local target="$1" source="${2:-}" update_instruction="${3:-preserve-local}"
     local manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
     local index="$ABLETON_STATE_HOME/install-prestate.tsv" prestate_dir id backup expected current index_tmp
-    case "$collision_policy" in
-        protect-modified|replace-modified) ;;
+    case "$update_instruction" in
+        preserve-local|refresh-stale-record) ;;
         *)
-            ableton_config_error "unknown managed-file collision policy: $collision_policy"
+            ableton_config_error "The installer received an unknown managed file update instruction: $update_instruction"
             return 1 ;;
     esac
     if [ -d "$target" ] && [ ! -L "$target" ]; then
@@ -893,13 +893,13 @@ ableton_persist_file_prestate()
         if [ -n "$expected" ]; then
             current="$(ableton_manifest_digest "$target" 2>/dev/null || true)"
             [ "$current" = "$expected" ] && return 0
-            # A symlinked target is a user arrangement, never launcher wear;
-            # it stays under the refusal even for replace-modified callers.
-            if [ "$collision_policy" = replace-modified ] && [ ! -L "$target" ]; then
-                echo "replacing modified managed file $target"
+            # A symlink selects a user path. The refresh instruction applies to
+            # regular project files.
+            if [ "$update_instruction" = refresh-stale-record ] && [ ! -L "$target" ]; then
+                echo "The installer refreshed a project file because its saved checksum differed: $target"
                 return 0
             fi
-            ableton_config_error "refusing to overwrite modified managed file $target"
+            ableton_config_error "The installer kept the managed path because its saved checksum differs: $target"
             return 1
         fi
     fi
@@ -941,12 +941,12 @@ ableton_persist_file_prestate()
 ableton_install_file()
 {
     local mode="$1" source="$2" target="$3" kind="${4:-file}"
-    local collision_policy="${5:-protect-modified}" post tmp parent
+    local update_instruction="${5:-preserve-local}" post tmp parent
     [ ! -d "$target" ] || [ -L "$target" ] || {
         ableton_config_error "refusing to replace directory with a file: $target"
         return 1
     }
-    ableton_persist_file_prestate "$target" "$source" "$collision_policy" || return 1
+    ableton_persist_file_prestate "$target" "$source" "$update_instruction" || return 1
     ableton_txn_snapshot "$target"
     post="$(ableton_regular_source_token "$source")" || return 1
     ableton_txn_expect "$target" "$post" || return 1
