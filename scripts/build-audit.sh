@@ -10,7 +10,7 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0099-ntdll-grow-the-reserved-pool-instead-of-unordered-mmap.patch'
+readonly REQUIRED_WINE_TAIL='0101-user32-release-drop-target-and-store-DragEnter-effect.patch'
 readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
 
 check_required_series_tails()
@@ -113,6 +113,10 @@ declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
 )
+for consolidated_gap in 0072 0074 0090 0091 0092 0093 0094 0095 0097 0098; do
+    SERIES_GAPS[$consolidated_gap]="consolidated in 0100"
+done
+unset consolidated_gap
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
     num="${f%%-*}"
@@ -320,22 +324,14 @@ FINGERPRINTS='
 0068|ascii|lib/wine/x86_64-windows/wined3d.dll|WINE_D3D_FORCE_GPU_RENDERING
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0071|ascii|lib/wine/x86_64-windows/wined3d.dll|Sustained present-size mismatch
-0072|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDrag
-0074|ascii|lib/wine/x86_64-unix/winex11.so|pinch begin on
 0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
 0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
-0090|ascii|lib/wine/x86_64-unix/winex11.so|smooth scroll delta
-0091|ascii|lib/wine/x86_64-unix/winex11.so|nudge slots full, dropping the schedule
-0092|ascii|lib/wine/x86_64-unix/winex11.so|pinch table full, dropping begin from source
-0093|ascii|lib/wine/x86_64-unix/winex11.so|lost X focus to another client while clipping
-0094|ascii|lib/wine/x86_64-unix/winex11.so|XWayland warp emulation activated after observed failed warps
-0095|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDragThrow
 0096|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
-0097|ascii|lib/wine/x86_64-unix/winex11.so|Wine ignores pointer motion from a scroll report while a button is held
-0098|ascii|lib/wine/x86_64-unix/winex11.so|X server delivered core MotionNotify while XI scroll motion is suspended
+0100|ascii|lib/wine/x86_64-unix/winex11.so|ptr lease event=restore
+0101|ascii|lib/wine/x86_64-windows/user32.dll|dnd target=%p event=release
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
