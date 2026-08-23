@@ -64,12 +64,15 @@ Additionally, you need:
 
 - glibc 2.35 or newer
 - PipeWire 1.4.2 or newer
+- [Linux 6.14 or newer with NTSync enabled](TROUBLESHOOTING.md#enable-and-verify-ntsync)
 - GStreamer with its base and good plugin sets
 - GNU coreutils, `tar`, `zstd`, and `flock`
 - your installation files and activation details from Ableton
 
 For most people, a modern and up-to-date Linux distribution, such as SteamOS,
-Ubuntu, CachyOS, or Arch, will already fulfil these requirements. 
+Ubuntu, CachyOS, or Arch, will already fulfil the userspace requirements.
+NTSync kernel support varies between distributions. Some systems need a newer
+kernel package or a manual module load.
 
 Some distros - such as Debian 12, Linux Mint, and Pop!_OS 24.04 and earlier - 
 ship an older version of the Linux audio system, Pipewire. If you are running

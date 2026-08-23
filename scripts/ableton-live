@@ -41,6 +41,8 @@ ABLETON-LIVE VARIABLES:
         Use off to remove an untouched launcher-managed choice and
         restore Live's calculated count. Existing and edited settings
         remain unchanged.
+        Fewer threads reduce worker wake-ups. Demanding Sets can run
+        better with a higher count or off.
         Review the value after the prefix moves to another processor.
 
     ABLETON_POWER=off

@@ -80,8 +80,12 @@ Ableton Linux limits Live 12 to the physical CPU cores available to the
 launcher by default when that value is below Live's calculated worker count.
 The tested value was 16. Wine reported 32 logical CPUs. Live had access to 32
 Linux CPUs. The worker count changed from 31 to 16. The
-[CPU troubleshooting guide](../TROUBLESHOOTING.md#live-uses-high-cpu-on-small-sets)
+[CPU troubleshooting guide](../TROUBLESHOOTING.md#live-uses-high-cpu-or-overloads-at-small-buffers)
 explains the automatic policy and its overrides.
+
+The limit reduces worker wake-ups. Plug-in-heavy Sets can benefit from more
+parallel workers, so compare the physical-core value with Live's calculated
+count when deadline overloads increase.
 
 Audio continuity depends on available processor time, an attached device, and
 a running PipeWire service. The CPU tests used PipeASIO 1.5 with Live 12.4.3.

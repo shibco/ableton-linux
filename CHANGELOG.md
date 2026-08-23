@@ -37,8 +37,13 @@ settings:
 - The CPU report now identifies its measurements as Linux process CPU and
   worker wake-ups. The worker setting does not change PipeASIO or Wine's audio
   path. PipeASIO real-time scheduling remains off by default.
+- Audio-worker guidance now covers deadline spikes in demanding Sets. It uses
+  Live's calculated count as the first comparison when the physical-core
+  limit lowers average CPU but increases overloads.
 - Desktop integration now installs `check-ntsync.sh` with its Windows
   semantics probe. The installed audio report names this local diagnostic.
+- Linux 6.14 or newer with active NTSync is now a documented requirement. The
+  troubleshooting guide covers the module load and the complete runtime check.
 
 ## 2026.08.19.1
 

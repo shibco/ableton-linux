@@ -91,6 +91,14 @@ The 8-worker result used the same host and reduced process CPU further than 16
 workers. Those results do not establish the safe default for a demanding Set
 or a low-core host.
 
+A later same-host project report found lower Average CPU values with the
+physical-core policy, especially at 32 and 64 frames. The complex Set still
+spiked above its deadlines at those sizes, and its 128-frame overload rate
+stayed comparable or rose slightly. The exact commit, worker count, and host
+topology remain unrecorded. The
+[same-host project report](FINDINGS-PIPEASIO-CPU-2026-08-20.md#same-host-project-report)
+records the values and scope.
+
 Before release, compare the physical-core value with Live's calculated value
 on a host with 4 to 8 physical cores. Use a demanding Set that runs independent
 audio chains at the same time. Record Live's deadline meter, audible dropouts,

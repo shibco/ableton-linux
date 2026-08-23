@@ -54,6 +54,34 @@ warning-line rate fell. The ERR rate fell.
 reduction in the empty Set. The result does not select a safe value for a
 demanding Set or a low-core host. The package provides a user-selected limit.
 
+## Same-host project report
+
+A tester later compared one Live Set on the same Linux Mint system and
+hardware. Both runs used active NTSync. The tester identified the first build
+as the latest `main` available during the test. The exact commit and worker
+counts remain unrecorded.
+
+These values come from Live's Average CPU meter. They measure deadline use,
+while the controlled tables above measure Linux process CPU.
+
+| Buffer frames | Earlier `main` | Physical-core policy |
+|---:|---:|---:|
+| 1024 | 7% to 8% | 7% to 8% |
+| 512 | 8% to 9% | 8% to 9% |
+| 256 | 9% to 10% | 8% to 9% |
+| 128 | 11% to 12% | 9% to 10% |
+| 64 | 15% to 16% | 10% to 11% |
+| 32 | about 25% to 30% | about 15% to 16% |
+
+The physical-core policy lowered the reported average most at 32 and 64
+frames. The same Set still produced spikes above 100% at those sizes. Its
+128-frame run produced overloads at a comparable or slightly higher rate.
+
+An empty project stayed stable. A lighter project produced few spikes. The
+tester associated the remaining spikes with one complex project's VST load.
+The report supports the worker-coordination result, while deadline behaviour
+remains specific to the Set and its plug-ins.
+
 ## Audio processing path
 
 The PipeWire graph connects audio inputs, programs, and outputs. One graph
