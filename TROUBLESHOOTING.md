@@ -17,6 +17,7 @@ have already fixed your issue.
 - [Installation and updates](#installation-and-updates)
   - [The installer does not finish after Live installs](#the-installer-does-not-finish-after-live-installs)
   - [The Ableton installer window never progresses or shows graphical corruption on Hyprland](#the-ableton-installer-window-never-progresses-or-shows-graphical-corruption-on-hyprland)
+  - [The installer asks for an explicit display scale](#the-installer-asks-for-an-explicit-display-scale)
   - [The installer says PipeWire is too old](#the-installer-says-pipewire-is-too-old)
 - [Live versions and launching](#live-versions-and-launching)
   - [The launcher finds more than one Live installation](#the-launcher-finds-more-than-one-live-installation)
@@ -29,9 +30,9 @@ have already fixed your issue.
   - [Audio crackling and distortion issues](#audio-crackling-and-distortion-issues)
   - [Audio cuts out for a few seconds, or plays at the wrong speed](#audio-cuts-out-for-a-few-seconds-or-plays-at-the-wrong-speed)
 - [Performance, visuals and the Live interface](#performance-visuals-and-the-live-interface)
-  - [Live is using lots of CPU, even on small Sets](#live-is-using-lots-of-cpu-even-on-small-sets)
+  - [Live uses high CPU on small Sets](#live-uses-high-cpu-on-small-sets)
   - [Live is the wrong size, or looks blurry](#live-is-the-wrong-size-or-looks-blurry)
-- [Plugins and Max 4 Live devices](#plugins-and-max-4-live-devices)
+- [Plugins and Max for Live devices](#plugins-and-max-for-live-devices)
   - [A plugin's installer won't start](#a-plugins-installer-wont-start)
   - [My plugin won't activate, or its copy protection fails](#my-plugin-wont-activate-or-its-copy-protection-fails)
   - [A plugin I installed doesn't appear in Live](#a-plugin-i-installed-doesnt-appear-in-live)
@@ -43,7 +44,8 @@ have already fixed your issue.
   - [CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse)
   - [My MIDI controller or audio interface doesn't show up in Live](#my-midi-controller-or-audio-interface-doesnt-show-up-in-live)
   - [Push 2 does not connect](#push-2-does-not-connect)
-  - [My Push 3 or Move doesn't work](#my-push-3-or-move-doesnt-work)
+  - [Push 3 does not start its display](#push-3-does-not-start-its-display)
+  - [Ableton Move does not connect](#ableton-move-does-not-connect)
 - [Ableton Link](#ableton-link)
   - [Ableton Link does not find peers](#ableton-link-does-not-find-peers)
 - [Report a problem](#report-a-problem)
@@ -75,6 +77,45 @@ We have had reports that Ableton's own installer window shows heavy graphical co
 Log in to a GNOME or KDE session, run the installer there, and return to Hyprland once it finishes. Nothing about the installed result depends on the session you installed from.
 
 If you find a Hyprland setting that fixes this, [open an issue](https://github.com/shibco/ableton-linux/issues) and tell us.
+
+### The installer asks for an explicit display scale
+
+Some X11 window managers, including i3, don't openly declare their DPI and this will
+throw our installer. When installing for the first time, the Ableton-Linux installer expects an
+explicit value for your DPI so it knows how to scale Ableton Live properly. 
+
+If your system isn't declaring a DPI, you'll get errors like this:
+
+```text
+!! cannot detect the display scale (non-GNOME desktop or headless session?)
+!! a fresh prefix needs an explicit ABLETON_DPI_MODE=100 or =dpi<N>
+```
+
+Check whether your desktop provides an Xft DPI value:
+
+```bash
+xrdb -query | grep '^Xft\.dpi:'
+```
+
+For an empty result on a desktop at 100% scale, run the installer with
+`ABLETON_DPI_MODE=100`:
+
+```bash
+env ABLETON_DPI_MODE=100 \
+  sh ~/Downloads/install-ableton-latest.run install
+```
+
+For a result such as `Xft.dpi: 120`, add `dpi` before the number:
+
+```bash
+env ABLETON_DPI_MODE=dpi120 \
+  sh ~/Downloads/install-ableton-latest.run install
+```
+
+For another desktop scale, select the matching value from the
+[display scale table](#live-is-the-wrong-size-or-looks-blurry).
+The 100% fallback resolved the i3 installation reported in
+[issue 246](https://github.com/shibco/ableton-linux/issues/246).
 
 ### The installer says PipeWire is too old
 
@@ -319,15 +360,15 @@ If your latency is still too high, run the audio report and attach it when you
 
 ### Audio crackling and distortion issues
 
-Crackles, pops, and dropouts all come from the same place: Live ran out of time
-to finish its audio work on your computer before the next buffer was due. 
-Plenty of things cause that, so work through these in order.
+When Live struggles to maintain real-time audio, playback can crackle or
+distort. Several conditions cause these symptoms, so work through the steps in
+order.
 
 #### Update to the latest release
 
-Most of the crackling we hear about comes from older installations, and a good
-number of those faults are already fixed. Before you change any settings,
-download [the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
+Older installations and runtimes cause many crackling reports. Runtime updates
+have fixed many of those faults. Before you change any settings, download
+[the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
 and run the update:
 
 ```bash
@@ -428,13 +469,62 @@ it when you open an issue.
 
 ## Performance, visuals and the Live interface
 
-### Live is using lots of CPU, even on small Sets
+### Live uses high CPU on small Sets
 
-If you're consistently seeing large amounts of CPU usage, even when Live is idle
-or displaying an empty set, the most likely cause is that Live is not rendering 
-the Live interface on your GPU chipset.
+A small PipeASIO buffer increases the number of audio blocks that enter Live.
+During stable audio processing at 48 kHz, PipeWire and Live use matching
+64-frame blocks. PipeASIO then calls Live 750 times each second.
 
-Open **Settings > Display & Input** and turn on **Enable GPU Renderer**. 
+Use 128 or 256 frames when the extra latency suits your work. Both comparisons
+used Live 12.4.3 with an empty Set on a 16-core host with 32 logical CPUs. They
+used 48 kHz and 64-frame buffers. A limit of 16 workers reduced CPU use by 23%
+when Live used standard scheduling. It reduced CPU use by 37% when Live used
+real-time scheduling.
+The [PipeASIO and Wine CPU report](notes/FINDINGS-PIPEASIO-CPU-2026-08-20.md)
+records the matched comparisons.
+
+Apply a limit of 16 workers as follows.
+
+1. Exit every Live process.
+2. Run `env ABLETON_MAX_AUDIO_THREADS=16 ableton-live`.
+3. Play a demanding Set.
+4. Check CPU use and audio timing.
+
+If Live transfers an older profile after a point update, exit Live when the
+transfer finishes. Repeat the command.
+
+The launcher adds this Live 12 setting when 16 falls below Live's calculated
+worker count:
+
+```text
+-MaxAudioThreads=16
+```
+
+Live stores the setting in this file:
+
+```text
+~/.wine-ableton/drive_c/users/$USER/AppData/Roaming/Ableton/Live 12*/Preferences/Options.txt
+```
+
+Exit Live before you edit the file. Replace the line that starts with
+`-MaxAudioThreads=` with an empty line to restore Live's calculated count. The
+launcher records your choice across later Live 12 point updates. A value already
+in the file takes priority.
+
+8 workers produced lower CPU use in the empty Set test. Play a demanding Set
+with 8 and 16 workers. Choose the value that preserves audio timing. Review the
+value after you move the prefix to a different processor.
+
+At 128 or 256 frames, use this comparison.
+
+1. Record Live's CPU use for one Set section with PipeASIO.
+2. Select another audio driver in Live.
+3. Record Live's CPU use for the same Set section.
+4. Select PipeASIO again.
+5. Open the Display and Input page in Live settings.
+6. Enable the GPU renderer.
+7. Record Live's CPU use for the same Set section.
+8. Compare the 3 CPU measurements.
 
 If your processor only spikes while you move the mouse, see
 [CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse) instead.
@@ -484,7 +574,8 @@ takes care of itself. When it gets it wrong, tell Live your scale yourself:
 
 4. Look your scale up in this table and start Live with that value. GNOME
    scales differently to everything else, so it has its own column. KDE,
-   Cinnamon, COSMIC, sway, and Hyprland all use the right-hand one.
+   Cinnamon, COSMIC, sway, Hyprland, i3, and other X11 window managers use the
+   right-hand column.
 
 | Your display scale | GNOME | Other |
 | --- | --- | --- |
@@ -548,7 +639,7 @@ Either way, [open an issue](https://github.com/shibco/ableton-linux/issues) and
 tell us your desktop, and whether Full Screen was still shifted with that
 command.
 
-## Plugins and Max 4 Live devices
+## Plugins and Max for Live devices
 
 ### A plugin's installer won't start
 
@@ -708,7 +799,7 @@ Live's processor use climbs while you move the pointer across its window, and
 settles again when you stop.
 
 First check that **Enable GPU Renderer** is turned on, as described in
-[Live is using lots of CPU](#live-is-using-lots-of-cpu-even-on-small-sets).
+[Live uses high CPU on small Sets](#live-uses-high-cpu-on-small-sets).
 That accounts for most of these.
 
 If it still happens, see whether Live recorded it:
@@ -792,13 +883,26 @@ If it still does not start,
 distribution and desktop. For technical details about this, please see the
 [Push 2 display bridge note](notes/ABLETON-WINE-PUSH2-DISPLAY.md).
 
-### My Push 3 or Move doesn't work
+### Push 3 does not start its display
 
-Push 3 and Move are not supported yet. A Push 3 plugged into your computer stays
-on its "Connect to a computer" screen. Push 1 and Push 2 both work today.
+Live detects Push 3 automatically in controller mode and starts its screen and
+pads. Work through these steps if the screen stays dark:
 
-We are working on it. You can follow along, or add what you know, at
+1. Download the latest installer and update this project.
+2. On a standalone Push 3, switch the unit to Control Mode.
+3. Connect the Push before you start Live. Close Live completely and start it
+   again after you connect the Push.
+4. If the Push asks for a restart after a firmware update, switch it off and on
+   once, then start Live again.
+
+Push 3 uses automatic USB detection, so leave the control-surface rows empty.
+If the screen stays dark, add your hardware and distribution details to
 [issue 26](https://github.com/shibco/ableton-linux/issues/26).
+
+### Ableton Move does not connect
+
+Ableton Move support is in development. The current controller support covers
+Push 1, Push 2, and Push 3 in controller mode.
 
 ## Ableton Link
 
@@ -812,11 +916,16 @@ network remain reachable with the VPN connected.
 Check these in order:
 
 1. If you run a firewall, allow UDP port 20808.
-2. If you installed with `--no-link`, run the installer again with `--link`.
-3. Otherwise, close Live and retry the setup:
+2. Check the current Link mode:
 
    ```bash
-   ~/.local/share/ableton-wine/setup-link.sh
+   sh ~/Downloads/install-ableton-latest.run link status
+   ```
+
+3. Enable session mode if Link is off:
+
+   ```bash
+   sh ~/Downloads/install-ableton-latest.run link enable --mode=session
    ```
 
 Start Live and enable **Show Link Toggle** and Link again. See

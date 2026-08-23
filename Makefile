@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup refresh uninstall test vendor-cache verify check pointer-safety-check clean distclean
+.PHONY: all build install setup refresh uninstall test test-glyph-path vendor-cache verify check pointer-safety-check clean distclean
 
 all: build
 
@@ -22,9 +22,13 @@ test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-tsan-policy.sh
 	./scripts/test-release-policy.sh
 	./scripts/test-shortcut-hold.sh
+	./scripts/test-live-options.sh
 	./scripts/test-desktop-integration.sh
 	./scripts/test-installer-lifecycle.sh
 	./scripts/test-pipeasio-installer.sh
+
+test-glyph-path:              ## assert a built runtime's dwrite glyph path (RUNTIME=<root>)
+	./scripts/test-dwrite-glyph-path.sh $(RUNTIME)
 
 vendor-cache:                 ## populate vendor/winetricks-cache for offline setup
 	./scripts/vendor-winetricks-cache.sh
