@@ -9,4 +9,5 @@ patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch whitespa
 patches/0095-winex11-separate-pointer-coast-sources.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0098-winex11-suspend-XI-scroll-selection-during-core-drags.patch whitespace=-blank-at-eof,-blank-at-eol
-notes/hotplug-prototypes/*.patch whitespace=-blank-at-eof,-blank-at-eol,-space-before-tab
+patches/0100-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch whitespace=-blank-at-eof,-blank-at-eol,-space-before-tab
+patches/pipeasio/0012-recover-selected-routes-after-hotplug.patch whitespace=-blank-at-eof,-blank-at-eol,-space-before-tab

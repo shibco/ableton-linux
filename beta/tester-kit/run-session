@@ -72,6 +72,7 @@ T04  OpenGL child context and sRGB pixel format
 T05  Plug-in title bars and layered shadows, visual
 T06  XDG portal file dialogue, visual
 T07  Virtual MIDI controller replug
+T07D MIDI discovery after Windows MIDI starts, removal, and replug
 C01  DPI, file-dialogue and audio-driver policy snapshot
 C02  Nested audio endpoint FriendlyName guard
 L01-L05, L10-L12 Optional passive and manual Live-session probes

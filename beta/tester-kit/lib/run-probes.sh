@@ -210,6 +210,33 @@ wait_for_text() {
     return 1
 }
 
+forget_background_pid() {
+    local forgotten="$1" pid
+    local -a kept=()
+
+    for pid in "${BACKGROUND_PIDS[@]}"; do
+        [[ $pid == "$forgotten" ]] || kept+=("$pid")
+    done
+    BACKGROUND_PIDS=("${kept[@]}")
+}
+
+stop_background_pid() {
+    local pid="${1:-}"
+
+    [[ -n $pid ]] || return
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    forget_background_pid "$pid"
+}
+
+stop_background_pids() {
+    local pid
+
+    for pid in "$@"; do
+        stop_background_pid "$pid"
+    done
+}
+
 test_midi_hotplug() {
     local fake_bin="$WORK_DIR/fakectl"
     local build_log="$WORK_DIR/fakectl-build.txt"
@@ -226,8 +253,8 @@ test_midi_hotplug() {
         return
     fi
 
-    cc -O2 -Wall -o "$fake_bin" "$NATIVE_SOURCES/fakectl.c" -lasound >"$build_log" 2>&1
-    if [[ $? -ne 0 ]]; then
+    if ! cc -O2 -Wall -o "$fake_bin" "$NATIVE_SOURCES/fakectl.c" -lasound \
+            >"$build_log" 2>&1; then
         record_result T07 SKIP "MIDI reconnect after controller replug" "ALSA development headers or library unavailable"
         append_redacted_file "fakectl build output" "$build_log"
         return
@@ -236,9 +263,11 @@ test_midi_hotplug() {
     "$fake_bin" >"$fake1_log" 2>&1 &
     fake1_pid=$!
     BACKGROUND_PIDS+=("$fake1_pid")
-    if ! wait_for_text "$fake1_log" 'FakeCtl up'; then
+    if ! wait_for_text "$fake1_log" 'READY client='; then
         record_result T07 SKIP "MIDI reconnect after controller replug" "virtual controller could not start"
         kill "$fake1_pid" 2>/dev/null || true
+        wait "$fake1_pid" 2>/dev/null || true
+        forget_background_pid "$fake1_pid"
         append_redacted_file "fakectl output" "$fake1_log"
         return
     fi
@@ -254,18 +283,21 @@ test_midi_hotplug() {
     before="$(grep -c 'MIM_DATA' "$midi_log" 2>/dev/null || true)"
     kill "$fake1_pid" 2>/dev/null || true
     wait "$fake1_pid" 2>/dev/null || true
+    forget_background_pid "$fake1_pid"
     sleep 2
 
     "$fake_bin" >"$fake2_log" 2>&1 &
     fake2_pid=$!
     BACKGROUND_PIDS+=("$fake2_pid")
-    wait_for_text "$fake2_log" 'FakeCtl up' || true
+    wait_for_text "$fake2_log" 'READY client=' || true
     sleep 4
     after="$(grep -c 'MIM_DATA' "$midi_log" 2>/dev/null || true)"
 
     kill "$fake2_pid" 2>/dev/null || true
     wait "$fake2_pid" 2>/dev/null || true
+    forget_background_pid "$fake2_pid"
     wait "$midi_pid" 2>/dev/null || true
+    forget_background_pid "$midi_pid"
 
     if (( before >= 2 && after >= before + 2 )); then
         record_result T07 PASS "MIDI reconnect after controller replug" "events before=$before after=$after"
@@ -277,6 +309,115 @@ test_midi_hotplug() {
     append_redacted_file "Virtual MIDI listener" "$midi_log"
     append_redacted_file "Virtual controller before replug" "$fake1_log"
     append_redacted_file "Virtual controller after replug" "$fake2_log"
+}
+
+test_midi_dynamic_hotplug() {
+    local fake_bin="$WORK_DIR/fakectl-dynamic"
+    local build_log="$WORK_DIR/fakectl-dynamic-build.txt"
+    local watcher_log="$WORK_DIR/midiwatch-dynamic.txt"
+    local first_log="$WORK_DIR/fakectl-dynamic-first.txt"
+    local second_log="$WORK_DIR/fakectl-dynamic-second.txt"
+    local blocker_log="$WORK_DIR/fakectl-dynamic-blocker.txt"
+    local name="BetaHotplug$$"
+    local watcher_pid first_pid second_pid blocker_pid watcher_rc
+    local first_id second_id blocker_id attempt
+    local -a blocker_pids=()
+
+    section "DYNAMIC VIRTUAL MIDI HOTPLUG"
+    printf 'Purpose: initialise WinMM before a MIDI device exists, open its new input and output, remove it, then restore both open handles under a different ALSA client number.\n'
+
+    if [[ ! -f "$WINDOWS_PROBES/midiwatch.exe" ]]; then
+        record_result T07D SKIP "Dynamic MIDI add, remove and replug" "midiwatch.exe is not included in this tester kit"
+        return
+    fi
+    if ! have cc || [[ ! -e /dev/snd/seq ]]; then
+        record_result T07D SKIP "Dynamic MIDI add, remove and replug" "C compiler or /dev/snd/seq is unavailable"
+        return
+    fi
+    if ! cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -o "$fake_bin" \
+            "$NATIVE_SOURCES/fakectl.c" -lasound >"$build_log" 2>&1; then
+        record_result T07D SKIP "Dynamic MIDI add, remove and replug" "ALSA development headers or library unavailable"
+        append_redacted_file "dynamic fakectl build output" "$build_log"
+        return
+    fi
+
+    (
+        cd "$WORK_DIR" || exit 1
+        timeout --foreground 90 "$WINE_BIN" "$WINDOWS_PROBES/midiwatch.exe" \
+            --assert-cycle "$name" 1 1 10000 1
+    ) >"$watcher_log" 2>&1 &
+    watcher_pid=$!
+    BACKGROUND_PIDS+=("$watcher_pid")
+    if ! wait_for_text "$watcher_log" 'ASSERT BASELINE' 100; then
+        record_result T07D FAIL "Dynamic MIDI add, remove and replug" "WinMM baseline timed out"
+        stop_background_pid "$watcher_pid"
+        return
+    fi
+
+    "$fake_bin" --name "$name" --port-name "$name" --duplex --interval-ms 100 \
+        >"$first_log" 2>&1 &
+    first_pid=$!
+    BACKGROUND_PIDS+=("$first_pid")
+    if ! wait_for_text "$watcher_log" 'ASSERT READY_FOR_REMOVE cycle=1' 100; then
+        record_result T07D FAIL "Dynamic MIDI add, remove and replug" "new device did not publish and open"
+        stop_background_pids "$first_pid" "$watcher_pid"
+        return
+    fi
+    first_id="$(sed -n 's/^READY client=\([0-9][0-9]*\).*/\1/p' "$first_log" | head -n 1)"
+    if [[ -z $first_id ]]; then
+        record_result T07D FAIL "Dynamic MIDI add, remove and replug" "initial ALSA client id was not reported"
+        stop_background_pids "$first_pid" "$watcher_pid"
+        return
+    fi
+    stop_background_pid "$first_pid"
+    if ! wait_for_text "$watcher_log" 'ASSERT READY_FOR_READD cycle=1' 100; then
+        record_result T07D FAIL "Dynamic MIDI add, remove and replug" "device removal did not shrink the WinMM list"
+        stop_background_pid "$watcher_pid"
+        return
+    fi
+
+    blocker_id=
+    for ((attempt = 1; attempt <= 64; attempt++)); do
+        blocker_log="$WORK_DIR/fakectl-dynamic-blocker-$attempt.txt"
+        "$fake_bin" --name "${name}Block${attempt}" --ports 0 >"$blocker_log" 2>&1 &
+        blocker_pid=$!
+        blocker_pids+=("$blocker_pid")
+        BACKGROUND_PIDS+=("$blocker_pid")
+        if ! wait_for_text "$blocker_log" 'READY client=' 100; then
+            record_result T07D FAIL "Dynamic MIDI add, remove and replug" "ALSA client-id blocker did not start"
+            stop_background_pids "${blocker_pids[@]}" "$watcher_pid"
+            return
+        fi
+        blocker_id="$(sed -n 's/^READY client=\([0-9][0-9]*\).*/\1/p' "$blocker_log" | head -n 1)"
+        [[ $blocker_id == "$first_id" ]] && break
+    done
+    if [[ $blocker_id != "$first_id" ]]; then
+        record_result T07D FAIL "Dynamic MIDI add, remove and replug" "could not reserve old ALSA client id $first_id"
+        stop_background_pids "${blocker_pids[@]}" "$watcher_pid"
+        return
+    fi
+    "$fake_bin" --name "$name" --port-name "$name" --duplex --interval-ms 100 \
+        >"$second_log" 2>&1 &
+    second_pid=$!
+    BACKGROUND_PIDS+=("$second_pid")
+
+    wait "$watcher_pid" 2>/dev/null
+    watcher_rc=$?
+    forget_background_pid "$watcher_pid"
+    second_id="$(sed -n 's/^READY client=\([0-9][0-9]*\).*/\1/p' "$second_log" | head -n 1)"
+    stop_background_pids "$second_pid" "${blocker_pids[@]}"
+
+    if [[ $watcher_rc -eq 0 && -n $first_id && -n $second_id &&
+          $first_id != "$second_id" ]] &&
+       grep -q 'ASSERT PASS mode=cycle cycles=1' "$watcher_log" &&
+       grep -q '^RX port=' "$second_log"; then
+        record_result T07D PASS "Dynamic MIDI add, remove and replug" "WinMM input/output recovered across ALSA clients $first_id and $second_id"
+    else
+        record_result T07D FAIL "Dynamic MIDI add, remove and replug" "exit $watcher_rc, ALSA clients ${first_id:-unknown}/${second_id:-unknown}, or missing I/O evidence"
+    fi
+    append_redacted_file "Dynamic WinMM watcher" "$watcher_log"
+    append_redacted_file "Dynamic controller before replug" "$first_log"
+    append_redacted_file "Dynamic controller after replug" "$second_log"
 }
 
 test_prefix_configuration() {
@@ -426,6 +567,7 @@ run_probe_suite() {
     test_plugin_windows
     test_file_portal
     test_midi_hotplug
+    test_midi_dynamic_hotplug
     test_prefix_configuration
     if [[ ${LIVE_PROBES:-0} == 1 ]]; then
         run_live_probes

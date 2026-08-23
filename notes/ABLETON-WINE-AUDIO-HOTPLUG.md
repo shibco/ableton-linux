@@ -1,19 +1,21 @@
-# Audio device reconnect behaviour
+# Audio device hotplug
 
-PipeASIO talks to PipeWire directly. PipeWire keeps device and graph changes
-outside Wine, so reconnecting an interface does not require WineASIO's JACK
-port restoration helper.
+PipeASIO remembers the selected PipeWire interface and channel routes.
 
-If an interface disappears while Live runs, wait for PipeWire and WirePlumber
-to restore it, then set Live's Audio Device to None and back to PipeASIO. Run
-`pw-top` or `wpctl status` to confirm that the device has returned before
-diagnosing Live.
+When the interface leaves, PipeASIO sends silence and accepts playback data
+safely. PipeASIO restores the route set when the same interface returns. Live
+and wineserver stay open.
 
-The older WineASIO setup exposed JACK ports owned by Wine. A reconnect could
-replace those ports, so `tools/jacklinkd.c` watched the graph and restored
-links. Current launchers do not start that helper.
+An explicit device choice waits for that interface. Automatic routing follows
+the PipeWire default. Automatic capture first follows the playback interface's
+audio card.
 
-Two input and output devices can still use different PipeWire clock domains.
-PipeASIO 1.5 reports those domains and anchors capture timing to the playback
-clock. Test reconnects with both devices active; do not reduce a two-device
-report to a single-device setup.
+New interfaces appear in PipeASIO Settings. A saved device choice applies while
+Live runs.
+
+PipeASIO also rebuilds its connection after delayed PipeWire startup or a
+PipeWire restart. Use `pw-top` or `wpctl status` to inspect the Linux audio
+graph.
+
+Release approval adds repeated USB reconnects and a full Ableton Live
+performance session with input, output and two-device setups.

@@ -43,7 +43,7 @@ Run `./beta/tester-kit/run-session --help` for the complete usage text.
 
 - `W00`: Wine startup and prefix initialisation
 - `H01-H02`: WirePlumber and PipeWire-Pulse readiness
-- `T01-T07`: shared mappings, menus, resize, OpenGL, file dialogues, and MIDI
+- `T01-T07D`: shared mappings, menus, resize, OpenGL, file dialogues, and MIDI hotplug
 - `C01-C02`: prefix policy and endpoint registry checks
 - `L01-L12`: optional Live observations and manual actions
 - `A01`: optional Wine and JUCE input trace

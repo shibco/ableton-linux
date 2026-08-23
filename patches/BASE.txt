@@ -11,7 +11,7 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The current Wine series contains 96 files, numbered 0001 through 0098.
+The current Wine series contains 98 files, numbered 0001 through 0100.
 Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
 once numbered 0066 and 0067 now appear after the gesture patches as 0093
 and 0094, because 0066 through 0068 were held for this GPU series.
@@ -20,11 +20,11 @@ and 0094, because 0066 through 0068 were held for this GPU series.
 
 Run `./build.sh`. Inside the Podman image, `scripts/container-build.sh`
 unpacks `vendor/wine-base-5c23dd1c.tar.zst`, creates a Git repository, and
-applies `patches/00*.patch` in lexical order with `git am --3way`.
+applies `patches/[0-9][0-9][0-9][0-9]-*.patch` in lexical order with
+`git am --3way`.
 
 Some early patch files have no `From` or `Date` header. The build script adds a
-fixed identity and date before passing those files to `git am`. A bare
-`git am patches/00*.patch` command does not reproduce this step.
+fixed identity and date before passing those files to `git am`.
 
 Patches 0008 through 0013 contain title-bar experiments and their reverts.
 Apply them in sequence with the rest of the series.
@@ -452,3 +452,8 @@ Apply them in sequence with the rest of the series.
   the drag's own motion was delivered there. `WINE_X11_POINTER_FEATURES`
   disables every pointer feature at once for baseline comparisons. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0099`: grow the reserved memory pool during large set loads. This keeps Max
+  for Live JIT allocations ordered and within their 32-bit image offsets.
+- `0100`: refresh ALSA MIDI endpoints throughout each Wine process. Keep open
+  handles tied to stable device details. Publish Windows device changes after
+  each device snapshot. See `notes/ABLETON-WINE-DEVICE-HOTPLUG.md`.
