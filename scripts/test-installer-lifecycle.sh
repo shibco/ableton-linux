@@ -617,8 +617,8 @@ base="$(new_env payload-wait)"
 kit="$base/kit"
 mkdir -p "$kit/scripts/lib" "$kit/bin" "$base/runtime/bin"
 cp -- "$here/installer.sh" "$kit/scripts/"
-cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/manifest.sh" \
-    "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
+cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
+    "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
 cat > "$kit/bin/pipewire-version-probe" <<'EOF'
 #!/bin/sh
 printf 'client=1.4.2\ndaemon=1.4.2\n'
@@ -1290,6 +1290,7 @@ mkdir -p "$base/data/ableton-wine/lib" "$base/config/ableton-wine" \
 printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
 cp "$here/lib/config.sh" "$base/data/ableton-wine/lib/config.sh"
 cp "$here/lib/lifecycle.sh" "$base/data/ableton-wine/lib/lifecycle.sh"
+cp "$here/lib/live-options.sh" "$base/data/ableton-wine/lib/live-options.sh"
 cp "$here/lib/manifest.sh" "$base/data/ableton-wine/lib/manifest.sh"
 cp "$here/lib/pipeasio.sh" "$base/data/ableton-wine/lib/pipeasio.sh"
 cp "$here/ableton-linkctl" "$base/data/ableton-wine/ableton-linkctl"
@@ -1325,7 +1326,8 @@ exit 0
 EOF
 chmod +x "$base/fakebin/systemctl"
 for owned in "$base/data/ableton-wine/lib/config.sh" "$base/data/ableton-wine/lib/lifecycle.sh" \
-    "$base/data/ableton-wine/lib/manifest.sh" "$base/data/ableton-wine/lib/pipeasio.sh" \
+    "$base/data/ableton-wine/lib/live-options.sh" "$base/data/ableton-wine/lib/manifest.sh" \
+    "$base/data/ableton-wine/lib/pipeasio.sh" \
     "$base/data/ableton-wine/ableton-linkctl" "$base/data/ableton-wine/setup-link.sh" \
     "$base/data/ableton-wine/ableton-linkd"; do
     printf 'file\t%s\t%s\n' "$owned" "$(sha256sum "$owned" | awk '{print $1}')" \

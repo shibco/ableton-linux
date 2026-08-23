@@ -71,3 +71,16 @@ PipeASIO 1.5 keeps the existing CPU needs of Live and its plug-ins. Smaller
 buffers give the engine less processing time. PipeASIO sends silence during
 device and service recovery. Release approval includes a supported Ableton
 Live build and real USB audio hardware.
+During stable periods with matching block sizes, PipeASIO calls Live's audio
+engine once per PipeWire graph period. A 48 kHz rate with 64 frames produces
+750 calls each second. Smaller buffers make Live wake and wait for its workers
+more often.
+
+Ableton Linux provides a Live 12 limit for audio workers. Users select the
+value. The tested value was 16. Wine reported 32 logical CPUs. Live had access
+to 32 Linux CPUs. The worker count changed from 31 to 16. The
+[CPU troubleshooting guide](../TROUBLESHOOTING.md#live-uses-high-cpu-on-small-sets)
+explains how to apply and test the value.
+
+Audio continuity depends on available processor time, an attached device, and
+a running PipeWire service. The CPU tests used PipeASIO 1.5 with Live 12.4.3.

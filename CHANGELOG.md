@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+This release changes Live CPU settings:
+
+- the launcher provides a Live 12 limit for audio workers with small PipeASIO
+  buffers.
+- users select a value from one to 63.
+- the launcher applies a requested value below Live's calculated worker count.
+- existing worker settings take priority.
+- users repeat the opt-in launch after Live transfers an older profile.
+- later user edits take priority.
+- Wine continues to report the same CPU count.
+- Live retains its Linux CPU access.
+
 ## 2026.08.19.1
 
 - Fixed a slew of problems introduced by redesigning the new Installer too defensively, therefore **breaking it** for lots of people :( :

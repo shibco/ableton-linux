@@ -29,7 +29,7 @@ have already fixed your issue.
   - [Audio crackling and distortion issues](#audio-crackling-and-distortion-issues)
   - [Audio cuts out for a few seconds, or plays at the wrong speed](#audio-cuts-out-for-a-few-seconds-or-plays-at-the-wrong-speed)
 - [Performance, visuals and the Live interface](#performance-visuals-and-the-live-interface)
-  - [Live is using lots of CPU, even on small Sets](#live-is-using-lots-of-cpu-even-on-small-sets)
+  - [Live uses high CPU on small Sets](#live-uses-high-cpu-on-small-sets)
   - [Live is the wrong size, or looks blurry](#live-is-the-wrong-size-or-looks-blurry)
 - [Plugins and Max 4 Live devices](#plugins-and-max-4-live-devices)
   - [A plugin's installer won't start](#a-plugins-installer-wont-start)
@@ -428,13 +428,62 @@ it when you open an issue.
 
 ## Performance, visuals and the Live interface
 
-### Live is using lots of CPU, even on small Sets
+### Live uses high CPU on small Sets
 
-If you're consistently seeing large amounts of CPU usage, even when Live is idle
-or displaying an empty set, the most likely cause is that Live is not rendering 
-the Live interface on your GPU chipset.
+A small PipeASIO buffer increases the number of audio blocks that enter Live.
+During stable audio processing at 48 kHz, PipeWire and Live use matching
+64-frame blocks. PipeASIO then calls Live 750 times each second.
 
-Open **Settings > Display & Input** and turn on **Enable GPU Renderer**. 
+Use 128 or 256 frames when the extra latency suits your work. Both comparisons
+used Live 12.4.3 with an empty Set on a 16-core host with 32 logical CPUs. They
+used 48 kHz and 64-frame buffers. A limit of 16 workers reduced CPU use by 23%
+when Live used standard scheduling. It reduced CPU use by 37% when Live used
+real-time scheduling.
+The [PipeASIO and Wine CPU report](notes/FINDINGS-PIPEASIO-CPU-2026-08-20.md)
+records the matched comparisons.
+
+Apply a limit of 16 workers as follows.
+
+1. Exit every Live process.
+2. Run `env ABLETON_MAX_AUDIO_THREADS=16 ableton-live`.
+3. Play a demanding Set.
+4. Check CPU use and audio timing.
+
+If Live transfers an older profile after a point update, exit Live when the
+transfer finishes. Repeat the command.
+
+The launcher adds this Live 12 setting when 16 falls below Live's calculated
+worker count:
+
+```text
+-MaxAudioThreads=16
+```
+
+Live stores the setting in this file:
+
+```text
+~/.wine-ableton/drive_c/users/$USER/AppData/Roaming/Ableton/Live 12*/Preferences/Options.txt
+```
+
+Exit Live before you edit the file. Replace the line that starts with
+`-MaxAudioThreads=` with an empty line to restore Live's calculated count. The
+launcher records your choice across later Live 12 point updates. A value already
+in the file takes priority.
+
+8 workers produced lower CPU use in the empty Set test. Play a demanding Set
+with 8 and 16 workers. Choose the value that preserves audio timing. Review the
+value after you move the prefix to a different processor.
+
+At 128 or 256 frames, use this comparison.
+
+1. Record Live's CPU use for one Set section with PipeASIO.
+2. Select another audio driver in Live.
+3. Record Live's CPU use for the same Set section.
+4. Select PipeASIO again.
+5. Open the Display and Input page in Live settings.
+6. Enable the GPU renderer.
+7. Record Live's CPU use for the same Set section.
+8. Compare the 3 CPU measurements.
 
 If your processor only spikes while you move the mouse, see
 [CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse) instead.
@@ -708,7 +757,7 @@ Live's processor use climbs while you move the pointer across its window, and
 settles again when you stop.
 
 First check that **Enable GPU Renderer** is turned on, as described in
-[Live is using lots of CPU](#live-is-using-lots-of-cpu-even-on-small-sets).
+[Live uses high CPU on small Sets](#live-uses-high-cpu-on-small-sets).
 That accounts for most of these.
 
 If it still happens, see whether Live recorded it:
