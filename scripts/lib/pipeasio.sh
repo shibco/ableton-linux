@@ -206,8 +206,8 @@ ableton_pipeasio_validate_runtime()
         return 1
     fi
     for canonical in \
-        lib/wine/$ARCH-windows/pipeasio64.dll \
-        lib/wine/$ARCH-unix/pipeasio64.dll.so; do
+        lib/wine/x86_64-windows/pipeasio64.dll \
+        lib/wine/x86_64-unix/pipeasio64.dll.so; do
         [ -s "$runtime/$canonical" ] || { echo "!! runtime is missing $canonical" >&2; return 1; }
     done
     pe_record="$(ableton_pipeasio_build_info_value "$info" pipeasio-pe)" || {
@@ -216,8 +216,8 @@ ableton_pipeasio_validate_runtime()
         echo "!! runtime has no unique PipeASIO Unix digest" >&2; return 1; }
     [[ "$pe_record" =~ ^[0-9a-f]{64}$ ]] && [[ "$unix_record" =~ ^[0-9a-f]{64}$ ]] || {
         echo "!! runtime has a malformed PipeASIO digest" >&2; return 1; }
-    pe_hash="$(sha256sum -- "$runtime/lib/wine/$ARCH-windows/pipeasio64.dll" | awk '{print $1}')"
-    unix_hash="$(sha256sum -- "$runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so" | awk '{print $1}')"
+    pe_hash="$(sha256sum -- "$runtime/lib/wine/x86_64-windows/pipeasio64.dll" | awk '{print $1}')"
+    unix_hash="$(sha256sum -- "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so" | awk '{print $1}')"
     [ "$pe_hash" = "$pe_record" ] && [ "$unix_hash" = "$unix_record" ] || {
         echo "!! PipeASIO binaries do not match runtime build information" >&2
         return 1
@@ -230,8 +230,8 @@ ableton_pipeasio_validate_runtime()
             return 1
         fi
     done <<'EOF'
-lib/wine/$ARCH-windows/pipeasio64.dll|lib/wine/$ARCH-windows/pipeasio.dll
-lib/wine/$ARCH-unix/pipeasio64.dll.so|lib/wine/$ARCH-unix/pipeasio.dll.so
+lib/wine/x86_64-windows/pipeasio64.dll|lib/wine/x86_64-windows/pipeasio.dll
+lib/wine/x86_64-unix/pipeasio64.dll.so|lib/wine/x86_64-unix/pipeasio.dll.so
 EOF
     [ -x "$runtime/bin/pipewire-version-probe" ] || {
         echo "!! runtime is missing its PipeWire compatibility check" >&2; return 1; }

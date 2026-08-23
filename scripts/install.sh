@@ -460,10 +460,10 @@ validate_runtime_payload()
         lib/wine/$ARCH-unix/winegstreamer.so \
         bin/pipewire-version-probe \
         ABLETON-WINE-BUILD-INFO.txt \
-        lib/wine/$ARCH-windows/pipeasio64.dll \
-        lib/wine/$ARCH-windows/pipeasio.dll \
-        lib/wine/$ARCH-unix/pipeasio64.dll.so \
-        lib/wine/$ARCH-unix/pipeasio.dll.so; do
+        lib/wine/x86_64-windows/pipeasio64.dll \
+        lib/wine/x86_64-windows/pipeasio.dll \
+        lib/wine/x86_64-unix/pipeasio64.dll.so \
+        lib/wine/x86_64-unix/pipeasio.dll.so; do
         [ -s "$candidate/$required" ] || { echo "!! runtime payload is missing $required" >&2; return 1; }
     done
     [ ! -e "$candidate/lib/wine/i386-windows/libusb-1.0.dll" ] || {
@@ -471,7 +471,7 @@ validate_runtime_payload()
     if command -v readelf >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
         readelf -d "$candidate/lib/wine/$ARCH-unix/libusb-1.0.so" | grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/null
         strings "$candidate/lib/wine/$ARCH-unix/comdlg32.so" | grep -F 'org.freedesktop.portal.FileChooser' >/dev/null
-        readelf -d "$candidate/lib/wine/$ARCH-unix/pipeasio64.dll.so" | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
+        readelf -d "$candidate/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
         readelf -d "$candidate/lib/wine/$ARCH-unix/winegstreamer.so" | grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null
     fi
     ableton_pipeasio_validate_runtime "$candidate" "$runtime_info" "$version"

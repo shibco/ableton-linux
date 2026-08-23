@@ -206,8 +206,8 @@ EOF
         printf 'dist-version: 2026.08.12.999\n'
         printf 'pipeasio: 1.5.0\n'
         printf 'pipewire-floor: 1.4.2\n'
-        printf 'pipeasio-pe: %s\n' "$(sha256sum -- "$runtime/lib/wine/$ARCH-windows/pipeasio64.dll" | awk '{print $1}')"
-        printf 'pipeasio-unix: %s\n' "$(sha256sum -- "$runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so" | awk '{print $1}')"
+        printf 'pipeasio-pe: %s\n' "$(sha256sum -- "$runtime/lib/wine/x86_64-windows/pipeasio64.dll" | awk '{print $1}')"
+        printf 'pipeasio-unix: %s\n' "$(sha256sum -- "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so" | awk '{print $1}')"
         printf 'pipewire-version-probe: %s\n' "$(sha256sum -- "$runtime/bin/pipewire-version-probe" | awk '{print $1}')"
         printf 'pipeasio-panel: %s\n' "$mode"
         if [ "$mode" = built ]; then
@@ -225,10 +225,10 @@ make_runtime()
     mkdir -p -- "$runtime/bin" \
         "$runtime/lib/wine/$ARCH-windows" \
         "$runtime/lib/wine/$ARCH-unix"
-    printf 'PE PipeASIO fixture\n' > "$runtime/lib/wine/$ARCH-windows/pipeasio64.dll"
-    ln -s -- pipeasio64.dll "$runtime/lib/wine/$ARCH-windows/pipeasio.dll"
-    printf 'Unix PipeASIO fixture\n' > "$runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so"
-    ln -s -- pipeasio64.dll.so "$runtime/lib/wine/$ARCH-unix/pipeasio.dll.so"
+    printf 'PE PipeASIO fixture\n' > "$runtime/lib/wine/x86_64-windows/pipeasio64.dll"
+    ln -s -- pipeasio64.dll "$runtime/lib/wine/x86_64-windows/pipeasio.dll"
+    printf 'Unix PipeASIO fixture\n' > "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so"
+    ln -s -- pipeasio64.dll.so "$runtime/lib/wine/x86_64-unix/pipeasio.dll.so"
     write_probe "$runtime/bin/pipewire-version-probe"
     write_build_info "$runtime" "$external" "$mode"
 }
@@ -277,20 +277,20 @@ ok "skipped panel requires an empty artifact set"
 
 base="$(new_env alias-mismatch)"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
-rm -f -- "$base/runtime/lib/wine/$ARCH-windows/pipeasio.dll"
-printf 'different alias\n' > "$base/runtime/lib/wine/$ARCH-windows/pipeasio.dll"
+rm -f -- "$base/runtime/lib/wine/x86_64-windows/pipeasio.dll"
+printf 'different alias\n' > "$base/runtime/lib/wine/x86_64-windows/pipeasio.dll"
 runtime_fails_validation "$base/runtime" "$base/BUILD-INFO.txt" || fail "mismatched PipeASIO PE aliases were accepted"
 ok "PipeASIO aliases must be byte-identical"
 
 base="$(new_env alias-partial)"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
-rm -f -- "$base/runtime/lib/wine/$ARCH-unix/pipeasio.dll.so"
+rm -f -- "$base/runtime/lib/wine/x86_64-unix/pipeasio.dll.so"
 runtime_fails_validation "$base/runtime" "$base/BUILD-INFO.txt" || fail "partial PipeASIO alias set was accepted"
 ok "PipeASIO aliases are all-or-none"
 
 base="$(new_env driver-digest-mismatch)"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
-printf 'post-build mutation\n' >> "$base/runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so"
+printf 'post-build mutation\n' >> "$base/runtime/lib/wine/x86_64-unix/pipeasio64.dll.so"
 runtime_fails_validation "$base/runtime" "$base/BUILD-INFO.txt" \
     || fail "modified canonical PipeASIO binary was accepted with a stale BUILD-INFO digest"
 ok "PipeASIO PE and Unix binaries must match their unique BUILD-INFO digests"

@@ -327,10 +327,10 @@ for required in \
     lib/wine/$ARCH-unix/comdlg32.so \
     lib/wine/x86_64-windows/libusb-1.0.dll \
     lib/wine/$ARCH-unix/libusb-1.0.so \
-    lib/wine/$ARCH-windows/pipeasio64.dll \
-    lib/wine/$ARCH-windows/pipeasio.dll \
-    lib/wine/$ARCH-unix/pipeasio64.dll.so \
-    lib/wine/$ARCH-unix/pipeasio.dll.so; do
+    lib/wine/x86_64-windows/pipeasio64.dll \
+    lib/wine/x86_64-windows/pipeasio.dll \
+    lib/wine/x86_64-unix/pipeasio64.dll.so \
+    lib/wine/x86_64-unix/pipeasio.dll.so; do
     [ -s "$WINE_ROOT/$required" ] || { echo "!! packaged runtime is missing $required"; exit 1; }
 done
 ableton_pipeasio_validate_runtime "$WINE_ROOT"

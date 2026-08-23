@@ -16,8 +16,6 @@ pteq_win.log
 !/tools/setsyscolors.exe
 !/tools/linkprobe.exe
 *.exe.so
-*.so
-*.dll
 *.o
 uclick
 fakectl

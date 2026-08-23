@@ -409,6 +409,11 @@ case "$probe_stub_dir" in
 esac
 echo "   pipewire-version-probe: client stub + ASan/UBSan verification passed"
 
+panel_state="skipped (disabled)"
+asan_panel_state="unavailable"
+
+if [ "$ARCH" = "x86_64" ]; then
+
 pipeasio_cmake_configure() {
     local build_dir="$1"
     shift
@@ -416,8 +421,6 @@ pipeasio_cmake_configure() {
         PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
         CC=clang CXX=clang++ \
         cmake -S . -B "$build_dir" -G Ninja \
-            -DCMAKE_C_FLAGS="--target=x86_64-unknown-linux-gnu" \
-            -DCMAKE_CXX_FLAGS="--target=x86_64-unknown-linux-gnu" \
             -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
             -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
             "$@"
@@ -481,12 +484,6 @@ pipeasio_ctest_nonintegration() {
     esac
 }
 
-if [ "$ARCH" = "aarch64" ]; then
-    BUILD_TESTS="OFF"
-else
-    BUILD_TESTS="ON"
-fi
-
 # Production build. BUILD_SETTINGS_PANEL=ON means "build when Qt is present",
 # matching upstream: Qt discovery is quiet and a missing toolkit does not stop
 # the driver. The official container has Qt and CI separately requires the
@@ -500,7 +497,7 @@ pipeasio_cmake_configure build \
     -DBUILD_TESTS=$BUILD_TESTS
 cmake --build build -j "$JOBS"
 
-panel_state="skipped (disabled)"
+
 if [ -x build/gui/pipeasio-settings ]; then
     panel_state="built"
 elif [ "$PIPEASIO_BUILD_SETTINGS_PANEL" = ON ]; then
@@ -518,7 +515,6 @@ pipeasio_ctest_nonintegration build
 # Prove the actual missing-Qt contract, rather than inferring it from an option:
 # force Qt discovery off, build and test the driver, then run upstream's staged
 # install and require the driver aliases while forbidding a partial panel.
-if [ "$ARCH" = "x86_64" ] then
 pipeasio_cmake_configure build-noqt \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$CONFIGURE_PREFIX" \
@@ -566,7 +562,6 @@ cmake --build build-asan -j "$JOBS"
 pipeasio_ctest_nonintegration build-asan \
     ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0 \
     UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-asan_panel_state="unavailable"
 if [ -x build-asan/gui/pipeasio-settings ]; then
     asan_panel_state="passed"
 fi
@@ -613,7 +608,6 @@ if [ "$tsan_enabled" -eq 1 ]; then
 fi
 [ -n "$tsan_record" ] || { echo "!! internal error: missing TSan result" >&2; exit 1; }
 echo "   sanitizers: ASan+UBSan unit/panel=$asan_panel_state; $tsan_record"
-fi
 
 # Install through upstream CMake so its layout, Qt data files and Wine alias
 # contract are exercised. The project has its own atomic registration path, so
@@ -657,6 +651,8 @@ elif [ "$panel_payload_count" -ne 0 ]; then
     echo "!! panel was skipped but CMake installed a partial payload ($panel_payload_count/3)" >&2
     exit 1
 fi
+fi
+
 
 echo "== [5/8] strip + prune (dev files served their purpose in [4/8]; nothing below runs on user machines) =="
 # Debug info is ~3/4 of every PE builtin and ~5/6 of the unix halves. Exports,
@@ -679,8 +675,15 @@ bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
 pipewire_probe_sha="$(sha256sum "$pipewire_probe" | awk '{print $1}')"
 
-pipeasio_pe="$PREFIX_ROOT/lib/wine/$ARCH-windows/pipeasio64.dll"
-pipeasio_unix="$PREFIX_ROOT/lib/wine/$ARCH-unix/pipeasio64.dll.so"
+if [ "$ARCH" = "aarch64" ]; then
+	mkdir -p "$PREFIX_ROOT/lib/wine/x86_64-windows"
+	mkdir -p "$PREFIX_ROOT/lib/wine/x86_64-unix"
+	cp /work/x86_64-windows/*.dll "$PREFIX_ROOT/lib/wine/x86_64-windows/"
+	cp /work/x86_64-unix/*.dll.so "$PREFIX_ROOT/lib/wine/x86_64-unix/"
+fi
+
+pipeasio_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio64.dll"
+pipeasio_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so"
 test -s "$pipeasio_pe"
 test -s "$pipeasio_unix"
 pipeasio_pe_sha="$(sha256sum "$pipeasio_pe" | awk '{print $1}')"

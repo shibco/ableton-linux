@@ -260,8 +260,8 @@ declare -A recorded_binary_hashes=()
 readonly RECORDED_BINARIES='libusb-pe|lib/wine/x86_64-windows/libusb-1.0.dll
 libusb-unix|lib/wine/$ARCH-unix/libusb-1.0.so
 portal-unix|lib/wine/$ARCH-unix/comdlg32.so
-pipeasio-pe|lib/wine/$ARCH-windows/pipeasio64.dll
-pipeasio-unix|lib/wine/$ARCH-unix/pipeasio64.dll.so'
+pipeasio-pe|lib/wine/x86_64-windows/pipeasio64.dll
+pipeasio-unix|lib/wine/x86_64-unix/pipeasio64.dll.so'
 if [ -f "$binfo" ]; then
     panel_mode="$(sed -n 's/^pipeasio-panel: *//p' "$binfo")"
     panel_record="$(sed -n 's/^pipeasio-settings: *//p' "$binfo")"
@@ -390,26 +390,22 @@ FINGERPRINTS='
 0094|ascii|lib/wine/$ARCH-unix/winex11.so|XWayland warp emulation activated after observed failed warps
 0095|ascii|lib/wine/$ARCH-unix/winex11.so|MiddleDragThrow
 0096|ascii|lib/wine/$ARCH-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
-0100|ascii|lib/wine/x86_64-unix/winex11.so|ptr lease event=restore
-0101|ascii|lib/wine/x86_64-windows/user32.dll|dnd target=%p event=release
-0105|ascii|lib/wine/x86_64-unix/winealsa.so|WINE MIDI topology
-0105|ascii|lib/wine/x86_64-windows/winmm.dll|Out of memory refreshing %s mappings
+0100|ascii|lib/wine/$ARCH-unix/winex11.so|ptr lease event=restore
+0101|ascii|lib/wine/$ARCH-windows/user32.dll|dnd target=%p event=release
+0105|ascii|lib/wine/$ARCH-unix/winealsa.so|WINE MIDI topology
+0105|ascii|lib/wine/$ARCH-windows/winmm.dll|Out of memory refreshing %s mappings
 0106|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
-pipeasio/0001|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
-pipeasio/0002|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-midi-timebase
-pipeasio/0004|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-any-buffer-size
-pipeasio/0005|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-quantum-converge
-pipeasio/0005|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
-pipeasio/0006|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-clock-domains
-pipeasio/0008|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-daemon-version
-pipeasio/0009|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-honest-realtime
+pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
+pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
+pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
+pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-converge
+pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
+pipeasio/0006|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clock-domains
+pipeasio/0008|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-daemon-version
+pipeasio/0009|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-honest-realtime
 pipeasio/0010|wide|bin/pipeasio-settings|pick a preset or type any value
-pipeasio/0011|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
-<<<<<<< HEAD
+pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
 pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotplug
-=======
-pipeasio/0012|logic-only (set cmake wine target)
->>>>>>> 895a292 (try building pipeasio as x86 since it won't build as aarch64)
 '
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,
@@ -561,10 +557,10 @@ must lib/wine/$ARCH-unix/winealsa.so
 must lib/wine/$ARCH-unix/winegstreamer.so
 must lib/wine/$ARCH-windows/winegstreamer.dll
 must lib/wine/$ARCH-unix/comdlg32.so
-must lib/wine/$ARCH-windows/pipeasio64.dll
-must lib/wine/$ARCH-unix/pipeasio64.dll.so
-must lib/wine/$ARCH-windows/pipeasio.dll
-must lib/wine/$ARCH-unix/pipeasio.dll.so
+must lib/wine/x86_64-windows/pipeasio64.dll
+must lib/wine/x86_64-unix/pipeasio64.dll.so
+must lib/wine/x86_64-windows/pipeasio.dll
+must lib/wine/x86_64-unix/pipeasio.dll.so
 must bin/pipewire-version-probe
 must ABLETON-WINE-BUILD-PACKAGES.txt
 
@@ -622,8 +618,8 @@ fi
 # links proves the packaging used that install contract and keeps relocation
 # safe; a copied or absolute alias can silently diverge from the versioned DLL.
 for alias_spec in \
-    'lib/wine/$ARCH-windows/pipeasio.dll|pipeasio64.dll' \
-    'lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio64.dll.so'; do
+    'lib/wine/x86_64-windows/pipeasio.dll|pipeasio64.dll' \
+    'lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio64.dll.so'; do
     alias_path="${alias_spec%%|*}"
     alias_target="${alias_spec#*|}"
     if [ -L "$tree/$alias_path" ] && [ "$(readlink "$tree/$alias_path")" = "$alias_target" ]; then
@@ -690,7 +686,7 @@ if command -v readelf >/dev/null; then
         | grep -qF 'Shared library: [libusb-1.0.so.0]' \
         && ok "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0" \
         || bad "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0 not linked"
-    readelf -d "$tree/lib/wine/$ARCH-unix/pipeasio.dll.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/x86_64H-unix/pipeasio.dll.so" 2>/dev/null \
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
         && ok "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
         || bad "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
