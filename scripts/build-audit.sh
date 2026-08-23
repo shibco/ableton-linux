@@ -405,7 +405,11 @@ pipeasio/0008|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-daemon-version
 pipeasio/0009|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-honest-realtime
 pipeasio/0010|wide|bin/pipeasio-settings|pick a preset or type any value
 pipeasio/0011|ascii|lib/wine/$ARCH-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
+<<<<<<< HEAD
 pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotplug
+=======
+pipeasio/0012|logic-only (set cmake wine target)
+>>>>>>> 895a292 (try building pipeasio as x86 since it won't build as aarch64)
 '
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,

@@ -412,15 +412,12 @@ echo "   pipewire-version-probe: client stub + ASan/UBSan verification passed"
 pipeasio_cmake_configure() {
     local build_dir="$1"
     shift
-        PKG_CONFIG_PATH="$PW_SDK/usr/lib/$ARCH-linux-gnu/pkgconfig" \
+        PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
-        CC=winegcc CXX=wineg++ \
+        CC=clang CXX=clang++ \
         cmake -S . -B "$build_dir" -G Ninja \
-            -DCMAKE_C_FLAGS="--target=aarch64-windows -ffixed-x18" \
-            -DCMAKE_CXX_FLAGS="--target=aarch64-windows -ffixed-x18" \
-            -DCMAKE_DISABLE_FIND_PACKAGE_Threads=TRUE \
-            -DThreads_FOUND=TRUE \
-            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_C_FLAGS="--target=x86_64-unknown-linux-gnu" \
+            -DCMAKE_CXX_FLAGS="--target=x86_64-unknown-linux-gnu" \
             -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
             -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
             "$@"
@@ -540,10 +537,10 @@ pipeasio_ctest_nonintegration build-noqt
 noqt_stage="$(mktemp -d /tmp/pipeasio-noqt-install.XXXXXX)"
 DESTDIR="$noqt_stage" cmake --install build-noqt
 noqt_root="$noqt_stage$CONFIGURE_PREFIX"
-test -s "$noqt_root/lib/wine/$ARCH-windows/pipeasio64.dll"
-test -s "$noqt_root/lib/wine/$ARCH-unix/pipeasio64.dll.so"
-test "$(readlink "$noqt_root/lib/wine/$ARCH-windows/pipeasio.dll")" = pipeasio64.dll
-test "$(readlink "$noqt_root/lib/wine/$ARCH-unix/pipeasio.dll.so")" = pipeasio64.dll.so
+test -s "$noqt_root/lib/wine/x86_64-windows/pipeasio64.dll"
+test -s "$noqt_root/lib/wine/x86_64-unix/pipeasio64.dll.so"
+test "$(readlink "$noqt_root/lib/wine/x86_64-windows/pipeasio.dll")" = pipeasio64.dll
+test "$(readlink "$noqt_root/lib/wine/x86_64-unix/pipeasio.dll.so")" = pipeasio64.dll.so
 test ! -e "$noqt_root/bin/pipeasio-settings"
 test ! -e "$noqt_root/share/applications/pipeasio-settings.desktop"
 test ! -e "$noqt_root/share/icons/hicolor/scalable/apps/pipeasio.svg"
@@ -625,9 +622,9 @@ DESTDIR="$DESTDIR" cmake --install build
 rm -f -- "$PREFIX_ROOT/bin/pipeasio-register"
 
 # Must link the host's PipeWire by soname, with no SDK/build path baked in.
-readelf -d "$PREFIX_ROOT/lib/wine/$ARCH-unix/pipeasio64.dll.so" \
+readelf -d "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so" \
     | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
-if readelf -d "$PREFIX_ROOT/lib/wine/$ARCH-unix/pipeasio64.dll.so" | grep -qE 'RPATH|RUNPATH'; then
+if readelf -d "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -qE 'RPATH|RUNPATH'; then
     echo "!! pipeasio64.dll.so carries an rpath into the build container" >&2
     exit 1
 fi
@@ -771,7 +768,7 @@ WINEPREFIX="$reloc/prefix" WINEDEBUG=-all \
 # a newer glibc than this container, so satisfy the loader with a stub that
 # exports exactly the pw_ symbols the driver references.
 pwstub="$(mktemp -d)"
-nm -D "$reloc/$NAME/lib/wine/$ARCH-unix/pipeasio64.dll.so" \
+nm -D "$reloc/$NAME/lib/wine/x86_64-unix/pipeasio64.dll.so" \
     | awk '$1 == "U" && $2 ~ /^pw_/ { print "void " $2 "(void) {}" }' > "$pwstub/stub.c"
 gcc -shared -fPIC -Wl,-soname,libpipewire-0.3.so.0 -o "$pwstub/libpipewire-0.3.so.0" "$pwstub/stub.c"
 WINEPREFIX="$reloc/prefix" WINEDEBUG=-all \

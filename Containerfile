@@ -149,6 +149,14 @@ RUN if [ "$ARCH" = "aarch64" ]; then \
     && test -e /opt/llvm-mingw-ucrt-aarch64/bin/arm64ec-w64-mingw32-clang \
 ;fi
 
+# 6 x86_64 compilation target on aarch64 for pipeasio
+RUN if [ "ARCH" = "aarch64" ]; then \ 
+    dpkg --add-architecture amd64 \
+    && apt update \
+    && apt install -y  --no-install-recommends clang lld libc6-dev-amd64-cross libstdc++-11-dev-amd64-cross \
+    && rm -rf /var/lib/apt/lists/* \
+;fi
+
 WORKDIR /work
 
 
