@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assert what an hwnd render target keeps across Resize: patch 0102.
+# Assert what an hwnd render target keeps across Resize: patch 0104.
 #
 #     scripts/test-d2d-resize.sh <runtime-root>
 #

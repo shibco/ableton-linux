@@ -1,5 +1,5 @@
 /*
- * Assert what an hwnd render target keeps across Resize: patch 0102.
+ * Assert what an hwnd render target keeps across Resize: patch 0104.
  *
  * Resize recreates the target bitmap. Two properties of the original target
  * have to survive it, and each has a known failing value, so no reference image

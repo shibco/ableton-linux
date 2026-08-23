@@ -2,7 +2,7 @@
  * Assert the DirectWrite glyph path: which form a glyph is rasterised from,
  * and whether a fractional origin moves it.
  *
- * Covers patches 0100 and 0101. Each check has a known failing value, so
+ * Covers patches 0102 and 0103. Each check has a known failing value, so
  * no reference image is needed:
  *
  *   a bitmap strike carries one coverage sample per pixel. Expanded into a
