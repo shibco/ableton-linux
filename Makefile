@@ -46,17 +46,7 @@ pointer-safety-check:
 	trap 'rm -f -- tools/.pointer-safety-invariants.tmp' EXIT HUP INT TERM; \
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror \
 		tools/pointer-safety-invariants.c -lm -o tools/.pointer-safety-invariants.tmp; \
-	tools/.pointer-safety-invariants.tmp \
-		patches/0090-winex11-preserve-precision-scrolling-from-XInput2-scroll-.patch \
-		patches/0091-winex11-coast-scrolling-and-thrown-middle-drags-after-rel.patch \
-		patches/0074-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch \
-		patches/0072-winex11-registry-pointer-settings-and-middle-button-dra.patch \
-		patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch \
-		patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch \
-		patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch \
-		patches/0095-winex11-separate-pointer-coast-sources.patch \
-		patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch \
-		patches/0098-winex11-suspend-XI-scroll-selection-during-core-drags.patch
+	tools/.pointer-safety-invariants.tmp
 
 clean:                        ## remove build outputs
 	rm -rf dist

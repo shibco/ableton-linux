@@ -65,9 +65,10 @@ logout='org.gnome.settings-daemon.plugins.media-keys|logout'
 values[$up]="['<Control><Alt>Up', '<Super>Up']"
 values[$down]="['<Primary><Alt>Down']"
 values[$logout]="['<Control><Alt>Delete']"
-export ABLETON_SHORTCUTS=take XDG_CURRENT_DESKTOP='ubuntu:GNOME'
+unset ABLETON_SHORTCUTS
+export XDG_CURRENT_DESKTOP='ubuntu:GNOME'
 ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
-check "hold strips only conflicting Up entry" "${values[$up]}" "['<Super>Up']"
+check "default hold strips only conflicting Up entry" "${values[$up]}" "['<Super>Up']"
 check "hold disables conflicting Down entry" "${values[$down]}" "[]"
 check "Live 12 leaves logout alone" "${values[$logout]}" "['<Control><Alt>Delete']"
 check "state format is versioned" "$(head -1 "$ableton_shortcuts_state")" "ABLETON_SHORTCUT_HOLD_V2"
@@ -94,6 +95,12 @@ check "restore returns exact Up value" "${values[$up]}" "['<Control><Alt>Up', '<
 check "restore returns exact Down value" "${values[$down]}" "['<Primary><Alt>Down']"
 check "restore returns exact logout value" "${values[$logout]}" "['<Control><Alt>Delete']"
 check "successful restore removes state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+
+export ABLETON_SHORTCUTS=preserve
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+check "preserve keeps the GNOME Up entry" "${values[$up]}" "['<Control><Alt>Up', '<Super>Up']"
+check "preserve creates no recovery state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+unset ABLETON_SHORTCUTS
 
 # A logout removes XDG_RUNTIME_DIR but not dconf.  A later launch must recover
 # the held bindings from persistent state once the new session has no lease.

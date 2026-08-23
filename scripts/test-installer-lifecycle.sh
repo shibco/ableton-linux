@@ -87,7 +87,8 @@ run_isolated()
     local base="$1"; shift
     env HOME="$base/home" XDG_CONFIG_HOME="$base/config" XDG_DATA_HOME="$base/data" \
         XDG_STATE_HOME="$base/state" XDG_CACHE_HOME="$base/cache" \
-        XDG_RUNTIME_DIR="$base/run" TMPDIR="$base/tmp" "$@"
+        XDG_RUNTIME_DIR="$base/run" TMPDIR="$base/tmp" \
+        ABLETON_SHORTCUTS=preserve ABLETON_MAX_AUDIO_THREADS=off "$@"
 }
 
 base="$(new_env sudo-password-paths)"

@@ -30,23 +30,29 @@ ABLETON-LIVE VARIABLES:
         by default the launcher runs Live under SCHED_RR wherever
         realtime rights exist
 
-    ABLETON_MAX_AUDIO_THREADS=off|<number>
-        Use a number from one to 63 for the audio thread count in Live 12.
-        The launcher saves the number before Live starts when it lowers the count that Live selects.
-        Use off to preserve the current Live setting.
-        The default is off.
-        The launcher preserves existing settings and later edits.
+    ABLETON_MAX_AUDIO_THREADS=auto|off|<number>
+        Set the audio thread count in Live 12. The default, auto, uses
+        the physical CPU cores available to the launcher when that
+        value lowers the count that Live selects.
+        The launcher saves the number before Live starts.
+        Existing Live settings and earlier launcher choices take
+        priority over implicit auto.
+        Set auto explicitly to recalculate an earlier launcher choice.
+        Use off to remove an untouched launcher-managed choice and
+        restore Live's calculated count. Existing and edited settings
+        remain unchanged.
+        Review the value after the prefix moves to another processor.
 
     ABLETON_POWER=off
         skip the performance power-profile hold for this launch; by
         default the launcher holds the "performance" profile while
         Live runs and releases it on exit
 
-    ABLETON_SHORTCUTS=take
+    ABLETON_SHORTCUTS=take|preserve
         GNOME only: hold the desktop shortcuts that shadow Live
         bindings (Ctrl+Alt+Up/Down, and Ctrl+Alt+Delete on Live 11)
-        while Live runs; they restore when Live exits; the default,
-        preserve, touches nothing
+        while Live runs; they restore when Live exits; default take;
+        preserve leaves the desktop shortcuts unchanged
 
     ABLETON_LAUNCH_TIMEOUT=90
         seconds the launcher waits for Live to appear in the prefix
@@ -84,7 +90,8 @@ ABLETON-LIVE VARIABLES:
 
     ABLETON_LINK_MODE=off|session|always
         whether the launcher starts the Ableton Link session anchor;
-        default off
+        new installations save session; otherwise the launcher follows
+        the saved policy, with off as the unconfigured compatibility fallback
 
     ABLETON_LINKD=/path/to/ableton-linkd
         start this binary as the Ableton Link session anchor instead
@@ -249,6 +256,14 @@ declare -F ableton_live_running >/dev/null 2>&1 || { echo "ableton-live: lifecyc
 for live_options_lib in "$launcher_here/lib/live-options.sh" "$ABLETON_DATA_HOME/lib/live-options.sh"; do
     if [ -r "$live_options_lib" ]; then . "$live_options_lib"; break; fi
 done
+for live_options_function in ableton_available_physical_cores \
+                             ableton_live_product_version \
+                             ableton_seed_max_audio_threads; do
+    declare -F "$live_options_function" >/dev/null 2>&1 || {
+        echo "ableton-live: live-options.sh helper is missing or incomplete" >&2
+        exit 1
+    }
+done
 
 # Live exits cleanly; WebView2's updater does not, and one wedged agent keeps the
 # wineserver alive for the whole login session.
@@ -274,11 +289,32 @@ export WINEPREFIX="$ABLETON_WINEPREFIX"
 case "${ABLETON_LIVE_VERSION:-}" in ''|11|12) ;;
     *) echo "ableton-live: ABLETON_LIVE_VERSION must be 11 or 12" >&2; exit 2 ;;
 esac
-max_audio_threads="${ABLETON_MAX_AUDIO_THREADS:-off}"
-case "$max_audio_threads" in
-    off|[1-9]|[1-5][0-9]|6[0-3]) ;;
-    *) echo "ableton-live: Set ABLETON_MAX_AUDIO_THREADS to off or a number from one to 63." >&2; exit 2 ;;
+max_audio_threads_request="${ABLETON_MAX_AUDIO_THREADS:-auto}"
+max_audio_threads_replace_seeded=1
+[ -n "${ABLETON_MAX_AUDIO_THREADS+x}" ] || max_audio_threads_replace_seeded=0
+max_audio_threads_restore_at_default=0
+max_audio_threads_action=1
+case "$max_audio_threads_request" in
+    auto)
+        [ "$max_audio_threads_replace_seeded" -eq 0 ] \
+            || max_audio_threads_restore_at_default=1
+        if declare -F ableton_available_physical_cores >/dev/null 2>&1 \
+           && max_audio_threads="$(ableton_available_physical_cores)"; then
+            :
+        else
+            echo "ableton-live: Physical CPU topology is unavailable; Live will select its audio thread count." >&2
+            max_audio_threads=off
+            max_audio_threads_action=0
+        fi ;;
+    off|[1-9]|[1-5][0-9]|6[0-3]) max_audio_threads="$max_audio_threads_request" ;;
+    *) echo "ableton-live: Set ABLETON_MAX_AUDIO_THREADS to auto, off, or a number from one to 63." >&2; exit 2 ;;
 esac
+shortcuts_mode="${ABLETON_SHORTCUTS:-take}"
+case "$shortcuts_mode" in
+    take|preserve) ;;
+    *) echo "ableton-live: Set ABLETON_SHORTCUTS to take or preserve." >&2; exit 2 ;;
+esac
+ABLETON_SHORTCUTS="$shortcuts_mode"
 
 # Armed after the guards: teardown ends this prefix's agents, and a launch that
 # refused to start has no session to end - the prefix may hold someone else's.
@@ -500,28 +536,24 @@ callback_live_exe_for_audio_settings()
 apply_max_audio_threads_setting()
 {
     local selected_exe="$live_exe_unix"
-    if ! declare -F ableton_seed_max_audio_threads >/dev/null 2>&1 \
-       || ! declare -F ableton_live_product_version >/dev/null 2>&1; then
-        echo "ableton-live: Reinstall ableton-linux to restore audio thread settings." >&2
-        return 1
-    fi
     if [ -z "$selected_exe" ]; then
         if ! selected_exe="$(callback_live_exe_for_audio_settings)"; then
             echo "ableton-live: The callback does not identify one Live 12 version for audio thread settings." >&2
-            echo "ableton-live: Start the intended edition directly with ABLETON_LIVE_EXE to apply the requested count." >&2
+            echo "ableton-live: Start the intended edition directly with ABLETON_LIVE_EXE to apply the requested setting." >&2
             return 0
         fi
     fi
     ableton_seed_max_audio_threads "$WINEPREFIX" "$max_audio_threads" \
-        "$selected_exe" "${USER:-}"
+        "$selected_exe" "${USER:-}" "$max_audio_threads_replace_seeded" \
+        "$max_audio_threads_restore_at_default"
 }
-if [ "$max_audio_threads" != off ]; then
+if [ "$max_audio_threads_action" -eq 1 ]; then
     if [ "$cold_launch" -eq 1 ]; then
         if ! apply_max_audio_threads_setting; then
             echo "ableton-live: Live will use the current count for audio threads during this launch." >&2
         fi
-    else
-        echo "ableton-live: Exit Live. Run the command again to apply the audio thread count." >&2
+    elif [ "$max_audio_threads_replace_seeded" -eq 1 ]; then
+        echo "ableton-live: Exit Live. Run the command again to apply the audio thread setting." >&2
     fi
 fi
 
@@ -1166,11 +1198,12 @@ if ! ableton_live_running; then
 fi
 
 # GNOME consumes Live's Ctrl+Alt+Up/Down shortcuts (and Live 11's
-# Ctrl+Alt+Delete) before Wine sees them.  ABLETON_SHORTCUTS=take temporarily
-# removes only those entries.  The helper uses session-global, crash-recoverable
-# state because GSettings itself is session-global; it also preserves any user
-# edit made while Live runs.  Opt-in: the held keys are unavailable to every
-# other window until the last opted-in Live exits.  See the shortcut support note.
+# Ctrl+Alt+Delete) before Wine sees them. The launcher temporarily removes only
+# those entries by default on GNOME. ABLETON_SHORTCUTS=preserve opts out. The
+# helper uses session-global, crash-recoverable state because GSettings itself
+# is session-global; it also preserves any user edit made while Live runs. The
+# held keys are unavailable to every other window until the last Live exits.
+# See the shortcut support note.
 shortcut_lib=""
 for f in "$ABLETON_DATA_HOME/shortcut-hold.sh" \
          "${BASH_SOURCE[0]%/*}/shortcut-hold.sh"; do
@@ -1190,7 +1223,7 @@ if [ -n "$shortcut_lib" ]; then
         ( exec 9>&-; ableton_shortcuts_watch_loop ) </dev/null >/dev/null 2>&1 &
         disown
     fi
-elif [ "${ABLETON_SHORTCUTS:-preserve}" = take ] && [ -n "$EXE" ]; then
+elif [ "$shortcuts_mode" = take ] && [ -n "$EXE" ]; then
     echo "ableton-live: shortcut hold helper is missing; leaving desktop shortcuts unchanged" >&2
 fi
 
