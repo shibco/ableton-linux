@@ -131,6 +131,17 @@ jobs:
       - name: Test installer and launcher lifecycle
         run: make test
 
+      # The glyph path is a property of the built runtime, so `make test`
+      # cannot assert it: its suites are all host-side. The tarball exists by
+      # this point, so extract it and run the gate against that.
+      - name: Test dwrite glyph path
+        run: |
+          sudo apt-get install --yes gcc-mingw-w64-x86-64
+          version="$(cat VERSION)"
+          rt="$(mktemp -d /tmp/ableton-glyph-rt.XXXXXX)"
+          tar --zstd -xf "dist/wine-d2d1-nspa-11.13-$version.tar.zst" -C "$rt"
+          make test-glyph-path RUNTIME="$rt/wine-d2d1-nspa-11.13"
+
       # The generic artifact format permits an explicitly recorded no-Qt
       # driver build. The official release image installs Qt, so its artifact
       # must carry the panel binary, desktop entry and icon together, as well
