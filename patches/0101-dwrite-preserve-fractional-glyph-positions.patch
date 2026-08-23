@@ -32,10 +32,17 @@ index 21ba87d..9f2e60a 100644
  };
  
  struct cache_entry
-@@ -209,8 +210,32 @@ static unsigned int get_glyph_bitmap_pitch(DWRITE_RENDERING_MODE1 rendering_mode
+@@ -209,14 +210,38 @@ static unsigned int get_glyph_bitmap_pitch(DWRITE_RENDERING_MODE1 rendering_mode
      return (width + 3) / 4 * 4;
  }
  
+ static BOOL rendering_mode_uses_outline(DWRITE_RENDERING_MODE1 rendering_mode)
+ {
+     return rendering_mode == DWRITE_RENDERING_MODE1_NATURAL
+             || rendering_mode == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
+ }
+-
++
 +/* Glyph layout produces fractional horizontal origins. Split one into the whole
 + * pixel the bitmap is blitted to and a phase, quantised to DWRITE_SUBPIXEL_PHASES
 + * per pixel, which the rasteriser applies to the outline. Only the natural modes
@@ -65,10 +72,10 @@ index 21ba87d..9f2e60a 100644
 +        BOOL lcd, unsigned int subpixel_phase, unsigned int *is_1bpp, struct dwrite_glyphbitmap *bitmap)
  {
      /* dlls/win32u/freetype.c sets FT_LOAD_NO_BITMAP for every requested format
-      * except GGO_BITMAP. Deriving the flag from the rendering mode rather than
+      * except GGO_BITMAP. DirectWrite's equivalent boundary is its rendering
 @@ -218,7 +243,7 @@ static HRESULT dwrite_fontface_get_glyph_bitmap(struct dwrite_fontface *fontface
-      * face at one size. */
-     BOOL outline = rendering_mode != DWRITE_RENDERING_MODE1_ALIASED;
+      * modes keep the strike. */
+     BOOL outline = rendering_mode_uses_outline(rendering_mode);
      struct cache_key key = { .size = bitmap->emsize, .glyph = bitmap->glyph, .mode = DWRITE_MEASURING_MODE_NATURAL,
 -            .lcd = !!lcd, .outline = !!outline };
 +            .lcd = !!lcd, .outline = !!outline, .subpixel_phase = subpixel_phase };
@@ -143,7 +150,7 @@ index 21ba87d..9f2e60a 100644
 +        origin_x = split_glyph_origin(analysis->origins[i].x, analysis->rendering_mode, &subpixel_phase);
          glyph_bitmap.glyph = analysis->run.glyphIndices[i];
          dwrite_fontface_get_glyph_bbox(analysis->run.fontFace, is_cleartype,
-                 analysis->rendering_mode != DWRITE_RENDERING_MODE1_ALIASED, &glyph_bitmap);
+                 rendering_mode_uses_outline(analysis->rendering_mode), &glyph_bitmap);
 @@ -6006,6 +6045,9 @@ static HRESULT glyphrunanalysis_render(struct dwrite_glyphrunanalysis *analysis)
          if (IsRectEmpty(bbox))
              continue;

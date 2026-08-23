@@ -2,7 +2,7 @@
  * Assert the DirectWrite glyph path: which form a glyph is rasterised from,
  * and whether a fractional origin moves it.
  *
- * Covers patches 0100, 0101 and 0103. Each check has a known failing value, so
+ * Covers patches 0100 and 0101. Each check has a known failing value, so
  * no reference image is needed:
  *
  *   a bitmap strike carries one coverage sample per pixel. Expanded into a
@@ -137,6 +137,22 @@ static void check_form(const char *what, float em, DWRITE_RENDERING_MODE mode,
     check(s.distinct > 8, what, detail);
 }
 
+/* GDI-compatible and aliased modes retain the embedded strike. This is the
+ * other half of selecting the form by rendering mode, and prevents a broad
+ * "anything antialiased uses outlines" rule from silently changing GDI text. */
+static void check_strike(const char *what, DWRITE_RENDERING_MODE mode,
+        DWRITE_TEXT_ANTIALIAS_MODE aa)
+{
+    struct sample s = measure(STRIKE_EM, mode, aa, 0.0f);
+    char detail[160];
+
+    if (!s.ok) { check(0, what, "no coverage rendered"); return; }
+    snprintf(detail, sizeof(detail),
+             "distinct=%d saturated=%d; the embedded strike has one non-zero "
+             "coverage value and saturated samples", s.distinct, s.saturated);
+    check(s.distinct == 1 && s.saturated > 0, what, detail);
+}
+
 /* a natural rendering mode must move the ink by the fraction asked for; every
  * other mode must not move it at all */
 static void check_position(const char *what, DWRITE_RENDERING_MODE mode,
@@ -207,10 +223,24 @@ int main(int argc, char **argv)
                STRIKE_EM, DWRITE_RENDERING_MODE_NATURAL,
                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
-    /* 0103: neither must a greyscale one, which 0100 alone does not cover */
+    /* the form follows the natural rendering mode, not the texture type */
     check_form("greyscale at a strike size rasterises the outline",
                STRIKE_EM, DWRITE_RENDERING_MODE_NATURAL,
                DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
+    check_form("natural symmetric at a strike size rasterises the outline",
+               STRIKE_EM, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+               DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
+    check_strike("gdi classic keeps the strike with ClearType",
+                 DWRITE_RENDERING_MODE_GDI_CLASSIC,
+                 DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+    check_strike("gdi natural keeps the strike with greyscale",
+                 DWRITE_RENDERING_MODE_GDI_NATURAL,
+                 DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    check_strike("aliased rendering keeps the strike",
+                 DWRITE_RENDERING_MODE_ALIASED,
+                 DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
     /* the control: above the strike range every mode already used the outline */
     check_form("cleartype above the strike range rasterises the outline",

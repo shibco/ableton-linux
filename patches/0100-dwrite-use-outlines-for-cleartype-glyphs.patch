@@ -7,13 +7,12 @@ coverage. Wine's own Tahoma, the face MS Shell Dlg resolves to and so the
 default interface font, carries strikes for 8 to 13, 15 and 16 ppem, which
 covers most interface text.
 
-dlls/win32u/freetype.c sets FT_LOAD_NO_BITMAP for every requested format except
-GGO_BITMAP: the strike is the aliased form, so any other requested format
-requires the outline. Derive the flag from the rendering mode rather than from
-whether a ClearType texture was requested. That gives greyscale, ClearType and
-GDI the same form for one face at one size, and it removes a size-to-size
-inconsistency, since Tahoma has strikes at 13 and 15 but not 14 and
-neighbouring sizes otherwise render in different forms.
+Windows selects the form by rendering mode: the GDI-compatible modes take the
+strike, while NATURAL and NATURAL_SYMMETRIC take the outline. Derive the flag
+from that boundary rather than from whether a ClearType texture was requested.
+That gives greyscale and ClearType the same form for one face at one size, and
+it removes a size-to-size inconsistency, since Tahoma has strikes at 13 and 15
+but not 14 and neighbouring sizes otherwise render in different forms.
 
 Keying on the requested texture fixes ClearType and leaves greyscale taking the
 strike: create_glyphrunanalysis() selects DWRITE_TEXTURE_ALIASED_1x1 whenever
@@ -78,15 +77,21 @@ index efe85d5..21ba87d 100644
      params.emsize = bitmap->emsize;
      matrix_2x2_from_dwrite_matrix(&params.m, bitmap->m ? bitmap->m : &identity);
  
-@@ -203,8 +212,13 @@ static unsigned int get_glyph_bitmap_pitch(DWRITE_RENDERING_MODE1 rendering_mode
+@@ -203,8 +212,19 @@ static unsigned int get_glyph_bitmap_pitch(DWRITE_RENDERING_MODE1 rendering_mode
++static BOOL rendering_mode_uses_outline(DWRITE_RENDERING_MODE1 rendering_mode)
++{
++    return rendering_mode == DWRITE_RENDERING_MODE1_NATURAL
++            || rendering_mode == DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
++}
++
  static HRESULT dwrite_fontface_get_glyph_bitmap(struct dwrite_fontface *fontface, DWRITE_RENDERING_MODE1 rendering_mode,
          BOOL lcd, unsigned int *is_1bpp, struct dwrite_glyphbitmap *bitmap)
  {
 +    /* dlls/win32u/freetype.c sets FT_LOAD_NO_BITMAP for every requested format
-+     * except GGO_BITMAP. Deriving the flag from the rendering mode rather than
-+     * from lcd alone gives greyscale, ClearType and GDI the same form for one
-+     * face at one size. */
-+    BOOL outline = rendering_mode != DWRITE_RENDERING_MODE1_ALIASED;
++     * except GGO_BITMAP. DirectWrite's equivalent boundary is its rendering
++     * mode: natural modes use the outline, while GDI-compatible and aliased
++     * modes keep the strike. */
++    BOOL outline = rendering_mode_uses_outline(rendering_mode);
      struct cache_key key = { .size = bitmap->emsize, .glyph = bitmap->glyph, .mode = DWRITE_MEASURING_MODE_NATURAL,
 -            .lcd = !!lcd };
 +            .lcd = !!lcd, .outline = !!outline };
@@ -116,7 +121,7 @@ index efe85d5..21ba87d 100644
 -        dwrite_fontface_get_glyph_bbox(analysis->run.fontFace, &glyph_bitmap);
 +        dwrite_fontface_get_glyph_bbox(analysis->run.fontFace,
 +                analysis->texture_type == DWRITE_TEXTURE_CLEARTYPE_3x1,
-+                analysis->rendering_mode != DWRITE_RENDERING_MODE1_ALIASED, &glyph_bitmap);
++                rendering_mode_uses_outline(analysis->rendering_mode), &glyph_bitmap);
  
          /* FreeType's five-tap LCD filter extends an outline by two subpixels
           * on either side. DWrite exposes whole-pixel texture bounds, so retain
@@ -126,7 +131,7 @@ index efe85d5..21ba87d 100644
          glyph_bitmap.glyph = analysis->run.glyphIndices[i];
 -        dwrite_fontface_get_glyph_bbox(analysis->run.fontFace, &glyph_bitmap);
 +        dwrite_fontface_get_glyph_bbox(analysis->run.fontFace, is_cleartype,
-+                analysis->rendering_mode != DWRITE_RENDERING_MODE1_ALIASED, &glyph_bitmap);
++                rendering_mode_uses_outline(analysis->rendering_mode), &glyph_bitmap);
  
          if (is_cleartype)
          {
@@ -134,16 +139,15 @@ diff --git a/dlls/dwrite/freetype.c b/dlls/dwrite/freetype.c
 index 87979da..a1d850e 100644
 --- a/dlls/dwrite/freetype.c
 +++ b/dlls/dwrite/freetype.c
-@@ -527,6 +527,22 @@ static BOOL get_glyph_transform(unsigned int simulations, const MATRIX_2X2 *m, F
+@@ -527,6 +527,21 @@ static BOOL get_glyph_transform(unsigned int simulations, const MATRIX_2X2 *m, F
      return TRUE;
  }
  
 +/* An embedded bitmap strike carries one coverage sample per pixel, which is the
 + * aliased form. Antialiased and ClearType output need more than one sample per
 + * pixel, so a strike supplied for either is expanded back into aliased coverage.
-+ * dlls/win32u/freetype.c sets FT_LOAD_NO_BITMAP for every requested format
-+ * except GGO_BITMAP; outline is derived the same way, so the aliased mode keeps
-+ * the strike and every other mode loads the outline. A face carrying no outline
++ * DirectWrite chooses by rendering mode: natural modes use the outline, while
++ * GDI-compatible and aliased modes keep the strike. A face carrying no outline
 + * for this glyph loads its strike regardless, leaving such faces unchanged. */
 +static FT_Error freetype_load_glyph(FT_Face face, unsigned int glyph, FT_Int32 flags, BOOL outline)
 +{

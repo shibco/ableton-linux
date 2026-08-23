@@ -11,7 +11,7 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The current Wine series contains 96 files, numbered 0001 through 0098.
+The current Wine series contains 99 files, numbered 0001 through 0101.
 Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
 once numbered 0066 and 0067 now appear after the gesture patches as 0093
 and 0094, because 0066 through 0068 were held for this GPU series.

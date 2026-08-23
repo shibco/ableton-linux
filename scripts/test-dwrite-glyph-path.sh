@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Assert the DirectWrite glyph path of a built runtime: patches 0100, 0101 and
-# 0103.
+# Assert the DirectWrite glyph path of a built runtime: patches 0100 and 0101.
 #
 #     scripts/test-dwrite-glyph-path.sh [runtime-root]
 #
