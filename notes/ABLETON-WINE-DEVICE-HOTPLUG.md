@@ -63,7 +63,7 @@ The candidate uses these targets:
 
 The work links to these records:
 
-- the [Wine MIDI patch 0100](../patches/0100-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch) keeps the Windows MIDI list current.
+- the [Wine MIDI patch 0105](../patches/0105-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch) keeps the Windows MIDI list current.
 - the [PipeASIO patch 0012](../patches/pipeasio/0012-recover-selected-routes-after-hotplug.patch) restores selected audio connections.
 - the [MIDI issue 46](https://github.com/shibco/ableton-linux/issues/46) tracks devices connected after Live starts.
 - the [performance plan PR 118](https://github.com/shibco/ableton-linux/pull/118) records the original work plan.

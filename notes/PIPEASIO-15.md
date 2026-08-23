@@ -51,6 +51,12 @@ the launcher's `ABLETON_RT` setting. Use this command for real-time scheduling:
 env PIPEASIO_REALTIME=on ableton-live
 ```
 
+Keep it off for normal use. Upstream traced an Ableton regression to the
+callback entering `SCHED_FIFO` in
+[issue 4](https://github.com/M0n7y5/pipeasio/issues/4) and found more xruns in a
+multi-threaded host test in its
+[performance notes](https://github.com/M0n7y5/pipeasio/blob/v1.5.0/README.md#performance).
+
 ## Settings window
 
 Open PipeASIO Settings from the application menu or Live's Hardware Setup
@@ -76,11 +82,17 @@ engine once per PipeWire graph period. A 48 kHz rate with 64 frames produces
 750 calls each second. Smaller buffers make Live wake and wait for its workers
 more often.
 
-Ableton Linux provides a Live 12 limit for audio workers. Users select the
-value. The tested value was 16. Wine reported 32 logical CPUs. Live had access
-to 32 Linux CPUs. The worker count changed from 31 to 16. The
-[CPU troubleshooting guide](../TROUBLESHOOTING.md#live-uses-high-cpu-on-small-sets)
-explains how to apply and test the value.
+Ableton Linux limits Live 12 to the physical CPU cores available to the
+launcher by default when that value is below Live's calculated worker count.
+The tested value was 16. Wine reported 32 logical CPUs. Live had access to 32
+Linux CPUs. The worker count changed from 31 to 16. The
+[CPU troubleshooting guide](../TROUBLESHOOTING.md#live-uses-high-cpu-or-overloads-at-small-buffers)
+explains the automatic policy and its overrides.
+
+The limit reduces worker wake-ups. Plug-in-heavy Sets can benefit from more
+parallel workers, so compare the physical-core value with Live's calculated
+count when deadline overloads increase.
 
 Audio continuity depends on available processor time, an attached device, and
 a running PipeWire service. The CPU tests used PipeASIO 1.5 with Live 12.4.3.
+They measured Linux process CPU, not Live's audio-deadline meter.

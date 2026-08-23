@@ -53,7 +53,8 @@ run_isolated()
         XDG_STATE_HOME="$base/xdg/state" \
         XDG_CACHE_HOME="$base/xdg/cache" \
         XDG_RUNTIME_DIR="$base/xdg/run" \
-        TMPDIR="$base/tmp" "$@"
+        TMPDIR="$base/tmp" ABLETON_SHORTCUTS=preserve \
+        ABLETON_MAX_AUDIO_THREADS=off "$@"
 }
 
 write_probe()

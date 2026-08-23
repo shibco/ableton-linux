@@ -2,17 +2,48 @@
 
 ## Unreleased
 
-This release changes Live CPU settings:
+- Another big pass on the input system. It's now simplified massively with one consolidated patch that features:
+  - fast smooth-scroll reports preserve the complete movement across all packet sizes
+  - drag recovery that restores XI2 motion after release, focus, capture, window, and device changes
+  - revised scrolling inertia that also remains enabled by default
+  - revised middle-button throw, also remaining enabled by default
+  - scrolling inertia and middle-button throw have a new algorithm that calculate travel from elapsed time
+  - pinch zoom preserves every scale update
+  - pinch zoom restores Ctrl state after each gesture
+  - the pointer master switch disables optional pointer features while retaining the issue 122 clipping-state repair
+  - external drag and drop that releases each target
+  - external drag and drop reports first-position acceptance correctly
+- Updates replace project-managed launcher and Live menu files when their saved checksums differ (#251).
 
-- the launcher provides a Live 12 limit for audio workers with small PipeASIO
-  buffers.
-- users select a value from one to 63.
-- the launcher applies a requested value below Live's calculated worker count.
-- existing worker settings take priority.
-- users repeat the opt-in launch after Live transfers an older profile.
-- later user edits take priority.
-- Wine continues to report the same CPU count.
-- Live retains its Linux CPU access.
+This release turns on two features that already shipped behind launcher
+settings:
+
+- Live 12 now starts with at most one audio thread per physical CPU core
+  available to the launcher. This lowers Live's default worker count where the
+  physical-core value is smaller. An existing Live setting, a previous
+  launcher choice, or a later user edit still takes priority.
+- `ABLETON_MAX_AUDIO_THREADS=auto` recalculates the physical-core value.
+  `ABLETON_MAX_AUDIO_THREADS=off` removes an untouched launcher-managed value
+  and restores Live's calculated count. Existing settings and user edits stay
+  unchanged. A value from one to 63 selects an explicit limit.
+- Warm Ableton URL, licence, and Set handoffs stay quiet for the automatic
+  audio-thread policy. An explicit audio-thread request still asks for a cold
+  launch.
+- On GNOME, Live now borrows Ctrl+Alt+Up and Ctrl+Alt+Down while it runs. Live
+  11 also borrows Ctrl+Alt+Delete. The launcher restores the exact settings
+  after the final Live session exits. `ABLETON_SHORTCUTS=preserve` opts out.
+- Unknown `ABLETON_SHORTCUTS` values now stop the launcher with status 2.
+  Earlier launchers treated those values as `preserve`.
+- The CPU report now identifies its measurements as Linux process CPU and
+  worker wake-ups. The worker setting does not change PipeASIO or Wine's audio
+  path. PipeASIO real-time scheduling remains off by default.
+- Audio-worker guidance now covers deadline spikes in demanding Sets. It uses
+  Live's calculated count as the first comparison when the physical-core
+  limit lowers average CPU but increases overloads.
+- Desktop integration now installs `check-ntsync.sh` with its Windows
+  semantics probe. The installed audio report names this local diagnostic.
+- Linux 6.14 or newer with active NTSync is now a documented requirement. The
+  troubleshooting guide covers the module load and the complete runtime check.
 
 ## 2026.08.19.1
 
@@ -67,8 +98,9 @@ This release changes Live CPU settings:
     pointer. It defaults to `auto`, engaging only after Wine observes failed
     warps, and a button release is repaired only when the drag's own motion was.
     Desktop testing remains open.
-  - Added `WINE_X11_POINTER_FEATURES=disabled`, a master switch that turns every
-    pointer feature off for one launch for baseline comparisons.
+  - Added `WINE_X11_POINTER_FEATURES=disabled`, a master switch that turns the
+    optional pointer features off for one launch for baseline comparisons. The
+    issue 122 clipping-state repair remains active.
   - Named pointer values ignore letter case. `off` and `0` work wherever
     `disabled` works. Invalid settings appear in the normal launch log. 
   - Added a mitigation strategy in response to consistent reports of 

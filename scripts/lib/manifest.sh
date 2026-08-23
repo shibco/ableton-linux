@@ -149,7 +149,8 @@ ableton_managed_path_allowed()
         "$ABLETON_DATA_HOME/lib/pipeasio.sh"|\
         "$ABLETON_DATA_HOME/detect-scale.sh"|"$ABLETON_DATA_HOME/detect-theme.sh"|\
         "$ABLETON_DATA_HOME/shortcut-hold.sh"|"$ABLETON_DATA_HOME/setup-realtime.sh"|\
-        "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/rollback.sh"|\
+        "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/check-ntsync.sh"|\
+        "$ABLETON_DATA_HOME/ntsyncprobe.exe"|"$ABLETON_DATA_HOME/rollback.sh"|\
         "$ABLETON_DATA_HOME/pipewire-version-probe"|"$ABLETON_DATA_HOME/setsyscolors.exe"|\
         "$ABLETON_DATA_HOME/learnheal.exe"|"$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID"|\
         "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID"|\
@@ -810,7 +811,9 @@ ableton_legacy_owned_path()
         "$ABLETON_DATA_HOME/detect-scale.sh") grep -qF 'Sourceable display-scale detection' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/detect-theme.sh") grep -qF 'Sourceable theme detection helpers' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/shortcut-hold.sh") grep -qF 'GNOME shortcut hold' "$path" 2>/dev/null ;;
-        "$ABLETON_DATA_HOME/setsyscolors.exe"|"$ABLETON_DATA_HOME/learnheal.exe") return 1 ;;
+        "$ABLETON_DATA_HOME/check-ntsync.sh") grep -qF 'NT sync semantics hold' "$path" 2>/dev/null ;;
+        "$ABLETON_DATA_HOME/setsyscolors.exe"|"$ABLETON_DATA_HOME/learnheal.exe"|\
+        "$ABLETON_DATA_HOME/ntsyncprobe.exe") return 1 ;;
         "$ABLETON_BIN_HOME/ableton-live") grep -qF 'Ableton Live launcher for the patched Wine stack' "$path" 2>/dev/null ;;
         "$ABLETON_BIN_HOME/max9") grep -qF 'Max 9 launcher' "$path" 2>/dev/null ;;
         "$ABLETON_BIN_HOME/pipeasio-settings") return 0 ;;
@@ -865,13 +868,13 @@ ableton_legacy_owned_path()
 
 ableton_persist_file_prestate()
 {
-    local target="$1" source="${2:-}" collision_policy="${3:-protect-modified}"
+    local target="$1" source="${2:-}" update_instruction="${3:-preserve-local}"
     local manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
     local index="$ABLETON_STATE_HOME/install-prestate.tsv" prestate_dir id backup expected current index_tmp
-    case "$collision_policy" in
-        protect-modified|replace-modified) ;;
+    case "$update_instruction" in
+        preserve-local|refresh-stale-record) ;;
         *)
-            ableton_config_error "unknown managed-file collision policy: $collision_policy"
+            ableton_config_error "The installer received an unknown managed file update instruction: $update_instruction"
             return 1 ;;
     esac
     if [ -d "$target" ] && [ ! -L "$target" ]; then
@@ -893,13 +896,13 @@ ableton_persist_file_prestate()
         if [ -n "$expected" ]; then
             current="$(ableton_manifest_digest "$target" 2>/dev/null || true)"
             [ "$current" = "$expected" ] && return 0
-            # A symlinked target is a user arrangement, never launcher wear;
-            # it stays under the refusal even for replace-modified callers.
-            if [ "$collision_policy" = replace-modified ] && [ ! -L "$target" ]; then
-                echo "replacing modified managed file $target"
+            # A symlink selects a user path. The refresh instruction applies to
+            # regular project files.
+            if [ "$update_instruction" = refresh-stale-record ] && [ ! -L "$target" ]; then
+                echo "The installer refreshed a project file because its saved checksum differed: $target"
                 return 0
             fi
-            ableton_config_error "refusing to overwrite modified managed file $target"
+            ableton_config_error "The installer kept the managed path because its saved checksum differs: $target"
             return 1
         fi
     fi
@@ -941,12 +944,12 @@ ableton_persist_file_prestate()
 ableton_install_file()
 {
     local mode="$1" source="$2" target="$3" kind="${4:-file}"
-    local collision_policy="${5:-protect-modified}" post tmp parent
+    local update_instruction="${5:-preserve-local}" post tmp parent
     [ ! -d "$target" ] || [ -L "$target" ] || {
         ableton_config_error "refusing to replace directory with a file: $target"
         return 1
     }
-    ableton_persist_file_prestate "$target" "$source" "$collision_policy" || return 1
+    ableton_persist_file_prestate "$target" "$source" "$update_instruction" || return 1
     ableton_txn_snapshot "$target"
     post="$(ableton_regular_source_token "$source")" || return 1
     ableton_txn_expect "$target" "$post" || return 1

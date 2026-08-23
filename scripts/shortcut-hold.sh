@@ -403,7 +403,7 @@ ableton_shortcuts_prepare()
     ableton_shortcuts_active=0
     command -v gsettings >/dev/null 2>&1 || return 0
     command -v flock >/dev/null 2>&1 || {
-        [ "${ABLETON_SHORTCUTS:-preserve}" != take ] || echo "ableton-live: cannot safely hold GNOME shortcuts without flock" >&2
+        [ "${ABLETON_SHORTCUTS:-take}" != take ] || echo "ableton-live: cannot safely hold GNOME shortcuts without flock" >&2
         return 0
     }
     ableton_shortcuts_init_state || return 0
@@ -440,7 +440,7 @@ ableton_shortcuts_prepare()
         echo "ableton-live: restoring GNOME shortcuts left by a previous session" >&2
         ableton_shortcuts_restore_locked || true
     fi
-    if [ "$allow_hold" = 1 ] && [ "${ABLETON_SHORTCUTS:-preserve}" = take ] \
+    if [ "$allow_hold" = 1 ] && [ "${ABLETON_SHORTCUTS:-take}" = take ] \
         && [[ "${desktop,,}" == *gnome* ]]; then
         ableton_shortcuts_hold_locked "$exe_base"
         [ -f "$ableton_shortcuts_state" ] && take_lease=1
