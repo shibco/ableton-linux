@@ -475,29 +475,43 @@ A small PipeASIO buffer increases the number of audio blocks that enter Live.
 During stable audio processing at 48 kHz, PipeWire and Live use matching
 64-frame blocks. PipeASIO then calls Live 750 times each second.
 
-Use 128 or 256 frames when the extra latency suits your work. Both comparisons
-used Live 12.4.3 with an empty Set on a 16-core host with 32 logical CPUs. They
-used 48 kHz and 64-frame buffers. A limit of 16 workers reduced CPU use by 23%
-when Live used standard scheduling. It reduced CPU use by 37% when Live used
-real-time scheduling.
-The [PipeASIO and Wine CPU report](notes/FINDINGS-PIPEASIO-CPU-2026-08-20.md)
-records the matched comparisons.
+Live's Average and Current CPU meters measure audio-processing time against
+the buffer deadline. They do not show Linux process CPU. See
+[Ableton's CPU meter guide](https://help.ableton.com/hc/en-us/articles/360019151379-Live-s-CPU-Meter).
 
-Apply a limit of 16 workers as follows.
+The published 23% and 37% reductions measured Linux process CPU for an empty
+Set. They did not measure Live's deadline meter. The change reduced Live
+worker wake-ups. It did not change a PipeASIO or Wine audio hot path. The
+[Live worker and Linux process CPU report](notes/FINDINGS-PIPEASIO-CPU-2026-08-20.md)
+records the comparisons and their limits.
 
-1. Exit every Live process.
-2. Run `env ABLETON_MAX_AUDIO_THREADS=16 ableton-live`.
-3. Play a demanding Set.
-4. Check CPU use and audio timing.
+Use 128 or 256 frames when the extra latency suits your work. On a normal Live
+12 launch, the launcher starts with the physical-core count available to it
+when that value is below Live's calculated audio thread count. An existing
+Live setting, a previous launcher choice, or a later edit takes priority.
 
-If Live transfers an older profile after a point update, exit Live when the
-transfer finishes. Repeat the command.
+These commands override the policy for one cold launch:
 
-The launcher adds this Live 12 setting when 16 falls below Live's calculated
-worker count:
+```bash
+env ABLETON_MAX_AUDIO_THREADS=auto ableton-live  # recalculate an earlier launcher value
+env ABLETON_MAX_AUDIO_THREADS=8 ableton-live     # request an exact value
+env ABLETON_MAX_AUDIO_THREADS=off ableton-live   # restore Live's calculated count
+```
+
+The setting persists in Live. `off` removes the line only when the launcher's
+marker still describes that line. It leaves an existing setting or a later
+user edit unchanged. Exit every Live process before comparing values.
+
+Review the value after you move the prefix to a different processor. A first
+launch under `taskset` or another CPU limit can save the restricted physical
+core count. Run an explicit `auto` launch with normal CPU access to recalculate
+an untouched launcher value.
+
+The launcher adds this Live 12 setting when the selected value falls below
+Live's calculated count:
 
 ```text
--MaxAudioThreads=16
+-MaxAudioThreads=<number>
 ```
 
 Live stores the setting in this file:
@@ -506,14 +520,38 @@ Live stores the setting in this file:
 ~/.wine-ableton/drive_c/users/$USER/AppData/Roaming/Ableton/Live 12*/Preferences/Options.txt
 ```
 
-Exit Live before you edit the file. Replace the line that starts with
-`-MaxAudioThreads=` with an empty line to restore Live's calculated count. The
-launcher records your choice across later Live 12 point updates. A value already
-in the file takes priority.
+Check the value that Live will read:
 
-8 workers produced lower CPU use in the empty Set test. Play a demanding Set
-with 8 and 16 workers. Choose the value that preserves audio timing. Review the
-value after you move the prefix to a different processor.
+```bash
+rg '^-MaxAudioThreads=' \
+  "${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"/drive_c/users/*/AppData/Roaming/Ableton/Live\ 12*/Preferences/Options.txt
+```
+
+Exit Live before editing the file. Remove the line that starts with
+`-MaxAudioThreads=` to restore Live's calculated count. Play a demanding Set
+when comparing values. A smaller count can reduce worker coordination in an
+empty Set but can also leave too few workers for a demanding Set.
+
+The current evidence uses an empty Set on one 16-core, 32-thread host. Before
+this branch is released with the physical-core default, compare it with Live's
+calculated value on a low-core host and a demanding Set. Record deadline load,
+dropouts, and xruns for the same Set section.
+
+Before attributing a high fixed per-callback cost to Wine synchronisation,
+close Live and prove which path the runtime uses:
+
+```bash
+"${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/check-ntsync.sh"
+```
+
+The existence of `/dev/ntsync` proves only that the host device is available.
+The dynamic check also verifies runtime support and confirms that the test
+wineserver opens the device.
+
+Keep PipeASIO real-time scheduling off for normal use. Upstream made it opt-in
+after an Ableton regression was traced to the callback using `SCHED_FIFO`; see
+[PipeASIO issue 4](https://github.com/M0n7y5/pipeasio/issues/4) and the
+[PipeASIO performance notes](https://github.com/M0n7y5/pipeasio/blob/v1.5.0/README.md#performance).
 
 At 128 or 256 frames, use this comparison.
 
@@ -768,23 +806,19 @@ Ctrl+Alt+Up and Ctrl+Alt+Down switch workspaces instead of running Live's
 **Adjust Note Selection Chance**, and Ctrl+Alt+Delete opens the logout dialog
 instead of **Delete Fades** in Live 11.
 
-On GNOME, start Live with this command and it borrows those keys while Live is
-open:
-
-```bash
-env ABLETON_SHORTCUTS=take ableton-live
-```
+On GNOME, a normal launch borrows those keys while Live is open.
 
 Your shortcuts come back when you close Live, and after a crash. While Live
 runs, those combinations stop working elsewhere on your desktop, so you cannot
 switch workspaces with them until you close Live.
 
-Live never touches your desktop shortcuts unless you ask, so starting Live
-normally changes nothing. You can also ask for that explicitly:
+To keep the desktop bindings instead, opt out for that launch:
 
 ```bash
 env ABLETON_SHORTCUTS=preserve ableton-live
 ```
+
+Use `ABLETON_SHORTCUTS=take` to request the normal behaviour explicitly.
 
 On any other desktop, change the conflicting shortcut in your desktop's own
 settings.

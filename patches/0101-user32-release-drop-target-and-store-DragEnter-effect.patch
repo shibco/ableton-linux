@@ -1,0 +1,116 @@
+From: ableton-wine <local@ableton-wine>
+Date: Thu, 20 Aug 2026 18:05:00 +0200
+Subject: [PATCH] user32: finish external drag targets exactly once
+
+Release and clear the retained IDropTarget at drag leave and after every drop
+path. This incorporates the lifetime fix from upstream Wine commit 8ca473d0.
+
+Also store the effect returned by DragEnter before X11 asks for the first
+XdndStatus. Previously the first position could advertise the stale NONE
+effect and reject a fast Enter -> Position -> Drop transaction even though the
+target had accepted it.
+
+diff --git a/dlls/user32/clipboard.c b/dlls/user32/clipboard.c
+index 3c3ba7c..d63e915 100644
+--- a/dlls/user32/clipboard.c
++++ b/dlls/user32/clipboard.c
+@@ -684,6 +684,18 @@ static struct data_object *data_object_from_IDataObject( IDataObject *iface )
+     return CONTAINING_RECORD( iface, struct data_object, IDataObject_iface );
+ }
+ 
++static void data_object_release_drop_target( struct data_object *object, BOOL leave )
++{
++    HRESULT hr;
++
++    if (!object->drop_target) return;
++    if (leave && FAILED(hr = IDropTarget_DragLeave( object->drop_target )))
++        WARN( "IDropTarget_DragLeave returned %#lx\n", hr );
++    TRACE( "dnd target=%p event=release leave=%u\n", object->drop_target, leave );
++    IDropTarget_Release( object->drop_target );
++    object->drop_target = NULL;
++}
++
+ struct format_iterator
+ {
+     IEnumFORMATETC IEnumFORMATETC_iface;
+@@ -862,13 +874,7 @@ static ULONG WINAPI data_object_Release( IDataObject *iface )
+ 
+     if (!ref)
+     {
+-        if (object->drop_target)
+-        {
+-            HRESULT hr = IDropTarget_DragLeave( object->drop_target );
+-            if (FAILED(hr)) WARN( "IDropTarget_DragLeave returned %#lx\n", hr );
+-            IDropTarget_Release( object->drop_target );
+-        }
+-
++        data_object_release_drop_target( object, TRUE );
+         free( object );
+     }
+ 
+@@ -1158,7 +1164,9 @@ void drag_drop_leave(void)
+ 
+     TRACE("DND Operation canceled\n");
+ 
+-    if ((object = get_data_object( TRUE ))) IDataObject_Release( &object->IDataObject_iface );
++    if (!(object = get_data_object( TRUE ))) return;
++    data_object_release_drop_target( object, TRUE );
++    IDataObject_Release( &object->IDataObject_iface );
+ }
+ 
+ DWORD drag_drop_drag( HWND hwnd, POINT point, DWORD effect )
+@@ -1179,13 +1187,8 @@ DWORD drag_drop_drag( HWND hwnd, POINT point, DWORD effect )
+         /* Notify OLE of DragEnter. Result determines if we accept */
+         HWND dropTargetWindow;
+ 
+-        if (object->drop_target)
+-        {
+-            hr = IDropTarget_DragLeave( object->drop_target );
+-            if (FAILED(hr)) WARN( "IDropTarget_DragLeave returned %#lx\n", hr );
+-            IDropTarget_Release( object->drop_target );
+-            object->drop_target = NULL;
+-        }
++        data_object_release_drop_target( object, TRUE );
++        object->target_effect = DROPEFFECT_NONE;
+ 
+         dropTargetWindow = hwnd;
+         do { object->drop_target = get_droptarget_pointer( dropTargetWindow ); }
+@@ -1197,12 +1200,15 @@ DWORD drag_drop_drag( HWND hwnd, POINT point, DWORD effect )
+-            DWORD effect_ignore = effect;
++            DWORD target_effect = effect;
+             hr = IDropTarget_DragEnter( object->drop_target, &object->IDataObject_iface,
+-                                        MK_LBUTTON, pointl, &effect_ignore );
++                                        MK_LBUTTON, pointl, &target_effect );
+-            if (hr == S_OK) TRACE( "the application accepted the drop (effect = %ld)\n", effect_ignore );
++            if (hr == S_OK)
++            {
++                object->target_effect = target_effect;
++                TRACE( "the application accepted the drop (effect = %ld)\n", target_effect );
++            }
+             else
+             {
+                 WARN( "IDropTarget_DragEnter returned %#lx\n", hr );
+-                IDropTarget_Release( object->drop_target );
+-                object->drop_target = NULL;
++                data_object_release_drop_target( object, FALSE );
+             }
+         }
+     }
+@@ -1276,8 +1282,6 @@ DWORD drag_drop_drop( HWND hwnd )
+     {
+         HRESULT hr = IDropTarget_DragLeave( object->drop_target );
+         if (FAILED(hr)) WARN( "IDropTarget_DragLeave returned %#lx\n", hr );
+-        IDropTarget_Release( object->drop_target );
+-        object->drop_target = NULL;
+     }
+ 
+     if (drop_file)
+@@ -1306,6 +1310,8 @@ DWORD drag_drop_drop( HWND hwnd )
+         }
+     }
+ 
++    data_object_release_drop_target( object, FALSE );
++
+     TRACE("effectRequested(0x%lx) accept(%d) performed(0x%lx) at x(%ld),y(%ld)\n",
+           object->target_effect, accept, effect, object->target_pos.x, object->target_pos.y);
+ 

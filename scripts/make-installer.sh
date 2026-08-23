@@ -20,6 +20,7 @@ VERSION="$(cat VERSION)"
 tarball="dist/${NAME}-${VERSION}.tar.zst"
 build_info="dist/BUILD-INFO-${VERSION}.txt"
 probe="dist/pipewire-version-probe"
+ntsync_probe="beta/tester-kit/probes/windows/ntsyncprobe.exe"
 cabextract_static="dist/cabextract-static"
 linkd="dist/ableton-linkd"
 
@@ -27,6 +28,7 @@ linkd="dist/ableton-linkd"
 [ -f "$tarball.sha256" ] || { echo "!! $tarball.sha256 missing" >&2; exit 1; }
 [ -s "$build_info" ] || { echo "!! exact BUILD-INFO-${VERSION}.txt is missing" >&2; exit 1; }
 [ -x "$probe" ] || { echo "!! dist/pipewire-version-probe is missing" >&2; exit 1; }
+[ -f "$ntsync_probe" ] || { echo "!! $ntsync_probe is missing" >&2; exit 1; }
 [ -x "$cabextract_static" ] || { echo "!! dist/cabextract-static is missing: run ./build.sh first" >&2; exit 1; }
 [ -x "$linkd" ] || { echo "!! dist/ableton-linkd is missing: run ./build.sh first" >&2; exit 1; }
 if [ "$(grep -c '^dist-version:' "$build_info" || true)" -ne 1 ] \
@@ -85,16 +87,19 @@ mkdir -p "$kit/scripts"
 cp -- scripts/installer.sh scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
       scripts/ableton-live scripts/max9 scripts/detect-scale.sh \
       scripts/detect-theme.sh scripts/shortcut-hold.sh \
-      scripts/check-live-audio.sh scripts/setup-link.sh scripts/ableton-linkctl \
+      scripts/check-live-audio.sh scripts/check-ntsync.sh \
+      scripts/setup-link.sh scripts/ableton-linkctl \
       "$kit/scripts/"
 chmod 755 "$kit/scripts/installer.sh" "$kit/scripts/install.sh" \
     "$kit/scripts/setup-prefix.sh" "$kit/scripts/uninstall.sh" \
     "$kit/scripts/ableton-live" "$kit/scripts/max9" \
     "$kit/scripts/detect-scale.sh" "$kit/scripts/detect-theme.sh" \
     "$kit/scripts/shortcut-hold.sh" "$kit/scripts/check-live-audio.sh" \
-    "$kit/scripts/setup-link.sh" "$kit/scripts/ableton-linkctl"
+    "$kit/scripts/check-ntsync.sh" "$kit/scripts/setup-link.sh" \
+    "$kit/scripts/ableton-linkctl"
 install -m755 scripts/setup-realtime.sh scripts/audio-report.sh scripts/rollback.sh \
       "$kit/scripts/"
+install -m644 "$ntsync_probe" "$kit/scripts/ntsyncprobe.exe"
 cp -- scripts/lib/config.sh scripts/lib/lifecycle.sh scripts/lib/live-options.sh \
       scripts/lib/manifest.sh scripts/lib/pipeasio.sh \
       "$kit/scripts/lib/"
@@ -160,6 +165,7 @@ install -m644 vendor/fonts/bitstream-vera/COPYRIGHT.TXT \
 
 for staged_executable in \
     "$kit/scripts/setup-realtime.sh" "$kit/scripts/audio-report.sh" \
+    "$kit/scripts/check-ntsync.sh" \
     "$kit/scripts/rollback.sh" "$kit/bin/pipewire-version-probe"; do
     [ -x "$staged_executable" ] || {
         echo "!! staged installer helper is not executable: $staged_executable" >&2
@@ -168,6 +174,8 @@ for staged_executable in \
 done
 cmp -s -- "$probe" "$kit/bin/pipewire-version-probe" || {
     echo "!! staged PipeWire compatibility check changed while packing" >&2; exit 1; }
+cmp -s -- "$ntsync_probe" "$kit/scripts/ntsyncprobe.exe" || {
+    echo "!! staged NTSync semantics probe changed while packing" >&2; exit 1; }
 cmp -s -- "$build_info" "$kit/BUILD-INFO-${VERSION}.txt" || {
     echo "!! staged BUILD-INFO changed while packing" >&2; exit 1; }
 

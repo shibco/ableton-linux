@@ -10,11 +10,17 @@ WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export WINEDEBUG=-all
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-PROBE="${ABLETON_NTSYNC_PROBE:-$here/../beta/tester-kit/probes/windows/ntsyncprobe.exe}"
+if [ -n "${ABLETON_NTSYNC_PROBE:-}" ]; then
+    PROBE="$ABLETON_NTSYNC_PROBE"
+elif [ -f "$here/ntsyncprobe.exe" ]; then
+    PROBE="$here/ntsyncprobe.exe"
+else
+    PROBE="$here/../beta/tester-kit/probes/windows/ntsyncprobe.exe"
+fi
 TIMEOUT="${ABLETON_CHECK_TIMEOUT:-120}"
 
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "!! no wine at $WINE_ROOT" >&2; exit 1; }
-[ -f "$PROBE" ]              || { echo "!! probe not found at $PROBE (run beta/tester-kit/probes/build-maintainer-probes.sh)" >&2; exit 1; }
+[ -f "$PROBE" ]              || { echo "!! ntsync semantics probe not found at $PROBE" >&2; exit 1; }
 
 for pid in $(pgrep -x wineserver); do
     if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX"; then
