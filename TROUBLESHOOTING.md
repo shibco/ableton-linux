@@ -19,7 +19,7 @@ have already fixed your issue.
   - [The Ableton installer window never progresses or shows graphical corruption on Hyprland](#the-ableton-installer-window-never-progresses-or-shows-graphical-corruption-on-hyprland)
   - [The installer asks for an explicit display scale](#the-installer-asks-for-an-explicit-display-scale)
   - [The installer says PipeWire is too old](#the-installer-says-pipewire-is-too-old)
-  - [Enable and verify NTSync](#enable-and-verify-ntsync)
+  - [Live reports that NTSync is inactive](#live-reports-that-ntsync-is-inactive)
 - [Live versions and launching](#live-versions-and-launching)
   - [The launcher finds more than one Live installation](#the-launcher-finds-more-than-one-live-installation)
   - [Live 11: Max for Live fails after the first launch](#live-11-max-for-live-fails-after-the-first-launch)
@@ -31,7 +31,8 @@ have already fixed your issue.
   - [Audio crackling and distortion issues](#audio-crackling-and-distortion-issues)
   - [Audio cuts out for a few seconds, or plays at the wrong speed](#audio-cuts-out-for-a-few-seconds-or-plays-at-the-wrong-speed)
 - [Performance, visuals and the Live interface](#performance-visuals-and-the-live-interface)
-  - [Live uses high CPU or overloads at small buffers](#live-uses-high-cpu-or-overloads-at-small-buffers)
+  - [Live overloads after an update](#live-overloads-after-an-update)
+  - [Live uses high CPU while idle](#live-uses-high-cpu-while-idle)
   - [Live is the wrong size, or looks blurry](#live-is-the-wrong-size-or-looks-blurry)
 - [Plugins and Max for Live devices](#plugins-and-max-for-live-devices)
   - [A plugin's installer won't start](#a-plugins-installer-wont-start)
@@ -43,7 +44,9 @@ have already fixed your issue.
 - [Inputs (mouse and keyboard) and devices (MIDI and controllers)](#inputs-mouse-and-keyboard-and-devices-midi-and-controllers)
   - [Live ignores or does something unexpected when you use a keyboard shortcut](#live-ignores-or-does-something-unexpected-when-you-use-a-keyboard-shortcut)
   - [CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse)
-  - [My MIDI controller or audio interface doesn't show up in Live](#my-midi-controller-or-audio-interface-doesnt-show-up-in-live)
+  - [Scrolling, panning or dragging stops working](#scrolling-panning-or-dragging-stops-working)
+  - [A MIDI controller does not appear](#a-midi-controller-does-not-appear)
+  - [An audio interface does not appear](#an-audio-interface-does-not-appear)
   - [Push 2 connection steps](#push-2-connection-steps)
   - [Push 3 stays on the connection screen](#push-3-stays-on-the-connection-screen)
   - [Ableton Move support](#ableton-move-support)
@@ -81,42 +84,34 @@ If you find a Hyprland setting that fixes this, [open an issue](https://github.c
 
 ### The installer asks for an explicit display scale
 
-Some X11 window managers, including i3, don't openly declare their DPI and this will
-throw our installer. When installing for the first time, the Ableton-Linux installer expects an
-explicit value for your DPI so it knows how to scale Ableton Live properly. 
-
-If your system isn't declaring a DPI, you'll get errors like this:
+Some X11 window managers, including i3, do not tell the installer your display
+scale. A fresh Live setup then stops with these messages:
 
 ```text
 !! cannot detect the display scale (non-GNOME desktop or headless session?)
 !! a fresh prefix needs an explicit ABLETON_DPI_MODE=100 or =dpi<N>
 ```
 
-Check whether your desktop provides an Xft DPI value:
-
-```bash
-xrdb -query | grep '^Xft\.dpi:'
-```
-
-For an empty result on a desktop at 100% scale, run the installer with
-`ABLETON_DPI_MODE=100`:
+For a desktop at 100% scale, run the installer again with:
 
 ```bash
 env ABLETON_DPI_MODE=100 \
   sh ~/Downloads/install-ableton-latest.run install
 ```
 
-For a result such as `Xft.dpi: 120`, add `dpi` before the number:
+For a desktop at 125% scale, use:
 
 ```bash
 env ABLETON_DPI_MODE=dpi120 \
   sh ~/Downloads/install-ableton-latest.run install
 ```
 
-For another desktop scale, select the matching value from the
-[display scale table](#live-is-the-wrong-size-or-looks-blurry).
-The 100% fallback resolved the i3 installation reported in
-[issue 246](https://github.com/shibco/ableton-linux/issues/246).
+For another scale, choose its value from the
+[display scale table](#live-is-the-wrong-size-or-looks-blurry). The installer
+continues when the value is valid, and Live uses that scale on its first start.
+Thanks to the reporter of
+[issue 246](https://github.com/shibco/ableton-linux/issues/246) for confirming
+the 100% value on i3.
 
 ### The installer says PipeWire is too old
 
@@ -168,48 +163,30 @@ sudo apt install ppa-purge
 sudo ppa-purge ppa:savoury1/pipewire
 ```
 
-### Enable and verify NTSync
+### Live reports that NTSync is inactive
 
-NTSync lets Wine complete Windows wait operations in the Linux kernel. This
-project requires the complete NTSync interface from Linux 6.14 or newer for
-low-latency audio. The [Linux NTSync documentation](https://docs.kernel.org/6.14/userspace-api/ntsync.html)
-describes the driver and its `/dev/ntsync` device.
+NTSync helps Live meet short audio deadlines. This project requires Linux 6.14
+or newer with NTSync active.
 
-Check your running kernel and device:
-
-```bash
-uname -r
-ls -l /dev/ntsync
-```
-
-A listed character device means that the host driver is active. A kernel that
-packages NTSync as a module can load it with these commands:
-
-```bash
-sudo modprobe ntsync
-ls -l /dev/ntsync
-printf '%s\n' ntsync | sudo tee /etc/modules-load.d/ntsync.conf
-```
-
-If `modprobe` reports an unavailable module, install a distribution kernel
-with `CONFIG_NTSYNC=y` or `CONFIG_NTSYNC=m`. Use Linux 6.14 or newer, then
-restart the computer.
-
-After you install or update Ableton Linux, close Live and verify the complete
-path:
+Close Live and run the installed check:
 
 ```bash
 "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/check-ntsync.sh"
 ```
 
-A successful check ends with this result:
+A working setup ends with:
 
 ```text
 OK: sync semantics hold, ntsync active (server holds /dev/ntsync)
 ```
 
-The device check verifies the host kernel. The dynamic check also verifies the
-bundled Wine runtime and Windows synchronisation semantics.
+Any other final line means that NTSync is inactive. Install your normal system
+and kernel updates, restart the computer and run the check again.
+
+If the command is missing, or the result still differs, update this project and
+include the complete output in a
+[new issue](https://github.com/shibco/ableton-linux/issues/new/choose). We can
+then give you directions for your distribution.
 
 ## Live versions and launching
 
@@ -242,8 +219,6 @@ Live 11 will start again. A fix for this is coming soon.
 If you import WMA or video files in Live 11, the codecs used by Live 11 will
 cause Live under Linux to crash. This is a known issue, but we do not intend to
 fix it at this time.
-
-For technical details about this, please see the [WMVCore investigation](notes/ABLETON-WINE-LIVE11-WMVCORE-STUB.md).
 
 ## Sound and PipeASIO
 
@@ -303,9 +278,9 @@ sudo pacman -S qt6-base qt6-wayland
 On any other system, install Qt 6 Widgets and its platform plugins with your
 package manager.
 
-Now open PipeASIO Settings again. Each time you change a setting there, set
-Live's **Audio Device** to **None** and back to **PipeASIO** so Live picks it
-up.
+Now open PipeASIO Settings again. Device, buffer, sample-rate and scheduling
+changes apply while Live runs. If you change the number of input or output
+channels, set Live's **Audio Device** to **None** and back to **PipeASIO** once.
 
 If PipeASIO Settings still does not open, download
 [the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
@@ -369,14 +344,12 @@ env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
 
 ### High audio latency with Live
 
-The most obvious way to resolve this is the same as other systems: lower the buffer 
-size with **PipeASIO Settings** in your application menu or via (`pipeasio-settings` 
-in a terminal), or via the manual methods above. Then, **Audio Device** in Live to
-**None** and back to **PipeASIO**. 
+Open **PipeASIO Settings** and lower the buffer. The change applies while Live
+runs. Play your instrument after each change and stop when the monitoring delay
+feels comfortable.
 
-As with Windows and macOS a lower buffer value shortens the delay but risks
-audio artifacting. If you experience audio distortion or corruption, set the 
-buffer to a higher number.
+A lower value shortens the delay and gives Live less time to finish each audio
+block. Raise it again if you hear crackles or dropouts.
 
 You can also make Live run in an experimental real-time audio mode. 
 
@@ -422,9 +395,9 @@ sh ~/Downloads/install-ableton-latest.run update
 #### Raise your buffer size
 
 As with Windows and macOS, a larger buffer gives Live more time to process
-audio. Open **PipeASIO Settings**, raise the buffer, then set **Audio Device**
-in Live to **None** and back to **PipeASIO**. If that window will not open, you
-can [edit the settings file instead](#changing-your-audio-settings-when-pipeasio-settings-wont-open).
+audio. Open **PipeASIO Settings** and raise the buffer. The change applies while
+Live runs. If that window will not open, you can
+[edit the settings file instead](#changing-your-audio-settings-when-pipeasio-settings-wont-open).
 
 To try a size without changing anything permanently:
 
@@ -513,129 +486,60 @@ it when you open an issue.
 
 ## Performance, visuals and the Live interface
 
-### Live uses high CPU or overloads at small buffers
+### Live overloads after an update
 
-A small PipeASIO buffer increases the number of audio blocks that enter Live.
-During stable audio processing at 48 kHz, 64-frame blocks call Live 750 times
-each second. A 32-frame buffer raises that rate to 1,500 calls each second.
+Live 12 now uses at most one audio worker per physical CPU core by default.
+This lowers processor use on many computers. A demanding Set with several
+independent instrument and effect chains can perform better with Live's own
+worker count.
 
-Live's Average and Current CPU meters measure audio-processing time against
-the buffer deadline. Linux process CPU measures a different value. See
-[Ableton's CPU meter guide](https://help.ableton.com/hc/en-us/articles/360019151379-Live-s-CPU-Meter).
+Start with a 256-frame buffer in PipeASIO Settings. If the Set becomes stable,
+lower the buffer only when you need less monitoring latency.
 
-The published 23% and 37% reductions measured Linux process CPU for an empty
-Set. The change reduced Live worker wake-ups. PipeASIO and Wine audio paths
-stay unchanged. The
-[Live worker and Linux process CPU report](notes/FINDINGS-PIPEASIO-CPU-2026-08-20.md)
-records the comparisons and their limits.
+If the overloads began after an update, compare the new default with Live's
+own count:
 
-The physical-core limit trades some parallel DSP capacity for fewer worker
-wake-ups. A plug-in-heavy Set can show a lower average value and still cross
-the audio deadline. Use 256 frames as a starting point. Try 128 frames when
-the lower latency helps your work.
+1. Close every Live window.
+2. Start Live with this command:
 
-On a normal Live 12 launch, the launcher starts with the physical-core count
-available to it when that value is below Live's calculated audio thread count.
-An existing Live setting, a previous launcher choice, or a later edit takes
-priority.
+   ```bash
+   env ABLETON_MAX_AUDIO_THREADS=off ableton-live
+   ```
 
-These commands override the policy for one cold launch:
+3. Play the same part of the Set.
+4. Compare Live's Current CPU meter, overload indicator and audible dropouts.
 
-```bash
-env ABLETON_MAX_AUDIO_THREADS=auto ableton-live  # recalculate an earlier launcher value
-env ABLETON_MAX_AUDIO_THREADS=8 ableton-live     # request an exact value
-env ABLETON_MAX_AUDIO_THREADS=off ableton-live   # restore Live's calculated count
-```
+If `off` performs better, use that command for the demanding Set.
 
-An automatic or exact count persists in Live. `off` removes the line when the
-launcher's marker still describes it. A later normal launch can apply the
-automatic count again. Existing settings and later user edits stay unchanged.
-
-Use `off` for the first comparison when a demanding Set overloads after an
-update. Exit every Live process, launch with `off`, and play the same Set
-section. Compare Current CPU, overload events, audible glitches, and xruns.
-Use the value that gives the Set enough parallel DSP capacity.
-
-Review the value after you move the prefix to a different processor. A first
-launch under `taskset` or another CPU limit can save the restricted physical
-core count. Run an explicit `auto` launch with normal CPU access to recalculate
-an untouched launcher value.
-
-The launcher adds this Live 12 setting when the selected value falls below
-Live's calculated count:
-
-```text
--MaxAudioThreads=<number>
-```
-
-Live stores the setting in this file:
-
-```text
-~/.wine-ableton/drive_c/users/$USER/AppData/Roaming/Ableton/Live 12*/Preferences/Options.txt
-```
-
-Check the value that Live will read:
-
-```bash
-rg '^-MaxAudioThreads=' \
-  "${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"/drive_c/users/*/AppData/Roaming/Ableton/Live\ 12*/Preferences/Options.txt
-```
-
-Exit Live before editing the file. Remove the line that starts with
-`-MaxAudioThreads=` to restore Live's calculated count. Play a demanding Set
-when comparing values. A smaller count reduces worker coordination. A larger
-count gives independent audio chains more parallel capacity.
-
-The controlled evidence uses an empty Set on one 16-core, 32-thread host.
-Project routing, plug-ins, and processor topology change the best count. Run
-the [NTSync verification](#enable-and-verify-ntsync) before CPU comparisons.
-
-Keep PipeASIO real-time scheduling off for normal use. Upstream made it opt-in
-after an Ableton regression was traced to the callback using `SCHED_FIFO`; see
-[PipeASIO issue 4](https://github.com/M0n7y5/pipeasio/issues/4) and the
-[PipeASIO performance notes](https://github.com/M0n7y5/pipeasio/blob/v1.5.0/README.md#performance).
-
-At 128 or 256 frames, use this comparison.
-
-1. Record Live's CPU use for one Set section with PipeASIO.
-2. Select another audio driver in Live.
-3. Record Live's CPU use for the same Set section.
-4. Select PipeASIO again.
-5. Open the Display and Input page in Live settings.
-6. Enable the GPU renderer.
-7. Record Live's CPU use for the same Set section.
-8. Compare the 3 CPU measurements.
-
-If your processor only spikes while you move the mouse, see
-[CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse) instead.
-If audio is crackling as well, work through
+If `off` gives the same result, return to a normal launch and work through
 [audio crackling and distortion issues](#audio-crackling-and-distortion-issues).
+Existing worker settings and later edits always take priority over the default.
 
-#### If Enable GPU Renderer is greyed out
+### Live uses high CPU while idle
 
-Live decides whether to offer its GPU renderer from the identity number of your
-graphics chip, and it turns down a list of Intel chips sold between 2004 and
-2014. 
+Open **Settings > Display & Input** and turn on **Enable GPU Renderer**. Close
+the settings window and let the empty Set sit for a moment. Live's processor
+use should settle.
 
-Luckily, you are running Live on Linux, and many of those chipsets are well
-supported. 
-
-Try starting Live with:
+If **Enable GPU Renderer** is greyed out on an older Intel graphics chip, try
+one launch with:
 
 ```bash
 env WINE_D3D_FORCE_GPU_RENDERING=1 ableton-live
 ```
 
-Then open **Settings > Display & Input** and turn on **Enable GPU Renderer**.
+Open **Settings > Display & Input** again and enable the GPU renderer. The
+launch override ends when Live closes. If Live crashes or shows visual damage,
+start it normally to return to the standard graphics path.
 
-If this causes a crash or any visual distortion, the setting is not saved when
-Live exits. Simply run `ableton-`live without the prepended setting.
-
-If the Enable GPU Renderer setting is still greyed out, [open an issue](https://github.com/shibco/ableton-linux/issues) and tell us which card you have.
+If the switch stays greyed out, or an empty Set still uses high CPU, open a
+[new issue](https://github.com/shibco/ableton-linux/issues/new/choose) and name
+your graphics card. If processor use rises only while the pointer moves, see
+[CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse).
 
 ### Live is the wrong size, or looks blurry
 
-If Live open much bigger or smaller than everything else on your desktop, or
+If Live opens much bigger or smaller than everything else on your desktop, or
 if its text is blurry, Live is trying to display at a resolution that isn't
 aligned with your desktop.
 
@@ -796,9 +700,7 @@ title bar in Live's device rack, turn off **Auto-Scale Plugin Window**,
 then close the plugin and open it again.
 
 Only some plugins are affected, so leave the setting alone for the rest.
-
-For technical details about this, please see the
-[Pianoteq investigation](notes/ABLETON-WINE-PIANOTEQ-DPI-GHOST-BUG.md).
+The plugin window should now reopen at a stable size and fit its frame.
 
 ### A plugin loads into a Live channel fine, and can play sound, but fails to open its window
 
@@ -834,10 +736,9 @@ Linux-native VST and CLAP plugins will not show up in Live's browser, and no
 setting will change that yet. We are working on implementing support for 
 Linux native plugins.
 
-For now, you can still play them alongside Live by running them in Carla and routing the
-audio and MIDI through PipeWire. See
-[Linux-native plugin routing](notes/ABLETON-WINE-PLUGIN-BRIDGING.md) for the
-steps and for what does not work yet.
+For now, you can still play them alongside Live by running them in Carla and
+routing audio and MIDI through PipeWire. Live then treats the plugin as an
+external instrument or effect; save the Carla session separately.
 
 ## Inputs (mouse and keyboard) and devices (MIDI and controllers)
 
@@ -875,7 +776,7 @@ Live's processor use climbs while you move the pointer across its window, and
 settles again when you stop.
 
 First check that **Enable GPU Renderer** is turned on, as described in
-[Live uses high CPU or overloads at small buffers](#live-uses-high-cpu-or-overloads-at-small-buffers).
+[Live uses high CPU while idle](#live-uses-high-cpu-while-idle).
 That accounts for most of these.
 
 If it still happens, see whether Live recorded it:
@@ -892,17 +793,33 @@ else.
 
 When you are testing Live 12 Beta, use `live-beta.log` in that same folder.
 
-### My MIDI controller or audio interface doesn't show up in Live
+### Scrolling, panning or dragging stops working
 
-Connect your gear before you start Live. Live only finds MIDI devices that were
-already plugged in when it started, so anything you connect afterwards stays
-invisible until you close Live and open it again. A device that was connected
-before Live started keeps working if you unplug it and plug it back in.
+The current runtime repairs pointer state after button releases, focus changes,
+closed windows and device changes. Download the latest installer, run an
+update, close every Live window and start Live again.
 
-#### MIDI controllers
+If scrolling or dragging still stops, compare one launch with the optional
+pointer features turned off:
 
-With the controller connected and Live running, open
-**Settings > Link, Tempo & MIDI**:
+```bash
+env WINE_X11_POINTER_FEATURES=disabled ableton-live
+```
+
+This comparison keeps ordinary wheel and button input. It turns off precise
+scrolling, pinch zoom, inertia and middle-button navigation. The issue 122
+pointer-clipping repair stays active.
+
+If the problem disappears during that launch, open a
+[new issue](https://github.com/shibco/ableton-linux/issues/new/choose). Name
+your mouse or touchpad, desktop and the action that made input stop. If the
+problem remains, include that result too. It tells us to look outside the
+optional pointer path.
+
+### A MIDI controller does not appear
+
+Connect the controller while Live runs and wait a few seconds. Open
+**Settings > Link, Tempo and MIDI**:
 
 1. Look for your controller in the **Control Surface** chooser. If it is there,
    select it, then set **Input** and **Output** to your controller's ports.
@@ -911,33 +828,51 @@ With the controller connected and Live running, open
    has motorised faders or lit buttons, turn **Remote** on for its output port
    as well.
 
-Live's MIDI indicators in the top right corner flash when it receives something,
-which is the quickest way to tell whether it worked.
+Live's MIDI indicators in the top-right corner flash when it receives input.
+This confirms the connection.
 
-If your controller was connected before launch and still does not appear,
-[open an issue](https://github.com/shibco/ableton-linux/issues) and tell us its
-make and model.
+USB MIDI ports now use Windows-style names. After updating, select the input
+and output again in any old control-surface row that became blank or stopped
+responding.
 
-#### Audio interfaces
+If the ports remain missing, run:
+
+```bash
+aconnect -l
+```
+
+If the controller appears there, Linux can see it. Update this project and
+open a [new issue](https://github.com/shibco/ableton-linux/issues/new/choose)
+with the controller make, model and command output. If it stays absent, try
+another USB port or data-capable cable until `aconnect -l` lists it.
+
+After setup, disconnecting and reconnecting the same controller should restore
+its input and output in the current Live session.
+
+### An audio interface does not appear
 
 Your interface will not appear by name in Live's **Audio Device** list, and that
 is normal. On Linux, Live sees a single audio device called **PipeASIO**, which
 passes sound to whichever interface your system is using.
 
 Pick your interface in **PipeASIO Settings** instead, using the **Hardware
-Setup** button in **Settings > Audio**. If you connected the interface after
-Live started, set **Audio Device** to **None** and back to **PipeASIO** first.
-If it is still missing, close Live and start it again.
+Setup** button in **Settings > Audio**. An interface connected after Live starts
+should appear there within a few seconds.
+
+When you select a specific interface, PipeASIO remembers it. Audio stays silent
+while that interface is disconnected and resumes when its complete input or
+output route returns. Automatic routing follows the default device selected by
+your desktop.
 
 If PipeASIO Settings will not open, see
 [I can't change any audio settings in Live](#i-cant-change-any-audio-settings-in-live)
 for how to set your devices in a text file instead.
 
-If your interface is missing from PipeASIO Settings as well, it is your system
-that cannot see it rather than Live. Check that it appears in your desktop's own
-sound settings first, then
-[open an issue](https://github.com/shibco/ableton-linux/issues) and tell us the
-make and model.
+If your interface is missing from PipeASIO Settings, check your desktop's sound
+settings. Reconnect the interface until it appears there. If the desktop sees
+it and PipeASIO Settings still does not, update this project and open a
+[new issue](https://github.com/shibco/ableton-linux/issues/new/choose). Include
+the interface make and model.
 
 ### Push 2 connection steps
 
@@ -954,17 +889,21 @@ For a dark display, close Live normally. Reconnect Push 2 and start Live again.
 
 Share unresolved display results in a
 [new GitHub issue](https://github.com/shibco/ableton-linux/issues/new).
-Include your distribution and desktop. The
-[Push 2 display bridge note](notes/ABLETON-WINE-PUSH2-DISPLAY.md) explains the
-technical design.
+Include your distribution and desktop.
 
 ### Push 3 stays on the connection screen
 
-Push 3 needs desktop USB access and a current Wine prefix. Complete these
-checks:
+Push 3 needs the current runtime, desktop USB access and a connection before
+Live starts. Work through these steps:
 
-1. Select control mode on a standalone Push 3.
-2. Check the USB connection.
+1. Close Live and update this project:
+
+   ```bash
+   sh ~/Downloads/install-ableton-latest.run update
+   ```
+
+2. Select Control Mode on a standalone Push 3.
+3. Check the USB connection:
 
    ```bash
    lsusb -d 2982:1969
@@ -973,7 +912,7 @@ checks:
    A line for `2982:1969` confirms the USB connection. Try another
    data-capable cable or USB port until that line appears.
 
-3. Add USB access for your desktop session.
+4. Add USB access for your desktop session:
 
    ```bash
    printf '%s\n' 'SUBSYSTEM=="usb", ATTR{idVendor}=="2982", ATTR{idProduct}=="1969", MODE="0660", TAG+="uaccess"' |
@@ -981,37 +920,20 @@ checks:
    sudo udevadm control --reload-rules
    ```
 
-4. Disconnect and reconnect Push 3.
-5. Refresh the prefix after a source build.
-
-   ```bash
-   scripts/setup-prefix.sh --refresh
-   ```
-
+5. Disconnect and reconnect Push 3.
 6. Start Live while Push 3 is connected.
 
-Live scans its MIDI device list during startup. Live starts `Push3.exe` after
-it finds the Push USB identity. A successful session ends with `Push is go`.
-Keep the Push 3 control-surface rows empty. Live detects the surface
-automatically. Follow the power prompt when Live installs firmware, then start
-Live again after Push restarts.
+Keep the Push 3 control-surface rows empty. Live creates the surface
+automatically. A successful connection clears Push's connection screen and
+activates its display, pads and encoders.
 
-You can test host access from a source checkout:
+If Live offers a firmware update, follow the power prompt. Start Live again
+after Push restarts.
 
-```bash
-cc -std=c11 -O2 -Wall -Wextra tools/push3usb.c \
-  $(pkg-config --cflags --libs libusb-1.0) -o /tmp/push3usb
-/tmp/push3usb --claim
-```
-
-With host access, the probe reports `claim=ok` for interfaces 0 and 6. A
-`LIBUSB_ERROR_ACCESS` result points to the device rule.
-
-Add your results to
-[Push 3 support issue 26](https://github.com/shibco/ableton-linux/issues/26).
-Include your distribution, desktop, Live version, firmware version, and probe
-output. Replace the controller serial number with `[redacted]` in every shared
-USB trace.
+If Push stays on the connection screen, open a
+[new issue](https://github.com/shibco/ableton-linux/issues/new/choose). Include
+your distribution, desktop, Live version, firmware version and the output from
+`lsusb -d 2982:1969`.
 
 ### Ableton Move support
 
@@ -1042,9 +964,11 @@ Check these in order:
    sh ~/Downloads/install-ableton-latest.run link enable --mode=session
    ```
 
-Start Live and enable **Show Link Toggle** and Link again. See
-[Ableton Link diagnostics](notes/ABLETON-WINE-LINK.md) if peers still do not
-appear.
+Start Live and enable **Show Link Toggle** and Link again. Your peers should now
+appear. If they do not, open a
+[new issue](https://github.com/shibco/ableton-linux/issues/new/choose) and include
+your network type, whether a VPN or firewall is active, and the output of
+`sh ~/Downloads/install-ableton-latest.run link status`.
 
 ## Report a problem
 

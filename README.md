@@ -15,7 +15,7 @@ Follow the project on [Bluesky](https://bsky.app/profile/wires.sh) to stay up to
 
 ## Features
 
-This project fully supports the full set of Ableton's offering:
+This project supports:
 
    - **Software:**
       - **Live 12** - Intro, Standard, Suite, Lite and Trial
@@ -25,7 +25,7 @@ This project fully supports the full set of Ableton's offering:
       - **Splice integration**
       - **Ableton Cloud**
       - **Ableton Link**
-      - **Extensions SDK**
+      - **Experimental Extensions SDK support**
    - **Hardware:**
       - **Push 1**
       - **Push 2**
@@ -33,20 +33,19 @@ This project fully supports the full set of Ableton's offering:
 
 _**Ableton Move** support is coming soon._
 
-In the pursuit of making Linux the uncontested ideal home for Ableton Live in 2026 and beyond,
-the Ableton-Linux runtime offers a complete set of features for real-world, everyday
-use in amateur, production, professional and live settings:
+The Ableton-Linux runtime supports everyday writing, production and live
+performance with:
 
-- Automatic recovery when in-use audio hardware or startup-detected MIDI
-  controllers briefly disconnect
+- MIDI controllers and audio interfaces that can appear, disconnect and return
+  while Live stays open
 - Low-latency PipeASIO audio for live performance
 - Linux desktop integration with native file types and dialogs, advanced font rendering
   and reuse of your own desktop fonts in application windows
 - Automatic light and dark desktop theme detection
 - No-fuss support for desktop resolutions, HiDPI displays, and fractional scaling
 - Fixes for VST-specific display, audio, and stability problems
-- Extensive optimisations to make Live and Max start up and run faster, use less resources
-  and behave with greater stability than their Windows or macOS counterparts
+- Optimisations that help Live and Max start faster, use fewer resources and
+  run more reliably under Wine
 - Dozens of nice-to-haves, quality-of-life fixes, and other polish
 - Auditable builds with pinned inputs, checksum verification, and public documentation
 
@@ -64,15 +63,15 @@ Additionally, you need:
 
 - glibc 2.35 or newer
 - PipeWire 1.4.2 or newer
-- [Linux 6.14 or newer with NTSync enabled](TROUBLESHOOTING.md#enable-and-verify-ntsync)
+- [Linux 6.14 or newer with active NTSync](TROUBLESHOOTING.md#live-reports-that-ntsync-is-inactive)
 - GStreamer with its base and good plugin sets
 - GNU coreutils, `tar`, `zstd`, and `flock`
 - your installation files and activation details from Ableton
 
 For most people, a modern and up-to-date Linux distribution, such as SteamOS,
 Ubuntu, CachyOS, or Arch, will already fulfil the userspace requirements.
-NTSync kernel support varies between distributions. Some systems need a newer
-kernel package or a manual module load.
+NTSync support varies between distributions. Some systems need newer system or
+kernel packages; the linked check confirms when it is ready for Live.
 
 Some distros - such as Debian 12, Linux Mint, and Pop!_OS 24.04 and earlier - 
 ship an older version of the Linux audio system, Pipewire. If you are running
@@ -129,12 +128,13 @@ ableton-live "/path/to/Your Set.als"
 ```
 
 Environment variables change how the `ableton-live` command behaves. The
-[runtime configuration reference](BUILDING.md#current-configuration) lists
-them. You can also read the launcher help:
+launcher explains every available setting and its default:
 
 ```bash
-ableton-live --help
+ableton-live --config
 ```
+
+Run `ableton-live --help` for its command-line options.
 
 For more details on how to run Live 11, follow the [Live 11 instructions](#live-11).
 
@@ -156,9 +156,10 @@ then from a terminal, use this command:
 sh ~/Downloads/install-ableton-latest.run update
 ```
 
-The update process will install new fixes and features listed in the release notes 
-to your Live Linux environment. Your Live installation, authorization, and projects will
-be preserved, but anything related to the Runtime (and Live's settings) may be changed.
+The update installs the fixes and features in the
+[changelog](CHANGELOG.md). It preserves your Live installation, authorisation
+and projects. Read the latest entry before updating because a release can
+change a launcher default or ask you to select a renamed device again.
 
 ### Uninstalling
 
@@ -317,8 +318,9 @@ model and a standalone model in control mode.
 5. Start Live.
 
 Keep the Push 3 control-surface rows empty. Live creates the control surface
-automatically. Live can install a firmware update during the first connection.
-Follow the power prompt and start Live again after Push restarts.
+automatically. A successful connection clears Push's connection screen and
+brings its display and controls to life. If Live offers a firmware update,
+follow the power prompt and start Live again after Push restarts.
 
 Use the
 [Push 3 connection steps](TROUBLESHOOTING.md#push-3-stays-on-the-connection-screen)
@@ -380,7 +382,8 @@ sh ~/Downloads/install-ableton-latest.run link disable
 ```
 
 This removes only the Link files, settings, and firewall rule that this project
-added. Run `link status` to see whether Link is running.
+added. Run `sh ~/Downloads/install-ableton-latest.run link status` to see
+whether Link is running.
 
 ## Getting help
 

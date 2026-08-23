@@ -2,89 +2,96 @@
 
 ## Unreleased
 
-- **Follow-up work on the device hotplug support shipped in July (#245):**
-  - MIDI devices connected after Live starts now enter Wine's device list.
-    The July implementation already restored reconnecting devices that Wine
-    found during startup.
-  - Open MIDI inputs and outputs now follow the same controller across ALSA
-    device-number changes when its identity gives one clear match.
-  - Removing a MIDI input ends held notes, sustain, and incomplete long
-    messages before Wine waits for the device to return.
-  - PipeASIO now preserves explicit interface and channel selections across
-    disconnects, delayed PipeWire startup, and PipeWire restarts. It sends
-    silence until the complete selected route returns instead of requiring
-    PipeASIO to be reselected after the device returns.
-  - New interfaces appear in PipeASIO Settings while Live runs. Automatic
-    audio routing continues to follow the PipeWire default. Serial numbers,
-    hardware paths, and channel details distinguish duplicate devices where
-    Linux provides them.
-  - USB MIDI ports now use Windows-style display names. Existing Live device
-    and control-surface assignments may need selection again after the update.
-  - Hardware release testing remains open for 100 USB reconnect cycles, a full
-    performance session, and a supported Ableton Live build.
-- **Added Push 3 controller-mode support for Live 12 (#254):**
-  - Live recognises Push 3 through its USB MIDI identity and starts
-    `Push3.exe`. The Push 3 Live port keeps the `Ableton Push 3` name expected
-    by Ableton's helper.
-  - The built-in USB bridge now supplies synchronous bulk transfers, error
-    text, and the hotplug exports used by the helper. It can claim Push 3's
-    display and xPort interfaces while ALSA keeps the MIDI interface.
-  - Prefix setup selects the bridge only for `Push3.exe` and
-    `Push2DisplayProcess.exe`; Live keeps its packaged libusb DLL.
-  - Added one shared host probe for Push 2 and Push 3, plus setup and
-    troubleshooting steps for desktop USB access and standalone control mode.
-  - Hardware reports reached the complete Live handshake on controller and
-    standalone models. A physical acceptance run remains open for the final
-    combined #245 and #254 patch stack.
-- Another big pass on the input system. It's now simplified massively with one consolidated patch that features:
-  - fast smooth-scroll reports preserve the complete movement across all packet sizes
-  - drag recovery that restores XI2 motion after release, focus, capture, window, and device changes
-  - revised scrolling inertia that also remains enabled by default
-  - revised middle-button throw, also remaining enabled by default
-  - scrolling inertia and middle-button throw have a new algorithm that calculate travel from elapsed time
-  - pinch zoom preserves every scale update
-  - pinch zoom restores Ctrl state after each gesture
-  - the pointer master switch disables optional pointer features while retaining the issue 122 clipping-state repair
-  - external drag and drop that releases each target
-  - external drag and drop reports first-position acceptance correctly
-- **Refined the custom text renderer again:**
-  - Small DirectWrite text now keeps antialiased or colour-subpixel edges when
-    a font also supplies an embedded one-bit bitmap strike.
-  - Natural rendering preserves horizontal glyph positions in 1/16-pixel
-    steps, so text moves and spaces smoothly between whole pixels.
-  - Resized Direct2D windows keep ClearType and GDI-compatible bitmap settings
-    for the rest of the window's life.
-- Updates replace project-managed launcher and Live menu files when their saved checksums differ (#251).
-
-This release turns on two features that already shipped behind launcher
-settings:
-
-- Live 12 now starts with at most one audio thread per physical CPU core
-  available to the launcher. This lowers Live's default worker count where the
-  physical-core value is smaller. An existing Live setting, a previous
-  launcher choice, or a later user edit still takes priority.
-- `ABLETON_MAX_AUDIO_THREADS=auto` recalculates the physical-core value.
-  `ABLETON_MAX_AUDIO_THREADS=off` removes an untouched launcher-managed value
-  and restores Live's calculated count. Existing settings and user edits stay
-  unchanged. A value from one to 63 selects an explicit limit.
-- Warm Ableton URL, licence, and Set handoffs stay quiet for the automatic
-  audio-thread policy. An explicit audio-thread request still asks for a cold
-  launch.
-- On GNOME, Live now borrows Ctrl+Alt+Up and Ctrl+Alt+Down while it runs. Live
-  11 also borrows Ctrl+Alt+Delete. The launcher restores the exact settings
-  after the final Live session exits. `ABLETON_SHORTCUTS=preserve` opts out.
-- Unknown `ABLETON_SHORTCUTS` values now stop the launcher with status 2.
-  Earlier launchers treated those values as `preserve`.
-- The CPU report now identifies its measurements as Linux process CPU and
-  worker wake-ups. The worker setting does not change PipeASIO or Wine's audio
-  path. PipeASIO real-time scheduling remains off by default.
-- Audio-worker guidance now covers deadline spikes in demanding Sets. It uses
-  Live's calculated count as the first comparison when the physical-core
-  limit lowers average CPU but increases overloads.
-- Desktop integration now installs `check-ntsync.sh` with its Windows
-  semantics probe. The installed audio report names this local diagnostic.
-- Linux 6.14 or newer with active NTSync is now a documented requirement. The
-  troubleshooting guide covers the module load and the complete runtime check.
+- **Push 3 finally works in controller mode with Live 12 (#254)!**
+  - Live detects Push 3 and creates its control surface automatically. Leave
+    the Push 3 rows empty in Live's MIDI settings and let Live do its thing.
+  - Both Push 3 models are supported: the Controller model, and the Standalone
+    model after switching it to Control Mode. The display and controls connect
+    alongside the MIDI ports.
+  - Push 3 needs desktop USB access on Linux. The README now covers the one-time
+    setup, first connection and firmware-update dance.
+  - Thanks @Version33 for the original MIDI identity work and relentless
+    testing, @Velkas and @ilikecake123 for the early hardware reports, and
+    @berryhill and @cicklolwut for end-to-end validation.
+- **July's reconnect work now also covers gear that arrives late (#245):**
+  - To be completely clear: July already let MIDI and audio devices reconnect
+    while Live stayed open. Now, a MIDI controller first connected after Live
+    starts appears in the MIDI device list.
+  - Open MIDI inputs and outputs stay with the same controller when Linux gives
+    it a new device number after reconnection.
+  - Disconnecting a MIDI input clears held notes, sustain and unfinished SysEx
+    messages. No more reconnecting to a phantom note screaming into eternity.
+  - PipeASIO remembers the exact interface and channels you selected through
+    disconnects, late PipeWire startup and PipeWire restarts. It keeps the
+    missing route silent, then restores it when the complete route returns.
+  - New audio interfaces appear in PipeASIO Settings while Live runs. Automatic
+    routing still follows the PipeWire default, and available hardware details
+    keep identical devices apart.
+  - **Heads up:** USB MIDI ports now use Windows-style names. You may need to
+    select your MIDI devices and control surfaces again after updating.
+  - Thanks @jackson-57 for reporting the missing half of July's hotplug work.
+- **The mouse and touchpad system got another frankly excessive overhaul:**
+  - Fast smooth scrolling now keeps the full distance, even during a very large
+    movement.
+  - Drags recover after button releases, focus changes, closed windows and
+    device changes, so scrolling and gestures do not stay stranded afterwards.
+  - Scrolling inertia and middle-button throw remain on by default. Both now
+    use elapsed time, giving the same gesture much more consistent travel.
+  - Pinch zoom keeps every scale change and restores Ctrl to the state it had
+    before the gesture.
+  - Dragging files in from another app now releases old targets properly and
+    reports whether the first target accepts the drop.
+  - `WINE_X11_POINTER_FEATURES=disabled` still turns the optional pointer work
+    off for comparisons while keeping the issue 122 clipping repair.
+  - Thanks @SLiZzuL, Anizo, jackson, Immabed, claire. and slop for the
+    scrolling reports, and @berryhill for the drag-and-drop investigation.
+- **Fonts found three more ways to be weird, so we fixed all three:**
+  - Tiny text keeps smooth greyscale or colour-subpixel edges instead of
+    falling back to jagged one-bit glyphs.
+  - Text can keep its position between whole pixels, making spacing and
+    horizontal movement noticeably smoother.
+  - Resizing a window no longer quietly changes its ClearType or bitmap text
+    settings.
+  - Thanks Giang Nguyen (@giang17) for finding and fixing the bitmap-strike
+    gap, and Lucas Gillingham (@ClickSentinel) for the review, follow-up fixes
+    and tests.
+- **Live 12 now uses a saner default for its audio workers:**
+  - Live starts with at most one audio worker per physical CPU core when that
+    is lower than Live's own calculation. This cut Linux CPU use in our tests,
+    especially at small buffers.
+  - A demanding Set may still prefer Live's original count. Close every Live
+    process and launch with `ABLETON_MAX_AUDIO_THREADS=off` for a direct
+    comparison if an update brings more overloads or dropouts.
+  - If you already chose a worker count yourself, updating will not replace it.
+  - Opening a Set, licence or `ableton://` link in an existing session leaves
+    the automatic setting alone. An explicit worker request still asks for a
+    cold launch.
+  - The CPU report and troubleshooting guide now separate Linux process CPU
+    from Live's deadline meter, and explain the trade-off without blaming
+    PipeASIO for work it never did. PipeASIO real-time scheduling remains off
+    by default.
+  - Thanks Lucas Gillingham (@ClickSentinel) for finding and fixing the first
+    version's configuration replacement failures before we made it the default.
+- **GNOME and Live have stopped fighting over the same keyboard shortcuts:**
+  - Ctrl+Alt+Up and Ctrl+Alt+Down belong to Live while it runs. Live 11 also
+    gets Ctrl+Alt+Delete.
+  - The launcher restores your exact GNOME settings after the final Live
+    session closes. `ABLETON_SHORTCUTS=preserve` leaves them alone instead.
+  - A misspelt `ABLETON_SHORTCUTS` value now stops with a useful error instead
+    of silently opting out.
+  - Thanks Lucas Gillingham (@ClickSentinel) for the review that hardened
+    shortcut recovery before we turned it on by default.
+- **Updates no longer trip over files the project changed itself (#251):**
+  - The installer refreshes stale copies of its own launcher and Live menu
+    entry instead of treating them as somebody else's work.
+  - A symlinked launcher or a menu entry pointed at another setup still stays
+    yours.
+  - Thanks @Sandai64 for the complete report that made this easy to reproduce.
+- **NTSync is now an actual requirement, rather than an optimistic suggestion:**
+  - Use Linux 6.14 or newer with NTSync active.
+  - Desktop integration installs one NTSync check, and the audio report points
+    straight to it. The troubleshooting guide tells you what a working result
+    looks like and where to ask for help if yours differs.
 
 ## 2026.08.19.1
 
