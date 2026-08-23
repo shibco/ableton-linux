@@ -22,6 +22,20 @@
     and control-surface assignments may need selection again after the update.
   - Hardware release testing remains open for 100 USB reconnect cycles, a full
     performance session, and a supported Ableton Live build.
+- **Added Push 3 controller-mode support for Live 12 (#254):**
+  - Live recognises Push 3 through its USB MIDI identity and starts
+    `Push3.exe`. The Push 3 Live port keeps the `Ableton Push 3` name expected
+    by Ableton's helper.
+  - The built-in USB bridge now supplies synchronous bulk transfers, error
+    text, and the hotplug exports used by the helper. It can claim Push 3's
+    display and xPort interfaces while ALSA keeps the MIDI interface.
+  - Prefix setup selects the bridge only for `Push3.exe` and
+    `Push2DisplayProcess.exe`; Live keeps its packaged libusb DLL.
+  - Added one shared host probe for Push 2 and Push 3, plus setup and
+    troubleshooting steps for desktop USB access and standalone control mode.
+  - Hardware reports reached the complete Live handshake on controller and
+    standalone models. A physical acceptance run remains open for the final
+    combined #245 and #254 patch stack.
 - Another big pass on the input system. It's now simplified massively with one consolidated patch that features:
   - fast smooth-scroll reports preserve the complete movement across all packet sizes
   - drag recovery that restores XI2 motion after release, focus, capture, window, and device changes

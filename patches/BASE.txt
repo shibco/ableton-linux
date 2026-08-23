@@ -11,7 +11,7 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The Wine series contains 93 patch files and ends at 0105. The absent numbers
+The Wine series contains 94 patch files and ends at 0106. The absent numbers
 are 0027, 0044, 0072, 0074, 0090 through 0095, 0097, and 0098; their reasons
 are declared in `SERIES_GAPS` in `scripts/build-audit.sh`. Patch 0073 keeps
 the wheel coordinate fix separate. Patch 0100 combines 10 pointer patches.
@@ -412,3 +412,6 @@ Apply them in sequence with the rest of the series.
   open handles tied to stable device details and publishes Windows device
   changes after each snapshot. See
   `notes/ABLETON-WINE-DEVICE-HOTPLUG.md`.
+- `0106` extends the patch 0032 USB bridge for Push 3. Add synchronous bulk
+  transfer, error text, and hotplug registration exports. Accept USB interface
+  numbers from 0 to 255. The helper polls after the hotplug registration result.

@@ -10,7 +10,7 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0105-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch'
+readonly REQUIRED_WINE_TAIL='0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch'
 readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0012-recover-selected-routes-after-hotplug.patch'
 
 check_required_series_tails()
@@ -334,6 +334,7 @@ FINGERPRINTS='
 0101|ascii|lib/wine/x86_64-windows/user32.dll|dnd target=%p event=release
 0105|ascii|lib/wine/x86_64-unix/winealsa.so|WINE MIDI topology
 0105|ascii|lib/wine/x86_64-windows/winmm.dll|Out of memory refreshing %s mappings
+0106|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
@@ -349,6 +350,8 @@ pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotpl
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,
 # stored as UTF-16 by QStringLiteral, hence the wide encoding.
+# Patch 0105 supplies the MIDI device path used for Push 3 discovery. Its
+# winealsa and winmm fingerprints above verify that implementation.
 PIPEASIO_MARKER_TODO='
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.

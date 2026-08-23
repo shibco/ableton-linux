@@ -1047,15 +1047,17 @@ elif [ -L "$pipeasio_cfg" ] && [ ! -e "$pipeasio_cfg" ]; then
     echo "   kept your dangling PipeASIO configuration link: $pipeasio_cfg"
 fi
 
-echo "== [5/5] set portal policy and scope Push 2 bridge to its helper =="
+echo "== [5/5] set portal policy and scope the Push USB bridge to its helpers =="
 # Default only: a policy the user set with set-file-portal-policy survives re-runs.
 if ! wine reg query 'HKCU\Software\Wine\X11 Driver' /v FileDialogPortal >/dev/null 2>&1; then
   wine reg add 'HKCU\Software\Wine\X11 Driver' \
     /v FileDialogPortal /t REG_SZ /d auto /f
 fi
-push2_key='HKCU\Software\Wine\AppDefaults\Push2DisplayProcess.exe\DllOverrides'
-wine reg add "$push2_key" /v libusb-1.0 /t REG_SZ /d builtin /f
-wine reg query "$push2_key" /v libusb-1.0
+for push_helper in Push2DisplayProcess.exe Push3.exe; do
+    push_key="HKCU\\Software\\Wine\\AppDefaults\\$push_helper\\DllOverrides"
+    wine reg add "$push_key" /v libusb-1.0 /t REG_SZ /d builtin /f
+    wine reg query "$push_key" /v libusb-1.0
+done
 
 # Ableton's tlsetupfx.exe (kernel USB driver installer) faults under Wine and pops a winedbg
 # dialog mid-install - twice, on every Live 11 install. The fault is harmless: the installer

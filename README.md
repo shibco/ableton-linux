@@ -29,7 +29,7 @@ This project fully supports the full set of Ableton's offering:
    - **Hardware:**
       - **Push 1**
       - **Push 2**
-      - **Push 3**
+      - **Push 3 in controller mode**
 
 _**Ableton Move** support is coming soon._
 
@@ -128,9 +128,9 @@ You can also specify a Live Set to quickly open on launch:
 ableton-live "/path/to/Your Set.als"
 ```
 
-The `ableton-live` command accepts a number of options (called _environment variables_) that change
-how it behaves. [We document each of them and their effects](BUILDING.md#current-configuration), but you can
-also read about them like this:
+Environment variables change how the `ableton-live` command behaves. The
+[runtime configuration reference](BUILDING.md#current-configuration) lists
+them. You can also read the launcher help:
 
 ```bash
 ableton-live --help
@@ -279,35 +279,52 @@ controllers.
 ### Ableton Push 1 and 2 setup
 
 1. Connect your Ableton Push.
-2. Launch Ableton Live.
+2. Start Ableton Live.
 
 Live detects Push 1 automatically.
 
-For Push 2, configure exactly one control-surface row under
-**Settings/Preferences > Link, Tempo & MIDI**:
+For Push 2, configure one control-surface row under
+Settings or Preferences > Link, Tempo and MIDI:
 
-- **Control Surface:** Push2
-- **Input:** Ableton Push 2 Live Port
-- **Output:** Ableton Push 2 Live Port
+- control surface: `Push2`
+- input: `Ableton Push 2 Live Port`
+- output: `Ableton Push 2 Live Port`
 
-Enable the input and output **Remote** switches. See
-[Push troubleshooting](TROUBLESHOOTING.md#push-2-does-not-connect) if its
-display does not start.
+Turn on the input and output Remote switches. Use the
+[Push 2 connection steps](TROUBLESHOOTING.md#push-2-connection-steps)
+for a dark display.
 
 ### Ableton Push 3 setup
 
-1. Connect Push 3 with its USB-C cable.
-2. On a standalone Push 3, switch the unit to Control Mode.
-3. Launch Ableton Live.
+Push 3 controller mode works with Live 12. Hardware tests covered a controller
+model and a standalone model in control mode.
 
-Live detects Push 3 and starts its screen and pads automatically. Leave the
-control-surface rows empty for Push 3.
+1. Add USB access for your desktop session.
 
-The first start can install a firmware update on the Push. If the Push asks for
-a restart, switch it off and on once, then start Live again.
+   ```bash
+   printf '%s\n' 'SUBSYSTEM=="usb", ATTR{idVendor}=="2982", ATTR{idProduct}=="1969", MODE="0660", TAG+="uaccess"' |
+     sudo tee /etc/udev/rules.d/60-ableton-push3.rules >/dev/null
+   ```
 
-See [Push 3 troubleshooting](TROUBLESHOOTING.md#push-3-does-not-start-its-display)
-if the display stays dark.
+2. Reload the device rules.
+
+   ```bash
+   sudo udevadm control --reload-rules
+   ```
+
+3. Select control mode on a standalone Push 3.
+4. Disconnect and reconnect Push 3.
+5. Start Live.
+
+Keep the Push 3 control-surface rows empty. Live creates the control surface
+automatically. Live can install a firmware update during the first connection.
+Follow the power prompt and start Live again after Push restarts.
+
+Use the
+[Push 3 connection steps](TROUBLESHOOTING.md#push-3-stays-on-the-connection-screen)
+when Push keeps showing its connection screen. The
+[Push 3 technical note](notes/ABLETON-WINE-PUSH3-USB.md) records the design,
+test results, and current limits.
 
 ## Ableton Link
 
