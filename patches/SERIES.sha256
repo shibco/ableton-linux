@@ -95,7 +95,7 @@ b644c922888e201e1ae525ab22993d89bee835410cd36a739b9f84387009d009  0095-winex11-s
 80c69a6f555ecc8fcf36fb5d7f466ab9fe4cc1a09f48db7c1cbac442197faef7  0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch
 5296ad3f9f91911cf13849e2edf33793d97c2c4d0c06fbee0f119cb06e1114fc  0098-winex11-suspend-XI-scroll-selection-during-core-drags.patch
 84e8c5bf8a7916361449d15abf675815c4a1fa7183f800a23632e00f1e6ae44b  0099-ntdll-grow-the-reserved-pool-instead-of-unordered-mmap.patch
-1906e2412c0b433ad5c86e69b43ba4e3ddab15a9b7b787f05bac50e0a6439f48  0100-dwrite-use-outlines-for-cleartype-glyphs.patch
+08cc39bd2f32ed645d2d129647cd140741ac04f13b6ad13b78ed46d891656e7c  0100-dwrite-use-outlines-for-cleartype-glyphs.patch
 428cc515ba28d978a72623065ab1ae9d13f0ffe9c21bf78869c98efcc46a8c0b  0101-dwrite-preserve-fractional-glyph-positions.patch
 e2759a5aee2cc5820a3ed27d2d4f954a6a5262c1a95172ad11ffa5302c487387  pipeasio/0001-asio-clamp-unavailable-sample-rate-requests.patch
 b4d53b6ebb24e39c7d23efcbddd837149d4d08886167637a73bb085af851d2c1  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
