@@ -55,6 +55,20 @@ cleanup()
 }
 trap cleanup EXIT
 
+x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -O1 "$probe_src" -o "$tmp/probe.exe" \
+    -ld2d1 -ldwrite -lole32 -lgdi32 -luser32 || fail "probe did not build"
+
+mkdir -p "$WINEPREFIX"
+timeout --kill-after=10s 60s "$runtime/bin/wine" wineboot -u >/dev/null 2>&1 \
+    || fail "wineboot failed or timed out in the test prefix"
+timeout --kill-after=5s 30s "$runtime/bin/wine" reg add 'HKCU\Control Panel\Desktop' \
+    /v FontSmoothingType /t REG_DWORD /d 2 /f >/dev/null 2>&1 \
+    || fail "could not seed FontSmoothingType before the timeout"
+timeout --kill-after=2s 10s "$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
+
+# Initialise the prefix headlessly first. Starting Wine's desktop processes on
+# Xvfb during wineboot can keep wineboot alive with the display session. The
+# actual D2D probe is the only command that needs the display.
 if [ -z "${DISPLAY:-}" ]; then
     command -v Xvfb >/dev/null || fail "no DISPLAY and Xvfb is missing; install xvfb"
     for n in 90 91 92 93 94; do
@@ -69,17 +83,6 @@ if [ -z "${DISPLAY:-}" ]; then
     sleep 3
     kill -0 "$xvfb_pid" 2>/dev/null || fail "Xvfb did not start on $DISPLAY"
 fi
-
-x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -O1 "$probe_src" -o "$tmp/probe.exe" \
-    -ld2d1 -ldwrite -lole32 -lgdi32 -luser32 || fail "probe did not build"
-
-mkdir -p "$WINEPREFIX"
-timeout --kill-after=10s 60s "$runtime/bin/wine" wineboot -u >/dev/null 2>&1 \
-    || fail "wineboot failed or timed out in the test prefix"
-timeout --kill-after=5s 30s "$runtime/bin/wine" reg add 'HKCU\Control Panel\Desktop' \
-    /v FontSmoothingType /t REG_DWORD /d 2 /f >/dev/null 2>&1 \
-    || fail "could not seed FontSmoothingType before the timeout"
-timeout --kill-after=2s 10s "$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
 
 printf 'runtime: %s\n' "$runtime"
 [ -r "$runtime/ABLETON-WINE-BUILD-INFO.txt" ] &&
