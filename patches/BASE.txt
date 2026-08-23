@@ -11,10 +11,10 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The current Wine series contains 96 files, numbered 0001 through 0098.
-Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
-once numbered 0066 and 0067 now appear after the gesture patches as 0093
-and 0094, because 0066 through 0068 were held for this GPU series.
+The current Wine series contains 99 files, numbered 0001 through 0101.
+The series reserves 0027 and 0044 as documented gaps. The ClickSentinel
+changes once numbered 0066 and 0067 now appear after the gesture patches as
+0093 and 0094.
 
 ## Applying the series
 
@@ -452,3 +452,15 @@ Apply them in sequence with the rest of the series.
   the drag's own motion was delivered there. `WINE_X11_POINTER_FEATURES`
   disables every pointer feature at once for baseline comparisons. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0099`: grow the preloader's reserved address pool after large applications
+  exhaust its first arenas. Further anonymous views keep ascending within the
+  requested address range. This preserves 32-bit relative offsets used by Max
+  for Live gen~ devices.
+- `0100`: extend the patch 0032 USB bridge for Push 3. Add synchronous bulk
+  transfer, error text, and hotplug registration exports. Accept USB interface
+  numbers from 0 to 255. The helper polls after the hotplug registration result.
+- `0101`: report USB device paths for ALSA MIDI inputs and outputs. Derive each
+  path from the USB parent IDs and current ALSA address. Route MIDI input device
+  queries through the physical device path. Give the Push 3 Live port the name
+  expected by Ableton's helper. Other MIDI names stay stable. See
+  `notes/ABLETON-WINE-PUSH3-USB.md`.

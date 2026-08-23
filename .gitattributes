@@ -9,3 +9,5 @@ patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch whitespa
 patches/0095-winex11-separate-pointer-coast-sources.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0098-winex11-suspend-XI-scroll-selection-during-core-drags.patch whitespace=-blank-at-eof,-blank-at-eol
+patches/0100-libusb-1.0-extend-the-host-bridge-for-Push-3.patch whitespace=-blank-at-eof,-blank-at-eol
+patches/0101-winealsa-report-USB-MIDI-paths-and-identify-Push-3.patch whitespace=-blank-at-eof,-blank-at-eol,-space-before-tab

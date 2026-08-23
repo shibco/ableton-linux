@@ -43,9 +43,9 @@ have already fixed your issue.
   - [Live ignores or does something unexpected when you use a keyboard shortcut](#live-ignores-or-does-something-unexpected-when-you-use-a-keyboard-shortcut)
   - [CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse)
   - [My MIDI controller or audio interface doesn't show up in Live](#my-midi-controller-or-audio-interface-doesnt-show-up-in-live)
-  - [Push 2 does not connect](#push-2-does-not-connect)
-  - [Push 3 does not start its display](#push-3-does-not-start-its-display)
-  - [Ableton Move does not connect](#ableton-move-does-not-connect)
+  - [Push 2 connection steps](#push-2-connection-steps)
+  - [Push 3 stays on the connection screen](#push-3-stays-on-the-connection-screen)
+  - [Ableton Move support](#ableton-move-support)
 - [Ableton Link](#ableton-link)
   - [Ableton Link does not find peers](#ableton-link-does-not-find-peers)
 - [Report a problem](#report-a-problem)
@@ -863,43 +863,81 @@ sound settings first, then
 [open an issue](https://github.com/shibco/ableton-linux/issues) and tell us the
 make and model.
 
-### Push 2 does not connect
+### Push 2 connection steps
 
 Connect Push 2 before you start Live. Then open
-**Settings > Link, Tempo & MIDI** and set up exactly one control surface row:
+Settings > Link, Tempo and MIDI and set up one control-surface row:
 
-- **Control Surface:** Push2
-- **Input:** Ableton Push 2 Live Port
-- **Output:** Ableton Push 2 Live Port
+- control surface: `Push2`
+- input: `Ableton Push 2 Live Port`
+- output: `Ableton Push 2 Live Port`
 
-Turn on the **Remote** switches for that input and output. If there is more than
-one Push2 row, remove the extras.
+Turn on the Remote switches for that input and output. Keep one Push2 row.
 
-If the display stays dark, close Live normally, unplug Push 2 and plug it back
-in, then start Live again.
+For a dark display, close Live normally. Reconnect Push 2 and start Live again.
 
-If it still does not start,
-[open an issue](https://github.com/shibco/ableton-linux/issues) and tell us your
-distribution and desktop. For technical details about this, please see the
-[Push 2 display bridge note](notes/ABLETON-WINE-PUSH2-DISPLAY.md).
+Share unresolved display results in a
+[new GitHub issue](https://github.com/shibco/ableton-linux/issues/new).
+Include your distribution and desktop. The
+[Push 2 display bridge note](notes/ABLETON-WINE-PUSH2-DISPLAY.md) explains the
+technical design.
 
-### Push 3 does not start its display
+### Push 3 stays on the connection screen
 
-Live detects Push 3 automatically in controller mode and starts its screen and
-pads. Work through these steps if the screen stays dark:
+Push 3 needs desktop USB access and a current Wine prefix. Complete these
+checks:
 
-1. Download the latest installer and update this project.
-2. On a standalone Push 3, switch the unit to Control Mode.
-3. Connect the Push before you start Live. Close Live completely and start it
-   again after you connect the Push.
-4. If the Push asks for a restart after a firmware update, switch it off and on
-   once, then start Live again.
+1. Select control mode on a standalone Push 3.
+2. Check the USB connection.
 
-Push 3 uses automatic USB detection, so leave the control-surface rows empty.
-If the screen stays dark, add your hardware and distribution details to
-[issue 26](https://github.com/shibco/ableton-linux/issues/26).
+   ```bash
+   lsusb -d 2982:1969
+   ```
 
-### Ableton Move does not connect
+   A line for `2982:1969` confirms the USB connection. Try another
+   data-capable cable or USB port until that line appears.
+
+3. Add USB access for your desktop session.
+
+   ```bash
+   printf '%s\n' 'SUBSYSTEM=="usb", ATTR{idVendor}=="2982", ATTR{idProduct}=="1969", MODE="0660", TAG+="uaccess"' |
+     sudo tee /etc/udev/rules.d/60-ableton-push3.rules >/dev/null
+   sudo udevadm control --reload-rules
+   ```
+
+4. Disconnect and reconnect Push 3.
+5. Refresh the prefix after a source build.
+
+   ```bash
+   scripts/setup-prefix.sh --refresh
+   ```
+
+6. Start Live while Push 3 is connected.
+
+Live scans its MIDI device list during startup. Live starts `Push3.exe` after
+it finds the Push USB identity. A successful session ends with `Push is go`.
+Keep the Push 3 control-surface rows empty. Live detects the surface
+automatically. Follow the power prompt when Live installs firmware, then start
+Live again after Push restarts.
+
+You can test host access from a source checkout:
+
+```bash
+cc -std=c11 -O2 -Wall -Wextra tools/push3usb.c \
+  $(pkg-config --cflags --libs libusb-1.0) -o /tmp/push3usb
+/tmp/push3usb --claim
+```
+
+With host access, the probe reports `claim=ok` for interfaces 0 and 6. A
+`LIBUSB_ERROR_ACCESS` result points to the device rule.
+
+Add your results to
+[Push 3 support issue 26](https://github.com/shibco/ableton-linux/issues/26).
+Include your distribution, desktop, Live version, firmware version, and probe
+output. Replace the controller serial number with `[redacted]` in every shared
+USB trace.
+
+### Ableton Move support
 
 Ableton Move support is in development. The current controller support covers
 Push 1, Push 2, and Push 3 in controller mode.

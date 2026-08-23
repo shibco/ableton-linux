@@ -10,7 +10,7 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0099-ntdll-grow-the-reserved-pool-instead-of-unordered-mmap.patch'
+readonly REQUIRED_WINE_TAIL='0101-winealsa-report-USB-MIDI-paths-and-identify-Push-3.patch'
 readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
 
 check_required_series_tails()
@@ -336,6 +336,8 @@ FINGERPRINTS='
 0096|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
 0097|ascii|lib/wine/x86_64-unix/winex11.so|Wine ignores pointer motion from a scroll report while a button is held
 0098|ascii|lib/wine/x86_64-unix/winex11.so|X server delivered core MotionNotify while XI scroll motion is suspended
+0100|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
+0101|ascii|lib/wine/x86_64-unix/winealsa.so|#alsa&client%d&port%d#
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
@@ -350,6 +352,8 @@ pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-contro
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,
 # stored as UTF-16 by QStringLiteral, hence the wide encoding.
+# The winmm part of 0101 routes input device IDs and adds no string. The
+# winealsa path marker verifies the compiled patch.
 PIPEASIO_MARKER_TODO='
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
