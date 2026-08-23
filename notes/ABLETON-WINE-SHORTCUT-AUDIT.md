@@ -45,10 +45,10 @@ Other desktop collisions depend on user configuration, including Alt+digits
 for workspaces and Alt+drag for moving windows. Alt+Tab is also owned by the
 desktop on Windows, so it is not a Live parity issue.
 
-The launcher opt-in strips only the exact GNOME entries above. It preserves
-other accelerators stored in the same setting, saves a private recovery file,
-coordinates multiple Live processes, restores after the last process exits,
-and keeps a user change made during the session.
+The default launcher policy strips only the exact GNOME entries above. It
+preserves other accelerators stored in the same setting, saves a private
+recovery file, coordinates multiple Live processes, restores after the last
+process exits, and keeps a user change made during the session.
 
 ## Checks still open
 

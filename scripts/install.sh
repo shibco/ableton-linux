@@ -481,9 +481,9 @@ validate_runtime_payload()
 
 validate_integration_sources()
 {
-    local required probe_source=""
+    local required probe_source="" ntsync_probe_source=""
     for required in ableton-live max9 detect-scale.sh detect-theme.sh shortcut-hold.sh \
-                    setup-realtime.sh audio-report.sh rollback.sh; do
+                    setup-realtime.sh audio-report.sh check-ntsync.sh rollback.sh; do
         [ -f "$here/$required" ] || { echo "!! installer kit is missing scripts/$required" >&2; return 1; }
     done
     for required in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh; do
@@ -497,6 +497,16 @@ validate_integration_sources()
     done
     [ -n "$probe_source" ] || {
         echo "!! installer kit is missing its PipeWire compatibility check" >&2
+        return 1
+    }
+    for required in "$here/ntsyncprobe.exe" \
+                    "$root/beta/tester-kit/probes/windows/ntsyncprobe.exe"; do
+        [ -f "$required" ] || continue
+        ntsync_probe_source="$required"
+        break
+    done
+    [ -n "$ntsync_probe_source" ] || {
+        echo "!! installer kit is missing its NTSync semantics probe" >&2
         return 1
     }
     for required in ableton-live.desktop.in ableton-linux-protocol.desktop.in \
@@ -564,6 +574,7 @@ if [ "$dry_run" -eq 1 ]; then
     if [ "$want_integration" -eq 1 ]; then
         printf '  write launcher: %s/ableton-live\n' "$bin"
         printf '  write launcher support and recovery tools below: %s\n' "$data"
+        printf '  write NTSync diagnostic: %s/{check-ntsync.sh,ntsyncprobe.exe}\n' "$data"
         printf '  write helper assets when packaged: %s/{setsyscolors.exe,learnheal.exe}\n' "$data"
         printf '  write desktop entries: %s/{ableton-live,%s,%s}\n' \
             "$apps" "$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID"
@@ -739,7 +750,7 @@ install_integration()
 {
     local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d i
     local live_desktop_foreign=0 max_desktop_foreign=0 max_protocol_foreign=0 foreign=0
-    local probe_source="" mime_stage="" mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    local probe_source="" ntsync_probe_source="" mime_stage="" mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
     local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
     local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
     local -a handler_templates=(ableton-linux-protocol ableton-linux-auz)
@@ -753,9 +764,20 @@ install_integration()
     for tool in detect-scale.sh detect-theme.sh shortcut-hold.sh; do
         ableton_install_file 644 "$here/$tool" "$data/$tool"
     done
-    for tool in setup-realtime.sh audio-report.sh rollback.sh; do
+    for tool in setup-realtime.sh audio-report.sh check-ntsync.sh rollback.sh; do
         ableton_install_file 755 "$here/$tool" "$data/$tool"
     done
+    for source in "$here/ntsyncprobe.exe" \
+                  "$root/beta/tester-kit/probes/windows/ntsyncprobe.exe"; do
+        [ -f "$source" ] || continue
+        ntsync_probe_source="$source"
+        break
+    done
+    [ -n "$ntsync_probe_source" ] || {
+        echo "!! installer kit is missing its NTSync semantics probe" >&2
+        return 1
+    }
+    ableton_install_file 644 "$ntsync_probe_source" "$data/ntsyncprobe.exe"
     for source in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
                   "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
         [ -x "$source" ] || continue
@@ -1074,6 +1096,7 @@ trap - EXIT
 echo "OK: selected components installed transactionally"
 if [ "$want_integration" -eq 1 ]; then
     printf '   Audio report: %s/audio-report.sh\n' "$data"
+    printf '   NTSync check: %s/check-ntsync.sh\n' "$data"
     printf '   Realtime setup: %s/setup-realtime.sh\n' "$data"
     printf '   Runtime rollback: %s/rollback.sh\n' "$data"
 fi
