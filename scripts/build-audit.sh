@@ -408,7 +408,7 @@ STAMP_ONLY='
 0078|logic-only (initial monitor DPI seeded in the create_window request; MR 11573 backport, no new string literal)
 0079|logic-only (standalone-surface window search gated on a private-data marker; adds no string literal)
 0099|logic-only (reserved pool grown with further arenas once map_reserved_area declines, keeping anonymous views ascending; new TRACE only, adds no string literal)
-0100|ClearType uses glyph outlines. The audit checks the patch and patch list.
+0100|logic-only (glyph form selected by rendering mode, mirroring win32u; adds no string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
