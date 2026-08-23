@@ -453,7 +453,7 @@ validate_runtime_payload()
     local required
     for required in \
         bin/wine bin/wineserver \
-        lib/wine/$ARCH-windows/libusb-1.0.dll \
+        lib/wine/x86_64-windows/libusb-1.0.dll \
         lib/wine/$ARCH-unix/libusb-1.0.so \
         lib/wine/$ARCH-unix/comdlg32.so \
         lib/wine/$ARCH-unix/winealsa.so \

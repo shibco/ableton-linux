@@ -257,7 +257,7 @@ panel_mode=""
 pipewire_probe_hash=""
 builder_packages_hash=""
 declare -A recorded_binary_hashes=()
-readonly RECORDED_BINARIES='libusb-pe|lib/wine/$ARCH-windows/libusb-1.0.dll
+readonly RECORDED_BINARIES='libusb-pe|lib/wine/x86_64-windows/libusb-1.0.dll
 libusb-unix|lib/wine/$ARCH-unix/libusb-1.0.so
 portal-unix|lib/wine/$ARCH-unix/comdlg32.so
 pipeasio-pe|lib/wine/$ARCH-windows/pipeasio64.dll
@@ -349,7 +349,7 @@ FINGERPRINTS='
 0022|wide|lib/wine/$ARCH-windows/dxgi.dll|__wine_dcomp_last_present
 0031|ascii|lib/wine/$ARCH-unix/comdlg32.so|org.freedesktop.portal.FileChooser
 0031|wide|lib/wine/$ARCH-windows/comdlg32.dll|FileDialogPortal
-0032|ascii|lib/wine/$ARCH-windows/libusb-1.0.dll|libusb_submit_transfer
+0032|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|libusb_submit_transfer
 0033|ascii|lib/wine/$ARCH-unix/ntdll.so|WINE_DISABLE_UNIX_MOUNT_REPARSE
 0035|ascii|lib/wine/$ARCH-windows/wined3d.dll|Arc(tm) B580
 0036|wide|lib/wine/$ARCH-windows/dxgi.dll|__wine_dcomp_null_device
@@ -675,7 +675,7 @@ elif [ "$panel_built" = 0 ]; then
 else
     bad "settings panel payload" "cannot reconcile malformed BUILD-INFO provenance"
 fi
-must lib/wine/$ARCH-windows/libusb-1.0.dll
+must lib/wine/x86_64-windows/libusb-1.0.dll
 must lib/wine/$ARCH-unix/libusb-1.0.so
 for absent in lib/wine/i386-windows/libusb-1.0.dll lib/wine/i386-unix/libusb-1.0.so; do
     [ ! -e "$tree/$absent" ] && ok "$absent" "correctly absent (64-bit only)" \

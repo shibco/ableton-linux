@@ -394,7 +394,7 @@ exit 0
 EOF
     chmod 755 "$payload/$runtime_name/bin/wine" "$payload/$runtime_name/bin/wineserver"
     for required in \
-        lib/wine/$ARCH-windows/libusb-1.0.dll \
+        lib/wine/x86_64-windows/libusb-1.0.dll \
         lib/wine/$ARCH-unix/libusb-1.0.so \
         lib/wine/$ARCH-unix/comdlg32.so \
         lib/wine/$ARCH-unix/winealsa.so \

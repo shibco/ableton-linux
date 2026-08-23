@@ -325,7 +325,7 @@ for required in \
     bin/pipewire-version-probe \
     ABLETON-WINE-BUILD-INFO.txt \
     lib/wine/$ARCH-unix/comdlg32.so \
-    lib/wine/$ARCH-windows/libusb-1.0.dll \
+    lib/wine/x86_64-windows/libusb-1.0.dll \
     lib/wine/$ARCH-unix/libusb-1.0.so \
     lib/wine/$ARCH-windows/pipeasio64.dll \
     lib/wine/$ARCH-windows/pipeasio.dll \

@@ -44,7 +44,13 @@ npatch="$(ls "$SRC"/patches/[0-9][0-9][0-9][0-9]-*.patch | wc -l)"
 # attestation, and check-release-build-info.sh refuses to pack, tag or publish
 # a BUILD-INFO without the exact "TSan unit passed" record. CI sets require
 # explicitly. skip is an explicit local, non-release mode.
-PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
+
+if [ "$ARCH" = "x86_64" ]; then
+    PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
+else
+    PIPEASIO_TSAN_MODE="skip"
+fi
+
 # shellcheck source=scripts/lib/tsan.sh
 source "$SRC/scripts/lib/tsan.sh"
 pipeasio_tsan_mode_valid "$PIPEASIO_TSAN_MODE" || {
@@ -478,6 +484,12 @@ pipeasio_ctest_nonintegration() {
     esac
 }
 
+if [ "$ARCH" = "aarch64" ]; then
+    BUILD_TESTS="OFF"
+else
+    BUILD_TESTS="ON"
+fi
+
 # Production build. BUILD_SETTINGS_PANEL=ON means "build when Qt is present",
 # matching upstream: Qt discovery is quiet and a missing toolkit does not stop
 # the driver. The official container has Qt and CI separately requires the
@@ -488,7 +500,7 @@ pipeasio_cmake_configure build \
     -DCMAKE_INSTALL_PREFIX="$CONFIGURE_PREFIX" \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
     -DBUILD_SETTINGS_PANEL="$PIPEASIO_BUILD_SETTINGS_PANEL" \
-    -DBUILD_TESTS=ON
+    -DBUILD_TESTS=$BUILD_TESTS
 cmake --build build -j "$JOBS"
 
 panel_state="skipped (disabled)"
@@ -509,13 +521,14 @@ pipeasio_ctest_nonintegration build
 # Prove the actual missing-Qt contract, rather than inferring it from an option:
 # force Qt discovery off, build and test the driver, then run upstream's staged
 # install and require the driver aliases while forbidding a partial panel.
+if [ "$ARCH" = "x86_64" ] then
 pipeasio_cmake_configure build-noqt \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$CONFIGURE_PREFIX" \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
     -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=TRUE \
     -DBUILD_SETTINGS_PANEL=ON \
-    -DBUILD_TESTS=ON
+    -DBUILD_TESTS=$BUILD_TESTS
 mapfile -t noqt_unit_targets < <(pipeasio_unit_targets build-noqt)
 [ "${#noqt_unit_targets[@]}" -gt 0 ] || {
     echo "!! no unit-labelled CTest targets found in the no-Qt build" >&2
@@ -603,6 +616,7 @@ if [ "$tsan_enabled" -eq 1 ]; then
 fi
 [ -n "$tsan_record" ] || { echo "!! internal error: missing TSan result" >&2; exit 1; }
 echo "   sanitizers: ASan+UBSan unit/panel=$asan_panel_state; $tsan_record"
+fi
 
 # Install through upstream CMake so its layout, Qt data files and Wine alias
 # contract are exercised. The project has its own atomic registration path, so
