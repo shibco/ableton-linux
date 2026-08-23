@@ -95,10 +95,12 @@ chmod 755 "$kit/scripts/installer.sh" "$kit/scripts/install.sh" \
     "$kit/scripts/setup-link.sh" "$kit/scripts/ableton-linkctl"
 install -m755 scripts/setup-realtime.sh scripts/audio-report.sh scripts/rollback.sh \
       "$kit/scripts/"
-cp -- scripts/lib/config.sh scripts/lib/lifecycle.sh scripts/lib/manifest.sh scripts/lib/pipeasio.sh \
+cp -- scripts/lib/config.sh scripts/lib/lifecycle.sh scripts/lib/live-options.sh \
+      scripts/lib/manifest.sh scripts/lib/pipeasio.sh \
       "$kit/scripts/lib/"
 chmod 644 "$kit/scripts/lib/config.sh" "$kit/scripts/lib/lifecycle.sh" \
-    "$kit/scripts/lib/manifest.sh" "$kit/scripts/lib/pipeasio.sh"
+    "$kit/scripts/lib/live-options.sh" "$kit/scripts/lib/manifest.sh" \
+    "$kit/scripts/lib/pipeasio.sh"
 install -m644 scripts/ableton-linkd.service "$kit/scripts/ableton-linkd.service"
 install -m644 tools/setsyscolors.exe "$kit/scripts/setsyscolors.exe"
 install -m644 tools/learnheal.exe "$kit/scripts/learnheal.exe"
