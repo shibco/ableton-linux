@@ -1129,7 +1129,8 @@ if run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 
     fail "integration overwrites a modified managed file"
 fi
 grep -qF '# user change' "$base/data/ableton-wine/detect-scale.sh" || fail "failed update lost managed-file modification"
-grep -q 'refusing to overwrite modified managed file' "$base/err" || fail "modified managed file refusal is explicit"
+grep -q 'The installer kept the managed path because its saved checksum differs' "$base/err" \
+    || fail "changed managed file refusal gives the reason"
 ok "update refuses to overwrite a locally modified managed file"
 
 # install.sh installs the version stamp inside an "if !" condition, which
@@ -1143,16 +1144,58 @@ if run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 
 fi
 grep -qxF tampered "$base/data/ableton-wine/VERSION" \
     || fail "failed update lost the version stamp modification"
-grep -q 'refusing to overwrite modified managed file' "$base/err" \
-    || fail "modified version stamp refusal is explicit"
+grep -q 'The installer kept the managed path because its saved checksum differs' "$base/err" \
+    || fail "changed version stamp refusal gives the reason"
 ok "update refuses to overwrite a locally modified version stamp"
 
-# A fresh install writes integration before it installs Live, so the desktop
-# entry has no StartupWMClass.  The launcher discovers Live on first start.  It
-# updates the name and appends the missing class after the template's final
-# field, but it leaves the ownership manifest unchanged.  The next install or
-# update must replace the entry.
-base="$(new_env modified-live-desktop)"
+# Issue #251 reports a regular project launcher whose saved checksum differs
+# from the file. An update must refresh the file and its saved checksum.
+base="$(new_env stale-live-launcher)"
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/first.out" 2>"$base/first.err"
+live_launcher="$base/home/.local/bin/ableton-live"
+manifest="$base/state/ableton-wine/install-manifest.tsv"
+printf '\n# project release fixture\n' >> "$live_launcher"
+grep -qF 'Ableton Live launcher for the patched Wine stack' "$live_launcher" \
+    || fail "project launcher fixture lacks its project marker"
+recorded="$(awk -F '\t' -v p="$live_launcher" '$1=="file" && $2==p { print $3 }' "$manifest")"
+current="$(sha256sum "$live_launcher" | awk '{print $1}')"
+[ -n "$recorded" ] && [ "$recorded" != "$current" ] \
+    || fail "project launcher fixture requires different saved and current checksums"
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "update rejected the project launcher after its saved checksum changed"; }
+cmp -s -- "$here/ableton-live" "$live_launcher" \
+    || fail "update left the old project launcher in place"
+recorded="$(awk -F '\t' -v p="$live_launcher" '$1=="file" && $2==p { print $3 }' "$manifest")"
+current="$(sha256sum "$live_launcher" | awk '{print $1}')"
+[ "$recorded" = "$current" ] \
+    || fail "update saved an incorrect launcher checksum"
+grep -qF "The installer refreshed a project file because its saved checksum differed: $live_launcher" "$base/out" \
+    || fail "update omitted the launcher refresh message"
+! grep -qF "modified managed file $live_launcher" "$base/err" \
+    || fail "update described the project launcher as user-modified"
+ok "update refreshes a project launcher when its saved checksum differs"
+
+# The refresh instruction applies to regular launcher files. A symlink keeps
+# the path that the user selected.
+launcher_copy="$base/home/project-launcher"
+mv "$live_launcher" "$launcher_copy"
+ln -s "$launcher_copy" "$live_launcher"
+if run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/symlink.out" 2>"$base/symlink.err"; then
+    fail "update replaced a symlinked project launcher"
+fi
+[ -L "$live_launcher" ] && [ "$(readlink -- "$live_launcher")" = "$launcher_copy" ] \
+    || fail "launcher refresh changed the user symlink"
+grep -q 'The installer kept the managed path because its saved checksum differs' "$base/symlink.err" \
+    || fail "symlinked launcher refusal gives the reason"
+ok "update preserves a symlinked project launcher"
+
+# A fresh install writes the desktop entry before Live exists. The first Live
+# start adds the edition name, icon, and window class. The saved checksum still
+# describes the original entry. The next update must replace the entry.
+base="$(new_env stale-live-desktop)"
 run_isolated "$base" bash "$here/install.sh" --integration-only \
     >"$base/first.out" 2>"$base/first.err"
 live_desktop="$base/data/applications/ableton-live.desktop"
@@ -1167,14 +1210,14 @@ printf 'StartupWMClass=ableton live 12 suite.exe\n' >> "$live_desktop"
 recorded="$(awk -F '\t' -v p="$live_desktop" '$1=="file" && $2==p { print $3 }' "$manifest")"
 current="$(sha256sum "$live_desktop" | awk '{print $1}')"
 [ -n "$recorded" ] && [ "$recorded" != "$current" ] \
-    || fail "launcher-healed desktop fixture does not have a stale ownership digest"
+    || fail "launcher-updated desktop fixture requires different saved and current checksums"
 run_isolated "$base" bash "$here/install.sh" --integration-only \
     >"$base/out" 2>"$base/err" \
-    || { sed -n '1,40p' "$base/err" >&2; fail "update refuses a launcher-healed managed desktop entry"; }
+    || { sed -n '1,40p' "$base/err" >&2; fail "update rejected the launcher-updated managed desktop entry"; }
 grep -qxF 'Name=Ableton Live 12 Suite' "$live_desktop" \
-    || fail "update did not refresh the launcher-healed desktop name"
+    || fail "update left the old Live desktop name"
 grep -qxF 'StartupWMClass=ableton live 12 suite.exe' "$live_desktop" \
-    || fail "update did not refresh the launcher-healed desktop window class"
+    || fail "update left the old Live desktop window class"
 [ "$(grep -c '^StartupWMClass=' "$live_desktop")" -eq 1 ] \
     || fail "updated Live desktop entry contains duplicate window classes"
 wmclass_line="$(grep -n '^StartupWMClass=' "$live_desktop" | cut -d: -f1)"
@@ -1185,13 +1228,13 @@ recorded="$(awk -F '\t' -v p="$live_desktop" '$1=="file" && $2==p { print $3 }' 
 current="$(sha256sum "$live_desktop" | awk '{print $1}')"
 [ "$recorded" = "$current" ] \
     || fail "update did not refresh the Live desktop ownership digest"
-grep -qF "replacing modified managed file $live_desktop" "$base/out" \
-    || fail "desktop entry replacement is not announced"
-ok "update replaces a launcher-healed managed Live desktop entry"
+grep -qF "The installer refreshed a project file because its saved checksum differed: $live_desktop" "$base/out" \
+    || fail "update omitted the desktop entry refresh message"
+ok "update refreshes a launcher-updated Live desktop entry"
 
-# Uninstall must accept the same launcher-healed entry: the digest mismatch is
-# normal wear, and the entry still routes through the launcher being removed.
-base="$(new_env uninstall-healed-desktop)"
+# Uninstall must accept the same launcher-updated entry. The entry still uses
+# the project launcher.
+base="$(new_env uninstall-launcher-updated-desktop)"
 mkdir -p "$base/fakebin"
 printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
 chmod +x "$base/fakebin/systemctl"
@@ -1202,11 +1245,11 @@ sed -i 's/^Name=.*/Name=Ableton Live 12 Suite/' "$live_desktop"
 printf 'StartupWMClass=ableton live 12 suite.exe\n' >> "$live_desktop"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
     --keep-prefix --yes >"$base/out" 2>"$base/err" \
-    || { sed -n '1,40p' "$base/err" >&2; fail "uninstall refuses a launcher-healed managed desktop entry"; }
-[ ! -e "$live_desktop" ] || fail "uninstall left the launcher-healed desktop entry behind"
+    || { sed -n '1,40p' "$base/err" >&2; fail "uninstall rejected the launcher-updated managed desktop entry"; }
+[ ! -e "$live_desktop" ] || fail "uninstall kept the launcher-updated desktop entry"
 grep -qF "removed $live_desktop" "$base/out" \
-    || fail "healed desktop entry removal is not reported"
-ok "uninstall removes a launcher-healed managed Live desktop entry"
+    || fail "uninstall omitted the desktop entry removal message"
+ok "uninstall removes a launcher-updated managed Live desktop entry"
 
 # The allowance holds only while the Exec line routes through this project's
 # launcher; one re-pointed at another program is hand-made and stays kept,
@@ -1230,8 +1273,7 @@ grep -qF "kept modified file $live_desktop" "$base/err" \
     || fail "kept re-pointed desktop entry is not reported"
 ok "uninstall keeps a desktop entry re-pointed away from the launcher"
 
-# A symlinked entry is a user arrangement, never launcher wear; the
-# replace-modified allowance must keep refusing it.
+# A symlinked entry selects a user path. The refresh instruction preserves it.
 base="$(new_env symlinked-live-desktop)"
 run_isolated "$base" bash "$here/install.sh" --integration-only \
     >"$base/first.out" 2>"$base/first.err"
@@ -1243,8 +1285,8 @@ if run_isolated "$base" bash "$here/install.sh" --integration-only \
     fail "update replaced a user-symlinked managed desktop entry"
 fi
 [ -L "$live_desktop" ] || fail "failed update did not keep the symlinked desktop entry"
-grep -q 'refusing to overwrite modified managed file' "$base/err" \
-    || fail "symlinked desktop entry refusal is not explicit"
+grep -q 'The installer kept the managed path because its saved checksum differs' "$base/err" \
+    || fail "symlinked desktop entry refusal gives the reason"
 ok "update keeps a user-symlinked managed Live desktop entry"
 
 base="$(new_env link-prestate)"
