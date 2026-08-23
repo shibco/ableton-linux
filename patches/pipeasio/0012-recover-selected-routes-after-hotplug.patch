@@ -1,0 +1,2365 @@
+From 1ea5d9ce1b71e3f87af64165fb3a9f8f147e267d Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Sat, 22 Aug 2026 23:46:27 +0200
+Subject: [PATCH] audio: recover persistent device routes after hotplug
+
+Keep per-channel route intents across PipeWire object-id churn and relink them directly when selected devices return. Recover asynchronously from delayed daemon startup and daemon restarts while preserving the host's active state.
+
+Refs: shibco/ableton-linux#118
+
+Refs: shibco/ableton-linux#121
+
+Refs: shibco/ableton-linux#170
+---
+ CMakeLists.txt                    |    3 +-
+ include/audio.h                   |    4 +
+ include/pipeasio_hotplug.h        |   42 +
+ include/pipeasio_unix_abi.h       |   14 +-
+ src/asio.c                        |   73 +-
+ src/audio.c                       | 1205 ++++++++++++++++++++++++++---
+ src/hotplug.c                     |   85 ++
+ src/wow64/audio_proxy.c           |   21 +
+ src/wow64/audio_unix.c            |   24 +-
+ tests/asio_probe/CMakeLists.txt   |    1 +
+ tests/pw_probe/CMakeLists.txt     |   22 +
+ tests/pw_probe/pw_restart_probe.c |  110 +++
+ tests/pw_probe/run_restart.sh     |   71 ++
+ tests/unit/CMakeLists.txt         |    1 +
+ tests/unit/test_hotplug.c         |   64 ++
+ tests/wow64/unix_abi_layout.c     |    6 +
+ 16 files changed, 1575 insertions(+), 171 deletions(-)
+ create mode 100644 include/pipeasio_hotplug.h
+ create mode 100644 src/hotplug.c
+ create mode 100644 tests/pw_probe/pw_restart_probe.c
+ create mode 100755 tests/pw_probe/run_restart.sh
+ create mode 100644 tests/unit/test_hotplug.c
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1453500..c79d4b0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -59,6 +59,7 @@ add_wine_dll(
+     SPEC      ${CMAKE_SOURCE_DIR}/pipeasio.dll.spec
+     SOURCES   src/asio.c
+               src/audio.c
++              src/hotplug.c
+               src/config.c
+               src/main.c
+               src/regsvr.c
+@@ -160,7 +161,7 @@ if(BUILD_WOW64_32)
+     # 64-bit unixlib hosting the real PipeWire backend.
+     # -fno-lto: same winebuild ld -r / .spec export hazard as add_wine_dll (issue #6).
+     add_library(pipeasio32_unix_objs OBJECT
+-        src/wow64/audio_unix.c src/wow64/handle_table.c src/audio.c src/config.c)
++        src/wow64/audio_unix.c src/wow64/handle_table.c src/audio.c src/hotplug.c src/config.c)
+     set_target_properties(pipeasio32_unix_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
+     target_include_directories(pipeasio32_unix_objs PRIVATE
+         ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/wow64
+diff --git a/include/audio.h b/include/audio.h
+index 3c78eca..e30ff2f 100644
+--- a/include/audio.h
++++ b/include/audio.h
+@@ -183,6 +183,10 @@ bool audio_set_sample_rate_callback(audio_client_t *client, audio_sample_rate_cb
+ /* Connections / memory */
+ 
+ bool audio_connect(audio_client_t *client, const char *src, const char *dst);
++/* Keep this route intent while the selected device is absent. node_name ==
++ * NULL follows the PipeWire default for that direction. */
++bool audio_connect_device(audio_client_t *client, audio_port_t *local, const char *node_name,
++                          uint64_t remote_flags, uint32_t ordinal);
+ void audio_free(void *ptr);
+ /* Frees an array returned by audio_get_device_ports, including its strings. */
+ void audio_free_ports(const char **ports);
+diff --git a/include/pipeasio_hotplug.h b/include/pipeasio_hotplug.h
+new file mode 100644
+index 0000000..58f4ecf
+--- /dev/null
++++ b/include/pipeasio_hotplug.h
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#pragma once
++
++#include <stddef.h>
++#include <stdint.h>
++
++#define PIPEASIO_ROUTE_NAME_MAX 256u
++
++typedef struct
++{
++    char node_name[PIPEASIO_ROUTE_NAME_MAX];
++    char device_name[PIPEASIO_ROUTE_NAME_MAX];
++    char serial[PIPEASIO_ROUTE_NAME_MAX];
++    char bus_path[PIPEASIO_ROUTE_NAME_MAX];
++    char bus_id[PIPEASIO_ROUTE_NAME_MAX];
++    char alsa_path[PIPEASIO_ROUTE_NAME_MAX];
++    char vendor_id[PIPEASIO_ROUTE_NAME_MAX];
++    char product_id[PIPEASIO_ROUTE_NAME_MAX];
++} pipeasio_route_identity;
++
++enum pipeasio_route_state
++{
++    PIPEASIO_ROUTE_WAIT_TARGET = 0,
++    PIPEASIO_ROUTE_LINKING,
++    PIPEASIO_ROUTE_READY,
++};
++
++int pipeasio_route_identity_rank(const pipeasio_route_identity *saved,
++                                 const pipeasio_route_identity *candidate);
++int pipeasio_route_candidate_rank(const pipeasio_route_identity *saved,
++                                  const pipeasio_route_identity *candidate,
++                                  int                            has_required_direction);
++typedef struct
++{
++    const char *name;
++    uint32_t    id;
++} pipeasio_route_port_candidate;
++
++/* Prefer a unique semantic name. Duplicate names require the saved channel id
++ * or, after ids change, the stable configured ordinal. */
++int pipeasio_route_choose_port(const char *saved_name, uint32_t saved_id, uint32_t ordinal,
++                               const pipeasio_route_port_candidate *ports, size_t count);
+diff --git a/include/pipeasio_unix_abi.h b/include/pipeasio_unix_abi.h
+index cb866af..694c6a6 100644
+--- a/include/pipeasio_unix_abi.h
++++ b/include/pipeasio_unix_abi.h
+@@ -51,7 +51,7 @@ enum pa_call
+     PAU_PORT_UNREGISTER,
+     PAU_LATENCY_CHANGED, /* was PAU_RESERVED_12; pa_simple_params, result = bool */
+     PAU_RESERVED_13,
+-    PAU_RESERVED_14,
++    PAU_CONNECT_DEVICE,
+     PAU_PORT_LATENCY_RANGE,
+     PAU_RESERVED_16,
+     PAU_GET_DEVICE_PORTS,
+@@ -189,6 +189,18 @@ typedef struct
+     uint32_t  ok; /* out */
+ } pa_connect_params;
+ 
++/* PAU_CONNECT_DEVICE: preserve a selected route while its endpoint is absent. */
++typedef struct
++{
++    uint32_t  version;
++    pa_handle client;
++    pa_handle port;
++    uint32_t  flags;
++    uint32_t  ordinal;
++    char      node[PAU_PORTNAME_MAX];
++    uint32_t  ok; /* out */
++} pa_connect_device_params;
++
+ /* PAU_LOAD_CONFIG: pipeasio_config_load(&cfg) -> found. */
+ typedef struct
+ {
+diff --git a/src/asio.c b/src/asio.c
+index 5b477eb..7612767 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -1034,15 +1034,6 @@ config_watch_proc(LPVOID arg)
+             last_cfg = newcfg;
+         }
+ 
+-        /* PipeWire default device switched while we are following it */
+-        if (This->host_driver_state == Running
+-            && (!This->pipeasio_output_device[0] || !This->pipeasio_input_device[0])
+-            && audio_default_changed(This->audio_client))
+-        {
+-            TRACE("config watcher: default device changed\n");
+-            reset = true;
+-        }
+-
+         /* Follow-device mode: re-negotiate only when the observed graph quantum
+          * differs from the size we are already running.  Without the
+          * host_current_buffersize guard the first observation (and every later
+@@ -2369,8 +2360,6 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
+     BufferInformation  *original                             = NULL;
+     BufferInformation  *result                               = NULL;
+     audio_sample_t     *audio_buffer                         = NULL;
+-    const char        **input_endpoints                      = NULL;
+-    const char        **output_endpoints                     = NULL;
+     bool                input_active[PIPEASIO_MAX_CHANNELS]  = { false };
+     bool                output_active[PIPEASIO_MAX_CHANNELS] = { false };
+     bool                backend_active                       = false;
+@@ -2382,8 +2371,6 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
+     INT                 expected = Initialized;
+     size_t              table_bytes;
+     size_t              audio_bytes;
+-    size_t              input_endpoint_count  = 0;
+-    size_t              output_endpoint_count = 0;
+ 
+     if (!method_begin(This, false, &token))
+         return -1000;
+@@ -2537,62 +2524,38 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
+ 
+     if (This->pipeasio_connect_to_hardware)
+     {
+-        char local_name[PIPEASIO_MAX_NAME_LENGTH];
+-        /* Playback resolves FIRST: with no input_device configured, the
+-         * capture fallback anchors to the card the output side actually
+-         * resolved to, an explicit output_device included.  Resolving the
+-         * inputs first anchored capture to the system default, often the
+-         * onboard card, while a USB interface played (C9,
+-         * pipeasio-clock-domains). */
+-        output_endpoints = audio_get_device_ports(
+-                This->audio_client,
+-                This->pipeasio_output_device[0] ? This->pipeasio_output_device : NULL,
+-                AUDIO_PORT_IS_INPUT);
+-        input_endpoints = audio_get_device_ports(
+-                This->audio_client,
+-                This->pipeasio_input_device[0] ? This->pipeasio_input_device : NULL,
+-                AUDIO_PORT_IS_OUTPUT);
+-        if (!input_endpoints || !output_endpoints)
+-        {
+-            set_last_error(This, "could not enumerate audio device ports; check the Wine log");
+-            error = -1000;
+-            goto fail_internal;
+-        }
+-        while (input_endpoints[input_endpoint_count])
+-            ++input_endpoint_count;
+-        while (output_endpoints[output_endpoint_count])
+-            ++output_endpoint_count;
+-        for (int i = 0; i < This->pipeasio_number_inputs; ++i)
++        /* Routes are durable channel intents rather than links to today's
++         * PipeWire object ids. Playback is recorded first so unset capture
++         * can keep the same-card fallback. */
++        for (int i = 0; i < This->pipeasio_number_outputs; ++i)
+         {
+-            if (!input_active[i] || (size_t)i >= input_endpoint_count)
++            if (!output_active[i])
+                 continue;
+-            if (!audio_port_get_name(This->input_channel[i].port, local_name, sizeof local_name)
+-                || !audio_connect(This->audio_client, input_endpoints[i], local_name))
++            if (!audio_connect_device(
++                        This->audio_client, This->output_channel[i].port,
++                        This->pipeasio_output_device[0] ? This->pipeasio_output_device : NULL,
++                        AUDIO_PORT_IS_INPUT, (uint32_t)i))
+             {
+-                set_last_error(This, "failed to connect input channel %d to the audio device",
+-                               i + 1);
++                set_last_error(This, "failed to retain output route %d", i + 1);
+                 error = -1000;
+                 goto fail_internal;
+             }
+         }
+-        for (int i = 0; i < This->pipeasio_number_outputs; ++i)
++        for (int i = 0; i < This->pipeasio_number_inputs; ++i)
+         {
+-            if (!output_active[i] || (size_t)i >= output_endpoint_count)
++            if (!input_active[i])
+                 continue;
+-            if (!audio_port_get_name(This->output_channel[i].port, local_name, sizeof local_name)
+-                || !audio_connect(This->audio_client, local_name, output_endpoints[i]))
++            if (!audio_connect_device(
++                        This->audio_client, This->input_channel[i].port,
++                        This->pipeasio_input_device[0] ? This->pipeasio_input_device : NULL,
++                        AUDIO_PORT_IS_OUTPUT, (uint32_t)i))
+             {
+-                set_last_error(This, "failed to connect output channel %d to the audio device",
+-                               i + 1);
++                set_last_error(This, "failed to retain input route %d", i + 1);
+                 error = -1000;
+                 goto fail_internal;
+             }
+         }
+     }
+-    audio_free_ports(input_endpoints);
+-    audio_free_ports(output_endpoints);
+-    input_endpoints  = NULL;
+-    output_endpoints = NULL;
+ 
+     {
+         /* A previous best-effort stop may have left a watcher attached.  Join
+@@ -2725,8 +2688,6 @@ fail_internal_published:
+     This->host_active_outputs   = 0;
+     stop_config_watch(This, false);
+ fail_internal:
+-    audio_free_ports(input_endpoints);
+-    audio_free_ports(output_endpoints);
+     if (backend_active)
+         audio_deactivate(This->audio_client);
+     for (int i = 0; i < This->pipeasio_number_inputs; ++i)
+diff --git a/src/audio.c b/src/audio.c
+index d57c661..7f9316e 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -22,6 +22,7 @@
+ 
+ #include "audio.h"
+ #include "pipeasio_config.h"
++#include "pipeasio_hotplug.h"
+ #include "pipeasio_offsets.h"
+ #include "pipeasio_parse.h"
+ #include "pipeasio_pw_buffer.h"
+@@ -45,6 +46,7 @@
+ #include <spa/pod/builder.h>
+ 
+ #include <errno.h>
++#include <limits.h>
+ #include <pthread.h>
+ #include <sched.h>
+ #include <stdatomic.h>
+@@ -345,7 +347,7 @@ struct audio_client
+     audio_sample_rate_cb sample_rate_cb;
+     void                *sample_rate_cb_arg;
+ 
+-    bool active;
++    _Atomic bool active;
+ 
+     /* pw_filter */
+ 
+@@ -396,6 +398,7 @@ struct audio_client
+     struct spa_hook     registry_listener;
+     struct spa_hook     core_listener;
+     int                 sync_seq;
++    int                 sync_done_seq;
+     uint32_t            our_node_id;
+ 
+     /* "default" metadata object -> effective default sink/source node names,
+@@ -446,6 +449,57 @@ struct audio_client
+     struct pw_proxy **links;
+     uint32_t          n_links;
+     uint32_t          cap_links;
++
++    /* Routes keep semantic device/channel identity; PipeWire ids are only
++     * the binding for the current registry generation. */
++    struct audio_device_info **devices;
++    uint32_t                   n_devices;
++    uint32_t                   cap_devices;
++    struct audio_route       **routes;
++    uint32_t                   n_routes;
++    uint32_t                   cap_routes;
++    uint64_t                   topology_generation;
++    int                        reconcile_seq;
++    int                        reconcile_settle_seq;
++    _Atomic bool               route_ready[2];
++
++    pthread_mutex_t lifecycle_mutex;
++    pthread_mutex_t recovery_mutex;
++    pthread_cond_t  recovery_cond;
++    pthread_t       recovery_thread;
++    bool            recovery_thread_started;
++    bool            recovery_requested;
++    bool            recovery_in_progress;
++    _Atomic bool    backend_online;
++    _Atomic bool    closing;
++    _Atomic bool    tearing_down;
++    _Atomic bool    desired_active;
++};
++
++struct audio_device_info
++{
++    uint32_t id;
++    pipeasio_route_identity identity;
++};
++
++struct audio_route
++{
++    audio_client_t           *client;
++    audio_port_t             *local;
++    uint32_t                  direction;
++    bool                      explicit_target;
++    pipeasio_route_identity   target;
++    char                      remote_port_name[PIPEASIO_ROUTE_NAME_MAX];
++    uint32_t                  remote_port_id;
++    uint32_t                  remote_ordinal;
++    uint32_t                  bound_node_id;
++    uint32_t                  bound_port_id;
++    uint64_t                  generation;
++    enum pipeasio_route_state state;
++    struct pw_proxy          *link;
++    struct spa_hook           proxy_listener;
++    struct spa_hook           link_listener;
++    bool                      destroying;
+ };
+ 
+ struct audio_node_info
+@@ -456,6 +510,7 @@ struct audio_node_info
+     char           *node_name;
+     char           *display_name;
+     char           *media_class;
++    pipeasio_route_identity identity;
+     bool            is_ours;
+     bool            foreign_forcer; /* counted in foreign_forcers (issue #49) */
+     struct pw_node *proxy;           /* bound for dynamic node property updates */
+@@ -507,6 +562,8 @@ static const struct pw_filter_events audio_filter_events = {
+ /* Core and registry event forward declarations. */
+ 
+ static void audio_on_core_done(void *userdata, uint32_t id, int seq);
++static void audio_on_core_error(void *userdata, uint32_t id, int seq, int res,
++                                const char *message);
+ static void audio_on_registry_global(void *userdata, uint32_t id, uint32_t permissions,
+                                      const char *type, uint32_t version,
+                                      const struct spa_dict *props);
+@@ -516,8 +573,9 @@ static void audio_on_core_info(void *userdata, const struct pw_core_info *info);
+ 
+ static const struct pw_core_events audio_core_events = {
+     PW_VERSION_CORE_EVENTS,
+-    .info = audio_on_core_info,
+-    .done = audio_on_core_done,
++    .info  = audio_on_core_info,
++    .done  = audio_on_core_done,
++    .error = audio_on_core_error,
+ };
+ 
+ static const struct pw_registry_events audio_registry_events = {
+@@ -528,10 +586,23 @@ static const struct pw_registry_events audio_registry_events = {
+ 
+ static void audio_teardown_filter(audio_client_t *c);
+ static void audio_sync(audio_client_t *c);
++static bool audio_sync_timeout(audio_client_t *c, uint64_t timeout_nsec);
++static bool audio_activate_locked(audio_client_t *c);
++static bool audio_deactivate_locked(audio_client_t *c, bool clear_routes);
++static bool audio_connect_backend(audio_client_t *c);
++static void audio_disconnect_backend(audio_client_t *c);
++static void audio_request_recovery(audio_client_t *c, const char *reason);
++static void *audio_recovery_worker(void *userdata);
++static void audio_schedule_reconcile(audio_client_t *c);
++static void audio_reconcile_routes(audio_client_t *c);
++static void audio_destroy_routes(audio_client_t *c);
++static void audio_unbind_all_routes(audio_client_t *c);
++static uint32_t audio_route_count(const audio_client_t *c, uint32_t direction);
+ static void audio_adopt_own_ports(audio_client_t *c);
+ static void audio_refresh_defaults(audio_client_t *c);
+ static void audio_adopt_graph_rate(audio_client_t *c);
+ static void audio_diagnostic_event(void *data, uint64_t count);
++static void audio_free_discovered_port(audio_port_t *port);
+ 
+ /* Lifecycle. */
+ 
+@@ -560,6 +631,30 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+             *status = AUDIO_STATUS_NO_MEMORY;
+         return NULL;
+     }
++    if (pthread_mutex_init(&c->lifecycle_mutex, NULL))
++    {
++        if (status)
++            *status = AUDIO_STATUS_NO_MEMORY;
++        free(c);
++        return NULL;
++    }
++    if (pthread_mutex_init(&c->recovery_mutex, NULL))
++    {
++        pthread_mutex_destroy(&c->lifecycle_mutex);
++        if (status)
++            *status = AUDIO_STATUS_NO_MEMORY;
++        free(c);
++        return NULL;
++    }
++    if (pthread_cond_init(&c->recovery_cond, NULL))
++    {
++        pthread_mutex_destroy(&c->recovery_mutex);
++        pthread_mutex_destroy(&c->lifecycle_mutex);
++        if (status)
++            *status = AUDIO_STATUS_NO_MEMORY;
++        free(c);
++        return NULL;
++    }
+     c->name = strdup(client_name ? client_name : "PipeASIO");
+     if (!c->name)
+     {
+@@ -575,6 +670,13 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+     atomic_init(&c->graph_rate, 0);
+     atomic_init(&c->graph_force_rate, 0);
+     atomic_init(&c->default_changed, false);
++    atomic_init(&c->active, false);
++    atomic_init(&c->route_ready[AUDIO_CAPTURE_LATENCY], true);
++    atomic_init(&c->route_ready[AUDIO_PLAYBACK_LATENCY], true);
++    atomic_init(&c->backend_online, false);
++    atomic_init(&c->closing, false);
++    atomic_init(&c->tearing_down, false);
++    atomic_init(&c->desired_active, false);
+     atomic_init(&c->diagnostic_kind, 0);
+     atomic_init(&c->diagnostic_quantum, 0);
+     atomic_init(&c->diagnostic_buffer_size, 0);
+@@ -589,6 +691,8 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+     c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
+     c->default_metadata_id  = SPA_ID_INVALID;
+     c->settings_metadata_id = SPA_ID_INVALID;
++    c->topology_generation = 1;
++    c->reconcile_seq = c->reconcile_settle_seq = INT_MIN;
+ #ifndef PIPEASIO_AUDIO_UNIXLIB
+     atomic_init(&c->rt.ready, false);
+ #endif
+@@ -636,49 +740,34 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+     }
+ 
+     pw_thread_loop_lock(c->loop);
+-    c->core = pw_context_connect(c->ctx, NULL, 0);
+-    if (!c->core)
+-    {
+-        pw_thread_loop_unlock(c->loop);
+-        ERR("pw_context_connect failed (is the PipeWire daemon running?)\n");
+-        err = AUDIO_STATUS_NO_DAEMON;
+-        goto fail_started;
+-    }
+     c->diagnostic_event
+             = pw_loop_add_event(pw_thread_loop_get_loop(c->loop), audio_diagnostic_event, c);
+-
+-    /* Bind the registry and add listeners so we can walk the graph for
+-     * audio_get_ports / audio_port_by_name / audio_connect.  Then sync
+-     * the core once so the initial _global emission completes before
+-     * audio_open returns. */
+-    pw_core_add_listener(c->core, &c->core_listener, &audio_core_events, c);
+-    c->registry = pw_core_get_registry(c->core, PW_VERSION_REGISTRY, 0);
+-    if (c->registry)
+-        pw_registry_add_listener(c->registry, &c->registry_listener, &audio_registry_events, c);
+-
+     pw_thread_loop_unlock(c->loop);
+-    audio_sync(c);
+-    if (!c->daemon_version_seen)
++
++    bool connected = audio_connect_backend(c);
++    if (!connected && c->daemon_version_seen && !c->daemon_supported)
+     {
+-        ERR("PipeWire daemon did not report a readable version; version "
+-            PIPEASIO_PIPEWIRE_MIN_VERSION " or newer is required "
+-            "(pipeasio-daemon-version)\n");
+         err = AUDIO_STATUS_UNSUPPORTED_PIPEWIRE;
+-        goto fail_connected;
++        audio_disconnect_backend(c);
++        goto fail_started;
+     }
+-    if (!c->daemon_supported)
++
++    if (pthread_create(&c->recovery_thread, NULL, audio_recovery_worker, c))
+     {
+-        err = AUDIO_STATUS_UNSUPPORTED_PIPEWIRE;
+-        goto fail_connected;
++        ERR("cannot start PipeWire recovery worker\n");
++        err = AUDIO_STATUS_NO_MEMORY;
++        audio_disconnect_backend(c);
++        goto fail_started;
++    }
++    c->recovery_thread_started = true;
++
++    if (!connected)
++    {
++        audio_disconnect_backend(c);
++        audio_request_recovery(c, "daemon unavailable at startup");
++        TRACE("audio_open(%s) -> %p offline; waiting for PipeWire\n", c->name, c);
++        return c;
+     }
+-    /* A second sync drains the initial property burst of the "default" and
+-     * "settings" metadata objects: they are bound during the first sync's
+-     * global emission, so their values (default.audio.sink/source, the graph
+-     * clock rate) only land on the next round-trip. */
+-    audio_sync(c);
+-    audio_refresh_defaults(c);
+-    c->defaults_baselined = true;
+-    atomic_store_explicit(&c->default_changed, false, memory_order_release);
+ 
+     TRACE("audio_open(%s) -> %p [build " PIPEASIO_BUILD_TAG "] "
+           "[pipewire headers %s, library %s] "
+@@ -686,12 +775,6 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+           c->name, c, pw_get_headers_version(), pw_get_library_version(), c->n_nodes,
+           c->n_discovered);
+     return c;
+-
+-fail_connected:
+-    if (status)
+-        *status = err;
+-    audio_close(c);
+-    return NULL;
+ fail_started:
+     pw_thread_loop_stop(c->loop);
+ fail_ctx:
+@@ -700,6 +783,9 @@ fail_loop:
+     pw_thread_loop_destroy(c->loop);
+ fail_alloc:
+     free(c->name);
++    pthread_cond_destroy(&c->recovery_cond);
++    pthread_mutex_destroy(&c->recovery_mutex);
++    pthread_mutex_destroy(&c->lifecycle_mutex);
+     free(c);
+     if (status)
+         *status = err;
+@@ -712,10 +798,20 @@ audio_close(audio_client_t *c)
+     if (!c)
+         return false;
+ 
+-    /* Tear down the filter first so its destruction sees a live
+-     * thread loop / core to deliver events on. */
+-    if (c->active)
+-        audio_teardown_filter(c);
++    atomic_store_explicit(&c->desired_active, false, memory_order_release);
++    atomic_store_explicit(&c->closing, true, memory_order_release);
++    pthread_mutex_lock(&c->recovery_mutex);
++    pthread_cond_broadcast(&c->recovery_cond);
++    pthread_mutex_unlock(&c->recovery_mutex);
++    if (c->recovery_thread_started)
++    {
++        pthread_join(c->recovery_thread, NULL);
++        c->recovery_thread_started = false;
++    }
++
++    pthread_mutex_lock(&c->lifecycle_mutex);
++    audio_destroy_routes(c);
++    audio_disconnect_backend(c);
+ 
+     if (c->loop)
+     {
+@@ -725,37 +821,6 @@ audio_close(audio_client_t *c)
+             pw_loop_destroy_source(pw_thread_loop_get_loop(c->loop), c->diagnostic_event);
+             c->diagnostic_event = NULL;
+         }
+-        if (c->default_metadata)
+-        {
+-            spa_hook_remove(&c->default_metadata_listener);
+-            pw_proxy_destroy((struct pw_proxy *)c->default_metadata);
+-            c->default_metadata = NULL;
+-        }
+-        if (c->settings_metadata)
+-        {
+-            spa_hook_remove(&c->settings_metadata_listener);
+-            pw_proxy_destroy((struct pw_proxy *)c->settings_metadata);
+-            c->settings_metadata = NULL;
+-        }
+-        for (uint32_t i = 0; i < c->n_nodes; ++i)
+-            if (c->nodes[i]->proxy)
+-            {
+-                spa_hook_remove(&c->nodes[i]->listener);
+-                pw_proxy_destroy((struct pw_proxy *)c->nodes[i]->proxy);
+-                c->nodes[i]->proxy = NULL;
+-            }
+-        if (c->registry)
+-        {
+-            spa_hook_remove(&c->registry_listener);
+-            pw_proxy_destroy((struct pw_proxy *)c->registry);
+-            c->registry = NULL;
+-        }
+-        if (c->core)
+-        {
+-            spa_hook_remove(&c->core_listener);
+-            pw_core_disconnect(c->core);
+-            c->core = NULL;
+-        }
+         pw_thread_loop_unlock(c->loop);
+         pw_thread_loop_stop(c->loop);
+     }
+@@ -764,22 +829,6 @@ audio_close(audio_client_t *c)
+     if (c->loop)
+         pw_thread_loop_destroy(c->loop);
+ 
+-    for (uint32_t i = 0; i < c->n_nodes; i++)
+-    {
+-        free(c->nodes[i]->node_name);
+-        free(c->nodes[i]->display_name);
+-        free(c->nodes[i]->media_class);
+-        free(c->nodes[i]);
+-    }
+-    free(c->nodes);
+-    for (uint32_t i = 0; i < c->n_discovered; i++)
+-    {
+-        free(c->discovered[i]->name);
+-        free(c->discovered[i]->port_name);
+-        free(c->discovered[i]->node_name);
+-        free(c->discovered[i]);
+-    }
+-    free(c->discovered);
+     for (uint32_t i = 0; i < c->n_ports; i++)
+     {
+         audio_port_t *p = c->ports[i];
+@@ -788,8 +837,11 @@ audio_close(audio_client_t *c)
+     }
+     free(c->ports);
+     free(c->links);
+-
+     free(c->name);
++    pthread_mutex_unlock(&c->lifecycle_mutex);
++    pthread_cond_destroy(&c->recovery_cond);
++    pthread_mutex_destroy(&c->recovery_mutex);
++    pthread_mutex_destroy(&c->lifecycle_mutex);
+     free(c);
+     return true;
+ }
+@@ -799,6 +851,7 @@ audio_close(audio_client_t *c)
+ static void
+ audio_teardown_filter(audio_client_t *c)
+ {
++    atomic_store_explicit(&c->tearing_down, true, memory_order_release);
+     if (c->data_loop && c->loop)
+     {
+         pw_thread_loop_lock(c->loop);
+@@ -812,6 +865,7 @@ audio_teardown_filter(audio_client_t *c)
+             pw_proxy_destroy(c->links[--c->n_links]);
+         pw_thread_loop_unlock(c->loop);
+     }
++    audio_unbind_all_routes(c);
+     if (c->filter)
+     {
+         pw_thread_loop_lock(c->loop);
+@@ -825,12 +879,20 @@ audio_teardown_filter(audio_client_t *c)
+         port->pw_filter_port = NULL;
+         atomic_store_explicit(&port->cycle_buffer, NULL, memory_order_release);
+     }
++    c->our_node_id = SPA_ID_INVALID;
++    atomic_store_explicit(&c->route_ready[AUDIO_CAPTURE_LATENCY],
++                          audio_route_count(c, AUDIO_CAPTURE_LATENCY) == 0,
++                          memory_order_release);
++    atomic_store_explicit(&c->route_ready[AUDIO_PLAYBACK_LATENCY],
++                          audio_route_count(c, AUDIO_PLAYBACK_LATENCY) == 0,
++                          memory_order_release);
++    atomic_store_explicit(&c->tearing_down, false, memory_order_release);
+ }
+ 
+-bool
+-audio_activate(audio_client_t *c)
++static bool
++audio_activate_locked(audio_client_t *c)
+ {
+-    if (!c)
++    if (!c || !atomic_load_explicit(&c->backend_online, memory_order_acquire))
+         return false;
+     if (c->active)
+         return true;
+@@ -1082,7 +1144,10 @@ audio_activate(audio_client_t *c)
+     c->last_clock_position = 0;
+     c->last_clock_id       = 0;
+ 
+-    c->active = true;
++    atomic_store_explicit(&c->active, true, memory_order_release);
++    pw_thread_loop_lock(c->loop);
++    audio_schedule_reconcile(c);
++    pw_thread_loop_unlock(c->loop);
+     TRACE("audio_activate: %u ports, %u-sample buffers, %u Hz\n", c->n_ports, c->buffer_size,
+           atomic_load_explicit(&c->sample_rate, memory_order_acquire));
+     return true;
+@@ -1093,13 +1158,43 @@ fail:
+ }
+ 
+ bool
+-audio_deactivate(audio_client_t *c)
++audio_activate(audio_client_t *c)
+ {
++    bool result = false;
++    bool offline = false;
+     if (!c)
+         return false;
+-    if (!c->active)
++    atomic_store_explicit(&c->desired_active, true, memory_order_release);
++    pthread_mutex_lock(&c->lifecycle_mutex);
++    if (!atomic_load_explicit(&c->closing, memory_order_acquire) && c->n_ports)
++    {
++        offline = !atomic_load_explicit(&c->backend_online, memory_order_acquire);
++        result = offline || audio_activate_locked(c);
++        if (!result && !atomic_load_explicit(&c->backend_online, memory_order_acquire))
++            result = offline = true;
++    }
++    pthread_mutex_unlock(&c->lifecycle_mutex);
++    if (offline)
++        audio_request_recovery(c, "activation requested while offline");
++    if (!result)
++        atomic_store_explicit(&c->desired_active, false, memory_order_release);
++    return result;
++}
++
++static bool
++audio_deactivate_locked(audio_client_t *c, bool clear_routes)
++{
++    if (!c)
++        return false;
++    if (!atomic_load_explicit(&c->active, memory_order_acquire))
++    {
++        if (clear_routes)
++            audio_destroy_routes(c);
+         return true;
++    }
+     audio_teardown_filter(c);
++    if (clear_routes)
++        audio_destroy_routes(c);
+     /* Stale process-side state must not leak into the next activation: the
+      * observed quantum and the mute flag describe a graph this filter is no
+      * longer part of, and the predict/adopt paths must not act on them
+@@ -1107,10 +1202,23 @@ audio_deactivate(audio_client_t *c)
+     atomic_store_explicit(&c->observed_quantum, 0, memory_order_release);
+     atomic_store_explicit(&c->quantum_muted, false, memory_order_release);
+     c->mute_accum = 0;
+-    c->active = false;
++    atomic_store_explicit(&c->active, false, memory_order_release);
+     return true;
+ }
+ 
++bool
++audio_deactivate(audio_client_t *c)
++{
++    bool result;
++    if (!c)
++        return false;
++    atomic_store_explicit(&c->desired_active, false, memory_order_release);
++    pthread_mutex_lock(&c->lifecycle_mutex);
++    result = audio_deactivate_locked(c, true);
++    pthread_mutex_unlock(&c->lifecycle_mutex);
++    return result;
++}
++
+ const char *
+ audio_get_client_name(audio_client_t *c)
+ {
+@@ -1221,18 +1329,24 @@ audio_forcer_present(audio_client_t *c)
+ void
+ audio_drop_force_quantum(audio_client_t *c)
+ {
+-    if (!c || !c->filter)
++    bool dropped = false;
++    if (!c)
+         return;
+     pw_thread_loop_lock(c->loop);
+-    struct spa_dict_item item = SPA_DICT_ITEM_INIT(PW_KEY_NODE_FORCE_QUANTUM, "0");
+-    struct spa_dict      dict = SPA_DICT_INIT(&item, 1);
+-    pw_filter_update_properties(c->filter, NULL, &dict);
++    if (c->filter)
++    {
++        struct spa_dict_item item = SPA_DICT_ITEM_INIT(PW_KEY_NODE_FORCE_QUANTUM, "0");
++        struct spa_dict      dict = SPA_DICT_INIT(&item, 1);
++        pw_filter_update_properties(c->filter, NULL, &dict);
++        dropped = true;
++    }
+     pw_thread_loop_unlock(c->loop);
+     /* NODE_LOCK_QUANTUM stays for the rest of this activation.  The rebuild
+      * that answers the reset request tears the filter down and starts a
+      * fresh arbitration round with our own force at the new size, so no
+      * persistent "adopted" state survives here (issue #49). */
+-    TRACE("dropped node.force-quantum: adopting the graph quantum\n");
++    if (dropped)
++        TRACE("dropped node.force-quantum: adopting the graph quantum\n");
+ }
+ 
+ uint64_t
+@@ -1261,12 +1375,24 @@ audio_port_register(audio_client_t *c, const char *port_name, uint64_t flags, ui
+         free(owned_name);
+         return NULL;
+     }
++    pthread_mutex_lock(&c->lifecycle_mutex);
++    if (atomic_load_explicit(&c->closing, memory_order_acquire)
++        || atomic_load_explicit(&c->active, memory_order_acquire))
++    {
++        pthread_mutex_unlock(&c->lifecycle_mutex);
++        free(port);
++        free(owned_name);
++        return NULL;
++    }
++    pw_thread_loop_lock(c->loop);
+     if (c->n_ports == c->cap_ports)
+     {
+         uint32_t       capacity = c->cap_ports ? c->cap_ports * 2u : 16u;
+         audio_port_t **ports    = realloc(c->ports, (size_t)capacity * sizeof(*ports));
+         if (!ports)
+         {
++            pw_thread_loop_unlock(c->loop);
++            pthread_mutex_unlock(&c->lifecycle_mutex);
+             free(port);
+             free(owned_name);
+             return NULL;
+@@ -1280,6 +1406,8 @@ audio_port_register(audio_client_t *c, const char *port_name, uint64_t flags, ui
+     port->direction = (flags & AUDIO_PORT_IS_INPUT) ? PW_DIRECTION_INPUT : PW_DIRECTION_OUTPUT;
+     atomic_init(&port->cycle_buffer, NULL);
+     c->ports[c->n_ports++] = port;
++    pw_thread_loop_unlock(c->loop);
++    pthread_mutex_unlock(&c->lifecycle_mutex);
+     return port;
+ }
+ 
+@@ -1288,17 +1416,32 @@ audio_port_unregister(audio_client_t *c, audio_port_t *port)
+ {
+     if (!c || !port)
+         return false;
++    pthread_mutex_lock(&c->lifecycle_mutex);
++    pw_thread_loop_lock(c->loop);
+     uint32_t index;
+     for (index = 0; index < c->n_ports; ++index)
+         if (c->ports[index] == port)
+             break;
+     if (index == c->n_ports)
++    {
++        pw_thread_loop_unlock(c->loop);
++        pthread_mutex_unlock(&c->lifecycle_mutex);
+         return false;
++    }
++    for (uint32_t i = 0; i < c->n_routes; ++i)
++        if (c->routes[i]->local == port)
++        {
++            pw_thread_loop_unlock(c->loop);
++            pthread_mutex_unlock(&c->lifecycle_mutex);
++            return false;
++        }
+     memmove(&c->ports[index], &c->ports[index + 1],
+             (size_t)(c->n_ports - index - 1) * sizeof(*c->ports));
+     --c->n_ports;
+     free(port->name);
+     free(port);
++    pw_thread_loop_unlock(c->loop);
++    pthread_mutex_unlock(&c->lifecycle_mutex);
+     return true;
+ }
+ 
+@@ -1309,6 +1452,10 @@ audio_port_get_buffer(audio_port_t *port, audio_nframes_t frames)
+     void             *region = NULL;
+     if (!port)
+         return NULL;
++    if (port->direction == PW_DIRECTION_INPUT
++        && !atomic_load_explicit(&port->client->route_ready[AUDIO_CAPTURE_LATENCY],
++                                 memory_order_acquire))
++        return NULL;
+     buffer = atomic_load_explicit(&port->cycle_buffer, memory_order_acquire);
+     return pipeasio_pw_validate_region(buffer, frames, &region, NULL) ? region : NULL;
+ }
+@@ -1353,6 +1500,13 @@ audio_port_publish_output(audio_port_t *port, const audio_sample_t *source, audi
+ {
+     if (!port || port->direction != PW_DIRECTION_OUTPUT)
+         return false;
++    if (!atomic_load_explicit(&port->client->route_ready[AUDIO_PLAYBACK_LATENCY],
++                              memory_order_acquire))
++    {
++        source   = NULL;
++        admitted = false;
++        active   = false;
++    }
+     return pipeasio_pw_finish_output(&port->cycle_buffer, source, frames, admitted, active,
+                                      audio_queue_output, port);
+ }
+@@ -1388,6 +1542,72 @@ audio_find_node_id(audio_client_t *client, const char *node_name)
+ 
+ static struct audio_node_info *audio_find_node(audio_client_t *c, uint32_t id);
+ 
++static struct audio_device_info *
++audio_find_device(audio_client_t *c, uint32_t id)
++{
++    for (uint32_t i = 0; i < c->n_devices; ++i)
++        if (c->devices[i]->id == id)
++            return c->devices[i];
++    return NULL;
++}
++
++static void
++audio_copy_route_string(char destination[PIPEASIO_ROUTE_NAME_MAX], const char *source)
++{
++    destination[0] = '\0';
++    if (source)
++        snprintf(destination, PIPEASIO_ROUTE_NAME_MAX, "%s", source);
++}
++
++static void
++audio_node_identity(audio_client_t *c, const struct audio_node_info *node,
++                    pipeasio_route_identity *identity)
++{
++    memset(identity, 0, sizeof(*identity));
++    if (!node)
++        return;
++    *identity = node->identity;
++    audio_copy_route_string(identity->node_name, node->node_name);
++    struct audio_device_info *device = audio_find_device(c, node->device_id);
++    if (!device)
++        return;
++#define MERGE(field)                                                                                \
++    do                                                                                              \
++    {                                                                                               \
++        if (!identity->field[0])                                                                    \
++            audio_copy_route_string(identity->field, device->identity.field);                        \
++    } while (0)
++    MERGE(device_name);
++    MERGE(serial);
++    MERGE(bus_path);
++    MERGE(bus_id);
++    MERGE(alsa_path);
++    MERGE(vendor_id);
++    MERGE(product_id);
++#undef MERGE
++}
++
++static void
++audio_identity_fill_missing(pipeasio_route_identity *saved,
++                            const pipeasio_route_identity *candidate)
++{
++#define FILL(field)                                                                                 \
++    do                                                                                              \
++    {                                                                                               \
++        if (!saved->field[0])                                                                       \
++            audio_copy_route_string(saved->field, candidate->field);                                \
++    } while (0)
++    FILL(node_name);
++    FILL(device_name);
++    FILL(serial);
++    FILL(bus_path);
++    FILL(bus_id);
++    FILL(alsa_path);
++    FILL(vendor_id);
++    FILL(product_id);
++#undef FILL
++}
++
+ /* The device (card) a node belongs to, or SPA_ID_INVALID when unknown. */
+ static uint32_t
+ audio_node_device(audio_client_t *c, uint32_t node_id)
+@@ -1667,14 +1887,422 @@ audio_lookup_port(audio_client_t *client, const char *name, uint32_t *node_id)
+     return NULL;
+ }
+ 
++static uint32_t
++audio_route_count(const audio_client_t *c, uint32_t direction)
++{
++    uint32_t count = 0;
++    for (uint32_t i = 0; i < c->n_routes; ++i)
++        if (c->routes[i]->direction == direction)
++            ++count;
++    return count;
++}
++
++static void
++audio_update_route_ready(audio_client_t *c, uint32_t direction)
++{
++    bool ready = true;
++    for (uint32_t i = 0; i < c->n_routes; ++i)
++    {
++        struct audio_route *route = c->routes[i];
++        if (route->direction == direction
++            && (route->state != PIPEASIO_ROUTE_READY
++                || route->generation != c->topology_generation))
++        {
++            ready = false;
++            break;
++        }
++    }
++    atomic_store_explicit(&c->route_ready[direction], ready, memory_order_release);
++}
++
++/* Call on the PipeWire thread-loop. Two core round-trips debounce the registry
++ * burst for a device into one complete topology generation. */
++static void
++audio_schedule_reconcile(audio_client_t *c)
++{
++    if (!c->core || atomic_load_explicit(&c->closing, memory_order_acquire)
++        || atomic_load_explicit(&c->tearing_down, memory_order_acquire))
++        return;
++    ++c->topology_generation;
++    c->reconcile_settle_seq = INT_MIN;
++    c->reconcile_seq = pw_core_sync(c->core, PW_ID_CORE, c->reconcile_seq);
++}
++
++static void
++audio_route_lost(struct audio_route *route, const char *reason)
++{
++    audio_client_t *c = route->client;
++    route->state = PIPEASIO_ROUTE_WAIT_TARGET;
++    route->generation = 0;
++    route->bound_node_id = route->bound_port_id = SPA_ID_INVALID;
++    atomic_store_explicit(&c->route_ready[route->direction], false, memory_order_release);
++    if (!route->destroying
++        && !atomic_load_explicit(&c->tearing_down, memory_order_acquire))
++    {
++        WARN("hotplug: %s route %s; waiting for selected device\n",
++             route->direction == AUDIO_CAPTURE_LATENCY ? "capture" : "playback", reason);
++        audio_schedule_reconcile(c);
++    }
++}
++
++static void
++audio_route_proxy_destroy(void *userdata)
++{
++    struct audio_route *route = userdata;
++    spa_hook_remove(&route->proxy_listener);
++    spa_hook_remove(&route->link_listener);
++    route->link = NULL;
++    if (!route->destroying)
++        audio_route_lost(route, "link was destroyed");
++}
++
++static void
++audio_route_proxy_removed(void *userdata)
++{
++    struct audio_route *route = userdata;
++    if (route->link)
++        pw_proxy_destroy(route->link);
++}
++
++static void
++audio_route_proxy_error(void *userdata, int seq, int res, const char *message)
++{
++    struct audio_route *route = userdata;
++    (void)seq;
++    WARN("hotplug: link error %d for %s:%s: %s\n", res, route->target.node_name,
++         route->remote_port_name, message ? message : "unknown");
++    if (route->link)
++        pw_proxy_destroy(route->link);
++}
++
++static const struct pw_proxy_events audio_route_proxy_events = {
++    PW_VERSION_PROXY_EVENTS,
++    .destroy = audio_route_proxy_destroy,
++    .removed = audio_route_proxy_removed,
++    .error   = audio_route_proxy_error,
++};
++
++static void
++audio_route_link_info(void *userdata, const struct pw_link_info *info)
++{
++    struct audio_route *route = userdata;
++    if (!info)
++        return;
++    if (info->state == PW_LINK_STATE_PAUSED || info->state == PW_LINK_STATE_ACTIVE)
++    {
++        route->state = PIPEASIO_ROUTE_READY;
++        route->generation = route->client->topology_generation;
++        audio_update_route_ready(route->client, route->direction);
++    }
++    else if (info->state == PW_LINK_STATE_ERROR || info->state == PW_LINK_STATE_UNLINKED)
++    {
++        WARN("hotplug: link entered %s for %s:%s\n", pw_link_state_as_string(info->state),
++             route->target.node_name, route->remote_port_name);
++        if (route->link)
++            pw_proxy_destroy(route->link);
++    }
++}
++
++static const struct pw_link_events audio_route_link_events = {
++    PW_VERSION_LINK_EVENTS,
++    .info = audio_route_link_info,
++};
++
++/* Call with the PipeWire thread-loop held. */
++static void
++audio_unbind_route(struct audio_route *route)
++{
++    if (!route)
++        return;
++    if (route->link)
++    {
++        route->destroying = true;
++        pw_proxy_destroy(route->link);
++        route->destroying = false;
++    }
++    route->link = NULL;
++    route->state = PIPEASIO_ROUTE_WAIT_TARGET;
++    route->generation = 0;
++    route->bound_node_id = route->bound_port_id = SPA_ID_INVALID;
++    atomic_store_explicit(&route->client->route_ready[route->direction], false,
++                          memory_order_release);
++}
++
++static void
++audio_unbind_all_routes(audio_client_t *c)
++{
++    if (!c->loop)
++        return;
++    pw_thread_loop_lock(c->loop);
++    for (uint32_t i = 0; i < c->n_routes; ++i)
++        audio_unbind_route(c->routes[i]);
++    pw_thread_loop_unlock(c->loop);
++    audio_update_route_ready(c, AUDIO_CAPTURE_LATENCY);
++    audio_update_route_ready(c, AUDIO_PLAYBACK_LATENCY);
++}
++
++static void
++audio_destroy_routes(audio_client_t *c)
++{
++    if (c->loop)
++        pw_thread_loop_lock(c->loop);
++    for (uint32_t i = 0; i < c->n_routes; ++i)
++    {
++        audio_unbind_route(c->routes[i]);
++        free(c->routes[i]);
++    }
++    free(c->routes);
++    c->routes = NULL;
++    c->n_routes = c->cap_routes = 0;
++    atomic_store_explicit(&c->route_ready[AUDIO_CAPTURE_LATENCY], true, memory_order_release);
++    atomic_store_explicit(&c->route_ready[AUDIO_PLAYBACK_LATENCY], true, memory_order_release);
++    if (c->loop)
++        pw_thread_loop_unlock(c->loop);
++}
++
++static struct audio_node_info *
++audio_resolve_route_node(struct audio_route *route, bool *ambiguous)
++{
++    audio_client_t *c = route->client;
++    *ambiguous = false;
++    if (!route->explicit_target)
++    {
++        uint64_t flags = route->direction == AUDIO_PLAYBACK_LATENCY ? AUDIO_PORT_IS_INPUT
++                                                                    : AUDIO_PORT_IS_OUTPUT;
++        uint32_t count = 0;
++        audio_port_t **ports = audio_collect_device_port_objects(c, NULL, flags, &count);
++        struct audio_node_info *node = count ? audio_find_node(c, ports[0]->pw_node_id) : NULL;
++        free(ports);
++        return node;
++    }
++
++    struct audio_node_info *best = NULL;
++    int best_rank = 0;
++    uint64_t required_flags = route->direction == AUDIO_PLAYBACK_LATENCY ? AUDIO_PORT_IS_INPUT
++                                                                         : AUDIO_PORT_IS_OUTPUT;
++    for (uint32_t i = 0; i < c->n_nodes; ++i)
++    {
++        struct audio_node_info *node = c->nodes[i];
++        if (node->is_ours)
++            continue;
++        bool has_required_direction = false;
++        for (uint32_t j = 0; j < c->n_discovered; ++j)
++            if (c->discovered[j]->pw_node_id == node->id
++                && (c->discovered[j]->flags & required_flags) == required_flags)
++            {
++                has_required_direction = true;
++                break;
++            }
++        pipeasio_route_identity candidate;
++        audio_node_identity(c, node, &candidate);
++        int rank
++                = pipeasio_route_candidate_rank(&route->target, &candidate, has_required_direction);
++        if (rank > best_rank)
++        {
++            best = node;
++            best_rank = rank;
++            *ambiguous = false;
++        }
++        else if (rank && rank == best_rank)
++            *ambiguous = true;
++    }
++    return *ambiguous ? NULL : best;
++}
++
++static audio_port_t *
++audio_resolve_route_port(struct audio_route *route, const struct audio_node_info *node)
++{
++    audio_client_t *c = route->client;
++    uint64_t flags = route->direction == AUDIO_PLAYBACK_LATENCY ? AUDIO_PORT_IS_INPUT
++                                                                : AUDIO_PORT_IS_OUTPUT;
++    uint32_t count = 0;
++    audio_port_t **ports = audio_collect_device_port_objects(c, node->node_name, flags, &count);
++    audio_port_t *match = NULL;
++    pipeasio_route_port_candidate *candidates
++            = count ? malloc((size_t)count * sizeof(*candidates)) : NULL;
++    if (candidates)
++    {
++        for (uint32_t i = 0; i < count; ++i)
++        {
++            candidates[i].name = ports[i]->port_name;
++            candidates[i].id = ports[i]->port_id;
++        }
++        int index = pipeasio_route_choose_port(route->remote_port_name, route->remote_port_id,
++                                               route->remote_ordinal, candidates, count);
++        if (index >= 0)
++            match = ports[index];
++    }
++    free(candidates);
++    free(ports);
++    return match;
++}
++
++/* Call with the PipeWire thread-loop held. */
++static bool
++audio_bind_route(struct audio_route *route, audio_port_t *remote)
++{
++    audio_client_t *c = route->client;
++    if (!c->core || !atomic_load_explicit(&c->active, memory_order_acquire) || !route->local
++        || !remote || !route->local->pw_port_id || !remote->pw_port_id
++        || c->our_node_id == SPA_ID_INVALID)
++        return false;
++
++    struct pw_properties *properties = pw_properties_new(PW_KEY_OBJECT_LINGER, "false", NULL);
++    if (!properties)
++        return false;
++    if (route->direction == AUDIO_CAPTURE_LATENCY)
++    {
++        pw_properties_setf(properties, PW_KEY_LINK_OUTPUT_NODE, "%u", remote->pw_node_id);
++        pw_properties_setf(properties, PW_KEY_LINK_OUTPUT_PORT, "%u", remote->pw_port_id);
++        pw_properties_setf(properties, PW_KEY_LINK_INPUT_NODE, "%u", c->our_node_id);
++        pw_properties_setf(properties, PW_KEY_LINK_INPUT_PORT, "%u", route->local->pw_port_id);
++    }
++    else
++    {
++        pw_properties_setf(properties, PW_KEY_LINK_OUTPUT_NODE, "%u", c->our_node_id);
++        pw_properties_setf(properties, PW_KEY_LINK_OUTPUT_PORT, "%u", route->local->pw_port_id);
++        pw_properties_setf(properties, PW_KEY_LINK_INPUT_NODE, "%u", remote->pw_node_id);
++        pw_properties_setf(properties, PW_KEY_LINK_INPUT_PORT, "%u", remote->pw_port_id);
++    }
++    route->link = pw_core_create_object(c->core, "link-factory", PW_TYPE_INTERFACE_Link,
++                                        PW_VERSION_LINK, &properties->dict, 0);
++    pw_properties_free(properties);
++    if (!route->link)
++        return false;
++    route->state = PIPEASIO_ROUTE_LINKING;
++    route->generation = c->topology_generation;
++    route->bound_node_id = remote->pw_node_id;
++    route->bound_port_id = remote->pw_port_id;
++    pw_proxy_add_listener(route->link, &route->proxy_listener, &audio_route_proxy_events, route);
++    pw_link_add_listener((struct pw_link *)route->link, &route->link_listener,
++                         &audio_route_link_events, route);
++    return true;
++}
++
++/* Call on the PipeWire thread-loop after the registry burst settled. */
++static void
++audio_reconcile_routes(audio_client_t *c)
++{
++    if (!atomic_load_explicit(&c->active, memory_order_acquire) || !c->core
++        || atomic_load_explicit(&c->tearing_down, memory_order_acquire))
++        return;
++
++    for (uint32_t direction = AUDIO_PLAYBACK_LATENCY;; direction = AUDIO_CAPTURE_LATENCY)
++    {
++        for (uint32_t i = 0; i < c->n_routes; ++i)
++        {
++            struct audio_route *route = c->routes[i];
++            if (route->direction != direction)
++                continue;
++            bool ambiguous;
++            struct audio_node_info *node = audio_resolve_route_node(route, &ambiguous);
++            audio_port_t *remote = node ? audio_resolve_route_port(route, node) : NULL;
++            if (!remote)
++            {
++                if (route->link)
++                    audio_unbind_route(route);
++                route->state = PIPEASIO_ROUTE_WAIT_TARGET;
++                continue;
++            }
++            if (route->link && route->bound_node_id == remote->pw_node_id
++                && route->bound_port_id == remote->pw_port_id)
++            {
++                route->generation = c->topology_generation;
++                continue;
++            }
++            if (route->link)
++                audio_unbind_route(route);
++            pipeasio_route_identity resolved;
++            audio_node_identity(c, node, &resolved);
++            if (route->explicit_target)
++                audio_identity_fill_missing(&route->target, &resolved);
++            else
++                route->target = resolved;
++            audio_copy_route_string(route->remote_port_name, remote->port_name);
++            route->remote_port_id = remote->port_id;
++            if (!audio_bind_route(route, remote))
++                WARN("hotplug: failed to create %s link for %s:%s\n",
++                     direction == AUDIO_CAPTURE_LATENCY ? "capture" : "playback",
++                     route->target.node_name, route->remote_port_name);
++        }
++        audio_update_route_ready(c, direction);
++        if (direction == AUDIO_CAPTURE_LATENCY)
++            break;
++    }
++}
++
++bool
++audio_connect_device(audio_client_t *client, audio_port_t *local, const char *node_name,
++                     uint64_t remote_flags, uint32_t ordinal)
++{
++    if (!client || !local
++        || (remote_flags != AUDIO_PORT_IS_INPUT && remote_flags != AUDIO_PORT_IS_OUTPUT))
++        return false;
++    uint32_t direction = remote_flags == AUDIO_PORT_IS_INPUT ? AUDIO_PLAYBACK_LATENCY
++                                                             : AUDIO_CAPTURE_LATENCY;
++    bool result = false;
++    pthread_mutex_lock(&client->lifecycle_mutex);
++    pw_thread_loop_lock(client->loop);
++    bool owned = false;
++    for (uint32_t i = 0; i < client->n_ports; ++i)
++        if (client->ports[i] == local)
++            owned = true;
++    if (!owned || local->node_name
++        || (direction == AUDIO_CAPTURE_LATENCY && local->direction != PW_DIRECTION_INPUT)
++        || (direction == AUDIO_PLAYBACK_LATENCY && local->direction != PW_DIRECTION_OUTPUT))
++        goto done;
++    if (client->n_routes == client->cap_routes)
++    {
++        uint32_t capacity = client->cap_routes ? client->cap_routes * 2u : 16u;
++        struct audio_route **routes = realloc(client->routes,
++                                               (size_t)capacity * sizeof(*routes));
++        if (!routes)
++            goto done;
++        client->routes = routes;
++        client->cap_routes = capacity;
++    }
++    struct audio_route *route = calloc(1, sizeof(*route));
++    if (!route)
++        goto done;
++    route->client = client;
++    route->local = local;
++    route->direction = direction;
++    route->explicit_target = node_name && node_name[0];
++    route->remote_port_id = SPA_ID_INVALID;
++    route->remote_ordinal = ordinal;
++    route->bound_node_id = route->bound_port_id = SPA_ID_INVALID;
++    route->state = PIPEASIO_ROUTE_WAIT_TARGET;
++    if (route->explicit_target)
++    {
++        audio_copy_route_string(route->target.node_name, node_name);
++        uint32_t node_id = audio_find_node_id(client, node_name);
++        if (node_id != SPA_ID_INVALID)
++            audio_node_identity(client, audio_find_node(client, node_id), &route->target);
++    }
++    client->routes[client->n_routes++] = route;
++    atomic_store_explicit(&client->route_ready[direction], false, memory_order_release);
++    audio_schedule_reconcile(client);
++    result = true;
++done:
++    pw_thread_loop_unlock(client->loop);
++    pthread_mutex_unlock(&client->lifecycle_mutex);
++    return result;
++}
++
+ bool
+ audio_connect(audio_client_t *client, const char *source, const char *destination)
+ {
+     struct pw_proxy *link;
+     uint32_t         source_node      = SPA_ID_INVALID;
+     uint32_t         destination_node = SPA_ID_INVALID;
+-    if (!client || !client->core || !source || !destination)
++    if (!client || !source || !destination)
++        return false;
++    pthread_mutex_lock(&client->lifecycle_mutex);
++    if (!client->core)
++    {
++        pthread_mutex_unlock(&client->lifecycle_mutex);
+         return false;
++    }
+     pw_thread_loop_lock(client->loop);
+     audio_port_t *source_port      = audio_lookup_port(client, source, &source_node);
+     audio_port_t *destination_port = audio_lookup_port(client, destination, &destination_node);
+@@ -1705,9 +2333,11 @@ audio_connect(audio_client_t *client, const char *source, const char *destinatio
+         goto fail;
+     client->links[client->n_links++] = link;
+     pw_thread_loop_unlock(client->loop);
++    pthread_mutex_unlock(&client->lifecycle_mutex);
+     return true;
+ fail:
+     pw_thread_loop_unlock(client->loop);
++    pthread_mutex_unlock(&client->lifecycle_mutex);
+     WARN("audio_connect: cannot connect %s -> %s\n", source, destination);
+     return false;
+ }
+@@ -2052,6 +2682,245 @@ audio_on_core_info(void *userdata, const struct pw_core_info *info)
+             info->version);
+ }
+ 
++static void
++audio_request_recovery(audio_client_t *c, const char *reason)
++{
++    if (!c || atomic_load_explicit(&c->closing, memory_order_acquire))
++        return;
++    atomic_store_explicit(&c->backend_online, false, memory_order_release);
++    atomic_store_explicit(&c->route_ready[AUDIO_CAPTURE_LATENCY], false, memory_order_release);
++    atomic_store_explicit(&c->route_ready[AUDIO_PLAYBACK_LATENCY], false, memory_order_release);
++    pthread_mutex_lock(&c->recovery_mutex);
++    bool queued = !c->recovery_requested && !c->recovery_in_progress;
++    if (queued)
++        c->recovery_requested = true;
++    pthread_cond_signal(&c->recovery_cond);
++    pthread_mutex_unlock(&c->recovery_mutex);
++    if (queued)
++        WARN("PipeWire backend lost (%s); scheduling recovery\n", reason ? reason : "unknown");
++    else
++        TRACE("PipeWire backend loss coalesced into active recovery (%s)\n",
++              reason ? reason : "unknown");
++}
++
++static void
++audio_on_core_error(void *userdata, uint32_t id, int seq, int res, const char *message)
++{
++    audio_client_t *c = userdata;
++    bool lost = res == -EPIPE || res == -ECONNRESET || res == -ENOTCONN;
++    if (lost && (id == PW_ID_CORE || id == SPA_ID_INVALID))
++    {
++        WARN("PipeWire core connection lost id=%u seq=%d res=%d: %s\n", id, seq, res,
++             message ? message : "unknown");
++        audio_request_recovery(c, "fatal core connection error");
++    }
++    else
++        WARN("PipeWire core object error id=%u seq=%d res=%d (no rebuild): %s\n", id, seq, res,
++             message ? message : "unknown");
++}
++
++static void
++audio_clear_registry_cache(audio_client_t *c)
++{
++    for (uint32_t i = 0; i < c->n_nodes; ++i)
++    {
++        free(c->nodes[i]->node_name);
++        free(c->nodes[i]->display_name);
++        free(c->nodes[i]->media_class);
++        free(c->nodes[i]);
++    }
++    free(c->nodes);
++    c->nodes = NULL;
++    c->n_nodes = c->cap_nodes = 0;
++    for (uint32_t i = 0; i < c->n_discovered; ++i)
++        audio_free_discovered_port(c->discovered[i]);
++    free(c->discovered);
++    c->discovered = NULL;
++    c->n_discovered = c->cap_discovered = 0;
++    for (uint32_t i = 0; i < c->n_devices; ++i)
++        free(c->devices[i]);
++    free(c->devices);
++    c->devices = NULL;
++    c->n_devices = c->cap_devices = 0;
++    c->node_limit_warned = c->port_limit_warned = false;
++    c->chosen_node[0] = c->chosen_node[1] = SPA_ID_INVALID;
++    c->warned_clock_pair[0] = c->warned_clock_pair[1] = SPA_ID_INVALID;
++    c->our_node_id = SPA_ID_INVALID;
++    for (uint32_t i = 0; i < c->n_ports; ++i)
++        c->ports[i]->pw_node_id = c->ports[i]->pw_port_id = c->ports[i]->port_id = 0;
++}
++
++/* Preserve host ports and routes; discard only objects owned by this core. */
++static void
++audio_disconnect_backend(audio_client_t *c)
++{
++    if (!c || !c->loop)
++        return;
++    atomic_store_explicit(&c->backend_online, false, memory_order_release);
++    if (c->filter || c->n_links || atomic_load_explicit(&c->active, memory_order_acquire))
++        audio_teardown_filter(c);
++    atomic_store_explicit(&c->active, false, memory_order_release);
++
++    pw_thread_loop_lock(c->loop);
++    if (c->default_metadata)
++    {
++        spa_hook_remove(&c->default_metadata_listener);
++        pw_proxy_destroy((struct pw_proxy *)c->default_metadata);
++        c->default_metadata = NULL;
++    }
++    if (c->settings_metadata)
++    {
++        spa_hook_remove(&c->settings_metadata_listener);
++        pw_proxy_destroy((struct pw_proxy *)c->settings_metadata);
++        c->settings_metadata = NULL;
++    }
++    for (uint32_t i = 0; i < c->n_nodes; ++i)
++        if (c->nodes[i]->proxy)
++        {
++            spa_hook_remove(&c->nodes[i]->listener);
++            pw_proxy_destroy((struct pw_proxy *)c->nodes[i]->proxy);
++            c->nodes[i]->proxy = NULL;
++        }
++    if (c->registry)
++    {
++        spa_hook_remove(&c->registry_listener);
++        pw_proxy_destroy((struct pw_proxy *)c->registry);
++        c->registry = NULL;
++    }
++    if (c->core)
++    {
++        struct pw_core *core = c->core;
++        spa_hook_remove(&c->core_listener);
++        c->core = NULL;
++        pw_core_disconnect(core);
++    }
++    audio_clear_registry_cache(c);
++    c->n_links = 0;
++    pw_thread_loop_unlock(c->loop);
++
++    c->default_metadata_id = c->settings_metadata_id = SPA_ID_INVALID;
++    c->default_sink_name[0] = c->default_source_name[0] = '\0';
++    c->default_sink_fingerprint = c->default_source_fingerprint = 0;
++    c->default_sink_resolved = c->default_source_resolved = false;
++    c->defaults_baselined = false;
++    c->daemon_version_seen = c->daemon_supported = false;
++    c->sync_seq = c->sync_done_seq = INT_MIN;
++    c->reconcile_seq = c->reconcile_settle_seq = INT_MIN;
++    atomic_store_explicit(&c->foreign_forcers, 0, memory_order_release);
++    atomic_store_explicit(&c->global_force_quantum, 0, memory_order_release);
++    atomic_store_explicit(&c->graph_force_rate, 0, memory_order_release);
++    atomic_store_explicit(&c->device_latency[AUDIO_CAPTURE_LATENCY], 0, memory_order_release);
++    atomic_store_explicit(&c->device_latency[AUDIO_PLAYBACK_LATENCY], 0, memory_order_release);
++    atomic_store_explicit(&c->latency_changed, true, memory_order_release);
++}
++
++static bool
++audio_connect_backend(audio_client_t *c)
++{
++    pw_thread_loop_lock(c->loop);
++    c->core = pw_context_connect(c->ctx, NULL, 0);
++    if (c->core)
++    {
++        pw_core_add_listener(c->core, &c->core_listener, &audio_core_events, c);
++        c->registry = pw_core_get_registry(c->core, PW_VERSION_REGISTRY, 0);
++        if (c->registry)
++            pw_registry_add_listener(c->registry, &c->registry_listener,
++                                     &audio_registry_events, c);
++    }
++    pw_thread_loop_unlock(c->loop);
++    if (!c->core || !c->registry)
++        return false;
++    /* First drain globals, then metadata values bound from those globals. */
++    if (!audio_sync_timeout(c, 2 * SPA_NSEC_PER_SEC) || !c->daemon_version_seen
++        || !c->daemon_supported || !audio_sync_timeout(c, 2 * SPA_NSEC_PER_SEC))
++        return false;
++    pw_thread_loop_lock(c->loop);
++    audio_refresh_defaults(c);
++    c->defaults_baselined = true;
++    atomic_store_explicit(&c->default_changed, false, memory_order_release);
++    pw_thread_loop_unlock(c->loop);
++    atomic_store_explicit(&c->backend_online, true, memory_order_release);
++    return true;
++}
++
++static bool
++audio_recovery_delay(audio_client_t *c, uint32_t milliseconds)
++{
++    struct timespec until;
++    clock_gettime(CLOCK_REALTIME, &until);
++    until.tv_sec += milliseconds / 1000;
++    until.tv_nsec += (long)(milliseconds % 1000) * 1000000L;
++    if (until.tv_nsec >= 1000000000L)
++    {
++        ++until.tv_sec;
++        until.tv_nsec -= 1000000000L;
++    }
++    pthread_mutex_lock(&c->recovery_mutex);
++    if (!atomic_load_explicit(&c->closing, memory_order_acquire))
++        pthread_cond_timedwait(&c->recovery_cond, &c->recovery_mutex, &until);
++    bool keep_going = !atomic_load_explicit(&c->closing, memory_order_acquire);
++    pthread_mutex_unlock(&c->recovery_mutex);
++    return keep_going;
++}
++
++static void *
++audio_recovery_worker(void *userdata)
++{
++    audio_client_t *c = userdata;
++    pthread_mutex_lock(&c->recovery_mutex);
++    for (;;)
++    {
++        while (!atomic_load_explicit(&c->closing, memory_order_acquire)
++               && !c->recovery_requested)
++            pthread_cond_wait(&c->recovery_cond, &c->recovery_mutex);
++        if (atomic_load_explicit(&c->closing, memory_order_acquire))
++            break;
++        c->recovery_requested = false;
++        c->recovery_in_progress = true;
++        pthread_mutex_unlock(&c->recovery_mutex);
++
++        pthread_mutex_lock(&c->lifecycle_mutex);
++        audio_disconnect_backend(c);
++        pthread_mutex_unlock(&c->lifecycle_mutex);
++
++        uint32_t delay_ms = 100;
++        bool recovered = false;
++        while (!atomic_load_explicit(&c->closing, memory_order_acquire))
++        {
++            pthread_mutex_lock(&c->lifecycle_mutex);
++            bool connected = audio_connect_backend(c);
++            bool activated = connected
++                             && (!atomic_load_explicit(&c->desired_active, memory_order_acquire)
++                                 || audio_activate_locked(c));
++            if (activated)
++            {
++                pthread_mutex_lock(&c->recovery_mutex);
++                recovered = atomic_load_explicit(&c->backend_online, memory_order_acquire)
++                            && !atomic_load_explicit(&c->closing, memory_order_acquire);
++                if (recovered)
++                    c->recovery_in_progress = false;
++                pthread_mutex_unlock(&c->recovery_mutex);
++            }
++            if (!recovered)
++                audio_disconnect_backend(c);
++            pthread_mutex_unlock(&c->lifecycle_mutex);
++            if (recovered)
++                break;
++            if (!audio_recovery_delay(c, delay_ms))
++                break;
++            delay_ms = delay_ms < 1000 ? delay_ms * 2u : 2000u;
++        }
++        if (recovered)
++            TRACE("PipeWire recovery: backend and selected routes restored "
++                  "(pipeasio-reliable-hotplug)\n");
++        pthread_mutex_lock(&c->recovery_mutex);
++        if (!recovered)
++            c->recovery_in_progress = false;
++    }
++    pthread_mutex_unlock(&c->recovery_mutex);
++    return NULL;
++}
++
+ /* Core sync completion. */
+ 
+ static void
+@@ -2061,18 +2930,48 @@ audio_on_core_done(void *userdata, uint32_t id, int seq)
+     if (id != PW_ID_CORE)
+         return;
+     if (seq == c->sync_seq)
++    {
++        c->sync_done_seq = seq;
+         pw_thread_loop_signal(c->loop, false);
++    }
++    if (seq == c->reconcile_seq)
++    {
++        c->reconcile_seq = INT_MIN;
++        c->reconcile_settle_seq = pw_core_sync(c->core, PW_ID_CORE, seq);
++    }
++    else if (seq == c->reconcile_settle_seq)
++    {
++        c->reconcile_settle_seq = INT_MIN;
++        audio_reconcile_routes(c);
++    }
+ }
+ 
+ static void
+ audio_sync(audio_client_t *c)
++{
++    if (!audio_sync_timeout(c, 5 * SPA_NSEC_PER_SEC))
++        WARN("PipeWire core sync timed out\n");
++}
++
++static bool
++audio_sync_timeout(audio_client_t *c, uint64_t timeout_nsec)
+ {
+     if (!c->core || !c->loop)
+-        return;
++        return false;
+     pw_thread_loop_lock(c->loop);
++    c->sync_done_seq = INT_MIN;
+     c->sync_seq = pw_core_sync(c->core, PW_ID_CORE, c->sync_seq);
+-    pw_thread_loop_wait(c->loop);
++    int target = c->sync_seq;
++    struct timespec abstime;
++    pw_thread_loop_get_time(c->loop, &abstime, timeout_nsec);
++    while (c->sync_done_seq != target)
++        if (pw_thread_loop_timed_wait_full(c->loop, &abstime) < 0)
++        {
++            pw_thread_loop_unlock(c->loop);
++            return false;
++        }
+     pw_thread_loop_unlock(c->loop);
++    return true;
+ }
+ 
+ /* Walk c->discovered after our filter's node id is known, and migrate
+@@ -2146,6 +3045,48 @@ audio_registry_property_valid(const char *value)
+     return !value || strnlen(value, AUDIO_REGISTRY_PROPERTY_MAX + 1) <= AUDIO_REGISTRY_PROPERTY_MAX;
+ }
+ 
++static void
++audio_cache_device(audio_client_t *c, uint32_t id, const struct spa_dict *props)
++{
++    if (audio_find_device(c, id))
++        return;
++    struct audio_device_info *device = calloc(1, sizeof(*device));
++    if (!device)
++        return;
++    device->id = id;
++#define SAVE_PROP(key, field)                                                                       \
++    do                                                                                              \
++    {                                                                                               \
++        const char *value = spa_dict_lookup(props, key);                                             \
++        if (audio_registry_property_valid(value))                                                    \
++            audio_copy_route_string(device->identity.field, value);                                  \
++    } while (0)
++    SAVE_PROP(PW_KEY_DEVICE_NAME, device_name);
++    SAVE_PROP(PW_KEY_DEVICE_SERIAL, serial);
++    SAVE_PROP(PW_KEY_DEVICE_BUS_PATH, bus_path);
++    SAVE_PROP("device.bus-id", bus_id);
++    SAVE_PROP("api.alsa.path", alsa_path);
++    SAVE_PROP(PW_KEY_DEVICE_VENDOR_ID, vendor_id);
++    SAVE_PROP(PW_KEY_DEVICE_PRODUCT_ID, product_id);
++#undef SAVE_PROP
++    if (c->n_devices == c->cap_devices)
++    {
++        uint32_t capacity = c->cap_devices ? c->cap_devices * 2u : 16u;
++        struct audio_device_info **devices
++                = realloc(c->devices, (size_t)capacity * sizeof(*devices));
++        if (!devices)
++        {
++            free(device);
++            return;
++        }
++        c->devices = devices;
++        c->cap_devices = capacity;
++    }
++    c->devices[c->n_devices++] = device;
++    TRACE("registry: +device id=%u name=\"%s\" serial=\"%s\" bus-path=\"%s\"\n", id,
++          device->identity.device_name, device->identity.serial, device->identity.bus_path);
++}
++
+ /* Keep the aggregate foreign-forcer count synchronized with the current
+  * property set of one bound node.  Registry globals only provide a creation
+  * snapshot; PW_NODE_CHANGE_MASK_PROPS is required for Q -> 0 and 0 -> Q on a
+@@ -2235,6 +3176,22 @@ audio_cache_node(audio_client_t *c, uint32_t id, uint32_t version, const struct
+     n->node_name    = strdup(node_name);
+     n->media_class  = audio_dup_or_null(media_class);
+     n->display_name = strdup(description ? description : (nick ? nick : node_name));
++    audio_copy_route_string(n->identity.node_name, node_name);
++#define SAVE_NODE_PROP(key, field)                                                                  \
++    do                                                                                              \
++    {                                                                                               \
++        const char *value = spa_dict_lookup(props, key);                                             \
++        if (audio_registry_property_valid(value))                                                    \
++            audio_copy_route_string(n->identity.field, value);                                       \
++    } while (0)
++    SAVE_NODE_PROP(PW_KEY_DEVICE_NAME, device_name);
++    SAVE_NODE_PROP(PW_KEY_DEVICE_SERIAL, serial);
++    SAVE_NODE_PROP(PW_KEY_DEVICE_BUS_PATH, bus_path);
++    SAVE_NODE_PROP("device.bus-id", bus_id);
++    SAVE_NODE_PROP("api.alsa.path", alsa_path);
++    SAVE_NODE_PROP(PW_KEY_DEVICE_VENDOR_ID, vendor_id);
++    SAVE_NODE_PROP(PW_KEY_DEVICE_PRODUCT_ID, product_id);
++#undef SAVE_NODE_PROP
+     if (!n->node_name || !n->display_name || (media_class && !n->media_class))
+     {
+         free(n->node_name);
+@@ -2512,6 +3469,8 @@ audio_on_metadata_property(void *userdata, uint32_t subject, const char *key, co
+     }
+     memcpy(destination, name, sizeof(name));
+     audio_refresh_defaults(client);
++    if (atomic_load_explicit(&client->active, memory_order_acquire) && client->n_routes)
++        audio_schedule_reconcile(client);
+     return 0;
+ }
+ 
+@@ -2568,14 +3527,29 @@ audio_on_registry_global(void *userdata, uint32_t id, uint32_t permissions, cons
+         audio_cache_node(client, id, version, props);
+     else if (!strcmp(type, PW_TYPE_INTERFACE_Port))
+         audio_cache_port(client, id, props);
++    else if (!strcmp(type, PW_TYPE_INTERFACE_Device))
++        audio_cache_device(client, id, props);
+     else if (!strcmp(type, PW_TYPE_INTERFACE_Metadata))
+         audio_cache_metadata(client, id, version, props);
++    if (atomic_load_explicit(&client->active, memory_order_acquire) && client->n_routes
++        && (!strcmp(type, PW_TYPE_INTERFACE_Node) || !strcmp(type, PW_TYPE_INTERFACE_Port)
++            || !strcmp(type, PW_TYPE_INTERFACE_Device)))
++        audio_schedule_reconcile(client);
+ }
+ 
+ static void
+ audio_on_registry_global_remove(void *userdata, uint32_t id)
+ {
+     audio_client_t *client = userdata;
++    for (uint32_t i = 0; i < client->n_routes; ++i)
++    {
++        struct audio_route *route = client->routes[i];
++        if (route->bound_node_id == id || route->bound_port_id == id
++            || (route->local && route->local->pw_port_id == id))
++            audio_unbind_route(route);
++    }
++    if (atomic_load_explicit(&client->active, memory_order_acquire) && client->n_routes)
++        audio_schedule_reconcile(client);
+     if (id == client->default_metadata_id)
+     {
+         spa_hook_remove(&client->default_metadata_listener);
+@@ -2646,4 +3620,13 @@ audio_on_registry_global_remove(void *userdata, uint32_t id)
+             audio_refresh_defaults(client);
+             return;
+         }
++    for (uint32_t i = 0; i < client->n_devices; ++i)
++        if (client->devices[i]->id == id)
++        {
++            free(client->devices[i]);
++            memmove(&client->devices[i], &client->devices[i + 1],
++                    (size_t)(client->n_devices - i - 1) * sizeof(*client->devices));
++            --client->n_devices;
++            return;
++        }
+ }
+diff --git a/src/hotplug.c b/src/hotplug.c
+new file mode 100644
+index 0000000..c168b4a
+--- /dev/null
++++ b/src/hotplug.c
+@@ -0,0 +1,85 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#include "pipeasio_hotplug.h"
++
++#include <stdbool.h>
++#include <string.h>
++
++static bool
++same_nonempty(const char *a, const char *b)
++{
++    return a[0] && b[0] && !strcmp(a, b);
++}
++
++static bool
++matches_saved(const char *saved, const char *candidate)
++{
++    return !saved[0] || (candidate[0] && !strcmp(saved, candidate));
++}
++
++int
++pipeasio_route_identity_rank(const pipeasio_route_identity *saved,
++                             const pipeasio_route_identity *candidate)
++{
++    if (!saved || !candidate)
++        return 0;
++
++    /* Never let a reused friendly name bypass a known hardware conflict. */
++    if (!matches_saved(saved->vendor_id, candidate->vendor_id)
++        || !matches_saved(saved->product_id, candidate->product_id))
++        return 0;
++    if (saved->serial[0])
++    {
++        if (!matches_saved(saved->serial, candidate->serial))
++            return 0;
++        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 5;
++    }
++    if (same_nonempty(saved->bus_path, candidate->bus_path))
++        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 4;
++    if (same_nonempty(saved->bus_id, candidate->bus_id))
++        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 3;
++    if (same_nonempty(saved->alsa_path, candidate->alsa_path))
++        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 2;
++    if (same_nonempty(saved->node_name, candidate->node_name))
++        return 2;
++    if (same_nonempty(saved->device_name, candidate->device_name))
++        return 1;
++    return 0;
++}
++
++int
++pipeasio_route_candidate_rank(const pipeasio_route_identity *saved,
++                              const pipeasio_route_identity *candidate, int has_required_direction)
++{
++    return has_required_direction ? pipeasio_route_identity_rank(saved, candidate) : 0;
++}
++
++int
++pipeasio_route_choose_port(const char *saved_name, uint32_t saved_id, uint32_t ordinal,
++                           const pipeasio_route_port_candidate *ports, size_t count)
++{
++    int name_index = -1;
++    int id_index = -1;
++    size_t name_matches = 0;
++    size_t id_matches = 0;
++    if (!ports)
++        return -1;
++    for (size_t i = 0; i < count; ++i)
++    {
++        if (saved_name && saved_name[0] && ports[i].name
++            && !strcmp(saved_name, ports[i].name))
++        {
++            name_index = (int)i;
++            ++name_matches;
++        }
++        if (saved_id != UINT32_MAX && saved_id == ports[i].id)
++        {
++            id_index = (int)i;
++            ++id_matches;
++        }
++    }
++    if (name_matches == 1)
++        return name_index;
++    if (id_matches == 1)
++        return id_index;
++    return ordinal < count ? (int)ordinal : -1;
++}
+diff --git a/src/wow64/audio_proxy.c b/src/wow64/audio_proxy.c
+index c1fcb9b..dfe78fd 100644
+--- a/src/wow64/audio_proxy.c
++++ b/src/wow64/audio_proxy.c
+@@ -628,6 +628,27 @@ audio_connect(audio_client_t *client, const char *src, const char *dst)
+     return p.ok != 0;
+ }
+ 
++bool
++audio_connect_device(audio_client_t *client, audio_port_t *local, const char *node_name,
++                     uint64_t remote_flags, uint32_t ordinal)
++{
++    proxy_ctx *ctx = (proxy_ctx *)client;
++    pa_connect_device_params p;
++    size_t length = node_name ? strlen(node_name) : 0;
++
++    if (!ctx || !local || length >= sizeof(p.node))
++        return false;
++    memset(&p, 0, sizeof p);
++    p.version = PIPEASIO_UNIX_ABI_VERSION;
++    p.client  = ctx->unix_client;
++    p.port    = port_tok(local);
++    p.flags   = (uint32_t)remote_flags;
++    p.ordinal = ordinal;
++    if (length)
++        memcpy(p.node, node_name, length + 1);
++    return UCALL(PAU_CONNECT_DEVICE, &p) == 0 && p.ok != 0;
++}
++
+ void
+ audio_free(void *ptr)
+ {
+diff --git a/src/wow64/audio_unix.c b/src/wow64/audio_unix.c
+index 2f7a7bc..9d4fdd9 100644
+--- a/src/wow64/audio_unix.c
++++ b/src/wow64/audio_unix.c
+@@ -830,6 +830,26 @@ wow64_connect(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
++static NTSTATUS
++wow64_connect_device(void *args)
++{
++    pa_connect_device_params *p = args;
++    client_ctx *cc;
++    audio_port_t *port;
++
++    PAU_CHECK(p);
++    if (!memchr(p->node, '\0', sizeof(p->node))
++        || (p->flags != AUDIO_PORT_IS_INPUT && p->flags != AUDIO_PORT_IS_OUTPUT))
++        return STATUS_INVALID_PARAMETER;
++    cc   = cc_get(p->client);
++    port = port_get(p->port);
++    if (!cc || !port)
++        return STATUS_INVALID_HANDLE;
++    p->ok = audio_connect_device(cc->client, port, p->node[0] ? p->node : NULL,
++                                 p->flags, p->ordinal) ? 1 : 0;
++    return STATUS_SUCCESS;
++}
++
+ static NTSTATUS
+ wow64_activate(void *args)
+ {
+@@ -1082,7 +1102,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] = {
+     wow64_port_unregister,
+     wow64_latency_changed,
+     wow64_reserved,
+-    wow64_reserved,
++    wow64_connect_device,
+     wow64_port_latency_range,
+     wow64_reserved,
+     wow64_get_device_ports,
+@@ -1120,7 +1140,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {
+     wow64_port_unregister,
+     wow64_latency_changed,
+     wow64_reserved,
+-    wow64_reserved,
++    wow64_connect_device,
+     wow64_port_latency_range,
+     wow64_reserved,
+     wow64_get_device_ports,
+diff --git a/tests/asio_probe/CMakeLists.txt b/tests/asio_probe/CMakeLists.txt
+index e3703ee..4495642 100644
+--- a/tests/asio_probe/CMakeLists.txt
++++ b/tests/asio_probe/CMakeLists.txt
+@@ -23,6 +23,7 @@ add_wine_dll(
+     SPEC      ${CMAKE_SOURCE_DIR}/pipeasio.dll.spec
+     SOURCES   ${CMAKE_SOURCE_DIR}/src/asio.c
+               ${CMAKE_SOURCE_DIR}/src/audio.c
++              ${CMAKE_SOURCE_DIR}/src/hotplug.c
+               ${CMAKE_SOURCE_DIR}/src/config.c
+               ${CMAKE_SOURCE_DIR}/src/main.c
+               ${CMAKE_SOURCE_DIR}/src/regsvr.c
+diff --git a/tests/pw_probe/CMakeLists.txt b/tests/pw_probe/CMakeLists.txt
+index 6fbbc8f..7e05fdd 100644
+--- a/tests/pw_probe/CMakeLists.txt
++++ b/tests/pw_probe/CMakeLists.txt
+@@ -46,3 +46,25 @@ set_tests_properties(pw_default_probe PROPERTIES
+     TIMEOUT 30
+     LABELS "integration;pipewire")
+ pipeasio_sanitize_probe(pw_default_probe pw_default_probe)
++
++add_executable(pw_restart_probe
++    pw_restart_probe.c
++    ${CMAKE_SOURCE_DIR}/src/audio.c
++    ${CMAKE_SOURCE_DIR}/src/hotplug.c
++    ${CMAKE_SOURCE_DIR}/src/config.c)
++target_include_directories(pw_restart_probe PRIVATE ${CMAKE_SOURCE_DIR}/include)
++target_compile_definitions(pw_restart_probe PRIVATE PIPEASIO_AUDIO_UNIXLIB)
++target_link_libraries(pw_restart_probe PRIVATE PkgConfig::PIPEWIRE pthread m)
++target_compile_options(pw_restart_probe PRIVATE -Wall -Wextra)
++configure_file(run_restart.sh run_restart.sh COPYONLY)
++find_program(SH_EXECUTABLE sh REQUIRED)
++
++add_test(NAME pw_restart_probe
++    COMMAND ${SH_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/run_restart.sh
++            $<TARGET_FILE:pw_restart_probe>)
++set_tests_properties(pw_restart_probe PROPERTIES
++    SKIP_RETURN_CODE 77
++    TIMEOUT 60
++    RESOURCE_LOCK private-pipewire
++    LABELS "integration;pipewire;hotplug")
++pipeasio_sanitize_probe(pw_restart_probe pw_restart_probe)
+diff --git a/tests/pw_probe/pw_restart_probe.c b/tests/pw_probe/pw_restart_probe.c
+new file mode 100644
+index 0000000..e809b5f
+--- /dev/null
++++ b/tests/pw_probe/pw_restart_probe.c
+@@ -0,0 +1,110 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#define _GNU_SOURCE
++#include "audio.h"
++
++#include <stdatomic.h>
++#include <stdio.h>
++#include <unistd.h>
++
++static atomic_uint cycles;
++
++static int
++process_cb(audio_nframes_t nframes, void *arg)
++{
++    (void)nframes;
++    (void)arg;
++    atomic_fetch_add_explicit(&cycles, 1, memory_order_relaxed);
++    return 0;
++}
++
++static bool
++mark(const char *directory, const char *name)
++{
++    char path[1024];
++    if (snprintf(path, sizeof(path), "%s/%s", directory, name) >= (int)sizeof(path))
++        return false;
++    FILE *file = fopen(path, "w");
++    if (!file)
++        return false;
++    fclose(file);
++    return true;
++}
++
++static bool
++exists(const char *directory, const char *name)
++{
++    char path[1024];
++    return snprintf(path, sizeof(path), "%s/%s", directory, name) < (int)sizeof(path)
++           && !access(path, F_OK);
++}
++
++static bool
++wait_marker(const char *directory, const char *name, unsigned seconds)
++{
++    for (unsigned i = 0; i < seconds * 100; ++i)
++    {
++        if (exists(directory, name))
++            return true;
++        usleep(10000);
++    }
++    return false;
++}
++
++static bool
++wait_cycles(unsigned target, unsigned seconds)
++{
++    for (unsigned i = 0; i < seconds * 100; ++i)
++    {
++        if (atomic_load_explicit(&cycles, memory_order_acquire) >= target)
++            return true;
++        usleep(10000);
++    }
++    return false;
++}
++
++int
++main(int argc, char **argv)
++{
++    if (argc != 2)
++        return 2;
++    uint32_t status = AUDIO_STATUS_OK;
++    audio_client_t *client = audio_open("pipeasio.hotplug.probe", AUDIO_NO_START_SERVER, &status);
++    if (!client)
++    {
++        fprintf(stderr, "hotplug probe: audio_open failed, status=%u\n", status);
++        return 1;
++    }
++    audio_port_t *output = audio_port_register(client, "output_1", AUDIO_PORT_IS_OUTPUT, 0);
++    if (!output || !audio_set_process_callback(client, process_cb, NULL)
++        || !audio_activate(client)
++        || !audio_connect_device(client, output, NULL, AUDIO_PORT_IS_INPUT, 0))
++    {
++        fprintf(stderr, "hotplug probe: offline activation/route failed\n");
++        audio_close(client);
++        return 1;
++    }
++    if (!mark(argv[1], "opened") || !wait_marker(argv[1], "started", 10)
++        || !wait_cycles(4, 10))
++    {
++        fprintf(stderr, "hotplug probe: delayed daemon startup did not recover\n");
++        audio_close(client);
++        return 1;
++    }
++    if (!mark(argv[1], "ready") || !wait_marker(argv[1], "restarted", 20))
++    {
++        audio_close(client);
++        return 1;
++    }
++    unsigned before = atomic_load_explicit(&cycles, memory_order_acquire);
++    if (!wait_cycles(before + 4, 15))
++    {
++        fprintf(stderr, "hotplug probe: callbacks did not resume after daemon restart\n");
++        audio_close(client);
++        return 1;
++    }
++    fprintf(stderr, "hotplug probe: PASS delayed startup and restart (%u -> %u cycles)\n",
++            before, atomic_load_explicit(&cycles, memory_order_acquire));
++    audio_deactivate(client);
++    audio_close(client);
++    return 0;
++}
+diff --git a/tests/pw_probe/run_restart.sh b/tests/pw_probe/run_restart.sh
+new file mode 100755
+index 0000000..d10697f
+--- /dev/null
++++ b/tests/pw_probe/run_restart.sh
+@@ -0,0 +1,71 @@
++#!/bin/sh
++set -eu
++
++probe=${1:?hotplug probe path required}
++command -v pipewire >/dev/null 2>&1 || exit 77
++
++root=$(mktemp -d "${TMPDIR:-/tmp}/pipeasio-hotplug.XXXXXX")
++runtime="$root/runtime"
++state="$root/state"
++mkdir -p "$runtime" "$state"
++daemon_pid=
++probe_pid=
++cleanup()
++{
++    if [ -n "$probe_pid" ]; then kill "$probe_pid" 2>/dev/null || true; fi
++    if [ -n "$daemon_pid" ]; then kill "$daemon_pid" 2>/dev/null || true; fi
++    wait 2>/dev/null || true
++    rm -rf "$root"
++}
++trap cleanup EXIT INT TERM
++
++export XDG_RUNTIME_DIR="$runtime"
++export PIPEWIRE_RUNTIME_DIR="$runtime"
++
++start_daemon()
++{
++    pipewire >"$root/pipewire.log" 2>&1 &
++    daemon_pid=$!
++    i=0
++    while [ ! -S "$runtime/pipewire-0" ]; do
++        if ! kill -0 "$daemon_pid" 2>/dev/null; then exit 77; fi
++        i=$((i + 1))
++        [ "$i" -lt 500 ] || exit 77
++        sleep 0.01
++    done
++}
++
++PIPEASIO_DEBUG=1 "$probe" "$state" >"$root/probe.log" 2>&1 &
++probe_pid=$!
++i=0
++while [ ! -f "$state/opened" ]; do
++    if ! kill -0 "$probe_pid" 2>/dev/null; then
++        wait "$probe_pid" || rc=$?
++        exit "${rc:-1}"
++    fi
++    i=$((i + 1))
++    [ "$i" -lt 500 ] || exit 1
++    sleep 0.01
++done
++
++start_daemon
++touch "$state/started"
++i=0
++while [ ! -f "$state/ready" ]; do
++    if ! kill -0 "$probe_pid" 2>/dev/null; then
++        wait "$probe_pid" || rc=$?
++        exit "${rc:-1}"
++    fi
++    i=$((i + 1))
++    [ "$i" -lt 1500 ] || exit 1
++    sleep 0.01
++done
++
++kill "$daemon_pid"
++wait "$daemon_pid" || true
++daemon_pid=
++start_daemon
++touch "$state/restarted"
++wait "$probe_pid"
++probe_pid=
++echo "pw_restart_probe: delayed startup and daemon restart passed"
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 793ad65..07cc360 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -25,6 +25,7 @@ endfunction()
+ pipeasio_add_unit_test(test_offsets test_offsets.c)
+ pipeasio_add_unit_test(test_config test_config.c ${CMAKE_SOURCE_DIR}/src/config.c)
+ pipeasio_add_unit_test(test_rate_state test_rate_state.c)
++pipeasio_add_unit_test(test_hotplug test_hotplug.c ${CMAKE_SOURCE_DIR}/src/hotplug.c)
+ find_package(Threads REQUIRED)
+ pipeasio_add_unit_test(test_admission_gate test_admission_gate.c)
+ target_link_libraries(test_admission_gate PRIVATE Threads::Threads)
+diff --git a/tests/unit/test_hotplug.c b/tests/unit/test_hotplug.c
+new file mode 100644
+index 0000000..4427b15
+--- /dev/null
++++ b/tests/unit/test_hotplug.c
+@@ -0,0 +1,64 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#include "pipeasio_hotplug.h"
++#include "test_helpers.h"
++
++#include <string.h>
++
++static pipeasio_route_identity
++identity(const char *node, const char *device, const char *serial, const char *path,
++         const char *vendor, const char *product)
++{
++    pipeasio_route_identity result = { 0 };
++#define COPY(field, value)                                                                         \
++    do                                                                                             \
++    {                                                                                              \
++        if (value)                                                                                 \
++            strncpy(result.field, value, sizeof(result.field) - 1);                                \
++    } while (0)
++    COPY(node_name, node);
++    COPY(device_name, device);
++    COPY(serial, serial);
++    COPY(bus_path, path);
++    COPY(vendor_id, vendor);
++    COPY(product_id, product);
++#undef COPY
++    return result;
++}
++
++int
++main(void)
++{
++    pipeasio_route_identity saved = identity("alsa_output.usb-old", "alsa_card.usb", "ABC",
++                                             "pci-1-usb-2", "1234", "5678");
++    pipeasio_route_identity same = identity("alsa_output.usb-old", "other", "ABC",
++                                            "pci-1-usb-2", "1234", "5678");
++    pipeasio_route_identity reused = identity("alsa_output.usb-old", "other", "other", "other",
++                                              "1234", "9999");
++    pipeasio_route_identity moved = identity("alsa_output.usb-new", "other", "ABC",
++                                             "pci-1-usb-7", "1234", "5678");
++    pipeasio_route_identity saved_path = identity("old", "card", NULL, "pci-1-usb-2",
++                                                  "1234", "5678");
++    pipeasio_route_identity same_path = identity("new", "other", NULL, "pci-1-usb-2",
++                                                 "1234", "5678");
++    pipeasio_route_identity moved_path
++            = identity("old", "other", NULL, "pci-1-usb-7", "1234", "5678");
++    pipeasio_route_identity duplex_peer
++            = identity("alsa_input.usb-new", "other", "ABC", "pci-1-usb-7", "1234", "5678");
++
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved, &same), 6);
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved, &reused), 0);
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved, &moved), 5);
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved_path, &same_path), 4);
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved_path, &moved_path), 2);
++    EXPECT_EQ(pipeasio_route_candidate_rank(&saved, &duplex_peer, 0), 0);
++    EXPECT_EQ(pipeasio_route_candidate_rank(&saved, &moved, 1), 5);
++
++    pipeasio_route_port_candidate duplicate_names[] = {
++        { "playback", 10 }, { "playback", 11 }, { "phones", 12 },
++    };
++    EXPECT_EQ(pipeasio_route_choose_port("playback", 11, 0, duplicate_names, 3), 1);
++    EXPECT_EQ(pipeasio_route_choose_port("playback", 99, 1, duplicate_names, 3), 1);
++    EXPECT_EQ(pipeasio_route_choose_port("phones", 10, 0, duplicate_names, 3), 2);
++    EXPECT_EQ(pipeasio_route_choose_port(NULL, UINT32_MAX, 2, duplicate_names, 3), 2);
++    return test_report();
++}
+diff --git a/tests/wow64/unix_abi_layout.c b/tests/wow64/unix_abi_layout.c
+index 4b7352e..d75c1fb 100644
+--- a/tests/wow64/unix_abi_layout.c
++++ b/tests/wow64/unix_abi_layout.c
+@@ -46,6 +46,10 @@ CHECK(PAU_GLOBAL_FORCE_QUANTUM == 29, "call enum drift - append only");
+ CHECK(PAU_QUANTUM_MUTED == 30, "call enum drift - append only");
+ CHECK(PAU_FORCER_PRESENT == 31, "call enum drift - append only");
+ CHECK(PAU_DROP_FORCE_QUANTUM == 32, "call enum drift - append only");
++CHECK(PAU_RESERVED_13 == 13, "reserved slot drift");
++CHECK(PAU_CONNECT_DEVICE == 14, "persistent route slot drift");
++CHECK(PAU_PORT_LATENCY_RANGE == 15, "latency slot drift");
++CHECK(PAU_RESERVED_16 == 16, "reserved slot drift");
+ CHECK(PAU_CALL_COUNT == 33, "call count drift - update both unix call tables");
+ CHECK(PAU_CB_BUFFER_SWITCH == 0, "callback kind drift");
+ CHECK(PAU_CB_RESERVED_3 == 3, "callback kind drift");
+@@ -91,6 +95,8 @@ CHECK(offsetof(pa_ports_params, count) == 280, "pa_ports_params count offset");
+ CHECK(offsetof(pa_ports_params, endpoints) == 288, "pa_ports_params endpoints offset");
+ 
+ CHECK(sizeof(pa_connect_params) == 524, "pa_connect_params size");
++CHECK(sizeof(pa_connect_device_params) == 280, "pa_connect_device_params size");
++CHECK(offsetof(pa_connect_device_params, node) == 20, "pa_connect_device_params node offset");
+ 
+ CHECK(sizeof(pa_config_params) == 800, "pa_config_params size");
+ CHECK(offsetof(pa_config_params, cfg) == 4, "pa_config_params cfg offset");
+-- 
+2.55.0
+

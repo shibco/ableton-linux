@@ -10,8 +10,8 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0104-d2d1-keep-target-pixel-format-on-resize.patch'
-readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
+readonly REQUIRED_WINE_TAIL='0105-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch'
+readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0012-recover-selected-routes-after-hotplug.patch'
 
 check_required_series_tails()
 {
@@ -332,6 +332,8 @@ FINGERPRINTS='
 0096|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
 0100|ascii|lib/wine/x86_64-unix/winex11.so|ptr lease event=restore
 0101|ascii|lib/wine/x86_64-windows/user32.dll|dnd target=%p event=release
+0105|ascii|lib/wine/x86_64-unix/winealsa.so|WINE MIDI topology
+0105|ascii|lib/wine/x86_64-windows/winmm.dll|Out of memory refreshing %s mappings
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
@@ -342,6 +344,7 @@ pipeasio/0008|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-daemon-version
 pipeasio/0009|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-honest-realtime
 pipeasio/0010|wide|bin/pipeasio-settings|pick a preset or type any value
 pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
+pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotplug
 '
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,
