@@ -41,6 +41,21 @@ make_prefs()
     printf '%s\n' "$prefix/drive_c/users/test/AppData/Roaming/Ableton/$version/Preferences"
 }
 
+topology="$work/topology"
+for cpu in 0 1 2 3 4 5 6 7; do
+    mkdir -p -- "$topology/cpu$cpu/topology"
+    printf '%s\n' "$((cpu / 4))" > "$topology/cpu$cpu/topology/physical_package_id"
+    printf '%s\n' "$(((cpu % 4) / 2))" > "$topology/cpu$cpu/topology/core_id"
+done
+[ "$(ableton_available_physical_cores "$topology" 0-7)" -eq 4 ] \
+    || fail 'The topology reader counts each physical core once.'
+[ "$(ableton_available_physical_cores "$topology" 0-1,4-5)" -eq 2 ] \
+    || fail 'The topology reader includes only CPUs available to the launcher.'
+if ableton_available_physical_cores "$topology" 20-21 >/dev/null 2>&1; then
+    fail 'The topology reader accepts an affinity list without an available CPU.'
+fi
+ok 'The topology reader counts available physical cores across processor packages.'
+
 prefix="$work/new"
 prefs="$(make_prefs "$prefix")"
 ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
@@ -52,7 +67,15 @@ ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
     || fail 'The new settings directory contains the marker.'
 ok 'A new settings directory receives the requested count for audio threads. The settings file uses mode 600. The directory contains the marker.'
 
-ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
+ableton_seed_max_audio_threads "$prefix" 8 '' '' 0 >/dev/null
+grep -qx -- '-MaxAudioThreads=16' "$prefs/Options.txt" \
+    || fail 'The implicit automatic policy must keep an earlier launcher choice.'
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
+grep -qx -- '-MaxAudioThreads=8' "$prefs/Options.txt" \
+    || fail 'An explicit request must replace an earlier launcher choice.'
+ok 'The implicit automatic policy keeps an earlier choice. An explicit request replaces it.'
+
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
 [ "$(grep -c '^-MaxAudioThreads=' "$prefs/Options.txt")" -eq 1 ] \
     || fail 'The settings file contains one entry for audio threads after repeated launches.'
 printf '%s\n' '-UserChoice=keep' > "$prefs/Options.txt"

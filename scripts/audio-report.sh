@@ -36,8 +36,14 @@ fi
 [ -r "$WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" ] \
     && sed -n 's/^dist-version: /runtime: /p' "$WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 
-sec "ntsync"
-ls -l /dev/ntsync 2>/dev/null || echo "no /dev/ntsync"
+sec "ntsync device availability"
+if ls -l /dev/ntsync 2>/dev/null; then
+    echo "device presence does not prove that this Wine runtime uses ntsync"
+else
+    echo "no /dev/ntsync"
+fi
+echo "close Live, then run ./scripts/check-ntsync.sh from a repository checkout"
+echo "for the dynamic proof"
 
 sec "realtime limits"
 echo "ulimit -r: $(ulimit -r 2>/dev/null)"

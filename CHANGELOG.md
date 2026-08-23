@@ -14,7 +14,23 @@
   - external drag and drop that releases each target
   - external drag and drop reports first-position acceptance correctly
 - Updates replace project-managed launcher and Live menu files when their saved checksums differ (#251).
-- CPU optimisation via a provided limit for audio workers with small PipeASIO buffers.
+
+This release turns on two features that already shipped behind launcher
+settings:
+
+- Live 12 now starts with at most one audio thread per physical CPU core
+  available to the launcher. This lowers Live's default worker count where the
+  physical-core value is smaller. An existing Live setting, a previous
+  launcher choice, or a later user edit still takes priority.
+- `ABLETON_MAX_AUDIO_THREADS=auto` recalculates the physical-core value.
+  `ABLETON_MAX_AUDIO_THREADS=off` leaves Live's setting unchanged, and a value
+  from one to 63 selects an explicit limit.
+- On GNOME, Live now borrows Ctrl+Alt+Up and Ctrl+Alt+Down while it runs. Live
+  11 also borrows Ctrl+Alt+Delete. The launcher restores the exact settings
+  after the final Live session exits. `ABLETON_SHORTCUTS=preserve` opts out.
+- The CPU report now identifies its measurements as Linux process CPU and
+  worker wake-ups. The worker setting does not change PipeASIO or Wine's audio
+  path. PipeASIO real-time scheduling remains off by default.
 
 ## 2026.08.19.1
 

@@ -1,4 +1,57 @@
 #!/usr/bin/env bash
+ableton_cpu_is_allowed()
+{
+    local cpu="$1" allowed="$2" part first last
+    local IFS=,
+
+    [[ "$cpu" =~ ^[0-9]+$ ]] || return 1
+    for part in $allowed; do
+        case "$part" in
+            *-*) first="${part%%-*}"; last="${part#*-}" ;;
+            *)   first="$part"; last="$part" ;;
+        esac
+        [[ "$first" =~ ^[0-9]+$ ]] && [[ "$last" =~ ^[0-9]+$ ]] || continue
+        first=$((10#$first)); last=$((10#$last))
+        if [ "$cpu" -ge "$first" ] && [ "$cpu" -le "$last" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+ableton_available_physical_cores()
+(
+    local topology_root="${1:-/sys/devices/system/cpu}" allowed="${2:-}"
+    local cpu_dir cpu core package count
+    local -a cpu_dirs
+    local -A physical_cores=()
+
+    if [ -z "$allowed" ]; then
+        allowed="$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' /proc/self/status 2>/dev/null)"
+    fi
+    allowed="${allowed//[[:space:]]/}"
+    [ -n "$allowed" ] || return 1
+
+    shopt -s nullglob
+    cpu_dirs=("$topology_root"/cpu[0-9]*)
+    shopt -u nullglob
+    for cpu_dir in "${cpu_dirs[@]}"; do
+        cpu="${cpu_dir##*/cpu}"
+        ableton_cpu_is_allowed "$cpu" "$allowed" || continue
+        [ -r "$cpu_dir/topology/core_id" ] \
+            && [ -r "$cpu_dir/topology/physical_package_id" ] || continue
+        IFS= read -r core < "$cpu_dir/topology/core_id" || continue
+        IFS= read -r package < "$cpu_dir/topology/physical_package_id" || continue
+        [[ "$core" =~ ^-?[0-9]+$ ]] && [[ "$package" =~ ^-?[0-9]+$ ]] || continue
+        physical_cores["$package:$core"]=1
+    done
+
+    count="${#physical_cores[@]}"
+    [ "$count" -ge 1 ] || return 1
+    [ "$count" -le 63 ] || count=63
+    printf '%s\n' "$count"
+)
+
 ableton_live_product_version()
 {
     local exe="$1" key pattern key_bytes offset candidate
@@ -257,7 +310,7 @@ ableton_max_audio_rewrite_seeded()
 
 ableton_seed_max_audio_threads_in_dir()
 (
-    local users_root="$1" prefs="$2" option="$3"
+    local users_root="$1" prefs="$2" option="$3" replace_seeded="${4:-1}"
     local prefs_real prefs_token prefs_fd prefs_io options marker options_tmp marker_tmp
     local options_token options_fd options_io="" options_write_fd options_write_io options_existing=0
     local live_dir ableton_dir candidate candidate_real candidate_token candidate_fd candidate_io
@@ -284,9 +337,12 @@ ableton_seed_max_audio_threads_in_dir()
 
     # The marker preserves later user edits. While it still describes the file,
     # nothing has touched the line since the launcher wrote it, so a changed
-    # request may replace that one line.
+    # explicit request may replace that one line. The implicit automatic policy
+    # keeps a prior launcher choice, including a value requested by the user.
     if [ -e "$marker" ] || [ -L "$marker" ]; then
-        ableton_max_audio_rewrite_seeded "$prefs_io" "$option" || return 1
+        if [ "$replace_seeded" -eq 1 ]; then
+            ableton_max_audio_rewrite_seeded "$prefs_io" "$option" || return 1
+        fi
         return 0
     fi
     if [ -L "$options" ] || { [ -e "$options" ] && [ ! -f "$options" ]; }; then
@@ -413,6 +469,7 @@ ableton_seed_max_audio_threads()
     local prefix="${1:?Provide a Wine prefix}"
     local count="${2:-16}"
     local live_exe="${3:-}" wine_user="${4:-${USER:-}}" live_version=""
+    local replace_seeded="${5:-1}"
     local prefix_real users_root prefs online available live_default option
     local -a preference_dirs
 
@@ -420,6 +477,12 @@ ableton_seed_max_audio_threads()
         [1-9]|[1-5][0-9]|6[0-3]) ;;
         *)
             echo "ableton-live: Set the audio thread count to a number from one to 63. The launcher received '$count'." >&2
+            return 2 ;;
+    esac
+    case "$replace_seeded" in
+        0|1) ;;
+        *)
+            echo "ableton-live: The internal audio thread replacement policy is invalid." >&2
             return 2 ;;
     esac
 
@@ -476,6 +539,7 @@ ableton_seed_max_audio_threads()
     shopt -u nullglob
 
     for prefs in "${preference_dirs[@]}"; do
-        ableton_seed_max_audio_threads_in_dir "$users_root" "$prefs" "$option" || return 1
+        ableton_seed_max_audio_threads_in_dir "$users_root" "$prefs" "$option" \
+            "$replace_seeded" || return 1
     done
 )
