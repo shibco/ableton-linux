@@ -120,7 +120,7 @@ def expected_from_source(root: Path, info: Path, runtime: Path) -> dict[str, Exp
     executable_scripts = {
         "installer.sh", "install.sh", "setup-prefix.sh", "uninstall.sh",
         "ableton-live", "max9", "detect-scale.sh", "detect-theme.sh",
-        "shortcut-hold.sh", "check-live-audio.sh", "setup-link.sh",
+        "shortcut-hold.sh", "check-live-audio.sh", "check-ntsync.sh", "setup-link.sh",
         "ableton-linkctl", "setup-realtime.sh", "audio-report.sh", "rollback.sh",
     }
     for name in sorted(executable_scripts):
@@ -131,6 +131,12 @@ def expected_from_source(root: Path, info: Path, runtime: Path) -> dict[str, Exp
         add_source(expected, root / "scripts/lib" / name, f"scripts/lib/{name}", 0o644)
     add_source(expected, root / "tools/setsyscolors.exe", "scripts/setsyscolors.exe", 0o644)
     add_source(expected, root / "tools/learnheal.exe", "scripts/learnheal.exe", 0o644)
+    add_source(
+        expected,
+        root / "beta/tester-kit/probes/windows/ntsyncprobe.exe",
+        "scripts/ntsyncprobe.exe",
+        0o644,
+    )
 
     for source_name in tracked_paths(root, "desktop", "vendor/winetricks", "vendor/winetricks-cache"):
         mode = 0o755 if os.access(root / source_name, os.X_OK, follow_symlinks=False) else 0o644

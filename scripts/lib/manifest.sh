@@ -149,7 +149,8 @@ ableton_managed_path_allowed()
         "$ABLETON_DATA_HOME/lib/pipeasio.sh"|\
         "$ABLETON_DATA_HOME/detect-scale.sh"|"$ABLETON_DATA_HOME/detect-theme.sh"|\
         "$ABLETON_DATA_HOME/shortcut-hold.sh"|"$ABLETON_DATA_HOME/setup-realtime.sh"|\
-        "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/rollback.sh"|\
+        "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/check-ntsync.sh"|\
+        "$ABLETON_DATA_HOME/ntsyncprobe.exe"|"$ABLETON_DATA_HOME/rollback.sh"|\
         "$ABLETON_DATA_HOME/pipewire-version-probe"|"$ABLETON_DATA_HOME/setsyscolors.exe"|\
         "$ABLETON_DATA_HOME/learnheal.exe"|"$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID"|\
         "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID"|\
@@ -810,7 +811,9 @@ ableton_legacy_owned_path()
         "$ABLETON_DATA_HOME/detect-scale.sh") grep -qF 'Sourceable display-scale detection' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/detect-theme.sh") grep -qF 'Sourceable theme detection helpers' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/shortcut-hold.sh") grep -qF 'GNOME shortcut hold' "$path" 2>/dev/null ;;
-        "$ABLETON_DATA_HOME/setsyscolors.exe"|"$ABLETON_DATA_HOME/learnheal.exe") return 1 ;;
+        "$ABLETON_DATA_HOME/check-ntsync.sh") grep -qF 'NT sync semantics hold' "$path" 2>/dev/null ;;
+        "$ABLETON_DATA_HOME/setsyscolors.exe"|"$ABLETON_DATA_HOME/learnheal.exe"|\
+        "$ABLETON_DATA_HOME/ntsyncprobe.exe") return 1 ;;
         "$ABLETON_BIN_HOME/ableton-live") grep -qF 'Ableton Live launcher for the patched Wine stack' "$path" 2>/dev/null ;;
         "$ABLETON_BIN_HOME/max9") grep -qF 'Max 9 launcher' "$path" 2>/dev/null ;;
         "$ABLETON_BIN_HOME/pipeasio-settings") return 0 ;;

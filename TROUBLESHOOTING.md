@@ -495,12 +495,17 @@ These commands override the policy for one cold launch:
 ```bash
 env ABLETON_MAX_AUDIO_THREADS=auto ableton-live  # recalculate an earlier launcher value
 env ABLETON_MAX_AUDIO_THREADS=8 ableton-live     # request an exact value
-env ABLETON_MAX_AUDIO_THREADS=off ableton-live   # preserve the current Live setting
+env ABLETON_MAX_AUDIO_THREADS=off ableton-live   # restore Live's calculated count
 ```
 
-The setting persists in Live. `off` does not remove a line that was already
-written. Exit every Live process before comparing values. Use cloned prefixes,
-or edit the setting deliberately, for a clean default comparison.
+The setting persists in Live. `off` removes the line only when the launcher's
+marker still describes that line. It leaves an existing setting or a later
+user edit unchanged. Exit every Live process before comparing values.
+
+Review the value after you move the prefix to a different processor. A first
+launch under `taskset` or another CPU limit can save the restricted physical
+core count. Run an explicit `auto` launch with normal CPU access to recalculate
+an untouched launcher value.
 
 The launcher adds this Live 12 setting when the selected value falls below
 Live's calculated count:
@@ -527,11 +532,16 @@ Exit Live before editing the file. Remove the line that starts with
 when comparing values. A smaller count can reduce worker coordination in an
 empty Set but can also leave too few workers for a demanding Set.
 
+The current evidence uses an empty Set on one 16-core, 32-thread host. Before
+this branch is released with the physical-core default, compare it with Live's
+calculated value on a low-core host and a demanding Set. Record deadline load,
+dropouts, and xruns for the same Set section.
+
 Before attributing a high fixed per-callback cost to Wine synchronisation,
 close Live and prove which path the runtime uses:
 
 ```bash
-./scripts/check-ntsync.sh
+"${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/check-ntsync.sh"
 ```
 
 The existence of `/dev/ntsync` proves only that the host device is available.

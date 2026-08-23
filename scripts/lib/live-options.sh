@@ -308,6 +308,95 @@ ableton_max_audio_rewrite_seeded()
     echo "   The launcher changed Live to use ${option#*=} audio threads."
 }
 
+# Remove only the line that an intact launcher marker still describes. The
+# marker is removed with it, so ABLETON_MAX_AUDIO_THREADS=off restores Live's
+# calculated count for this and later launches where the override remains set.
+# A missing, malformed, replaced, or user-diverged pair is left untouched.
+ableton_max_audio_remove_seeded()
+{
+    local prefs_io="$1"
+    local marker="$prefs_io/.ableton-linux-max-audio-threads-v1"
+    local options="$prefs_io/Options.txt"
+    local seeded line total=0 matched=0
+    local marker_token marker_fd marker_io
+    local options_token options_fd options_io saved staged
+
+    [ -f "$marker" ] && [ ! -L "$marker" ] || return 0
+    marker_token="$(stat -c '%d:%i' -- "$marker")" || return 0
+    exec {marker_fd}<"$marker" || return 0
+    marker_io="/proc/$BASHPID/fd/$marker_fd"
+    if [ ! -f "$marker_io" ] \
+       || [ "$(stat -Lc '%d:%i' -- "$marker_io")" != "$marker_token" ]; then
+        exec {marker_fd}<&-
+        return 0
+    fi
+    if ableton_max_audio_marker_valid "$marker_io"; then
+        seeded="$(sed -n '2s/^default=//p' "$marker_io")"
+    fi
+    [ -n "$seeded" ] || { exec {marker_fd}<&-; return 0; }
+
+    [ -f "$options" ] && [ ! -L "$options" ] \
+        || { exec {marker_fd}<&-; return 0; }
+    options_token="$(stat -c '%d:%i' -- "$options")" \
+        || { exec {marker_fd}<&-; return 0; }
+    exec {options_fd}<>"$options" || { exec {marker_fd}<&-; return 0; }
+    options_io="/proc/$BASHPID/fd/$options_fd"
+    if [ ! -f "$options_io" ] \
+       || [ "$(stat -Lc '%d:%i' -- "$options_io")" != "$options_token" ]; then
+        exec {options_fd}>&-
+        exec {marker_fd}<&-
+        return 0
+    fi
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+            -MaxAudioThreads|-MaxAudioThreads[=[:space:]]*)
+                total=$((total + 1))
+                [ "$line" = "$seeded" ] && matched=$((matched + 1)) ;;
+        esac
+    done < "$options_io"
+    if [ "$total" -ne 1 ] || [ "$matched" -ne 1 ]; then
+        exec {options_fd}>&-
+        exec {marker_fd}<&-
+        return 0
+    fi
+
+    saved="$(mktemp "$prefs_io/.Options.txt.XXXXXX")" || {
+        exec {options_fd}>&-; exec {marker_fd}<&-; return 0; }
+    staged="$(mktemp "$prefs_io/.Options.txt.XXXXXX")" || {
+        rm -f -- "$saved"; exec {options_fd}>&-; exec {marker_fd}<&-; return 0; }
+    if ! cat "$options_io" > "$saved" \
+       || ! awk -v old="$seeded" \
+              '{ l = $0; sub(/\r$/, "", l) } l == old { next } { print }' \
+              "$options_io" > "$staged"; then
+        rm -f -- "$saved" "$staged"
+        exec {options_fd}>&-
+        exec {marker_fd}<&-
+        return 1
+    fi
+
+    if ! cat "$staged" > "$options_io"; then
+        rm -f -- "$saved" "$staged"
+        exec {options_fd}>&-
+        exec {marker_fd}<&-
+        return 1
+    fi
+    if [ -L "$options" ] || [ ! "$options" -ef "$options_io" ] \
+       || [ -L "$marker" ] || [ ! "$marker" -ef "$marker_io" ] \
+       || ! rm -f -- "$marker"; then
+        cat "$saved" > "$options_io"
+        rm -f -- "$saved" "$staged"
+        exec {options_fd}>&-
+        exec {marker_fd}<&-
+        return 1
+    fi
+    rm -f -- "$saved" "$staged"
+    exec {options_fd}>&-
+    exec {marker_fd}<&-
+    echo "   The launcher restored Live's calculated audio thread count."
+}
+
 ableton_seed_max_audio_threads_in_dir()
 (
     local users_root="$1" prefs="$2" option="$3" replace_seeded="${4:-1}"
@@ -341,10 +430,15 @@ ableton_seed_max_audio_threads_in_dir()
     # keeps a prior launcher choice, including a value requested by the user.
     if [ -e "$marker" ] || [ -L "$marker" ]; then
         if [ "$replace_seeded" -eq 1 ]; then
-            ableton_max_audio_rewrite_seeded "$prefs_io" "$option" || return 1
+            if [ "$option" = off ]; then
+                ableton_max_audio_remove_seeded "$prefs_io" || return 1
+            else
+                ableton_max_audio_rewrite_seeded "$prefs_io" "$option" || return 1
+            fi
         fi
         return 0
     fi
+    [ "$option" != off ] || return 0
     if [ -L "$options" ] || { [ -e "$options" ] && [ ! -f "$options" ]; }; then
         echo "ableton-live: Use a regular file inside the Wine prefix for Live settings: '$prefs/Options.txt'." >&2
         return 0
@@ -470,13 +564,14 @@ ableton_seed_max_audio_threads()
     local count="${2:-16}"
     local live_exe="${3:-}" wine_user="${4:-${USER:-}}" live_version=""
     local replace_seeded="${5:-1}"
-    local prefix_real users_root prefs online available live_default option
+    local restore_at_default="${6:-0}"
+    local prefix_real users_root prefs online available live_default option=""
     local -a preference_dirs
 
     case "$count" in
-        [1-9]|[1-5][0-9]|6[0-3]) ;;
+        off|[1-9]|[1-5][0-9]|6[0-3]) ;;
         *)
-            echo "ableton-live: Set the audio thread count to a number from one to 63. The launcher received '$count'." >&2
+            echo "ableton-live: Set the audio thread count to off or a number from one to 63. The launcher received '$count'." >&2
             return 2 ;;
     esac
     case "$replace_seeded" in
@@ -485,29 +580,47 @@ ableton_seed_max_audio_threads()
             echo "ableton-live: The internal audio thread replacement policy is invalid." >&2
             return 2 ;;
     esac
+    case "$restore_at_default" in
+        0|1) ;;
+        *)
+            echo "ableton-live: The internal audio thread restoration policy is invalid." >&2
+            return 2 ;;
+    esac
 
-    online="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || return 0
-    case "$online" in ''|*[!0-9]*) return 0 ;; esac
-    if [ "${#online}" -gt 6 ]; then
-        live_default=31
+    if [ "$count" = off ]; then
+        option=off
     else
-        [ "$online" -ge 1 ] || return 0
-        live_default=$((2 * online - 2))
-        [ "$live_default" -ge 1 ] || live_default=1
-        [ "$live_default" -le 31 ] || live_default=31
-    fi
-    [ "$count" -lt "$live_default" ] || return 0
+        online="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || return 0
+        case "$online" in ''|*[!0-9]*) return 0 ;; esac
+        if [ "${#online}" -gt 6 ]; then
+            live_default=31
+        else
+            [ "$online" -ge 1 ] || return 0
+            live_default=$((2 * online - 2))
+            [ "$live_default" -ge 1 ] || live_default=1
+            [ "$live_default" -le 31 ] || live_default=31
+        fi
+        if [ "$count" -ge "$live_default" ]; then
+            [ "$restore_at_default" -eq 1 ] || return 0
+            option=off
+        fi
 
-    available="$(nproc 2>/dev/null)" || return 0
-    case "$available" in ''|*[!0-9]*) return 0 ;; esac
-    if [ "${#available}" -le 6 ]; then
-        [ "$available" -ge 1 ] || return 0
-        live_default=$((2 * available - 2))
-        [ "$live_default" -ge 1 ] || live_default=1
-        [ "$live_default" -le 31 ] || live_default=31
-        [ "$count" -lt "$live_default" ] || return 0
+        if [ "$option" != off ]; then
+            available="$(nproc 2>/dev/null)" || return 0
+            case "$available" in ''|*[!0-9]*) return 0 ;; esac
+            if [ "${#available}" -le 6 ]; then
+                [ "$available" -ge 1 ] || return 0
+                live_default=$((2 * available - 2))
+                [ "$live_default" -ge 1 ] || live_default=1
+                [ "$live_default" -le 31 ] || live_default=31
+                if [ "$count" -ge "$live_default" ]; then
+                    [ "$restore_at_default" -eq 1 ] || return 0
+                    option=off
+                fi
+            fi
+        fi
+        [ -n "$option" ] || option="-MaxAudioThreads=$count"
     fi
-    option="-MaxAudioThreads=$count"
 
     [ -d "$prefix/drive_c/users" ] || return 0
     prefix_real="$(realpath -e -- "$prefix")" || return 1

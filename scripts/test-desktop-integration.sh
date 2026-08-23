@@ -2,7 +2,16 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-desktop-test.XXXXXX")"
-trap 'rm -rf -- "$work"' EXIT
+warm_pid=""
+cleanup()
+{
+    if [ -n "$warm_pid" ]; then
+        kill "$warm_pid" 2>/dev/null || true
+        wait "$warm_pid" 2>/dev/null || true
+    fi
+    rm -rf -- "$work"
+}
+trap cleanup EXIT
 pass=0
 
 ok()
@@ -83,11 +92,28 @@ printf '%s\n' "$config_help" | grep -q 'ABLETON_MAX_AUDIO_THREADS=auto|off|<numb
     || fail "launcher help omits the automatic audio thread policy"
 printf '%s\n' "$config_help" | grep -q 'physical CPU cores available to the launcher' \
     || fail "launcher help omits the automatic audio thread basis"
+printf '%s\n' "$config_help" | grep -q 'remove an untouched launcher-managed choice' \
+    || fail "launcher help omits the marker-aware audio thread opt-out"
+printf '%s\n' "$config_help" | grep -q 'Review the value after the prefix moves to another processor' \
+    || fail "launcher help omits the processor-change warning"
 printf '%s\n' "$config_help" | grep -q 'ABLETON_SHORTCUTS=take|preserve' \
     || fail "launcher help omits the GNOME shortcut policy"
 printf '%s\n' "$config_help" | grep -q 'preserve leaves the desktop shortcuts unchanged' \
     || fail "launcher help omits the shortcut opt-out"
 ok "launcher help reports the default-on worker and GNOME shortcut policies"
+
+base="$(new_env missing-live-options-helper)"
+mkdir -p -- "$base/launcher/lib"
+cp -- "$here/ableton-live" "$base/launcher/ableton-live"
+cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$base/launcher/lib/"
+: > "$base/launcher/lib/live-options.sh"
+if run_isolated "$base" bash "$base/launcher/ableton-live" \
+    >"$base/out" 2>"$base/err"; then
+    fail "launcher accepts an incomplete live-options.sh helper"
+fi
+grep -q 'live-options.sh helper is missing or incomplete' "$base/err" \
+    || fail "launcher does not name its incomplete audio settings helper"
+ok "launcher names and refuses an incomplete live-options.sh helper"
 
 base="$(new_env unique-handlers)"
 install_fake_desktop_tools "$base"
@@ -116,6 +142,36 @@ fi
     || fail "installer does not pin the project protocol handler"
 [ "$(awk -F '\t' '$1 == "application/x-wine-extension-auz" { print $2 }' "$base/mime-defaults.tsv")" = "$auz_id" ] \
     || fail "installer does not pin the project AUZ handler"
+installed_ntsync_check="$base/data/ableton-wine/check-ntsync.sh"
+installed_ntsync_probe="$base/data/ableton-wine/ntsyncprobe.exe"
+[ -x "$installed_ntsync_check" ] \
+    || fail "installer omits the executable NTSync diagnostic"
+[ -f "$installed_ntsync_probe" ] && [ ! -x "$installed_ntsync_probe" ] \
+    || fail "installer omits the data-only NTSync semantics probe"
+cmp -s "$here/../beta/tester-kit/probes/windows/ntsyncprobe.exe" "$installed_ntsync_probe" \
+    || fail "installer changes the NTSync semantics probe"
+grep -qF "$installed_ntsync_check" "$base/out" \
+    || fail "installer does not report the installed NTSync diagnostic"
+for diagnostic_tool in pw-metadata pw-dump pw-top journalctl; do
+    printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/$diagnostic_tool"
+    chmod +x "$base/fakebin/$diagnostic_tool"
+done
+run_isolated "$base" bash "$base/data/ableton-wine/audio-report.sh" \
+    >"$base/audio-report.out" 2>"$base/audio-report.err"
+grep -qF "close Live, then run $installed_ntsync_check for the dynamic proof" \
+    "$base/audio-report.out" \
+    || fail "installed audio report does not name the installed NTSync diagnostic"
+mkdir -p -- "$base/fake-wine/bin"
+printf '#!/bin/sh\nexit 0\n' > "$base/fake-wine/bin/wine"
+chmod +x "$base/fake-wine/bin/wine"
+if run_isolated "$base" env ABLETON_WINE_ROOT="$base/fake-wine" \
+    bash "$installed_ntsync_check" >"$base/ntsync.out" 2>"$base/ntsync.err"; then
+    fail "NTSync diagnostic accepts a runtime without NTSync"
+fi
+! grep -q 'semantics probe not found' "$base/ntsync.err" \
+    || fail "installed NTSync diagnostic cannot find its packaged sibling probe"
+grep -q 'FAIL: ntsync not compiled in' "$base/ntsync.err" \
+    || fail "installed NTSync diagnostic does not reach its runtime check"
 ok "installer uses unique callback handlers and retires only its legacy entry"
 
 base="$(new_env registration-failure)"
@@ -233,6 +289,47 @@ else
         || fail "The default launcher policy adds a limit above Live's calculated count."
 fi
 
+cp /bin/sleep "$base/runtime/bin/wine-client"
+warm_holder='C:\ProgramData\Ableton\Live 12 Suite\Program\Ableton Live 12 Suite.exe'
+env WINEPREFIX="$base/prefix" bash -c \
+    'exec -a "$2" "$1" 600' _ "$base/runtime/bin/wine-client" "$warm_holder" \
+    </dev/null >/dev/null 2>&1 &
+warm_pid=$!
+sleep 0.2
+warm_auz="$base/Warm.auz"
+warm_als="$base/Warm.als"
+: > "$warm_auz"
+: > "$warm_als"
+warm_index=0
+for warm_arg in 'ableton://warm-ableton-linux-probe' "$warm_auz" "$warm_als"; do
+    warm_index=$((warm_index + 1))
+    run_isolated "$base" env -u ABLETON_MAX_AUDIO_THREADS USER=test ABLETON_POWER=off \
+        ABLETON_RT=off ABLETON_THEME_MODE=preserve ABLETON_DPI_MODE=preserve \
+        ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
+        ABLETON_TOPBAR_MODE=preserve ABLETON_TEST_WINE_LOG="$base/wine.log" \
+        bash "$here/ableton-live" "$warm_arg" \
+        >"$base/warm-$warm_index.out" 2>"$base/warm-$warm_index.err" || true
+    ! grep -q 'Exit Live. Run the command again to apply the audio thread setting' \
+        "$base/warm-$warm_index.err" \
+        || fail "An implicit automatic warm handoff reports an action the user did not request."
+done
+for warm_request in 8 off; do
+    run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS="$warm_request" \
+        ABLETON_POWER=off ABLETON_RT=off ABLETON_THEME_MODE=preserve \
+        ABLETON_DPI_MODE=preserve ABLETON_UI_FONT=preserve \
+        ABLETON_TEXT_SMOOTHING=preserve ABLETON_TOPBAR_MODE=preserve \
+        ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" \
+        'ableton://warm-explicit-ableton-linux-probe' \
+        >"$base/warm-$warm_request.out" 2>"$base/warm-$warm_request.err" || true
+    grep -q 'Exit Live. Run the command again to apply the audio thread setting' \
+        "$base/warm-$warm_request.err" \
+        || fail "An explicit warm audio setting does not ask for a cold launch."
+done
+kill "$warm_pid" 2>/dev/null || true
+wait "$warm_pid" 2>/dev/null || true
+warm_pid=""
+ok "implicit URL, AUZ, and ALS warm handoffs stay quiet; explicit warm settings request a cold launch"
+
 : > "$base/wine.log"
 run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=16 ABLETON_POWER=off \
     ABLETON_RT=off ABLETON_THEME_MODE=preserve ABLETON_DPI_MODE=preserve \
@@ -279,6 +376,6 @@ grep -q 'callback does not identify one Live 12 version' "$base/mixed.err" \
 [ ! -e "$callback_prefs/Options.txt" ] \
     && [ ! -e "$base/prefix/drive_c/users/test/AppData/Roaming/Ableton/Live 12.5.0/Preferences/Options.txt" ] \
     || fail "An ambiguous callback writes audio thread settings for an edition the registry may not launch."
-ok "Callback launches use the selected Wine prefix. They preserve the Ableton protocol handlers. The off policy preserves Live's current count. The default uses available physical cores. A requested count reaches shared-version settings. Mixed-version callbacks leave edition selection and settings unchanged."
+ok "Callback launches use the selected Wine prefix. They preserve the Ableton protocol handlers. The off policy preserves settings without a launcher marker. The default uses available physical cores. A requested count reaches shared-version settings. Mixed-version callbacks leave edition selection and settings unchanged."
 
 printf 'PASS: %s desktop integration checks\n' "$pass"

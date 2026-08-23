@@ -42,8 +42,13 @@ if ls -l /dev/ntsync 2>/dev/null; then
 else
     echo "no /dev/ntsync"
 fi
-echo "close Live, then run ./scripts/check-ntsync.sh from a repository checkout"
-echo "for the dynamic proof"
+ntsync_check="$ABLETON_DATA_HOME/check-ntsync.sh"
+[ -x "$ntsync_check" ] || ntsync_check="$here/check-ntsync.sh"
+if [ -x "$ntsync_check" ]; then
+    printf 'close Live, then run %s for the dynamic proof\n' "$ntsync_check" | redact
+else
+    echo "dynamic proof unavailable: reinstall desktop integration to restore check-ntsync.sh"
+fi
 
 sec "realtime limits"
 echo "ulimit -r: $(ulimit -r 2>/dev/null)"

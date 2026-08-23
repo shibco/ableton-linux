@@ -23,14 +23,22 @@ settings:
   physical-core value is smaller. An existing Live setting, a previous
   launcher choice, or a later user edit still takes priority.
 - `ABLETON_MAX_AUDIO_THREADS=auto` recalculates the physical-core value.
-  `ABLETON_MAX_AUDIO_THREADS=off` leaves Live's setting unchanged, and a value
-  from one to 63 selects an explicit limit.
+  `ABLETON_MAX_AUDIO_THREADS=off` removes an untouched launcher-managed value
+  and restores Live's calculated count. Existing settings and user edits stay
+  unchanged. A value from one to 63 selects an explicit limit.
+- Warm Ableton URL, licence, and Set handoffs stay quiet for the automatic
+  audio-thread policy. An explicit audio-thread request still asks for a cold
+  launch.
 - On GNOME, Live now borrows Ctrl+Alt+Up and Ctrl+Alt+Down while it runs. Live
   11 also borrows Ctrl+Alt+Delete. The launcher restores the exact settings
   after the final Live session exits. `ABLETON_SHORTCUTS=preserve` opts out.
+- Unknown `ABLETON_SHORTCUTS` values now stop the launcher with status 2.
+  Earlier launchers treated those values as `preserve`.
 - The CPU report now identifies its measurements as Linux process CPU and
   worker wake-ups. The worker setting does not change PipeASIO or Wine's audio
   path. PipeASIO real-time scheduling remains off by default.
+- Desktop integration now installs `check-ntsync.sh` with its Windows
+  semantics probe. The installed audio report names this local diagnostic.
 
 ## 2026.08.19.1
 

@@ -75,6 +75,67 @@ grep -qx -- '-MaxAudioThreads=8' "$prefs/Options.txt" \
     || fail 'An explicit request must replace an earlier launcher choice.'
 ok 'The implicit automatic policy keeps an earlier choice. An explicit request replaces it.'
 
+prefix="$work/off-owned"
+prefs="$(make_prefs "$prefix")"
+printf '%s\n' '-ExistingOption=yes' > "$prefs/Options.txt"
+chmod 640 "$prefs/Options.txt"
+ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
+ableton_seed_max_audio_threads "$prefix" off >/dev/null
+! grep -q '^-MaxAudioThreads' "$prefs/Options.txt" \
+    || fail 'The off policy removes the launcher-owned audio thread count.'
+grep -qx -- '-ExistingOption=yes' "$prefs/Options.txt" \
+    || fail 'The off policy preserves other Live options.'
+[ ! -e "$prefs/.ableton-linux-max-audio-threads-v1" ] \
+    || fail 'The off policy removes the ownership marker with its line.'
+[ "$(stat -c '%a' "$prefs/Options.txt")" = 640 ] \
+    || fail 'The off policy preserves the settings file mode.'
+ok 'The off policy removes an owned count and marker while preserving other settings and the file mode.'
+
+ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
+grep -qx -- '-MaxAudioThreads=8' "$prefs/Options.txt" \
+    || fail 'A later explicit count applies after the off policy removed the old choice.'
+getconf() { printf '64\n'; }
+nproc() { printf '64\n'; }
+ableton_seed_max_audio_threads "$prefix" 32 '' '' 1 1 >/dev/null
+getconf() { printf '32\n'; }
+nproc() { printf '32\n'; }
+! grep -q '^-MaxAudioThreads' "$prefs/Options.txt" \
+    && [ ! -e "$prefs/.ableton-linux-max-audio-threads-v1" ] \
+    || fail 'An explicit automatic count at Live default restores Live selection.'
+ok 'A later value can replace off, and explicit auto restores Live selection when no lower limit applies.'
+
+prefix="$work/off-user-edit"
+prefs="$(make_prefs "$prefix")"
+ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
+printf '%s\n' '-MaxAudioThreads=24' > "$prefs/Options.txt"
+ableton_seed_max_audio_threads "$prefix" off >/dev/null
+grep -qx -- '-MaxAudioThreads=24' "$prefs/Options.txt" \
+    && [ -f "$prefs/.ableton-linux-max-audio-threads-v1" ] \
+    || fail "The off policy preserves a user's later audio thread edit."
+ok "The off policy preserves a user's later audio thread edit."
+
+prefix="$work/off-record-fails"
+prefs="$(make_prefs "$prefix")"
+ableton_seed_max_audio_threads "$prefix" 16 >/dev/null
+rm()
+{
+    local target="${!#}"
+    case "$target" in
+        */.ableton-linux-max-audio-threads-v1) return 1 ;;
+        *) command rm "$@" ;;
+    esac
+}
+off_rc=0
+ableton_seed_max_audio_threads "$prefix" off >/dev/null 2>&1 || off_rc=$?
+unset -f rm
+[ "$off_rc" -ne 0 ] \
+    && grep -qx -- '-MaxAudioThreads=16' "$prefs/Options.txt" \
+    && [ -f "$prefs/.ableton-linux-max-audio-threads-v1" ] \
+    || fail 'A failed marker removal restores the owned audio thread line.'
+ok 'A failed marker removal reports failure and restores the owned line.'
+
+prefix="$work/new"
+prefs="$(make_prefs "$prefix")"
 ableton_seed_max_audio_threads "$prefix" 8 >/dev/null
 [ "$(grep -c '^-MaxAudioThreads=' "$prefs/Options.txt")" -eq 1 ] \
     || fail 'The settings file contains one entry for audio threads after repeated launches.'

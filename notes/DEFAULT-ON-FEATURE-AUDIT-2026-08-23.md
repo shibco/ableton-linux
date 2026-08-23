@@ -3,15 +3,16 @@
 Date: 23 August 2026
 
 This audit reviewed merged and closed pull requests that added user-facing
-behaviour behind launcher or runtime settings. Two safe features were present
-on `main` but disabled for a normal launch. This branch turns both on.
+behaviour behind launcher or runtime settings. Two features were present on
+`main` but disabled for a normal launch. This branch turns both on. The audio
+worker policy still needs the low-core workload test described below.
 
 ## Changes in this branch
 
 | Pull requests | Feature | Decision |
 |---|---|---|
 | [#153](https://github.com/shibco/ableton-linux/pull/153) | GNOME global shortcut hold | Default to `ABLETON_SHORTCUTS=take`. Keep `preserve` as the opt-out. The existing recovery, concurrency, and user-edit safeguards remain. |
-| [#236](https://github.com/shibco/ableton-linux/pull/236), [#249](https://github.com/shibco/ableton-linux/pull/249) | Live 12 `-MaxAudioThreads` policy and replacement fix | Default to the physical cores available to the launcher. Preserve existing or edited settings. An explicit `auto` recalculates an untouched launcher value. |
+| [#236](https://github.com/shibco/ableton-linux/pull/236), [#249](https://github.com/shibco/ableton-linux/pull/249) | Live 12 `-MaxAudioThreads` policy and replacement fix | Default to the physical cores available to the launcher. Preserve existing or edited settings. An explicit `auto` recalculates an untouched launcher value. An explicit `off` removes that value and restores Live's calculation. |
 
 ## Merged features already active
 
@@ -23,14 +24,14 @@ No default change is needed for these features:
 | [#94](https://github.com/shibco/ableton-linux/pull/94) | GPU presentation support is active. |
 | [#114](https://github.com/shibco/ableton-linux/pull/114), [#125](https://github.com/shibco/ableton-linux/pull/125) | Live fullscreen and resizability fixes are active. |
 | [#155](https://github.com/shibco/ableton-linux/pull/155) | Subpixel text rendering is active. |
-| [#169](https://github.com/shibco/ableton-linux/pull/169), [#188](https://github.com/shibco/ableton-linux/pull/188), [#195](https://github.com/shibco/ableton-linux/pull/195) | The current pointer stack, including precise scrolling, is active. |
+| [#169](https://github.com/shibco/ableton-linux/pull/169), [#188](https://github.com/shibco/ableton-linux/pull/188), [#195](https://github.com/shibco/ableton-linux/pull/195) | Current patch 0100 consolidates the pointer stack. Precise scrolling stays active, and ordinary button drags suspend XI2 motion. Patch 0101 manages external drop targets. |
 | [#186](https://github.com/shibco/ableton-linux/pull/186) | The Max for Live host-font cache is active. |
 
-[#198](https://github.com/shibco/ableton-linux/pull/198) temporarily disabled
-smooth scrolling while the pointer stack was repaired. After #195,
-[commit 3751ab7](https://github.com/shibco/ableton-linux/commit/3751ab7)
-restored precise scrolling as the current default. It is not a hidden
-off-by-default feature.
+Current `main` replaced the separate pointer patches with consolidated patch
+0100. The consolidated patch keeps precise scrolling enabled and suspends XI2
+motion for ordinary core button drags. Patch 0101 contains the external
+drag-and-drop lifecycle fixes. Precise scrolling is an active feature on
+current `main`, with the fader-drag protection in the same patch.
 
 ## Features that remain explicit
 
@@ -65,10 +66,12 @@ audio-path file. The result is a Live worker-coordination result, not a
 PipeASIO hot-path optimisation.
 
 At 48 kHz, the callback rate is `48000 / buffer_frames`. The rounded reports
-fit a fixed cost of about 1.64 ms without NTSync and 0.134 ms with NTSync. That
-is about a twelve-fold reduction, or roughly 92% of the fixed per-callback
-cost. The inverse-buffer relationship is consistent with wake and wait
-coordination. It does not, by itself, identify one component.
+fit about 1.64 ms of aggregate Linux process CPU per callback without NTSync
+and 0.134 ms with NTSync. The values sum CPU time across Live's threads, so
+they can exceed the 1.33 ms wall period at 64 frames. The difference is about
+twelve-fold, or roughly 92% of the aggregate per-callback CPU. The
+inverse-buffer relationship is consistent with wake and wait coordination.
+The relationship alone cannot identify one component.
 
 The headless driver test recorded in
 [#170](https://github.com/shibco/ableton-linux/pull/170#issuecomment-5266487099)
@@ -77,9 +80,21 @@ used two inputs, two outputs, and 128 frames without Live DSP. It measured about
 an expensive steady-state native driver loop.
 
 The presence of `/dev/ntsync` is only a host capability check. Close Live and
-run `./scripts/check-ntsync.sh` to verify that the runtime contains NTSync,
-that its test wineserver opens the device, and that the synchronisation probe
-passes.
+run the installed `~/.local/share/ableton-wine/check-ntsync.sh` command. It
+verifies runtime support, the test wineserver's device use, and Windows
+synchronisation semantics.
+
+## Audio worker release validation
+
+The available measurement used an empty Set on one 16-core, 32-thread host.
+The 8-worker result used the same host and reduced process CPU further than 16
+workers. Those results do not establish the safe default for a demanding Set
+or a low-core host.
+
+Before release, compare the physical-core value with Live's calculated value
+on a host with 4 to 8 physical cores. Use a demanding Set that runs independent
+audio chains at the same time. Record Live's deadline meter, audible dropouts,
+PipeWire xruns, and Linux process CPU for the same Set section and buffer size.
 
 ## Separate engineering work
 

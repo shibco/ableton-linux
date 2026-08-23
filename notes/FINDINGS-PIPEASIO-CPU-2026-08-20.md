@@ -51,7 +51,8 @@ warning-line rate fell. The ERR rate fell.
 | 8-worker limit | 8 | 18.22% | 23,130 | 0.033 | 2.53 |
 
 16 matches the physical core count on the test host. 8 gave a further
-reduction in the empty Set. The package provides a user-selected limit.
+reduction in the empty Set. The result does not select a safe value for a
+demanding Set or a low-core host. The package provides a user-selected limit.
 
 ## Audio processing path
 
@@ -120,8 +121,9 @@ uses that setting.
 The launcher accepts `auto`, `off`, or a value from one to 63. The default,
 `auto`, counts unique physical cores among the CPUs available to the launcher.
 It applies that value before a cold Live 12 start when it is below Live's
-calculated count. `off` preserves the current Live setting. An explicit number
-requests that limit.
+calculated count. `off` removes an untouched launcher-managed value and
+restores Live's calculated count. Existing settings and user edits remain.
+An explicit number requests that limit.
 
 Existing worker settings, earlier launcher choices, and later file contents
 take priority over implicit `auto`. An explicit `auto` recalculates an untouched
@@ -164,17 +166,17 @@ It created 16 workers. Live saved `Preferences.cfg`. The final real-time run use
 an earlier script with SHA-256
 `49c5d24a28c381d442ec7c345f920b37fed166ee4f614f2e2c459bab2e8b1b53`.
 The current script changes comments and messages from that earlier script. Its
-SHA-256 is `03c1b6ba84c89f3ca5c8ba4b9e0f10c778290ca1b4e133413be7c71b546d82e6`.
+SHA-256 is `839940472f6921ca4874b575415c86fc2f99aee15221648561b6aff233b32062`.
 
-The current source passed every repository test script after the policy and
+The current source passed 7 shell suites with 250 checks after the policy and
 prose edits:
 
-- the settings script passed 26 focused cases.
+- the settings script passed 30 focused cases.
 - the shortcut hold script passed 47 recovery and concurrency cases.
-- the desktop integration test passed 4 cases.
+- the desktop integration test passed 6 cases.
 - the release policy test passed 7 cases.
 - the ThreadSanitizer policy test passed 2 cases.
-- the installer lifecycle test passed 72 cases.
+- the installer lifecycle test passed 74 cases.
 - the PipeASIO installer test passed 84 cases.
 - the shell syntax, whitespace, and pointer safety checks passed.
 
@@ -191,7 +193,8 @@ The retained run directories start from the worktree root:
 
 Future release decisions require these tests:
 
-- compare 16 workers with Live's calculated value on 24 to 32 independent tracks that process audio at the same time.
+- compare the physical-core value with Live's calculated value on a host with
+  4 to 8 physical cores and 24 to 32 independent audio chains.
 - compare standard and real-time scheduling for both Live and PipeASIO.
 - measure the same Set at 64, 128, and 256 frames.
 - close Live and run `scripts/check-ntsync.sh` to prove which wait driver the
