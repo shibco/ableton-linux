@@ -11,20 +11,20 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The current Wine series contains 96 files, numbered 0001 through 0098.
-Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
-once numbered 0066 and 0067 now appear after the gesture patches as 0093
-and 0094, because 0066 through 0068 were held for this GPU series.
+The Wine series contains 90 patch files and ends at 0102. The absent numbers
+are 0027, 0044, 0072, 0074, 0090 through 0095, 0097, and 0098; their reasons
+are declared in `SERIES_GAPS` in `scripts/build-audit.sh`. Patch 0073 keeps
+the wheel coordinate fix separate. Patch 0100 combines 10 pointer patches.
 
 ## Applying the series
 
 Run `./build.sh`. Inside the Podman image, `scripts/container-build.sh`
 unpacks `vendor/wine-base-5c23dd1c.tar.zst`, creates a Git repository, and
-applies `patches/00*.patch` in lexical order with `git am --3way`.
+applies `patches/[0-9][0-9][0-9][0-9]-*.patch` in lexical order with
+`git am --3way`.
 
-Some early patch files have no `From` or `Date` header. The build script adds a
-fixed identity and date before passing those files to `git am`. A bare
-`git am patches/00*.patch` command does not reproduce this step.
+The build script adds a fixed identity and date to early plain-diff patches.
+Use `./build.sh` to reproduce this step.
 
 Patches 0008 through 0013 contain title-bar experiments and their reverts.
 Apply them in sequence with the rest of the series.
@@ -267,19 +267,8 @@ Apply them in sequence with the rest of the series.
   an unconditional MESSAGE line, and prints a one-line summary when the
   swapchain is destroyed. The launchers now run `WINEDEBUG=-all,+winediag`
   so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
-- `0072`: add six pointer settings and middle-button drag navigation. Keep
-  normal middle clicks and correct the pointer position after a drag.
-  `SmoothScrolling` defaults to `precise`. Selecting XI2 events on our own
-  windows makes a button press an implicit XI2 grab, which fails the core
-  `XGrabPointer` that `SetCursorPos` needs; `0098` suspends that selection
-  for the duration of a core drag, so the default is safe. See
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0073`: report vertical and horizontal wheel movement at the pointer's screen
   position. See
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0074`: convert touchpad pinch to Ctrl+wheel without Ctrl key events and
-  keep the zoom at the window and point where it began. Limit each update to
-  one wheel step and stop it while a mouse button is held. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0075`: export UnregisterApplicationRecoveryCallback from kernel32.
   Applications link it as a static import, so the generated stub
@@ -383,40 +372,6 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
-- `0090`: add fine vertical and horizontal scrolling. Keep each update at its
-  starting point, ignore large jumps, and clear saved movement when the focus,
-  window, pointer control, or device changes. See
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0091`: add bounded continued movement after a fast scroll or middle-button
-  drag. Keep it at its starting point and stop it on new input or a window
-  change.
-  See `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0092`: stop old scroll, zoom, or continued movement from reaching a control
-  after a button press. Keep ignored movement from catching up after release
-  and limit middle-button navigation to its own held button. Add the
-  `update_driver_button` request, grow `union message_data` from 48 to 56 bytes,
-  regenerate the protocol files, and raise `SERVER_PROTOCOL_VERSION` from 957
-  to 961. Patch 0095 restores normal wheel use while a button is held without
-  weakening the checks for older movement. See
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0093`: clear old pointer state when a Max for Live window loses focus. This
-  stops the device from sending false pointer positions to Live after loading
-  (issue 122). Ported from ClickSentinel commit `ddea297054`; see
-  `notes/ABLETON-WINE-M4L-INPUT-INJECTION.md`.
-- `0094`: add an optional XWayland repair for faders and knobs that move farther
-  than the pointer. It stays off by default and automatic mode waits until it
-  sees the fault twice. Focus, pointer control, device, thread, and button
-  changes stop the repair. Reworked from ClickSentinel commit `d2996582b5`; see
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0095`: give fine-scroll inertia and middle-drag throw separate controls and
-  enable both by default. Continued movement slows more gradually. A short or
-  curved middle-button drag can throw when released. Add the 100 ms scroll
-  fallback. Keep normal wheel steps during a button hold, except
-  during middle-button navigation, while blocking smooth scrolling, pinch and
-  earlier continued movement. Stop continued movement when its input or target
-  changes, and disable it if timing setup fails. Named values ignore letter
-  case; `off` and `0` mean `disabled` where supported. See
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0096`: cache the enumerated host font list in
   `c:\windows\wine-host-font.cache`. Wine otherwise re-reads every host
   font in every font-using process, and the launcher kills the wineserver
@@ -426,29 +381,24 @@ Apply them in sequence with the rest of the series.
   input changes, Wine reads everything again and rewrites the file. Wine
   discards a damaged file whole, and always reads fonts inside the
   prefix directly. `WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off.
-  PR 139 first shipped this patch as 0070; it is 0096 here, renumbered
-  above the merged 0090-0095 pointer gesture series and repaired before
-  merge. See `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md`, P-M1.
-- `0097`: use the final 100 ms of movement for inertia and middle-drag throw.
-  Set the default rate to 4.0 and raise the continuation limits. Stop a second
-  touch from speeding up a left- or right-button control drag. Keep one-finger
-  dragging unchanged, and invert both middle-button navigation axes so content
-  follows the pointer. Deliver the vertical wheel with the opposite sign while
-  Ctrl is held, so a Ctrl+middle drag towards the top of the screen zooms in;
-  the horizontal wheel is unchanged and the accumulator keeps the pan sign, so
-  a modifier change mid-drag strands no partial notch. See
+  PR 139 first shipped this patch as 0070. See
+  `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md`, P-M1.
+- `0099` grows the 64-bit reserved allocation pool above its high-water mark.
+  The larger pool keeps JIT allocations ordered and close enough for 32-bit
+  image-base relocations after the preloader pool fills.
+- `0100` combines the pointer changes in one patch. XI2 scrolling preserves
+  each valid change and each fraction. Wine splits large reports at the
+  Windows packet limit. One timer runs scrolling inertia and middle-button
+  throw. Both features calculate travel from elapsed time. Pinch preserves the
+  complete scale change. Wine restores Ctrl state after each gesture. Drag
+  recovery restores XI2 motion after release, focus, capture, window, and
+  device changes. The patch includes the cursor and XWayland pointer repairs.
+  The master switch disables the optional pointer features while retaining the
+  issue 122 clipping-state repair. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0098`: select XI motion for smooth scrolling only while no ordinary core
-  button is held. A core press replaces the window's XI mask without motion;
-  the X server therefore owns the implicit grab and supplies real core drag
-  motion until the final core release restores XI motion. Already-queued XI
-  motion is discarded across the transition. Native smooth reports outside a
-  drag suppress only their correlated legacy core wheel copies, while physical
-  wheel buttons retain the stock core path. Scroll baselines are invalidated at
-  both drag boundaries. Event tracing records whether the server delivered an
-  accepted core `MotionNotify` before the drag ended. Warp emulation defaults
-  to `auto`: it engages only after observed failed warps, never preemptively,
-  and a button release is reported in the emulated coordinate space only when
-  the drag's own motion was delivered there. `WINE_X11_POINTER_FEATURES`
-  disables every pointer feature at once for baseline comparisons. See
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0101` releases each Windows drop target after drag leave and every drop.
+  Patch 0101 uses upstream Wine commit `8ca473d0`. The first X11 status uses
+  the effect from the initial target entry.
+- `0102` uses glyph outlines for DirectWrite's natural and natural-symmetric
+  rendering modes, even when the font provides an embedded bitmap strike.
+  GDI classic, GDI natural, and aliased modes retain those bitmap strikes.

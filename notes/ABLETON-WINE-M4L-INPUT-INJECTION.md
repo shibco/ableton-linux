@@ -1,53 +1,47 @@
-# Max for Live can make faders jump
+# Max for Live fader jumps
 
-This note covers [issue 122](https://github.com/shibco/ableton-linux/issues/122)
-and patch 0093.
+The cursor repair in patch 0100 addresses
+[Ableton Linux issue 122](https://github.com/shibco/ableton-linux/issues/122).
 
-## Status
+## Test status
 
-Patch 0093 is included and passes the build checks. The problem does not occur
-on the development computer, so testing on the affected Fedora computer is
-still required.
+Patch 0100 passes the build checks. Test patch 0100 on the affected Fedora
+computer.
 
-## Problem
+## Reported behaviour
 
-After loading a Max for Live device, a Live fader can jump across its range
-while the pointer moves smoothly. Clicking the device once may stop the problem
-for the rest of the session.
+Issue 122 reports fader jumps after a Max for Live device loads. The pointer
+moves smoothly while the fader crosses its range.
 
-Max for Live can open its device window separately from Live. While the device
-loads, that window may briefly take control of the pointer. On affected
-desktops, it can keep an old pointer state after control returns to Live. The
-device then reports extra pointer positions and the fader jumps between them.
+During the reported fault, a Max for Live window briefly receives pointer
+control. The repair addresses stale cursor state after control returns to Live.
 
-## Fix
+## Cursor repair
 
-Patch 0093 clears the old pointer state when control moves to another window.
-It also clears that state before a window tries to confine the pointer again.
-This stops the device from sending extra positions after Live regains control.
+Patch 0100 releases cursor clipping when another process receives X input
+focus. It resets cursor state before a window confines the pointer again.
 
-## Check
+## Fedora test
 
 Use a computer that shows the problem:
 
-1. Install a build that contains patch 0093.
+1. Install a build that contains patch 0100.
 2. Start a fresh Live session with:
 
    ```bash
    env WINEDEBUG=-all,+event ableton-live
    ```
 
-3. Load the affected Max for Live device. Do not click its panel.
+3. Load the affected Max for Live device. Leave its panel untouched.
 4. Drag the track volume fader in Session View.
 
-The fader should follow the pointer without jumping. The log may contain:
+The fader follows the pointer smoothly. A clipping recovery writes this event
+log message:
 
 ```text
 lost X focus to another client while clipping
 ```
 
-Report the device, Linux distribution, desktop, Live version, result, and
-whether clicking the device once changes the result.
+Report the device, Linux distribution, desktop, Live version, and result.
 
-This repair applies when Live runs through Xorg or XWayland. It does not apply
-when Live runs directly through Wayland.
+Use an Xorg or XWayland session. The repair uses X11 focus and cursor clipping.
