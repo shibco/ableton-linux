@@ -85,7 +85,7 @@ efec6729f1663efe78c7efa941b826b2a28d219bf6faa974294a3bfa854b84f5  0088-win32u-al
 10d34c085b2a1b554457524978e8a380d3c15aaafd290657e5ef8ca9874221c2  0089-d2d1-avoid-unsigned-ClearType-coverage-underflow.patch
 707a404f2c1d4e02abfa4eb4cbe35669f0caa46ce12dd685d5748f3a699d1186  0096-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch
 84e8c5bf8a7916361449d15abf675815c4a1fa7183f800a23632e00f1e6ae44b  0099-ntdll-grow-the-reserved-pool-instead-of-unordered-mmap.patch
-f6c393678e9f2a4f587af4a689f63a8ad2b8cd4fba615dc032b9ef0c6717b4d4  0100-winex11-conserve-pointer-input-and-recover-core-drags.patch
+fc84b958d52c4b413d33c518d86d98ff354a2ddf978e15bbe0282137d54253a7  0100-winex11-conserve-pointer-input-and-recover-core-drags.patch
 fe133a2e284cd97dc7f5903e8ea09006c56d2a1d21651b71da255fe4962e9c88  0101-user32-release-drop-target-and-store-DragEnter-effect.patch
 e2759a5aee2cc5820a3ed27d2d4f954a6a5262c1a95172ad11ffa5302c487387  pipeasio/0001-asio-clamp-unavailable-sample-rate-requests.patch
 b4d53b6ebb24e39c7d23efcbddd837149d4d08886167637a73bb085af851d2c1  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

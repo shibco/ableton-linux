@@ -1,8 +1,64 @@
+Subject: [PATCH] win32u, winex11: conserve pointer input and recover core drags
+
+Consolidate smooth scrolling, inertia, pinch zoom, middle-button navigation,
+and XWayland warp recovery without private server protocol state. Preserve every
+bounded movement unit while restoring core pointer ownership for button drags.
+
+Bound raw-only motion batches, reseed cumulative scroll valuators across focus
+and lifecycle changes, and discard queued inertia when capture begins. Keep the
+issue 122 clipping-state repair active when optional pointer features are off.
+
+---
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 32cb925b60125e84575a3ac6dcb093e9f8b747be..8783c81e627a5951c6b1b936f13132a5fa555e0f 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -692,7 +692,12 @@ static NTSTATUS accum_mouse_motion( HWND hwnd, UINT flags, INPUT input, const st
+     /* don't accumulate if there's button / wheel / MOUSEEVENTF_MOVE_NOCOALESCE */
+     send = input.mi.mouseData || (input.mi.dwFlags & ~(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE));
+     if (send || info->mouse_hwnd != hwnd) send_mouse_motion( flags );
+-    else if (info->raw_mouse.count + raw->count > ARRAY_SIZE(raw->data)) send_mouse_motion( flags );
++    else if (info->raw_mouse.count + raw->count > ARRAY_SIZE(raw->data))
++    {
++        if (!info->mouse_motion.mi.dwFlags && !info->mouse_motion.mi.mouseData)
++            info->raw_mouse.count = 0;
++        else send_mouse_motion( flags );
++    }
+
+     input.mi.dwFlags &= ~MOUSEEVENTF_MOVE_NOCOALESCE;
+     if (!input.mi.dwFlags) input = info->mouse_motion; /* only MOUSEEVENTF_MOVE_NOCOALESCE or raw */
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 00f6eb4ba69d1212926e95f07c43dac18eb03a8b..d04b2704ca0be92ba597eb9378adcbe23f6ee50e 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2620,6 +2620,14 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+
+     info.cbSize = sizeof(info);
+     NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info );
++    if (info.hwndCapture && extra_info == WINE_MOUSE_INPUT_INERTIA &&
++        (msg->message == WM_MOUSEWHEEL || msg->message == WM_MOUSEHWHEEL))
++    {
++        TRACE( "dropping queued pointer inertia wheel %#x after capture changed to %p\n",
++               msg->message, info.hwndCapture );
++        accept_hardware_message( hw_id );
++        return FALSE;
++    }
+     if (info.hwndCapture)
+     {
+         hittest = HTCLIENT;
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
-index a524761035298276af48efa895a87ef8bd7977f4..1cd8c3aff32fad1874a3c1ecabb8a2db1362d963 100644
+index a524761035298276af48efa895a87ef8bd7977f4..584d73cdd571f8f02118d0887e9b118d655e4b2d 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -753,6 +753,8 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+@@ -723,6 +723,7 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+     if (hwnd == NtUserGetDesktopWindow()) return FALSE;
+
+     x11drv_thread_data()->keymapnotify_hwnd = hwnd;
++    pointer_scroll_invalidate_baselines();
+
+     /* when keyboard grab is released, re-apply the cursor clipping rect */
+     was_grabbed = keyboard_grabbed;
+@@ -753,6 +754,8 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
   */
  static void focus_out( Display *display , HWND hwnd )
   {
@@ -11,7 +67,7 @@ index a524761035298276af48efa895a87ef8bd7977f4..1cd8c3aff32fad1874a3c1ecabb8a2db
      if (xim_in_compose_mode()) return;
  
      x11drv_thread_data()->last_focus = hwnd;
-@@ -804,19 +806,37 @@ static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
+@@ -804,19 +807,36 @@ static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
      HWND foreground = NtUserGetForegroundWindow();
      XFocusChangeEvent *event = &xev->xfocus;
  
@@ -28,8 +84,7 @@ index a524761035298276af48efa895a87ef8bd7977f4..1cd8c3aff32fad1874a3c1ecabb8a2db
 +             * that thread may be unresponsive or live in another process with a
 +             * clip window of its own, so release our own grab and clipping state
 +             * here too (issue 122) */
-+            if (pointer_config.enabled) ungrab_clipping_window();
-+            else XUnmapWindow( event->display, event->window );
++            ungrab_clipping_window();
          }
          return TRUE;
      }
@@ -41,7 +96,7 @@ index a524761035298276af48efa895a87ef8bd7977f4..1cd8c3aff32fad1874a3c1ecabb8a2db
 +       one, and stale state here turns every raw motion delta into synthesized
 +       pointer input over the focused process's cursor stream (issue 122).
 +       This must run even when the FocusOut is otherwise ignored below. */
-+    if (pointer_config.enabled && focus_held_by_other_client( event->display ))
++    if (focus_held_by_other_client( event->display ))
 +    {
 +        if (x11drv_thread_data()->clipping_cursor)
 +            WARN( "window %p/%lx lost X focus to another client while clipping, releasing the pointer grab\n",
@@ -66,7 +121,7 @@ index 668a25b134559e80a4a7c0159ad626ba92d0c27d..6882dfd29c9b9968fd40878edf7d33b2
      {
          window_set_user_time( data, event->time, FALSE );
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f94695c5ce08c 100644
+index 2c394b690164b7db3b33203a801873df3da1aef6..7880e555c31351b150caf4c6eef3faf2909e6082 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -29,7 +29,12 @@
@@ -606,8 +661,32 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
 +
      TRACE( "XInput2 %d.%d available\n", major, minor );
  }
- 
-@@ -401,8 +832,15 @@ static BOOL grab_clipping_window( const RECT *clip )
+
+@@ -386,6 +817,23 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+
+ #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
+
++void pointer_scroll_invalidate_baselines(void)
++{
++#ifdef XIScrollClass
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    int i;
++
++    if (!data) return;
++    for (i = 0; i < SCROLL_SOURCE_CACHE_SIZE; i++)
++    {
++        data->scroll_sources[i].scroll_x.value_valid = FALSE;
++        data->scroll_sources[i].scroll_y.value_valid = FALSE;
++        data->scroll_sources[i].scroll_x.last_value_valid = FALSE;
++        data->scroll_sources[i].scroll_y.last_value_valid = FALSE;
++    }
++#endif
++}
++
+ /***********************************************************************
+  *		grab_clipping_window
+  *
+@@ -401,8 +849,15 @@ static BOOL grab_clipping_window( const RECT *clip )
  
      /* don't clip in the desktop process */
      if (NtUserGetWindowThread( NtUserGetDesktopWindow(), NULL ) == GetCurrentThreadId()) return TRUE;
@@ -619,13 +698,13 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
 +       and scribbles over the focused process's cursor stream (issue 122) */
 +    if (!is_current_process_focused())
 +    {
-+        if (pointer_config.enabled) ungrab_clipping_window();
++        ungrab_clipping_window();
 +        return TRUE;
 +    }
  
      if (!data) return FALSE;
      if (!(clip_window = init_clip_window())) return TRUE;
-@@ -468,6 +906,7 @@ void ungrab_clipping_window(void)
+@@ -468,6 +923,7 @@ void ungrab_clipping_window(void)
      struct x11drv_thread_data *data = x11drv_init_thread_data();
      Window clip_window = init_clip_window();
  
@@ -633,7 +712,7 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
      if (!clip_window) return;
  
      TRACE( "no longer clipping\n" );
-@@ -542,1162 +981,2702 @@ static POINT map_event_coords( HWND hwnd, Window window, Window event_root, POIN
+@@ -542,1162 +998,2711 @@ static POINT map_event_coords( HWND hwnd, Window window, Window event_root, POIN
      return dst;
  }
  
@@ -1139,8 +1218,8 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
 +}
  
 -static const struct system_cursors comctl32_cursors[] =
-+static BOOL send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT time,
-+                              const struct raw_mouse *raw )
++static BOOL send_mouse_input_with_info( HWND hwnd, POINT pos, UINT flags, UINT data, UINT time,
++                                        const struct raw_mouse *raw, ULONG_PTR extra_info )
  {
 -    { 102, { "move", "dnd-move" }},
 -    { 104, { "copy", "dnd-copy" }},
@@ -1177,6 +1256,7 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
 +    input.mi.dwFlags = flags;
 +    input.mi.mouseData = data;
 +    input.mi.time = time;
++    input.mi.dwExtraInfo = extra_info;
  
 -static const struct
 -{
@@ -1184,6 +1264,12 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
 -    WCHAR name[16];
 -} module_cursors[] =
 +    return !NtUserSendHardwareInput( hwnd, SEND_HWMSG_RAWINPUT, &input, (LPARAM)raw );
++}
++
++static BOOL send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT time,
++                              const struct raw_mouse *raw )
++{
++    return send_mouse_input_with_info( hwnd, pos, flags, data, time, raw, 0 );
 +}
 +
 +static BOOL pointer_button_down(void)
@@ -1883,6 +1969,7 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
 +    struct x11drv_thread_data *data = x11drv_thread_data();
 +
 +    if (!data) return;
++    pointer_scroll_invalidate_baselines();
 +    if (data->middle_drag.active)
 +        TRACE( "ptr middle event=cancel hwnd=%p reason=lifecycle\n", data->middle_drag.hwnd );
 +    memset( &data->middle_drag, 0, sizeof(data->middle_drag) );
@@ -3889,7 +3976,8 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
 -        TRACE( "pos %d,%d old serial %lu, ignoring\n", event->x, event->y, event->serial );
 -        return FALSE;
 +        if (si->generation != InterlockedCompareExchange( &pointer_input_generation, 0, 0 ) ||
-+            !send_mouse_input( si->hwnd, (POINT){0}, flags, delta, time, NULL )) return FALSE;
++            !send_mouse_input_with_info( si->hwnd, (POINT){0}, flags, delta, time, NULL,
++                                         WINE_MOUSE_INPUT_INERTIA )) return FALSE;
 +        si->message_count++;
      }
 -
@@ -4227,7 +4315,7 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
  static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
  {
      RECT virtual = NtUserGetVirtualScreenRect( MDT_RAW_DPI );
-@@ -1735,8 +3714,191 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+@@ -1735,8 +3740,191 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -4419,7 +4507,7 @@ index 2c394b690164b7db3b33203a801873df3da1aef6..72cd9cdafa7575827d71ed9ecd7f9469
  
  /***********************************************************************
   *              x11drv_xinput2_load
-@@ -1800,12 +3962,30 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -1800,12 +3988,30 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
          ret = X11DRV_RawMotion( event );
          break;
  
@@ -4505,10 +4593,10 @@ index a64ba21ce51b2681b9487ce65f4a95e5b1252030..4b54725d6aacc44ec0e6ae9f6607aabd
          FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp );
          return 0;
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index 34b53ce403b3b0f9ca1c78ae6e5eefcd34351874..56cf394498a853e9d5946daf35e1899f5fca7128 100644
+index 34b53ce403b3b0f9ca1c78ae6e5eefcd34351874..36f4645bd810e0309f44d7f0440a713a74496c53 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -411,6 +411,165 @@ struct display_state
+@@ -411,6 +411,166 @@ struct display_state
      Window net_active_window;
  };
  
@@ -4632,6 +4720,7 @@ index 34b53ce403b3b0f9ca1c78ae6e5eefcd34351874..56cf394498a853e9d5946daf35e1899f
 +};
 +
 +extern void pointer_input_reset(void);
++extern void pointer_scroll_invalidate_baselines(void);
 +extern void pointer_inertia_cancel(void);
 +extern void pointer_inertia_tick(LONG generation);
 +
@@ -4674,7 +4763,7 @@ index 34b53ce403b3b0f9ca1c78ae6e5eefcd34351874..56cf394498a853e9d5946daf35e1899f
  struct x11drv_thread_data
  {
      Display *display;
-@@ -427,11 +586,17 @@ struct x11drv_thread_data
+@@ -427,11 +587,17 @@ struct x11drv_thread_data
      Atom    *net_supported;        /* list of _NET_SUPPORTED atoms */
      int      net_supported_count;  /* number of _NET_SUPPORTED atoms */
      UINT     net_wm_state_mask;    /* mask of supported _NET_WM_STATE *bits */
@@ -4692,7 +4781,7 @@ index 34b53ce403b3b0f9ca1c78ae6e5eefcd34351874..56cf394498a853e9d5946daf35e1899f
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
-@@ -636,7 +801,8 @@ enum x11drv_window_messages
+@@ -636,7 +802,8 @@ enum x11drv_window_messages
      WM_X11DRV_UPDATE_CLIPBOARD = WM_WINE_FIRST_DRIVER_MSG,
      WM_X11DRV_SET_WIN_REGION,
      WM_X11DRV_DELETE_TAB,
@@ -4703,7 +4792,7 @@ index 34b53ce403b3b0f9ca1c78ae6e5eefcd34351874..56cf394498a853e9d5946daf35e1899f
  
  /* _NET_WM_STATE properties that we keep track of */
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
-index 500a01331d5f1041a38a5114cc2fd51a25122d13..0fe7652a462c98ae1409a29dc16a785184c33cde 100644
+index 500a01331d5f1041a38a5114cc2fd51a25122d13..dd7ce201449d60b194315838c35ce16623e8e50f 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
 @@ -26,10 +26,12 @@
@@ -4719,7 +4808,7 @@ index 500a01331d5f1041a38a5114cc2fd51a25122d13..0fe7652a462c98ae1409a29dc16a7851
  #include <sys/time.h>
  #include <unistd.h>
  #include <assert.h>
-@@ -412,6 +414,207 @@ static inline DWORD get_config_key( HKEY defkey, HKEY appkey, const char *name,
+@@ -412,6 +414,209 @@ static inline DWORD get_config_key( HKEY defkey, HKEY appkey, const char *name,
  }
  
  
@@ -4842,10 +4931,9 @@ index 500a01331d5f1041a38a5114cc2fd51a25122d13..0fe7652a462c98ae1409a29dc16a7851
 +    unsigned int source_index;
 +    int value;
 +
-+    /* One master switch to a known-stock baseline. It beats the environment
-+     * and both registry keys for every pointer setting, so a broken-desktop
-+     * report can be reproduced against unmodified pointer behaviour with a
-+     * single variable. */
++    /* One master switch to a baseline without optional pointer features. It
++     * beats the environment and both registry keys for every pointer setting;
++     * the issue 122 clipping-state repair remains active. */
 +    {
 +        const char *master = getenv( "WINE_X11_POINTER_FEATURES" );
 +
@@ -4860,10 +4948,13 @@ index 500a01331d5f1041a38a5114cc2fd51a25122d13..0fe7652a462c98ae1409a29dc16a7851
 +            pointer_config.middle_drag_throw = POINTER_MIDDLE_DRAG_THROW_DISABLED;
 +            pointer_config.wheel_while_button_held = POINTER_WHEEL_WHILE_BUTTON_HELD_DISABLED;
 +            pointer_config.warp_emulation = POINTER_WARP_DISABLED;
-+            WARN_(winediag)( "WINE_X11_POINTER_FEATURES=%s disables every pointer feature; stock pointer behaviour applies\n",
++            WARN_(winediag)( "WINE_X11_POINTER_FEATURES=%s disables optional pointer features; issue 122 clipping recovery remains active\n",
 +                             debugstr_a( master ) );
 +            return;
 +        }
++        if (master)
++            WARN_(winediag)( "unrecognized WINE_X11_POINTER_FEATURES value %s, optional pointer features remain enabled\n",
++                             debugstr_a( master ) );
 +    }
 +
 +    value = pointer_config.smooth_scrolling;
@@ -4927,7 +5018,7 @@ index 500a01331d5f1041a38a5114cc2fd51a25122d13..0fe7652a462c98ae1409a29dc16a7851
  /***********************************************************************
   *		setup_options
   *
-@@ -505,6 +708,8 @@ static void setup_options(void)
+@@ -505,6 +710,8 @@ static void setup_options(void)
  
      get_config_key( hkey, appkey, "InputStyle", input_style, sizeof(input_style) );
  
@@ -4936,7 +5027,7 @@ index 500a01331d5f1041a38a5114cc2fd51a25122d13..0fe7652a462c98ae1409a29dc16a7851
      NtClose( appkey );
      NtClose( hkey );
  }
-@@ -694,6 +899,8 @@ void X11DRV_ThreadDetach(void)
+@@ -694,6 +901,8 @@ void X11DRV_ThreadDetach(void)
  
      if (data)
      {
@@ -4945,3 +5036,17 @@ index 500a01331d5f1041a38a5114cc2fd51a25122d13..0fe7652a462c98ae1409a29dc16a7851
          if (data->xim) XCloseIM( data->xim );
          if (data->font_set) XFreeFontSet( data->display, data->font_set );
          if (data->net_supported) XFree( data->net_supported );
+diff --git a/include/ntuser.h b/include/ntuser.h
+index be41b33adfd79cf69d7735987af4be593eba4250..e059f988d472a3ad4550dc4ed298bc1609b83fab 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -1606,6 +1606,9 @@ struct raw_mouse
+     POINT data[64]; /* arbitrary buffer size */
+ };
+
++/* Driver-private tag for cancellable synthetic pointer inertia. */
++#define WINE_MOUSE_INPUT_INERTIA 0x57494e49u
++
+ struct send_hardware_input_params
+ {
+     UINT flags;

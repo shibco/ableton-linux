@@ -14,7 +14,8 @@ The pending release includes:
 - scrolling inertia and middle-button throw calculate travel from elapsed time
 - pinch zoom preserves every scale update
 - pinch zoom restores Ctrl state after each gesture
-- the pointer master switch selects Wine's standard pointer handling
+- the pointer master switch disables optional pointer features while retaining
+  the issue 122 clipping-state repair
 - external drag and drop releases each target
 - external drag and drop reports first-position acceptance correctly
 
@@ -71,8 +72,9 @@ The pending release includes:
     pointer. It defaults to `auto`, engaging only after Wine observes failed
     warps, and a button release is repaired only when the drag's own motion was.
     Desktop testing remains open.
-  - Added `WINE_X11_POINTER_FEATURES=disabled`, a master switch that turns every
-    pointer feature off for one launch for baseline comparisons.
+  - Added `WINE_X11_POINTER_FEATURES=disabled`, a master switch that turns the
+    optional pointer features off for one launch for baseline comparisons. The
+    issue 122 clipping-state repair remains active.
   - Named pointer values ignore letter case. `off` and `0` work wherever
     `disabled` works. Invalid settings appear in the normal launch log. 
   - Added a mitigation strategy in response to consistent reports of 

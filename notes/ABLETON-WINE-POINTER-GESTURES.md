@@ -37,7 +37,7 @@ Wine divides large reports into signed packets whose total matches the source.
 | `InertiaCurve` | `WINE_X11_INERTIA_CURVE` | `exponential` | `exponential`, `linear` |
 | `InertiaRate` | `WINE_X11_INERTIA_RATE` | `4.0` | 0.5 to 16.0 |
 | `WarpEmulation` | `WINE_X11_WARP_EMULATION` | `auto` | `disabled`, `auto`, `enabled` |
-| all pointer features | `WINE_X11_POINTER_FEATURES` | enabled | `disabled`, `off`, `0` |
+| optional pointer features | `WINE_X11_POINTER_FEATURES` | enabled | `disabled`, `off`, `0` |
 
 Wine reads the registry settings when its X11 driver starts. A launch variable
 overrides its registry setting for one launch. Wine accepts lower-case and
@@ -47,8 +47,8 @@ upper-case named values.
 `TouchpadInertia=enabled` uses a repeated cumulative value or a 90 ms pause as
 an end signal. Lower `InertiaRate` values give a longer coast.
 
-Set `WINE_X11_POINTER_FEATURES=disabled` to select Wine's standard pointer
-handling for one launch.
+Set `WINE_X11_POINTER_FEATURES=disabled` to disable the optional pointer
+features for one launch. The issue 122 clipping-state repair remains active.
 
 ## Smooth scrolling
 
@@ -185,7 +185,8 @@ Run the tests in this order.
 10. Test faders and knobs with each `WarpEmulation` value.
    Confirm that control travel follows pointer travel.
 11. Start Live with `WINE_X11_POINTER_FEATURES=disabled`.
-    Confirm Wine's standard wheel, button, capture, and focus routing.
+    Confirm standard wheel, button, capture, and focus routing; the issue 122
+    clipping-state repair remains active.
 12. Repeat accepted and rejected external file drops 500 times.
     Confirm that each drop completes with the expected result.
 

@@ -11,9 +11,10 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The Wine series contains 89 patch files and ends at 0101. The series uses
-number gaps. Patch 0073 keeps the wheel coordinate fix separate. Patch 0100
-combines 10 pointer patches into one patch.
+The Wine series contains 89 patch files and ends at 0101. The absent numbers
+are 0027, 0044, 0072, 0074, 0090 through 0095, 0097, and 0098; their reasons
+are declared in `SERIES_GAPS` in `scripts/build-audit.sh`. Patch 0073 keeps
+the wheel coordinate fix separate. Patch 0100 combines 10 pointer patches.
 
 ## Applying the series
 
@@ -392,7 +393,8 @@ Apply them in sequence with the rest of the series.
   complete scale change. Wine restores Ctrl state after each gesture. Drag
   recovery restores XI2 motion after release, focus, capture, window, and
   device changes. The patch includes the cursor and XWayland pointer repairs.
-  The master switch selects Wine's standard pointer handling. See
+  The master switch disables the optional pointer features while retaining the
+  issue 122 clipping-state repair. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0101` releases each Windows drop target after drag leave and every drop.
   Patch 0101 uses upstream Wine commit `8ca473d0`. The first X11 status uses

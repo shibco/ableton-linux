@@ -169,6 +169,22 @@ static long long drain_scroll(struct scroll_axis *axis, double value, int notche
     return total;
 }
 
+static void check_raw_motion_guard(void)
+{
+    unsigned int count = 0, highwater = 0;
+    int i;
+
+    for (i = 0; i < 65; i++)
+    {
+        if (count + 1 > 64) count = 0; /* raw-only batch: no cooked motion to send */
+        count++;
+        if (count > highwater) highwater = count;
+    }
+    if (highwater != 64 || count != 1)
+        fail("raw motion buffer guard", "65 raw-only frames exceeded the 64-frame buffer");
+    else pass("raw-only motion batches reset at the 64-frame boundary");
+}
+
 static void check_scroll_reducer(void)
 {
     static const int boundaries[] =
@@ -452,7 +468,15 @@ static void check_source_contracts(const char *pointer, const char *dnd)
         "xinput2_smooth_scroll=pointer_config.enabled&&",
         "if(pointer_config.enabled&&pinch_button_is_wheel(event->button)&&",
         "if(xinput2_smooth_scroll){unsignedcharhier_bits",
-        "if(pointer_config.enabled)ungrab_clipping_window();",
+        "if(!info->mouse_motion.mi.dwFlags&&!info->mouse_motion.mi.mouseData)info->raw_mouse.count=0;",
+        "extra_info==WINE_MOUSE_INPUT_INERTIA&&",
+        "send_mouse_input_with_info(si->hwnd,(POINT){0},flags,delta,time,NULL,WINE_MOUSE_INPUT_INERTIA)",
+        "pointer_scroll_invalidate_baselines();",
+        "scroll_x.value_valid=FALSE;",
+        "scroll_y.last_value_valid=FALSE;",
+        "if(!is_current_process_focused()){ungrab_clipping_window();returnTRUE;}",
+        "if(focus_held_by_other_client(event->display))",
+        "unrecognizedWINE_X11_POINTER_FEATURESvalue%s",
         "src->scroll_y.value=src->scroll_y.last_value=val->value;",
         "while(have_y&&(delta_y=smooth_scroll_delta(",
         "xinput2_core_drag_restore(display,\"release-mismatch\");",
@@ -473,7 +497,9 @@ static void check_source_contracts(const char *pointer, const char *dnd)
     {
         "SEND_HWMSG_FIXED_POSITION", "update_driver_button", "notify_button_transition",
         "pointer_scroll_resync", "INERTIA_NUDGE_SLOTS", "nudge_thread",
-        "pointer_input_serial", "pinch_keyboard", "send_message(hwnd,WM_MOUSEWHEEL"
+        "pointer_input_serial", "pinch_keyboard", "send_message(hwnd,WM_MOUSEWHEEL",
+        "if(pointer_config.enabled)ungrab_clipping_window();",
+        "pointer_config.enabled&&focus_held_by_other_client"
     };
     size_t i;
 
@@ -513,6 +539,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    check_raw_motion_guard();
     check_scroll_reducer();
     check_middle_reducer();
     check_pinch_reducer();
