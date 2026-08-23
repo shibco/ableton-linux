@@ -2,19 +2,22 @@
 
 ## Unreleased
 
-- **MIDI and audio devices now recover while Live stays open (#245):**
-  - Wine updates Live's MIDI list when a controller appears after startup.
-    Open MIDI inputs and outputs reconnect when the device identity gives one
-    clear match, even when ALSA assigns new device numbers.
+- **Follow-up work on the device hotplug support shipped in July (#245):**
+  - MIDI devices connected after Live starts now enter Wine's device list.
+    The July implementation already restored reconnecting devices that Wine
+    found during startup.
+  - Open MIDI inputs and outputs now follow the same controller across ALSA
+    device-number changes when its identity gives one clear match.
   - Removing a MIDI input ends held notes, sustain, and incomplete long
     messages before Wine waits for the device to return.
-  - PipeASIO remembers selected interfaces and channel routes across device
+  - PipeASIO now preserves explicit interface and channel selections across
     disconnects, delayed PipeWire startup, and PipeWire restarts. It sends
-    silence until the full route returns. New interfaces appear in PipeASIO
-    Settings while Live runs.
-  - Automatic audio routing follows the PipeWire default. Explicit selections
-    wait for the same interface. Serial numbers, hardware paths, and channel
-    details distinguish duplicate devices where Linux provides them.
+    silence until the complete selected route returns instead of requiring
+    PipeASIO to be reselected after the device returns.
+  - New interfaces appear in PipeASIO Settings while Live runs. Automatic
+    audio routing continues to follow the PipeWire default. Serial numbers,
+    hardware paths, and channel details distinguish duplicate devices where
+    Linux provides them.
   - USB MIDI ports now use Windows-style display names. Existing Live device
     and control-surface assignments may need selection again after the update.
   - Hardware release testing remains open for 100 USB reconnect cycles, a full
