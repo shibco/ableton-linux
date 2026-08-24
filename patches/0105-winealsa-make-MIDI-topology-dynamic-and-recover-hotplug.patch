@@ -4,9 +4,16 @@ Date: Sat, 22 Aug 2026 23:38:15 +0200
 Subject: [PATCH 100/100] winealsa: make MIDI topology dynamic and recover
  hotplug
 
-Track ALSA sequencer changes after WinMM initialization and publish coherent, stable endpoint snapshots. Preserve open handles across reconnect, clean interrupted input state, and notify hosts after publication.
+Track ALSA sequencer changes after Windows MIDI starts. Publish complete and
+stable endpoint lists. Keep open connections across reconnection. End
+interrupted input state. Notify Windows after each new list.
 
-Teach WinMM to refresh MIDI mappings without invalidating open handles, and retain zero-device drivers so devices appearing later can be enumerated.
+Refresh Windows MIDI mappings while open connections keep their device records.
+Keep drivers available when they start with zero devices.
+
+Mark the monitor port as private to each Wine process. Confirm the exact
+subscription after ALSA reports a busy port. Retry pending subscriptions for
+about 10 seconds. Request an input pool of 1,000 events for multi-port devices.
 
 Refs #46.
 ---
@@ -147,7 +154,7 @@ index 9afca51..b24d1d0 100644
  };
  
 diff --git a/dlls/winealsa.drv/alsamidi.c b/dlls/winealsa.drv/alsamidi.c
-index 4b65307..1977867 100644
+index 4b65307..b9897d1 100644
 --- a/dlls/winealsa.drv/alsamidi.c
 +++ b/dlls/winealsa.drv/alsamidi.c
 @@ -29,8 +29,14 @@
@@ -170,11 +177,11 @@ index 4b65307..1977867 100644
  WINE_DEFAULT_DEBUG_CHANNEL(midi);
  
 +#define MIDI_INTERFACE_LEN 256
-+/* Retry a pending reconnect for this many 250 ms rounds (about ten
-+ * seconds) before giving up.  ALSA can publish a sequencer port before
-+ * its rawmidi stream, udev permissions or device firmware are ready, so
-+ * this stays well past the five-second readiness target. */
-+#define RECONNECT_RETRY_ROUNDS 40
++/* Retry for about 10 seconds while streams, permissions, and firmware
++ * become ready. */
++#define TOPOLOGY_RETRY_INTERVAL_MS 250u
++#define RECONNECT_RETRY_ROUNDS (10000u / TOPOLOGY_RETRY_INTERVAL_MS)
++#define TOPOLOGY_INPUT_POOL_EVENTS 1000u
 +#define MIDI_IDENTITY_LEN (PATH_MAX + 256)
 +
  struct midi_dest
@@ -854,10 +861,10 @@ index 4b65307..1977867 100644
 +    dest->runningStatus = 0;
 +}
 +
-+/* Query whether an exact sender->dest subscription exists.  snd_seq_connect_*
-+ * returns -EBUSY both when our own subscription is already in place and when
-+ * another client's exclusive subscription blocks ours, so a bare -EBUSY must
-+ * never be read as "connected".  Call with seq_mutex held. */
++/* Check for the exact subscription between these 2 ports.
++ * ALSA uses the same busy result for an existing Wine link and another client's exclusive link.
++ * The result distinguishes those 2 conditions.
++ * The caller owns the sequence lock. */
 +static BOOL subscription_present(snd_seq_t *seq, snd_seq_addr_t sender, snd_seq_addr_t dest)
 +{
 +    snd_seq_port_subscribe_t *sub;
@@ -883,12 +890,12 @@ index 4b65307..1977867 100644
 +    if (dest->connected && !same_addr)
 +        snd_seq_disconnect_to(dest->seq, dest->port_out, old_addr.client, old_addr.port);
 +    ret = snd_seq_connect_to(dest->seq, dest->port_out, dest->addr.client, dest->addr.port);
-+    if (ret == -EBUSY)
++    if (ret == -EBUSY || ret == -EEXIST)
 +    {
 +        snd_seq_addr_t self = { snd_seq_client_id(dest->seq), dest->port_out };
 +        dest->connected = subscription_present(dest->seq, self, dest->addr);
 +    }
-+    else dest->connected = ret >= 0 || ret == -EEXIST;
++    else dest->connected = ret >= 0;
 +    if (dest->connected)
 +    {
 +        dest->reconnect_attempts = 0;
@@ -919,12 +926,12 @@ index 4b65307..1977867 100644
 +    if (src->connected && !same_addr)
 +        snd_seq_disconnect_from(src->seq, src->port_in, old_addr.client, old_addr.port);
 +    ret = snd_seq_connect_from(src->seq, src->port_in, src->addr.client, src->addr.port);
-+    if (ret == -EBUSY)
++    if (ret == -EBUSY || ret == -EEXIST)
 +    {
 +        snd_seq_addr_t self = { snd_seq_client_id(src->seq), src->port_in };
 +        src->connected = subscription_present(src->seq, src->addr, self);
 +    }
-+    else src->connected = ret >= 0 || ret == -EEXIST;
++    else src->connected = ret >= 0;
 +    if (src->connected) src->reconnect_attempts = 0;
 +    else
 +    {
@@ -1458,7 +1465,7 @@ index 4b65307..1977867 100644
 +        if (snd_seq_open(&seq, "default", SND_SEQ_OPEN_INPUT, SND_SEQ_NONBLOCK) < 0)
 +        {
 +            if (!ready) { set_topology_ready(); ready = TRUE; }
-+            if (topology_cancelled(250)) break;
++            if (topology_cancelled(TOPOLOGY_RETRY_INTERVAL_MS)) break;
 +            continue;
 +        }
 +        snd_seq_set_client_name(seq, "WINE MIDI topology");
@@ -1466,12 +1473,12 @@ index 4b65307..1977867 100644
 +                                         SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE |
 +                                         SND_SEQ_PORT_CAP_NO_EXPORT,
 +                                         SND_SEQ_PORT_TYPE_APPLICATION);
-+        /* A composite device (several MIDI ports behind one card, e.g. Push 3)
-+         * plugs or unplugs as a burst of announce events.  The default input
-+         * pool is small enough that the kernel can drop the tail of such a
-+         * burst for this subscriber; a larger pool keeps a port-exit from being
-+         * lost, which would otherwise strand the vanished device in the list. */
-+        if (port >= 0) snd_seq_set_client_pool_input(seq, 1000);
++        /* A composite device publishes several port events together.
++         * A larger input pool gives the monitor room for the complete event group.
++         * Record an ALSA pool setup error in the Wine debug log. */
++        if (port >= 0 && (ret = snd_seq_set_client_pool_input(seq, TOPOLOGY_INPUT_POOL_EVENTS)) < 0)
++            WARN("ALSA rejected the MIDI topology input pool size %u: %s\n",
++                 TOPOLOGY_INPUT_POOL_EVENTS, snd_strerror(ret));
 +        if (port < 0 || snd_seq_connect_from(seq, port, SND_SEQ_CLIENT_SYSTEM,
 +                                             SND_SEQ_PORT_SYSTEM_ANNOUNCE) < 0)
 +        {
@@ -1479,7 +1486,7 @@ index 4b65307..1977867 100644
 +            snd_seq_close(seq);
 +            seq = NULL;
 +            if (!ready) { set_topology_ready(); ready = TRUE; }
-+            if (topology_cancelled(250)) break;
++            if (topology_cancelled(TOPOLOGY_RETRY_INTERVAL_MS)) break;
 +            continue;
 +        }
  
@@ -1548,7 +1555,7 @@ index 4b65307..1977867 100644
 +            fds[0].fd = topology_cancel_pipe[0];
 +            fds[0].events = POLLIN;
 +            snd_seq_poll_descriptors(seq, fds + 1, nfds - 1, POLLIN);
-+            ret = poll(fds, nfds, 250);
++            ret = poll(fds, nfds, TOPOLOGY_RETRY_INTERVAL_MS);
 +            if (ret < 0 && errno == EINTR) continue;
 +            if (ret < 0 || (fds[0].revents & POLLIN)) break;
 +            if (!ret)
@@ -4085,4 +4092,3 @@ index 8baf42b..1df7966 100644
  #define WODM_INIT		DRVM_INIT
 -- 
 2.55.0
-

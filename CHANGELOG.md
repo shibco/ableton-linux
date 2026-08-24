@@ -2,26 +2,21 @@
 
 ## Unreleased
 
-- **Hardened the new MIDI and audio hotplug after a review of #245:**
-  - A stray "WINE MIDI topology" entry no longer shows up in your MIDI list,
-    and your device numbers no longer shift, when another Wine program runs
-    beside Live. Each program keeps its own device watcher to itself now.
-  - A controller that another program already holds no longer looks connected
-    while it stays silent. Wine confirms its own connection before it reports
-    the controller as back, and keeps trying when it cannot get one.
-  - Wine keeps trying to reconnect a returning controller for about ten
-    seconds. A device that is slow to settle after you plug it in still comes
-    back on its own.
-  - A controller with several ports is less likely to get stranded in the
-    list after you unplug it, because the device watcher no longer drops the
-    unplug signal during the burst of changes.
-  - PipeASIO no longer sends your audio to a second identical interface when
-    the one you chose has no serial number and has moved to a different port.
-    Move such a device and you pick it again, rather than hearing audio arrive
-    on the wrong unit.
-  - The rapid-replug MIDI test now actually exercises removal and return. A
-    line-ending mismatch had been quietly stopping it from unplugging its
-    virtual controller, so that path went untested until now.
+- we fixed the device reconnection changes from
+  [pull request 245](https://github.com/shibco/ableton-linux/pull/245):
+  - the Wine MIDI driver hides its internal monitor from other Wine programs.
+  - the Live session keeps its MIDI device numbers when another Wine program
+    starts.
+  - a controller reserved by another program waits for Wine to confirm its own
+    MIDI link.
+  - the Wine MIDI driver retries a returning controller for about 10 seconds.
+  - the MIDI monitor uses a larger event pool for controllers with several
+    ports.
+  - the PipeASIO driver restores a serial-less interface at its original
+    physical port.
+  - a serial-less interface at another physical port waits for your selection.
+  - the rapid reconnection test completes its removal step after it converts
+    Windows line endings.
 
 ## 2026.08.24.1
 

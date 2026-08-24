@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise dynamic Wine MIDI add/remove/replug behavior with virtual ALSA ports.
+# Exercise Wine MIDI device addition, removal, and reconnection with virtual ALSA ports.
 set -uo pipefail
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -57,10 +57,9 @@ wait_for_text() {
     local elapsed=0
 
     while (( elapsed < timeout_ms )); do
-        # midiwatch.exe writes CRLF lines.  Strip the CR before matching so a
-        # "$"-anchored pattern still matches: some grep builds (ugrep) do not
-        # treat "$" as matching before a trailing carriage return.
-        if [ -r "$file" ] && tr -d '\r' <"$file" 2>/dev/null | grep -Eq "$pattern"; then
+        # The probe writes CRLF. Remove carriage returns so each end anchor
+        # matches the visible line.
+        if [ -r "$file" ] && grep -Eq "$pattern" < <(tr -d '\r' <"$file" 2>/dev/null); then
             return 0
         fi
         sleep 0.02
@@ -176,6 +175,16 @@ reserve_client_id() {
     return 1
 }
 
+stop_extra_reserve_blockers() {
+    local pid
+
+    for pid in "${reserve_blocker_pids[@]}"; do
+        if [[ $pid != "$reserved_blocker_pid" ]]; then
+            stop_process "$pid"
+        fi
+    done
+}
+
 run_monitor_leak_case() {
     local dir="$work_dir/monitor-leak" outer_seconds
     local first_log="$dir/watcher-1.txt" second_log="$dir/watcher-2.txt"
@@ -184,24 +193,26 @@ run_monitor_leak_case() {
     mkdir -p -- "$dir"
     outer_seconds=$((stage_timeout_ms / 1000 + 10))
 
-    # The first Wine process initialises winealsa, which creates its private
-    # topology monitor.  A second Wine process must not enumerate that monitor
-    # as a MIDI endpoint: it carries SND_SEQ_PORT_CAP_NO_EXPORT so it stays
-    # invisible to other processes' device lists.
+    # The first Wine process creates its private MIDI monitor. The second
+    # process confirms that Wine excludes private ports from its device list.
     start_watcher "$first_log" "$outer_seconds"
     first_pid=$STARTED_PID
     wait_for_text "$first_log" '^watching without open' "$stage_timeout_ms" ||
-        { fail "monitor-leak: first watcher never initialised WinMM"; return 1; }
+        { fail "monitor-leak: first watcher reached the WinMM initialisation timeout"; return 1; }
 
     start_watcher "$second_log" "$outer_seconds"
     second_pid=$STARTED_PID
     wait_for_text "$second_log" '^watching without open' "$stage_timeout_ms" ||
-        { stop_process "$first_pid"; fail "monitor-leak: second watcher never initialised WinMM"; return 1; }
+        {
+            stop_process "$first_pid"
+            fail "monitor-leak: second watcher reached the WinMM initialisation timeout"
+            return 1
+        }
 
     if grep -q 'WINE MIDI topology' "$first_log" "$second_log"; then
         stop_process "$first_pid"
         stop_process "$second_pid"
-        fail "monitor-leak: a WINE MIDI topology port leaked into a Wine MIDI list"
+        fail "monitor-leak: Wine MIDI list contains a WINE MIDI topology port"
         return 1
     fi
 
@@ -211,77 +222,90 @@ run_monitor_leak_case() {
 }
 
 run_cycle_case() {
-    local name="AH${$}Cycle" dir="$work_dir/rapid-cycle"
+    local label="$1" name_suffix="$2" test_cycles="$3" block_ms="$4"
+    local name="AH${$}${name_suffix}" dir="$work_dir/$label"
     local watcher_log="$dir/midiwatch.txt" target_log target_pid watcher_pid
     local previous_id current_id cycle watcher_rc outer_seconds
-    local retained_blocker_pid="" pid
+    local retained_blocker_pid=""
+    local test_timeout_ms=$stage_timeout_ms
+    local cycle_word=cycles
+    local -a replacement_args
 
     mkdir -p -- "$dir"
-    outer_seconds=$(((3 + 5 * cycles) * (stage_timeout_ms / 1000 + 1) + 10))
+    if (( block_ms && test_timeout_ms < block_ms + 2000 )); then
+        test_timeout_ms=$((block_ms + 2000))
+    fi
+    outer_seconds=$(((3 + 5 * test_cycles) * (test_timeout_ms / 1000 + 1) + 10))
     start_watcher "$watcher_log" "$outer_seconds" --assert-cycle "$name" 1 1 \
-        "$stage_timeout_ms" "$cycles"
+        "$test_timeout_ms" "$test_cycles"
     watcher_pid=$STARTED_PID
-    wait_for_text "$watcher_log" '^ASSERT BASELINE ' "$stage_timeout_ms" ||
-        { fail "rapid-cycle did not establish a WinMM baseline"; return 1; }
+    wait_for_text "$watcher_log" '^ASSERT BASELINE ' "$test_timeout_ms" ||
+        { fail "$label reached the WinMM baseline timeout"; return 1; }
 
     target_log="$dir/target-0.txt"
     start_fake "$target_log" "$name" --duplex --ports 1 --interval-ms 50
     target_pid=$STARTED_PID
-    wait_for_text "$target_log" '^READY client=' "$stage_timeout_ms" ||
-        { fail "rapid-cycle controller did not start"; return 1; }
+    wait_for_text "$target_log" '^READY client=' "$test_timeout_ms" ||
+        { fail "$label reached the controller startup timeout"; return 1; }
     previous_id="$(read_client_id "$target_log")"
 
-    for ((cycle = 1; cycle <= cycles; cycle++)); do
+    for ((cycle = 1; cycle <= test_cycles; cycle++)); do
         wait_for_text "$watcher_log" "^ASSERT READY_FOR_REMOVE cycle=$cycle$" \
-            "$stage_timeout_ms" ||
-            { fail "cycle $cycle never became ready for removal"; return 1; }
+            "$test_timeout_ms" ||
+            { fail "$label cycle $cycle reached the removal readiness timeout"; return 1; }
         stop_process "$target_pid"
         wait_for_text "$watcher_log" "^ASSERT READY_FOR_READD cycle=$cycle$" \
-            "$stage_timeout_ms" ||
-            { fail "cycle $cycle removal was not published"; return 1; }
+            "$test_timeout_ms" ||
+            { fail "$label cycle $cycle reached the removal publication timeout"; return 1; }
         reserve_client_id "$previous_id" "$dir" "$cycle" ||
-            { fail "could not reserve old ALSA client id $previous_id"; return 1; }
+            { fail "$label exhausted ALSA client ID reservations for $previous_id"; return 1; }
 
         if [[ -n $retained_blocker_pid ]]; then
             stop_process "$retained_blocker_pid"
         fi
-        for pid in "${reserve_blocker_pids[@]}"; do
-            if [[ $pid != "$reserved_blocker_pid" ]]; then
-                stop_process "$pid"
-            fi
-        done
+        stop_extra_reserve_blockers
         retained_blocker_pid=$reserved_blocker_pid
 
         target_log="$dir/target-$cycle.txt"
-        start_fake "$target_log" "$name" --duplex --ports 1 --interval-ms 50
+        replacement_args=(--duplex --ports 1 --interval-ms 50)
+        if (( block_ms && cycle == 1 )); then
+            replacement_args+=(--block-connections-ms "$block_ms")
+        fi
+        start_fake "$target_log" "$name" "${replacement_args[@]}"
         target_pid=$STARTED_PID
-        wait_for_text "$target_log" '^READY client=' "$stage_timeout_ms" ||
-            { fail "cycle $cycle replacement did not start"; return 1; }
+        wait_for_text "$target_log" '^READY client=' "$test_timeout_ms" ||
+            { fail "$label cycle $cycle reached the replacement startup timeout"; return 1; }
         current_id="$(read_client_id "$target_log")"
         if [[ -z $current_id || $current_id == "$previous_id" ]]; then
-            fail "cycle $cycle did not change ALSA client id ($previous_id)"
+            fail "$label cycle $cycle returned an empty or reused ALSA client ID ($previous_id)"
             return 1
         fi
+        if (( block_ms && cycle == 1 )); then
+            wait_for_text "$target_log" '^UNBLOCK elapsed_ms=' "$test_timeout_ms" ||
+                { fail "$label timed out before link release"; return 1; }
+        fi
         wait_for_text "$watcher_log" "^ASSERT CYCLE_PASS cycle=$cycle " \
-            "$stage_timeout_ms" ||
-            { fail "cycle $cycle did not restore the open WinMM handles"; return 1; }
+            "$test_timeout_ms" ||
+            { fail "$label cycle $cycle reached the open-handle recovery timeout"; return 1; }
         wait_for_text "$target_log" '^RX port=' 2000 ||
-            { fail "cycle $cycle replacement received no WinMM output"; return 1; }
+            { fail "$label cycle $cycle reached the WinMM output timeout"; return 1; }
         previous_id=$current_id
     done
 
     wait_process "$watcher_pid"
     watcher_rc=$?
     if [[ $watcher_rc -ne 0 ]] ||
-       ! grep -q "^ASSERT PASS mode=cycle cycles=$cycles " "$watcher_log"; then
-        fail "rapid-cycle assertion failed (exit $watcher_rc)"
+       ! grep -q "^ASSERT PASS mode=cycle cycles=$test_cycles " "$watcher_log"; then
+        fail "$label assertion failed (exit $watcher_rc)"
         return 1
     fi
     stop_process "$target_pid"
     if [[ -n $retained_blocker_pid ]]; then
         stop_process "$retained_blocker_pid"
     fi
-    printf 'PASS: rapid replug with changed ALSA client ids (%s cycles)\n' "$cycles"
+    if (( test_cycles == 1 )); then cycle_word=cycle; fi
+    printf 'PASS: %s with changed ALSA client IDs (%s %s)\n' \
+        "$label" "$test_cycles" "$cycle_word"
 }
 
 if [[ ! $stage_timeout_ms =~ ^[0-9]+$ || $stage_timeout_ms -lt 100 ]]; then
@@ -318,7 +342,8 @@ run_add_case duplex-add 1 1 --duplex --ports 1 || exit 1
 run_add_case input-only-add 1 0 --input-only --ports 1 || exit 1
 run_add_case output-only-add 0 1 --output-only --ports 1 || exit 1
 run_add_case duplicate-multiport-add 2 2 --duplex --ports 2 --duplicate-names || exit 1
-run_cycle_case || exit 1
+run_cycle_case busy-link-retry Busy 1 3000 || exit 1
+run_cycle_case rapid-cycle Cycle "$cycles" 0 || exit 1
 run_monitor_leak_case || exit 1
 
 printf 'PASS: all MIDI hotplug cases completed\n'

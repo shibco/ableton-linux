@@ -3,6 +3,20 @@ From: Shibco <cade@parare.al>
 Date: Sat, 22 Aug 2026 23:46:27 +0200
 Subject: [PATCH] audio: recover persistent device routes after hotplug
 
+Keep each selected channel route across PipeWire object ID changes. Restore
+the route when the selected interface returns. Recover after delayed daemon
+startup and daemon restarts. Preserve the host's active state.
+
+For a serial-less interface, compare its physical bus path before its bus ID
+and ALSA path. A matching bus path takes priority when the ALSA card path
+changes. A changed bus path waits for a new device selection.
+
+Refs: shibco/ableton-linux#118
+
+Refs: shibco/ableton-linux#121
+
+Refs: shibco/ableton-linux#170
+
 ---
  CMakeLists.txt                    |    3 +-
  include/audio.h                   |    4 +
@@ -18,9 +32,9 @@ Subject: [PATCH] audio: recover persistent device routes after hotplug
  tests/pw_probe/pw_restart_probe.c |  110 +++
  tests/pw_probe/run_restart.sh     |   71 ++
  tests/unit/CMakeLists.txt         |    1 +
- tests/unit/test_hotplug.c         |   77 ++
+ tests/unit/test_hotplug.c         |  102 +++
  tests/wow64/unix_abi_layout.c     |    6 +
- 16 files changed, 1602 insertions(+), 171 deletions(-)
+ 16 files changed, 1627 insertions(+), 171 deletions(-)
  create mode 100644 include/pipeasio_hotplug.h
  create mode 100644 src/hotplug.c
  create mode 100644 tests/pw_probe/pw_restart_probe.c
@@ -1842,7 +1856,7 @@ index d57c661..7f9316e 100644
  }
 diff --git a/src/hotplug.c b/src/hotplug.c
 new file mode 100644
-index 0000000..733baf9
+index 0000000..f60d1a1
 --- /dev/null
 +++ b/src/hotplug.c
 @@ -0,0 +1,99 @@
@@ -1864,16 +1878,6 @@ index 0000000..733baf9
 +    return !saved[0] || (candidate[0] && !strcmp(saved, candidate));
 +}
 +
-+/* Two known physical locators that are both present but differ prove the
-+ * candidate sits at a different place on the bus: a different unit, or an
-+ * identical serial-less sibling.  Either way a serial-less device that moved
-+ * must be reselected by the performer, never silently adopted. */
-+static bool
-+locator_conflict(const char *saved, const char *candidate)
-+{
-+    return saved[0] && candidate[0] && strcmp(saved, candidate);
-+}
-+
 +int
 +pipeasio_route_identity_rank(const pipeasio_route_identity *saved,
 +                             const pipeasio_route_identity *candidate)
@@ -1881,7 +1885,7 @@ index 0000000..733baf9
 +    if (!saved || !candidate)
 +        return 0;
 +
-+    /* Never let a reused friendly name bypass a known hardware conflict. */
++    /* Require known vendor and product IDs to match before comparing other fields. */
 +    if (!matches_saved(saved->vendor_id, candidate->vendor_id)
 +        || !matches_saved(saved->product_id, candidate->product_id))
 +        return 0;
@@ -1891,16 +1895,26 @@ index 0000000..733baf9
 +            return 0;
 +        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 5;
 +    }
-+    if (locator_conflict(saved->bus_path, candidate->bus_path)
-+        || locator_conflict(saved->bus_id, candidate->bus_id)
-+        || locator_conflict(saved->alsa_path, candidate->alsa_path))
-+        return 0;
-+    if (same_nonempty(saved->bus_path, candidate->bus_path))
++    /* Compare the first location field that both records provide.
++     * The bus path takes priority because an ALSA card path can change after reconnection. */
++    if (saved->bus_path[0] && candidate->bus_path[0])
++    {
++        if (strcmp(saved->bus_path, candidate->bus_path))
++            return 0;
 +        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 4;
-+    if (same_nonempty(saved->bus_id, candidate->bus_id))
++    }
++    if (saved->bus_id[0] && candidate->bus_id[0])
++    {
++        if (strcmp(saved->bus_id, candidate->bus_id))
++            return 0;
 +        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 3;
-+    if (same_nonempty(saved->alsa_path, candidate->alsa_path))
++    }
++    if (saved->alsa_path[0] && candidate->alsa_path[0])
++    {
++        if (strcmp(saved->alsa_path, candidate->alsa_path))
++            return 0;
 +        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 2;
++    }
 +    if (same_nonempty(saved->node_name, candidate->node_name))
 +        return 2;
 +    if (same_nonempty(saved->device_name, candidate->device_name))
@@ -2275,10 +2289,10 @@ index 793ad65..07cc360 100644
  target_link_libraries(test_admission_gate PRIVATE Threads::Threads)
 diff --git a/tests/unit/test_hotplug.c b/tests/unit/test_hotplug.c
 new file mode 100644
-index 0000000..8b16867
+index 0000000..d96c553
 --- /dev/null
 +++ b/tests/unit/test_hotplug.c
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,102 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later */
 +#include "pipeasio_hotplug.h"
 +#include "test_helpers.h"
@@ -2306,6 +2320,16 @@ index 0000000..8b16867
 +    return result;
 +}
 +
++static void
++set_secondary_locations(pipeasio_route_identity *result, const char *bus_id,
++                        const char *alsa_path)
++{
++    if (bus_id)
++        strncpy(result->bus_id, bus_id, sizeof(result->bus_id) - 1);
++    if (alsa_path)
++        strncpy(result->alsa_path, alsa_path, sizeof(result->alsa_path) - 1);
++}
++
 +int
 +main(void)
 +{
@@ -2323,21 +2347,36 @@ index 0000000..8b16867
 +                                                 "1234", "5678");
 +    pipeasio_route_identity moved_path
 +            = identity("old", "other", NULL, "pci-1-usb-7", "1234", "5678");
++    pipeasio_route_identity saved_bus_id
++            = identity("old", "card", NULL, NULL, "1234", "5678");
++    pipeasio_route_identity same_bus_id
++            = identity("new", "other", NULL, NULL, "1234", "5678");
++    pipeasio_route_identity moved_bus_id
++            = identity("old", "other", NULL, NULL, "1234", "5678");
++    pipeasio_route_identity moved_alsa_path
++            = identity("old", "other", NULL, NULL, "1234", "5678");
 +    pipeasio_route_identity duplex_peer
 +            = identity("alsa_input.usb-new", "other", "ABC", "pci-1-usb-7", "1234", "5678");
++    set_secondary_locations(&saved_path, "usb-interface-2", "hw:2");
++    set_secondary_locations(&same_path, "usb-interface-2", "hw:7");
++    set_secondary_locations(&saved_bus_id, "usb-interface-2", "hw:2");
++    set_secondary_locations(&same_bus_id, "usb-interface-2", "hw:7");
++    set_secondary_locations(&moved_bus_id, "usb-interface-7", "hw:2");
++    set_secondary_locations(&moved_alsa_path, NULL, "hw:7");
 +
 +    EXPECT_EQ(pipeasio_route_identity_rank(&saved, &same), 6);
 +    EXPECT_EQ(pipeasio_route_identity_rank(&saved, &reused), 0);
 +    EXPECT_EQ(pipeasio_route_identity_rank(&saved, &moved), 5);
 +    EXPECT_EQ(pipeasio_route_identity_rank(&saved_path, &same_path), 4);
-+    /* A serial-less device seen at a different known bus path is a conflict:
-+     * it may be an identical sibling, so it must be reselected, not adopted. */
++    /* A changed bus path leaves the saved route ready for a new selection. */
 +    EXPECT_EQ(pipeasio_route_identity_rank(&saved_path, &moved_path), 0);
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved_bus_id, &same_bus_id), 3);
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved_bus_id, &moved_bus_id), 0);
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved_bus_id, &moved_alsa_path), 0);
 +    EXPECT_EQ(pipeasio_route_candidate_rank(&saved, &duplex_peer, 0), 0);
 +    EXPECT_EQ(pipeasio_route_candidate_rank(&saved, &moved, 1), 5);
 +
-+    /* Two identical serial-less interfaces: same friendly names and USB ids,
-+     * only the bus path differs.  The sibling must never outrank a conflict. */
++    /* Identical names and USB IDs remain separate when their bus paths differ. */
 +    pipeasio_route_identity twin_saved
 +            = identity("Scarlett", "Focusrite Scarlett", NULL, "pci-0-usb-1", "1235", "8210");
 +    pipeasio_route_identity twin_sibling
@@ -2382,4 +2421,3 @@ index 4b7352e..d75c1fb 100644
  CHECK(offsetof(pa_config_params, cfg) == 4, "pa_config_params cfg offset");
 -- 
 2.55.0
-

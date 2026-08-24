@@ -90,7 +90,7 @@ fe133a2e284cd97dc7f5903e8ea09006c56d2a1d21651b71da255fe4962e9c88  0101-user32-re
 ef22b175d9a86906f2d6da3a57783621bae260e7f34eb25bb816e8104f87b990  0102-dwrite-use-outlines-for-cleartype-glyphs.patch
 7bb0abb6ef0893295dedb543e21560f95b8eabfed9c3160bfc90353f2e6cbe54  0103-dwrite-preserve-fractional-glyph-positions.patch
 30349187c38d6ae69cc6ce6953ec66df66da4561f8c411b4f412889da190e79c  0104-d2d1-keep-target-pixel-format-on-resize.patch
-273e4bfaac284a7ff5283510b248f9f7481a3320a8477354867d0727ff11cb6e  0105-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch
+afea65d0a50f10146672164f5dbd52a23987d951855bbce0b274f110c837f818  0105-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch
 69bcc0562e68b7663a482b98879a06897561c6f4510caaa7a2f7e162c10dabc7  0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch
 e2759a5aee2cc5820a3ed27d2d4f954a6a5262c1a95172ad11ffa5302c487387  pipeasio/0001-asio-clamp-unavailable-sample-rate-requests.patch
 b4d53b6ebb24e39c7d23efcbddd837149d4d08886167637a73bb085af851d2c1  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
@@ -101,4 +101,4 @@ e036bf380d83bd8c36cea09ffce051f0563ac31c8073c80cc8f3a1ead8335ce4  pipeasio/0008-
 dad3840da339256af7b3a929a5c2d84052402d26298e2d5706b298aba6515675  pipeasio/0009-honest-realtime-toggle.patch
 adf7f8446f8b4e60ab7df8bf433f50fcfd65ddf123c731027e513f4057ad2207  pipeasio/0010-gui-accept-any-buffer-size.patch
 bea289bb6f78f4b217813c4457c54bf2e4224fb74bb0435ac17bbb50a1db5a53  pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch
-d0d01152337fa873da106e8df1fb65f48845e7abef901d96dacdb763adc71ec9  pipeasio/0012-recover-selected-routes-after-hotplug.patch
+8542e3eb5f4e77559783b85bc741c1c21e99027e2e3989a1456909819385227e  pipeasio/0012-recover-selected-routes-after-hotplug.patch
