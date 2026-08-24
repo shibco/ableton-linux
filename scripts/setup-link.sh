@@ -1420,7 +1420,16 @@ restore_link_enable_snapshot()
 
 enable_link()
 {
-    [ -x "$linkctl" ] || { echo "!! ableton-linkctl is missing at $linkctl; install Link assets first" >&2; return 1; }
+    # Availability check only, against a local: a packaged install stages
+    # ableton-linkctl beside this script and populates no $ABLETON_DATA_HOME,
+    # so testing just the latter refuses to run and names assets no packaged
+    # install provides. $linkctl itself must not move - restore_link_snapshot
+    # and the ownership manifest address the $ABLETON_DATA_HOME path by name,
+    # and pointing those at the store would record an asset this project does
+    # not own and cannot restore. Same shape as plan_link and the restore path.
+    local ctl="$here/ableton-linkctl"
+    [ -x "$ctl" ] || ctl="$linkctl"
+    [ -x "$ctl" ] || { echo "!! ableton-linkctl is missing at $ctl; install Link assets first" >&2; return 1; }
     echo "== enable Ableton Link ($mode) =="
     local snapshot unit_existed=0 config_existed=0 rc=0 stop_rc=0
     validate_link_firewall_state || {

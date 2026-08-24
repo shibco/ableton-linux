@@ -272,8 +272,9 @@ stdenv.mkDerivation {
         # config.sh defaults ABLETON_LINKD to ~/.local/share/ableton-wine/ableton-linkd,
         # which only installer.sh populates; the staged config.sh copies below
         # default to this store copy instead. ABLETON_LINKD still overrides.
-        # The unit template stays verbatim: setup-link.sh renders @ABLETON_LINKD@
-        # itself from the resolved daemon path.
+        # The unit stays verbatim. setup-link.sh writes the live unit itself
+        # from the resolved daemon path and never reads this copy; it is staged
+        # because setup-link.sh tracks it as an owned asset.
         install -m755 ${ableton-linkd}/bin/ableton-linkd \
           $out/share/ableton-wine/ableton-linkd
         install -m644 ${../scripts/ableton-linkd.service} \
@@ -384,8 +385,14 @@ stdenv.mkDerivation {
 
         # -- Icons + MIME types (the set install.sh registers) --
         mkdir -p $out/share/icons/hicolor $out/share/mime/packages
-        cp -a ${../desktop/icons}/scalable $out/share/icons/hicolor/scalable
-        cp -a ${../desktop/icons}/symbolic $out/share/icons/hicolor/symbolic
+        # Trailing /. copies the CONTENTS: the PipeASIO icon above is installed
+        # with install -D, which creates hicolor/scalable first, and `cp -a src
+        # dst` over an existing dst copies src INTO it, producing
+        # hicolor/scalable/scalable/apps where no icon lookup will find it.
+        # This form gives the same result whichever order the two run in.
+        mkdir -p $out/share/icons/hicolor/scalable $out/share/icons/hicolor/symbolic
+        cp -a ${../desktop/icons}/scalable/. $out/share/icons/hicolor/scalable/
+        cp -a ${../desktop/icons}/symbolic/. $out/share/icons/hicolor/symbolic/
         install -m644 ${../desktop/x-wine-extension-auz.xml} \
           $out/share/mime/packages/x-wine-extension-auz.xml
         install -m644 ${../desktop/icons/application-ableton-live.xml} \
@@ -403,9 +410,9 @@ stdenv.mkDerivation {
         # are the pinned nix closure, so record those versions instead. Same
         # contract build-audit.sh checks: sorted, unique, two fields per line.
         printf '%s\n' \
-          "ableton-linkd ${ableton-linkd.version or "4.0"}" \
+          "ableton-linkd ${ableton-linkd.version}" \
           "cabextract ${cabextract.version}" \
-          "pipeasio 1.5.0" \
+          "pipeasio ${pipeasio.version}" \
           "pipewire ${pipewire.version}" \
           "unzip ${unzip.version}" \
           "wine-d2d1-nspa ${wine.version}" \
@@ -458,6 +465,11 @@ stdenv.mkDerivation {
     INFO
   '';
 
+  # Deliberately NOT dontStrip/dontPatchELF, unlike the wine derivation this
+  # tree is copied from. The default fixup is what removes the donor's store
+  # path from the copied binaries' RUNPATHs; remove-references-to above only
+  # covers the three files that embed it as a string. Setting either flag here
+  # makes the build fail this very check.
   disallowedReferences = [ wine ];
 
   # regsvr32 dlopens the unix half (exercising the libpipewire RUNPATH); the
@@ -553,9 +565,13 @@ stdenv.mkDerivation {
       grep -qF "$out/share/ableton-wine/ableton-linkd" $out/$f \
         || { echo "$f does not default ABLETON_LINKD to the staged daemon"; exit 1; }
     done
-    # setup-link.sh renders the user unit from the template itself.
-    grep -qF '@ABLETON_LINKD@' $out/share/ableton-wine/ableton-linkd.service \
-      || { echo "the staged unit template lost its @ABLETON_LINKD@ token"; exit 1; }
+    # setup-link.sh does NOT render this template: it writes the unit from an
+    # inline heredoc using the resolved daemon path, and the string
+    # @ABLETON_LINKD@ appears nowhere in it. The staged copy exists because
+    # setup-link.sh tracks it as an owned asset for snapshot and rollback, so
+    # what matters is that it is present and is the project's own unit.
+    grep -qxF 'X-AbletonLinuxOwned=true' $out/share/ableton-wine/ableton-linkd.service \
+      || { echo "the staged unit is not the project's own"; exit 1; }
     # Nothing this package installs may write THIS store path into user
     # configuration: it is deleted by a garbage collection of an unrooted
     # `nix run` closure and superseded by every upgrade. The launcher's handler
@@ -585,6 +601,27 @@ stdenv.mkDerivation {
         || { echo "$id is not staged for the launcher's handler repair"; exit 1; }
       grep -qF "Exec=$out/bin/ableton-live" "$out/share/ableton-wine/$id" \
         || { echo "$id does not exec this package's launcher"; exit 1; }
+    done
+    # Icons have to sit where the icon theme spec resolves them. Anything
+    # deeper is not found and the menu entry renders with no icon at all,
+    # which is what a `cp -a` into an already-created hicolor/scalable does.
+    [ ! -e $out/share/icons/hicolor/scalable/scalable ] \
+      || { echo "icons nested a level too deep: hicolor/scalable/scalable"; exit 1; }
+    for d in scalable/apps scalable/mimetypes symbolic/apps; do
+      [ -d $out/share/icons/hicolor/$d ] \
+        || { echo "icon directory hicolor/$d is missing"; exit 1; }
+    done
+    # The check that ties the two together: whatever the menu entry names in
+    # Icon= must exist as a file in the theme this package ships.
+    menu_icon=$(sed -n 's/^Icon=//p' $out/share/applications/ableton-live.desktop)
+    [ -n "$menu_icon" ] \
+      || { echo "the menu entry has no Icon= key"; exit 1; }
+    [ -s "$out/share/icons/hicolor/scalable/apps/$menu_icon.svg" ] \
+      || { echo "the menu entry's Icon=$menu_icon resolves to no file in the shipped theme"; exit 1; }
+    # Every source icon must survive the copy, at the same relative path.
+    ( cd ${../desktop/icons} && find . -name '*.svg' -printf '%P\n' ) | while read -r rel; do
+      [ -s "$out/share/icons/hicolor/$rel" ] \
+        || { echo "icon $rel did not reach hicolor/$rel"; exit 1; }
     done
     # No guessed window class: it is per edition, the store cannot see the
     # prefix, and a wrong one associates the window with nothing at all.

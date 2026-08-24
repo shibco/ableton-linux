@@ -100,8 +100,10 @@ case "$AUDIT_PROFILE" in release|nix) ;;
 esac
 # A build-container rpath resolves on no user's machine and must never ship.
 # An empty one is the tarball's case, which resolves through the host loader;
-# a store-only one is the Nix package pinning its own closure. Anything else
-# fails. Used for every binary whose rpath differs between the two packagings.
+# a store-only one is the Nix package pinning its own closure, and is accepted
+# ONLY under that profile. A release tarball carrying a /nix/store rpath runs
+# on the machine that built it and nowhere else, so on the release profile any
+# rpath at all is a failure, exactly as it was before this helper existed.
 rpath_check() {   # <label> <file> [empty-case detail]
     local label="$1" file="$2" empty="${3:-none}" value
     # A file that is not there is a failure to report, not an absent rpath to
@@ -115,6 +117,8 @@ rpath_check() {   # <label> <file> [empty-case detail]
         | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p' || true)"
     if [ -z "$value" ]; then
         ok "$label" "$empty"
+    elif [ "$AUDIT_PROFILE" != nix ]; then
+        bad "$label" "carries an rpath: $value"
     elif printf '%s' "$value" | tr ':' '\n' | grep -qv '^/nix/store/'; then
         bad "$label" "carries a build-container rpath: $value"
     else
