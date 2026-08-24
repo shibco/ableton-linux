@@ -3,13 +3,6 @@ From: Shibco <cade@parare.al>
 Date: Sat, 22 Aug 2026 23:46:27 +0200
 Subject: [PATCH] audio: recover persistent device routes after hotplug
 
-Keep per-channel route intents across PipeWire object-id churn and relink them directly when selected devices return. Recover asynchronously from delayed daemon startup and daemon restarts while preserving the host's active state.
-
-Refs: shibco/ableton-linux#118
-
-Refs: shibco/ableton-linux#121
-
-Refs: shibco/ableton-linux#170
 ---
  CMakeLists.txt                    |    3 +-
  include/audio.h                   |    4 +
@@ -17,7 +10,7 @@ Refs: shibco/ableton-linux#170
  include/pipeasio_unix_abi.h       |   14 +-
  src/asio.c                        |   73 +-
  src/audio.c                       | 1205 ++++++++++++++++++++++++++---
- src/hotplug.c                     |   85 ++
+ src/hotplug.c                     |   99 +++
  src/wow64/audio_proxy.c           |   21 +
  src/wow64/audio_unix.c            |   24 +-
  tests/asio_probe/CMakeLists.txt   |    1 +
@@ -25,9 +18,9 @@ Refs: shibco/ableton-linux#170
  tests/pw_probe/pw_restart_probe.c |  110 +++
  tests/pw_probe/run_restart.sh     |   71 ++
  tests/unit/CMakeLists.txt         |    1 +
- tests/unit/test_hotplug.c         |   64 ++
+ tests/unit/test_hotplug.c         |   77 ++
  tests/wow64/unix_abi_layout.c     |    6 +
- 16 files changed, 1575 insertions(+), 171 deletions(-)
+ 16 files changed, 1602 insertions(+), 171 deletions(-)
  create mode 100644 include/pipeasio_hotplug.h
  create mode 100644 src/hotplug.c
  create mode 100644 tests/pw_probe/pw_restart_probe.c
@@ -1849,10 +1842,10 @@ index d57c661..7f9316e 100644
  }
 diff --git a/src/hotplug.c b/src/hotplug.c
 new file mode 100644
-index 0000000..c168b4a
+index 0000000..733baf9
 --- /dev/null
 +++ b/src/hotplug.c
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,99 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later */
 +#include "pipeasio_hotplug.h"
 +
@@ -1869,6 +1862,16 @@ index 0000000..c168b4a
 +matches_saved(const char *saved, const char *candidate)
 +{
 +    return !saved[0] || (candidate[0] && !strcmp(saved, candidate));
++}
++
++/* Two known physical locators that are both present but differ prove the
++ * candidate sits at a different place on the bus: a different unit, or an
++ * identical serial-less sibling.  Either way a serial-less device that moved
++ * must be reselected by the performer, never silently adopted. */
++static bool
++locator_conflict(const char *saved, const char *candidate)
++{
++    return saved[0] && candidate[0] && strcmp(saved, candidate);
 +}
 +
 +int
@@ -1888,6 +1891,10 @@ index 0000000..c168b4a
 +            return 0;
 +        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 5;
 +    }
++    if (locator_conflict(saved->bus_path, candidate->bus_path)
++        || locator_conflict(saved->bus_id, candidate->bus_id)
++        || locator_conflict(saved->alsa_path, candidate->alsa_path))
++        return 0;
 +    if (same_nonempty(saved->bus_path, candidate->bus_path))
 +        return same_nonempty(saved->node_name, candidate->node_name) ? 6 : 4;
 +    if (same_nonempty(saved->bus_id, candidate->bus_id))
@@ -2268,10 +2275,10 @@ index 793ad65..07cc360 100644
  target_link_libraries(test_admission_gate PRIVATE Threads::Threads)
 diff --git a/tests/unit/test_hotplug.c b/tests/unit/test_hotplug.c
 new file mode 100644
-index 0000000..4427b15
+index 0000000..8b16867
 --- /dev/null
 +++ b/tests/unit/test_hotplug.c
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,77 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later */
 +#include "pipeasio_hotplug.h"
 +#include "test_helpers.h"
@@ -2323,9 +2330,22 @@ index 0000000..4427b15
 +    EXPECT_EQ(pipeasio_route_identity_rank(&saved, &reused), 0);
 +    EXPECT_EQ(pipeasio_route_identity_rank(&saved, &moved), 5);
 +    EXPECT_EQ(pipeasio_route_identity_rank(&saved_path, &same_path), 4);
-+    EXPECT_EQ(pipeasio_route_identity_rank(&saved_path, &moved_path), 2);
++    /* A serial-less device seen at a different known bus path is a conflict:
++     * it may be an identical sibling, so it must be reselected, not adopted. */
++    EXPECT_EQ(pipeasio_route_identity_rank(&saved_path, &moved_path), 0);
 +    EXPECT_EQ(pipeasio_route_candidate_rank(&saved, &duplex_peer, 0), 0);
 +    EXPECT_EQ(pipeasio_route_candidate_rank(&saved, &moved, 1), 5);
++
++    /* Two identical serial-less interfaces: same friendly names and USB ids,
++     * only the bus path differs.  The sibling must never outrank a conflict. */
++    pipeasio_route_identity twin_saved
++            = identity("Scarlett", "Focusrite Scarlett", NULL, "pci-0-usb-1", "1235", "8210");
++    pipeasio_route_identity twin_sibling
++            = identity("Scarlett", "Focusrite Scarlett", NULL, "pci-0-usb-4", "1235", "8210");
++    pipeasio_route_identity twin_same
++            = identity("Scarlett", "Focusrite Scarlett", NULL, "pci-0-usb-1", "1235", "8210");
++    EXPECT_EQ(pipeasio_route_identity_rank(&twin_saved, &twin_sibling), 0);
++    EXPECT_EQ(pipeasio_route_identity_rank(&twin_saved, &twin_same), 6);
 +
 +    pipeasio_route_port_candidate duplicate_names[] = {
 +        { "playback", 10 }, { "playback", 11 }, { "phones", 12 },

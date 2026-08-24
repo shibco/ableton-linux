@@ -13,7 +13,7 @@ Refs #46.
  dlls/mmdevapi/main.c               |   27 +-
  dlls/mmdevapi/unixlib.h            |    2 +
  dlls/winealsa.drv/alsa.c           |    2 +
- dlls/winealsa.drv/alsamidi.c       | 2320 ++++++++++++++++++++++------
+ dlls/winealsa.drv/alsamidi.c       | 2359 +++++++++++++++++++++++-----
  dlls/winealsa.drv/unixlib.h        |    1 +
  dlls/winecoreaudio.drv/coreaudio.c |    2 +
  dlls/winecoreaudio.drv/coremidi.c  |   15 +
@@ -25,7 +25,7 @@ Refs #46.
  dlls/winmm/winemm.h                |    8 +-
  dlls/winmm/winmm.c                 |    9 +-
  include/mmddk.h                    |    6 +
- 15 files changed, 2236 insertions(+), 478 deletions(-)
+ 15 files changed, 2275 insertions(+), 478 deletions(-)
 
 diff --git a/dlls/mmdevapi/main.c b/dlls/mmdevapi/main.c
 index 70eace8..d8c9983 100644
@@ -147,7 +147,7 @@ index 9afca51..b24d1d0 100644
  };
  
 diff --git a/dlls/winealsa.drv/alsamidi.c b/dlls/winealsa.drv/alsamidi.c
-index 4b65307..e8ca4a5 100644
+index 4b65307..1977867 100644
 --- a/dlls/winealsa.drv/alsamidi.c
 +++ b/dlls/winealsa.drv/alsamidi.c
 @@ -29,8 +29,14 @@
@@ -165,11 +165,16 @@ index 4b65307..e8ca4a5 100644
  #include <unistd.h>
  #include <pthread.h>
  #include <time.h>
-@@ -50,9 +56,25 @@
+@@ -50,9 +56,30 @@
  
  WINE_DEFAULT_DEBUG_CHANNEL(midi);
  
 +#define MIDI_INTERFACE_LEN 256
++/* Retry a pending reconnect for this many 250 ms rounds (about ten
++ * seconds) before giving up.  ALSA can publish a sequencer port before
++ * its rawmidi stream, udev permissions or device firmware are ready, so
++ * this stays well past the five-second readiness target. */
++#define RECONNECT_RETRY_ROUNDS 40
 +#define MIDI_IDENTITY_LEN (PATH_MAX + 256)
 +
  struct midi_dest
@@ -191,7 +196,7 @@ index 4b65307..e8ca4a5 100644
      MIDIOPENDESC        midiDesc;
      BYTE                runningStatus;
      WORD                wFlags;
-@@ -60,10 +82,26 @@ struct midi_dest
+@@ -60,10 +87,26 @@ struct midi_dest
      snd_seq_t          *seq;
      snd_seq_addr_t      addr;
      int                 port_out;
@@ -218,7 +223,7 @@ index 4b65307..e8ca4a5 100644
      int                 state; /* -1 disabled, 0 is no recording started, 1 in recording, bit 2 set if in sys exclusive recording */
      MIDIOPENDESC        midiDesc;
      WORD                wFlags;
-@@ -73,29 +111,72 @@ struct midi_src
+@@ -73,29 +116,72 @@ struct midi_src
      snd_seq_t          *seq;
      snd_seq_addr_t      addr;
      int                 port_in;
@@ -296,7 +301,7 @@ index 4b65307..e8ca4a5 100644
  
  static void seq_lock(void)
  {
-@@ -133,6 +214,7 @@ static void set_in_notify(struct notify_context *notify, struct midi_src *src, W
+@@ -133,6 +219,7 @@ static void set_in_notify(struct notify_context *notify, struct midi_src *src, W
                            UINT_PTR param_1, UINT_PTR param_2)
  {
      notify->send_notify = TRUE;
@@ -304,7 +309,7 @@ index 4b65307..e8ca4a5 100644
      notify->dev_id = dev_id;
      notify->msg = msg;
      notify->param_1 = param_1;
-@@ -143,13 +225,19 @@ static void set_in_notify(struct notify_context *notify, struct midi_src *src, W
+@@ -143,13 +230,19 @@ static void set_in_notify(struct notify_context *notify, struct midi_src *src, W
      notify->instance = src->midiDesc.dwInstance;
  }
  
@@ -325,7 +330,7 @@ index 4b65307..e8ca4a5 100644
  {
      if (++notify >= notify_buffer + ARRAY_SIZE(notify_buffer))
          notify = notify_buffer;
-@@ -167,16 +255,22 @@ static BOOL notify_buffer_full(void)
+@@ -167,16 +260,22 @@ static BOOL notify_buffer_full(void)
      return notify_buffer_next(notify_write) == notify_read;
  }
  
@@ -351,18 +356,18 @@ index 4b65307..e8ca4a5 100644
  {
      if (notify_buffer_empty()) return FALSE;
  
-@@ -189,14 +283,22 @@ static void notify_post(struct notify_context *notify)
+@@ -189,14 +288,22 @@ static void notify_post(struct notify_context *notify)
  {
      pthread_mutex_lock(&notify_mutex);
  
 -    if (notify)
 +    if (notify && notify->device_change && !notify_quit)
-     {
--        while (notify_buffer_full())
++    {
 +        device_change_pending = TRUE;
 +    }
 +    else if (notify && !notify_quit)
-+    {
+     {
+-        while (notify_buffer_full())
 +        while (!notify_quit && notify_buffer_full())
              pthread_cond_wait(&notify_write_cond, &notify_mutex);
  
@@ -378,7 +383,7 @@ index 4b65307..e8ca4a5 100644
      pthread_cond_signal(&notify_read_cond);
  
      pthread_mutex_unlock(&notify_mutex);
-@@ -231,13 +333,7 @@ static snd_seq_t *seq_open(int *port_in_ret)
+@@ -231,13 +338,7 @@ static snd_seq_t *seq_open(int *port_in_ret)
              if (port_in < 0)
                  TRACE("Unable to create input port\n");
              else
@@ -392,7 +397,7 @@ index 4b65307..e8ca4a5 100644
          }
          *port_in_ret = port_in;
      }
-@@ -291,10 +387,177 @@ static int alsa_to_win_device_type(unsigned int type)
+@@ -291,10 +392,177 @@ static int alsa_to_win_device_type(unsigned int type)
  /* Build the display name winmm exposes for a seq port: "client - port",
   * falling back to the port name alone if that would overflow.  Must stay
   * stable across replug so hotplug re-matching by name works. */
@@ -571,7 +576,7 @@ index 4b65307..e8ca4a5 100644
  
      if ((strlen(snd_seq_client_info_get_name(cinfo)) + len + 3) < MAXPNAMELEN) {
          sprintf(name, "%s - %s", snd_seq_client_info_get_name(cinfo), snd_seq_port_info_get_name(pinfo));
-@@ -307,179 +570,1052 @@ static unsigned int port_display_name(snd_seq_client_info_t *cinfo, snd_seq_port
+@@ -307,179 +575,1086 @@ static unsigned int port_display_name(snd_seq_client_info_t *cinfo, snd_seq_port
      return len;
  }
  
@@ -849,6 +854,23 @@ index 4b65307..e8ca4a5 100644
 +    dest->runningStatus = 0;
 +}
 +
++/* Query whether an exact sender->dest subscription exists.  snd_seq_connect_*
++ * returns -EBUSY both when our own subscription is already in place and when
++ * another client's exclusive subscription blocks ours, so a bare -EBUSY must
++ * never be read as "connected".  Call with seq_mutex held. */
++static BOOL subscription_present(snd_seq_t *seq, snd_seq_addr_t sender, snd_seq_addr_t dest)
++{
++    snd_seq_port_subscribe_t *sub;
++    BOOL present;
++
++    if (snd_seq_port_subscribe_malloc(&sub) < 0) return FALSE;
++    snd_seq_port_subscribe_set_sender(sub, &sender);
++    snd_seq_port_subscribe_set_dest(sub, &dest);
++    present = snd_seq_get_port_subscription(seq, sub) == 0;
++    snd_seq_port_subscribe_free(sub);
++    return present;
++}
++
 +static void reconnect_dest(struct midi_dest *dest, snd_seq_addr_t old_addr)
 +{
 +    BOOL same_addr;
@@ -861,7 +883,12 @@ index 4b65307..e8ca4a5 100644
 +    if (dest->connected && !same_addr)
 +        snd_seq_disconnect_to(dest->seq, dest->port_out, old_addr.client, old_addr.port);
 +    ret = snd_seq_connect_to(dest->seq, dest->port_out, dest->addr.client, dest->addr.port);
-+    dest->connected = ret >= 0 || ret == -EBUSY || ret == -EEXIST;
++    if (ret == -EBUSY)
++    {
++        snd_seq_addr_t self = { snd_seq_client_id(dest->seq), dest->port_out };
++        dest->connected = subscription_present(dest->seq, self, dest->addr);
++    }
++    else dest->connected = ret >= 0 || ret == -EEXIST;
 +    if (dest->connected)
 +    {
 +        dest->reconnect_attempts = 0;
@@ -869,7 +896,7 @@ index 4b65307..e8ca4a5 100644
 +    }
 +    else
 +    {
-+        if (!dest->reconnect_attempts) dest->reconnect_attempts = 8;
++        if (!dest->reconnect_attempts) dest->reconnect_attempts = RECONNECT_RETRY_ROUNDS;
 +        if (topology_retrying && !--dest->reconnect_attempts)
 +            ERR("MidiOut '%s - %s' reconnect retries exhausted\n",
 +                dest->client_name, dest->port_name);
@@ -892,11 +919,16 @@ index 4b65307..e8ca4a5 100644
 +    if (src->connected && !same_addr)
 +        snd_seq_disconnect_from(src->seq, src->port_in, old_addr.client, old_addr.port);
 +    ret = snd_seq_connect_from(src->seq, src->port_in, src->addr.client, src->addr.port);
-+    src->connected = ret >= 0 || ret == -EBUSY || ret == -EEXIST;
++    if (ret == -EBUSY)
++    {
++        snd_seq_addr_t self = { snd_seq_client_id(src->seq), src->port_in };
++        src->connected = subscription_present(src->seq, src->addr, self);
++    }
++    else src->connected = ret >= 0 || ret == -EEXIST;
 +    if (src->connected) src->reconnect_attempts = 0;
 +    else
 +    {
-+        if (!src->reconnect_attempts) src->reconnect_attempts = 8;
++        if (!src->reconnect_attempts) src->reconnect_attempts = RECONNECT_RETRY_ROUNDS;
 +        if (topology_retrying && !--src->reconnect_attempts)
 +            ERR("MidiIn '%s - %s' reconnect retries exhausted\n",
 +                src->client_name, src->port_name);
@@ -1431,8 +1463,15 @@ index 4b65307..e8ca4a5 100644
 +        }
 +        snd_seq_set_client_name(seq, "WINE MIDI topology");
 +        port = snd_seq_create_simple_port(seq, "WINE MIDI topology",
-+                                         SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE,
++                                         SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE |
++                                         SND_SEQ_PORT_CAP_NO_EXPORT,
 +                                         SND_SEQ_PORT_TYPE_APPLICATION);
++        /* A composite device (several MIDI ports behind one card, e.g. Push 3)
++         * plugs or unplugs as a burst of announce events.  The default input
++         * pool is small enough that the kernel can drop the tail of such a
++         * burst for this subscriber; a larger pool keeps a port-exit from being
++         * lost, which would otherwise strand the vanished device in the list. */
++        if (port >= 0) snd_seq_set_client_pool_input(seq, 1000);
 +        if (port < 0 || snd_seq_connect_from(seq, port, SND_SEQ_CLIENT_SYSTEM,
 +                                             SND_SEQ_PORT_SYSTEM_ANNOUNCE) < 0)
 +        {
@@ -1782,7 +1821,7 @@ index 4b65307..e8ca4a5 100644
  
      return STATUS_SUCCESS;
  }
-@@ -488,6 +1624,7 @@ static void set_out_notify(struct notify_context *notify, struct midi_dest *dest
+@@ -488,6 +1663,7 @@ static void set_out_notify(struct notify_context *notify, struct midi_dest *dest
                             UINT_PTR param_1, UINT_PTR param_2)
  {
      notify->send_notify = TRUE;
@@ -1790,7 +1829,7 @@ index 4b65307..e8ca4a5 100644
      notify->dev_id = dev_id;
      notify->msg = msg;
      notify->param_1 = param_1;
-@@ -498,9 +1635,64 @@ static void set_out_notify(struct notify_context *notify, struct midi_dest *dest
+@@ -498,9 +1674,64 @@ static void set_out_notify(struct notify_context *notify, struct midi_dest *dest
      notify->instance = dest->midiDesc.dwInstance;
  }
  
@@ -1857,7 +1896,7 @@ index 4b65307..e8ca4a5 100644
      int port_out;
      char port_out_name[32];
      snd_seq_t *midi_seq;
-@@ -513,21 +1705,28 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
+@@ -513,21 +1744,28 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
          WARN("Invalid Parameter !\n");
          return MMSYSERR_INVALPARAM;
      }
@@ -1889,7 +1928,7 @@ index 4b65307..e8ca4a5 100644
          return MMSYSERR_INVALFLAG;
      }
  
-@@ -537,10 +1736,14 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
+@@ -537,10 +1775,14 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
      case MOD_MIDIPORT:
      case MOD_SYNTH:
          if (!(midi_seq = seq_open(NULL)))
@@ -1904,7 +1943,7 @@ index 4b65307..e8ca4a5 100644
          return MMSYSERR_NOTENABLED;
      }
  
-@@ -548,14 +1751,16 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
+@@ -548,14 +1790,16 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
      dest->wFlags = HIWORD(flags & CALLBACK_TYPEMASK);
      dest->midiDesc = *midi_desc;
      dest->seq = midi_seq;
@@ -1924,7 +1963,7 @@ index 4b65307..e8ca4a5 100644
                                            SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ | SND_SEQ_PORT_CAP_SUBS_WRITE,
                                            SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
  
-@@ -580,32 +1785,49 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
+@@ -580,32 +1824,49 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
      }
      seq_unlock();
  
@@ -1982,7 +2021,7 @@ index 4b65307..e8ca4a5 100644
          return MMSYSERR_ERROR;
      }
  
-@@ -615,6 +1837,7 @@ static UINT midi_out_close(WORD dev_id, struct notify_context *notify)
+@@ -615,6 +1876,7 @@ static UINT midi_out_close(WORD dev_id, struct notify_context *notify)
      if (dest->seq == NULL)
      {
          WARN("can't close !\n");
@@ -1990,7 +2029,7 @@ index 4b65307..e8ca4a5 100644
          return MMSYSERR_ERROR;
      }
  
-@@ -633,29 +1856,24 @@ static UINT midi_out_close(WORD dev_id, struct notify_context *notify)
+@@ -633,29 +1895,24 @@ static UINT midi_out_close(WORD dev_id, struct notify_context *notify)
          break;
      default:
          WARN("Technology not supported (yet) %d !\n", dest->caps.wTechnology);
@@ -2026,7 +2065,7 @@ index 4b65307..e8ca4a5 100644
      {
          WARN("can't play !\n");
          return MIDIERR_NODEVICE;
-@@ -790,26 +2008,34 @@ static UINT midi_out_data(WORD dev_id, UINT data)
+@@ -790,26 +2047,34 @@ static UINT midi_out_data(WORD dev_id, UINT data)
      return MMSYSERR_NOERROR;
  }
  
@@ -2070,7 +2109,7 @@ index 4b65307..e8ca4a5 100644
      {
          WARN("can't play !\n");
          return MIDIERR_NODEVICE;
-@@ -885,13 +2111,29 @@ static UINT midi_out_long_data(WORD dev_id, MIDIHDR *hdr, UINT hdr_size, struct
+@@ -885,13 +2150,29 @@ static UINT midi_out_long_data(WORD dev_id, MIDIHDR *hdr, UINT hdr_size, struct
      dest->runningStatus = 0;
      hdr->dwFlags &= ~MHDR_INQUEUE;
      hdr->dwFlags |= MHDR_DONE;
@@ -2103,7 +2142,7 @@ index 4b65307..e8ca4a5 100644
  
      if (hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr || !hdr->lpData)
          return MMSYSERR_INVALPARAM;
-@@ -904,9 +2146,9 @@ static UINT midi_out_prepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+@@ -904,9 +2185,9 @@ static UINT midi_out_prepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
      return MMSYSERR_NOERROR;
  }
  
@@ -2115,7 +2154,7 @@ index 4b65307..e8ca4a5 100644
  
      if (hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr || !hdr->lpData)
          return MMSYSERR_INVALPARAM;
-@@ -919,50 +2161,87 @@ static UINT midi_out_unprepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+@@ -919,50 +2200,87 @@ static UINT midi_out_unprepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
      return MMSYSERR_NOERROR;
  }
  
@@ -2224,7 +2263,7 @@ index 4b65307..e8ca4a5 100644
  {
      UINT pos = 0, copy_len, current_time = get_time_msec() - src->startTime;
      struct notify_context notify;
-@@ -984,35 +2263,45 @@ static void handle_sysex_event(struct midi_src *src, BYTE *data, UINT len)
+@@ -984,35 +2302,45 @@ static void handle_sysex_event(struct midi_src *src, BYTE *data, UINT len)
          if ((hdr->dwBytesRecorded == hdr->dwBufferLength) ||
              (*(BYTE*)(hdr->lpData + hdr->dwBytesRecorded - 1) == 0xF7))
          { /* buffer full or end of sysex message */
@@ -2274,7 +2313,7 @@ index 4b65307..e8ca4a5 100644
          break;
      case SND_SEQ_EVENT_PITCHBEND:
          value = ev->data.control.value + 0x2000;
-@@ -1055,114 +2344,40 @@ static void handle_regular_event(struct midi_src *src, snd_seq_event_t *ev)
+@@ -1055,114 +2383,40 @@ static void handle_regular_event(struct midi_src *src, snd_seq_event_t *ev)
  
      if (data != 0)
      {
@@ -2409,7 +2448,7 @@ index 4b65307..e8ca4a5 100644
  }
  
  static void *rec_thread_proc(void *arg)
-@@ -1175,6 +2390,7 @@ static void *rec_thread_proc(void *arg)
+@@ -1175,6 +2429,7 @@ static void *rec_thread_proc(void *arg)
      /* Add on one for the read end of the cancel pipe */
      num_fds = snd_seq_poll_descriptors_count(midi_seq, POLLIN) + 1;
      pollfd = malloc(num_fds * sizeof(struct pollfd));
@@ -2417,7 +2456,7 @@ index 4b65307..e8ca4a5 100644
  
      while(1)
      {
-@@ -1216,7 +2432,8 @@ static void *rec_thread_proc(void *arg)
+@@ -1216,7 +2471,8 @@ static void *rec_thread_proc(void *arg)
      return 0;
  }
  
@@ -2427,7 +2466,7 @@ index 4b65307..e8ca4a5 100644
  {
      struct midi_src *src;
      int ret = 0, port_in;
-@@ -1232,21 +2449,28 @@ static UINT midi_in_open(WORD dev_id, MIDIOPENDESC *desc, UINT flags, struct not
+@@ -1232,21 +2488,28 @@ static UINT midi_in_open(WORD dev_id, MIDIOPENDESC *desc, UINT flags, struct not
  
      /* FIXME: check that contents of desc are correct */
  
@@ -2459,7 +2498,7 @@ index 4b65307..e8ca4a5 100644
          return MMSYSERR_ALLOCATED;
      }
      if (flags & MIDI_IO_STATUS)
-@@ -1257,111 +2481,189 @@ static UINT midi_in_open(WORD dev_id, MIDIOPENDESC *desc, UINT flags, struct not
+@@ -1257,111 +2520,189 @@ static UINT midi_in_open(WORD dev_id, MIDIOPENDESC *desc, UINT flags, struct not
      if (flags & ~CALLBACK_TYPEMASK)
      {
          FIXME("Bad flags %08X\n", flags);
@@ -2668,7 +2707,7 @@ index 4b65307..e8ca4a5 100644
      in_buffer_lock();
  
      hdr->dwFlags &= ~WHDR_DONE;
-@@ -1374,13 +2676,14 @@ static UINT midi_in_add_buffer(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+@@ -1374,13 +2715,14 @@ static UINT midi_in_add_buffer(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
      *next = hdr;
  
      in_buffer_unlock();
@@ -2685,7 +2724,7 @@ index 4b65307..e8ca4a5 100644
  
      if (hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr || !hdr->lpData)
          return MMSYSERR_INVALPARAM;
-@@ -1394,9 +2697,9 @@ static UINT midi_in_prepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+@@ -1394,9 +2736,9 @@ static UINT midi_in_prepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
      return MMSYSERR_NOERROR;
  }
  
@@ -2697,7 +2736,7 @@ index 4b65307..e8ca4a5 100644
  
      if (hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr || !hdr->lpData)
          return MMSYSERR_INVALPARAM;
-@@ -1410,74 +2713,122 @@ static UINT midi_in_unprepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+@@ -1410,74 +2752,122 @@ static UINT midi_in_unprepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
      return MMSYSERR_NOERROR;
  }
  
@@ -2849,7 +2888,7 @@ index 4b65307..e8ca4a5 100644
      return err;
  }
  
-@@ -1485,7 +2836,7 @@ NTSTATUS alsa_midi_out_message(void *args)
+@@ -1485,7 +2875,7 @@ NTSTATUS alsa_midi_out_message(void *args)
  {
      struct midi_out_message_params *params = args;
  
@@ -2858,7 +2897,7 @@ index 4b65307..e8ca4a5 100644
  
      switch (params->msg)
      {
-@@ -1499,37 +2850,51 @@ NTSTATUS alsa_midi_out_message(void *args)
+@@ -1499,37 +2889,51 @@ NTSTATUS alsa_midi_out_message(void *args)
          *params->err = MMSYSERR_NOERROR;
          break;
      case MODM_OPEN:
@@ -2919,7 +2958,7 @@ index 4b65307..e8ca4a5 100644
          break;
      default:
          TRACE("Unsupported message\n");
-@@ -1543,7 +2908,7 @@ NTSTATUS alsa_midi_in_message(void *args)
+@@ -1543,7 +2947,7 @@ NTSTATUS alsa_midi_in_message(void *args)
  {
      struct midi_in_message_params *params = args;
  
@@ -2928,7 +2967,7 @@ index 4b65307..e8ca4a5 100644
  
      switch (params->msg)
      {
-@@ -1557,34 +2922,47 @@ NTSTATUS alsa_midi_in_message(void *args)
+@@ -1557,34 +2961,47 @@ NTSTATUS alsa_midi_in_message(void *args)
          *params->err = MMSYSERR_NOERROR;
          break;
      case MIDM_OPEN:
@@ -2985,7 +3024,7 @@ index 4b65307..e8ca4a5 100644
          break;
      default:
          TRACE("Unsupported message\n");
-@@ -1597,23 +2975,75 @@ NTSTATUS alsa_midi_in_message(void *args)
+@@ -1597,23 +3014,75 @@ NTSTATUS alsa_midi_in_message(void *args)
  NTSTATUS alsa_midi_notify_wait(void *args)
  {
      struct midi_notify_wait_params *params = args;
@@ -3064,7 +3103,7 @@ index 4b65307..e8ca4a5 100644
  #ifdef _WIN64
  
  typedef UINT PTR32;
-@@ -1621,6 +3051,7 @@ typedef UINT PTR32;
+@@ -1621,6 +3090,7 @@ typedef UINT PTR32;
  struct notify_context32
  {
      BOOL send_notify;
@@ -3072,7 +3111,7 @@ index 4b65307..e8ca4a5 100644
      WORD dev_id;
      WORD msg;
      UINT param_1;
-@@ -1631,10 +3062,17 @@ struct notify_context32
+@@ -1631,10 +3101,17 @@ struct notify_context32
      UINT instance;
  };
  
@@ -3090,7 +3129,7 @@ index 4b65307..e8ca4a5 100644
      notify32->dev_id = notify->dev_id;
      notify32->msg = notify->msg;
      notify32->param_1 = notify->param_1;
-@@ -1668,9 +3106,9 @@ struct midi_hdr32
+@@ -1668,9 +3145,9 @@ struct midi_hdr32
      UINT dwReserved[8];
  };
  
@@ -3102,7 +3141,7 @@ index 4b65307..e8ca4a5 100644
  
      if (hdr_size < offsetof(struct midi_hdr32, dwOffset) || !hdr || !hdr->lpData)
          return MMSYSERR_INVALPARAM;
-@@ -1683,9 +3121,9 @@ static UINT wow64_midi_out_prepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr
+@@ -1683,9 +3160,9 @@ static UINT wow64_midi_out_prepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr
      return MMSYSERR_NOERROR;
  }
  
@@ -3114,7 +3153,7 @@ index 4b65307..e8ca4a5 100644
  
      if (hdr_size < offsetof(struct midi_hdr32, dwOffset) || !hdr || !hdr->lpData)
          return MMSYSERR_INVALPARAM;
-@@ -1716,6 +3154,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+@@ -1716,6 +3193,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
      struct notify_context notify;
      MIDIOPENDESC open_desc;
      MIDIHDR hdr;
@@ -3122,7 +3161,7 @@ index 4b65307..e8ca4a5 100644
      struct midi_out_message_params params =
      {
          .dev_id = params32->dev_id,
-@@ -1727,6 +3166,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+@@ -1727,6 +3205,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
          .notify = &notify
      };
      notify32->send_notify = FALSE;
@@ -3130,7 +3169,7 @@ index 4b65307..e8ca4a5 100644
  
      switch (params32->msg)
      {
-@@ -1742,6 +3182,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+@@ -1742,6 +3221,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
          open_desc.rgIds.wDeviceID = desc32->rgIds.wDeviceID;
  
          params.param_1 = (UINT_PTR)&open_desc;
@@ -3138,7 +3177,7 @@ index 4b65307..e8ca4a5 100644
          break;
  
      case MODM_LONGDATA:
-@@ -1759,13 +3200,13 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+@@ -1759,13 +3239,13 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
      case MODM_PREPARE: /* prepare and unprepare are easier to handle explicitly */
          hdr32 = ULongToPtr(params32->param_1);
  
@@ -3154,7 +3193,7 @@ index 4b65307..e8ca4a5 100644
          return STATUS_SUCCESS;
      }
  
-@@ -1773,6 +3214,9 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+@@ -1773,6 +3253,9 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
  
      switch (params32->msg)
      {
@@ -3164,7 +3203,7 @@ index 4b65307..e8ca4a5 100644
      case MODM_LONGDATA:
          hdr32 = ULongToPtr(params32->param_1);
  
-@@ -1780,7 +3224,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+@@ -1780,7 +3263,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
          break;
      }
  
@@ -3173,7 +3212,7 @@ index 4b65307..e8ca4a5 100644
      {
          notify_to_notify32(notify32, &notify);
  
-@@ -1790,9 +3234,9 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+@@ -1790,9 +3273,9 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
      return STATUS_SUCCESS;
  }
  
@@ -3185,7 +3224,7 @@ index 4b65307..e8ca4a5 100644
  
      if (hdr_size < offsetof(struct midi_hdr32, dwOffset) || !hdr || !hdr->lpData)
          return MMSYSERR_INVALPARAM;
-@@ -1806,9 +3250,9 @@ static UINT wow64_midi_in_prepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr_
+@@ -1806,9 +3289,9 @@ static UINT wow64_midi_in_prepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr_
      return MMSYSERR_NOERROR;
  }
  
@@ -3197,7 +3236,7 @@ index 4b65307..e8ca4a5 100644
  
      if (hdr_size < offsetof(struct midi_hdr32, dwOffset) || !hdr || !hdr->lpData)
          return MMSYSERR_INVALPARAM;
-@@ -1840,6 +3284,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+@@ -1840,6 +3323,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
      struct notify_context notify;
      MIDIOPENDESC open_desc;
      MIDIHDR *hdr = NULL;
@@ -3205,7 +3244,7 @@ index 4b65307..e8ca4a5 100644
      struct midi_in_message_params params =
      {
          .dev_id = params32->dev_id,
-@@ -1851,6 +3296,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+@@ -1851,6 +3335,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
          .notify = &notify
      };
      notify32->send_notify = FALSE;
@@ -3213,7 +3252,7 @@ index 4b65307..e8ca4a5 100644
  
      switch (params32->msg)
      {
-@@ -1866,6 +3312,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+@@ -1866,6 +3351,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
          open_desc.rgIds.wDeviceID = desc32->rgIds.wDeviceID;
  
          params.param_1 = (UINT_PTR)&open_desc;
@@ -3221,7 +3260,7 @@ index 4b65307..e8ca4a5 100644
          break;
  
      case MIDM_ADDBUFFER:
-@@ -1875,6 +3322,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+@@ -1875,6 +3361,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
          hdr->lpData = ULongToPtr(hdr32->lpData);
          hdr->dwBufferLength = hdr32->dwBufferLength;
          hdr->dwFlags = hdr32->dwFlags;
@@ -3229,7 +3268,7 @@ index 4b65307..e8ca4a5 100644
          hdr->dwReserved[7] = params32->param_1; /* keep hdr32 for MIM_LONGDATA notification */
  
          params.param_1 = (UINT_PTR)hdr;
-@@ -1884,13 +3332,13 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+@@ -1884,13 +3371,13 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
      case MIDM_PREPARE: /* prepare and unprepare are easier to handle explicitly */
          hdr32 = ULongToPtr(params32->param_1);
  
@@ -3245,7 +3284,7 @@ index 4b65307..e8ca4a5 100644
          return STATUS_SUCCESS;
      }
  
-@@ -1898,6 +3346,9 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+@@ -1898,6 +3385,9 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
  
      switch (params32->msg)
      {
@@ -3255,7 +3294,7 @@ index 4b65307..e8ca4a5 100644
      case MIDM_ADDBUFFER:
          hdr32 = ULongToPtr(params32->param_1);
  
-@@ -1912,11 +3363,11 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+@@ -1912,11 +3402,11 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
          break;
      }
  
@@ -3269,7 +3308,7 @@ index 4b65307..e8ca4a5 100644
          {
              hdr = (MIDIHDR *)notify.param_1;
              notify32->param_1 = hdr->dwReserved[7];
-@@ -1946,14 +3397,15 @@ NTSTATUS alsa_wow64_midi_notify_wait(void *args)
+@@ -1946,14 +3436,15 @@ NTSTATUS alsa_wow64_midi_notify_wait(void *args)
          .notify = &notify
      };
      notify32->send_notify = FALSE;

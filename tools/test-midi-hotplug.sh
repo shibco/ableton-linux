@@ -57,7 +57,10 @@ wait_for_text() {
     local elapsed=0
 
     while (( elapsed < timeout_ms )); do
-        if grep -Eq "$pattern" "$file" 2>/dev/null; then
+        # midiwatch.exe writes CRLF lines.  Strip the CR before matching so a
+        # "$"-anchored pattern still matches: some grep builds (ugrep) do not
+        # treat "$" as matching before a trailing carriage return.
+        if [ -r "$file" ] && tr -d '\r' <"$file" 2>/dev/null | grep -Eq "$pattern"; then
             return 0
         fi
         sleep 0.02
@@ -173,6 +176,40 @@ reserve_client_id() {
     return 1
 }
 
+run_monitor_leak_case() {
+    local dir="$work_dir/monitor-leak" outer_seconds
+    local first_log="$dir/watcher-1.txt" second_log="$dir/watcher-2.txt"
+    local first_pid second_pid
+
+    mkdir -p -- "$dir"
+    outer_seconds=$((stage_timeout_ms / 1000 + 10))
+
+    # The first Wine process initialises winealsa, which creates its private
+    # topology monitor.  A second Wine process must not enumerate that monitor
+    # as a MIDI endpoint: it carries SND_SEQ_PORT_CAP_NO_EXPORT so it stays
+    # invisible to other processes' device lists.
+    start_watcher "$first_log" "$outer_seconds"
+    first_pid=$STARTED_PID
+    wait_for_text "$first_log" '^watching without open' "$stage_timeout_ms" ||
+        { fail "monitor-leak: first watcher never initialised WinMM"; return 1; }
+
+    start_watcher "$second_log" "$outer_seconds"
+    second_pid=$STARTED_PID
+    wait_for_text "$second_log" '^watching without open' "$stage_timeout_ms" ||
+        { stop_process "$first_pid"; fail "monitor-leak: second watcher never initialised WinMM"; return 1; }
+
+    if grep -q 'WINE MIDI topology' "$first_log" "$second_log"; then
+        stop_process "$first_pid"
+        stop_process "$second_pid"
+        fail "monitor-leak: a WINE MIDI topology port leaked into a Wine MIDI list"
+        return 1
+    fi
+
+    stop_process "$first_pid"
+    stop_process "$second_pid"
+    printf 'PASS: topology monitor stays private to its own process\n'
+}
+
 run_cycle_case() {
     local name="AH${$}Cycle" dir="$work_dir/rapid-cycle"
     local watcher_log="$dir/midiwatch.txt" target_log target_pid watcher_pid
@@ -282,5 +319,6 @@ run_add_case input-only-add 1 0 --input-only --ports 1 || exit 1
 run_add_case output-only-add 0 1 --output-only --ports 1 || exit 1
 run_add_case duplicate-multiport-add 2 2 --duplex --ports 2 --duplicate-names || exit 1
 run_cycle_case || exit 1
+run_monitor_leak_case || exit 1
 
 printf 'PASS: all MIDI hotplug cases completed\n'
