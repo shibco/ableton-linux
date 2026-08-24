@@ -165,9 +165,13 @@ stdenv.mkDerivation {
         # The launcher and max9 resolve their config/lifecycle helpers beside
         # themselves first ($launcher_here/lib), then under the user's
         # ~/.local/share/ableton-wine (which only installer.sh populates).
+        # Every lib, by glob, not a list: the launcher hard-fails on a helper it
+        # cannot source, and a list here goes stale the moment one is added
+        # upstream. live-options.sh arrived that way and stopped the launcher
+        # starting at all, with the gate below naming the same stale four.
         mkdir -p $out/libexec/lib
-        for helper in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
-          install -m644 ${../scripts/lib}/$helper $out/libexec/lib/$helper
+        for helper in ${../scripts/lib}/*.sh; do
+          install -m644 $helper $out/libexec/lib/$(basename $helper)
         done
         # Quoted heredoc ('SHIM'): nothing shell-expands at build; @out@ is
         # substituted after. Runtime shell ''${...} is written with the '''' escape;
@@ -241,8 +245,8 @@ stdenv.mkDerivation {
         # setup-prefix.sh, setup-link.sh and ableton-linkctl source these from
         # $here/lib before falling back to the user's staging.
         mkdir -p $out/share/ableton-wine/scripts/lib
-        for helper in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
-          install -m644 ${../scripts/lib}/$helper $out/share/ableton-wine/scripts/lib/$helper
+        for helper in ${../scripts/lib}/*.sh; do
+          install -m644 $helper $out/share/ableton-wine/scripts/lib/$(basename $helper)
         done
         # The Link lifecycle controller both launchers call; installer.sh
         # stages it under ~/.local/share, the launchers fall back to this copy.
@@ -510,10 +514,21 @@ stdenv.mkDerivation {
     fi
     # The launchers and setup scripts hard-fail without their config and
     # lifecycle helpers; they resolve them beside themselves first.
-    for d in libexec/lib share/ableton-wine/scripts/lib; do
-      for helper in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
-        [ -r $out/$d/$helper ] || { echo "$helper is not staged in $d"; exit 1; }
+    # Derived from the source directory, so a helper added upstream is covered
+    # without editing this gate. A hardcoded list here missed live-options.sh
+    # and reported success while the launcher refused to start.
+    for helper in ${../scripts/lib}/*.sh; do
+      for d in libexec/lib share/ableton-wine/scripts/lib; do
+        [ -r $out/$d/$(basename $helper) ] \
+          || { echo "$(basename $helper) is not staged in $d"; exit 1; }
       done
+    done
+    # The launcher sources these and exits 1 naming any whose functions are
+    # absent. Check what it checks, rather than that files exist.
+    for fn in ableton_available_physical_cores ableton_live_product_version \
+              ableton_seed_max_audio_threads; do
+      ${stdenv.shell} -c ". $out/libexec/lib/live-options.sh; declare -F $fn >/dev/null" \
+        || { echo "live-options.sh does not define $fn; the launcher would refuse to start"; exit 1; }
     done
     # setup-prefix.sh refuses to run before the PipeWire preflight probe passes.
     [ -x $out/bin/pipewire-version-probe ] \
