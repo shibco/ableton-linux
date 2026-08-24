@@ -138,18 +138,35 @@ stdenv.mkDerivation rec {
       echo "$series" | grep -qx "$(basename $f)" \
         || { echo "!! $(basename $f) on disk but not in SERIES.sha256 — update the manifest" >&2; exit 1; }
     done
-    # --fuzz=0: container-build.sh applies the same series with `git am
-    # --3way`, which never places a hunk it cannot match. patch(1) defaults to
-    # fuzz 2 and would apply a drifted hunk at exit 0, producing a tree that
-    # differs from the released one with no gate on the difference (the [3/4]
-    # fingerprints only grep for strings). -N and --no-backup-if-mismatch keep
-    # a reversed hunk and a .orig file out of the build.
+    # Applied the way scripts/container-build.sh applies them, with `git am
+    # --3way`, because the two builders have to produce the same tree and
+    # patch(1) cannot. A three-way merge resolves a hunk whose context has
+    # moved by consulting the blob it was cut from; patch(1) has only the
+    # context lines, so it fails outright at fuzz 0 and can place a hunk
+    # wrongly at higher fuzz. Patch 0103 is a live example: it applies under
+    # --3way and fails under patch(1) at every fuzz level.
+    #
+    # The series ships without From:/Date: mail headers; git am refuses to
+    # commit with an empty author, so supply a fixed neutral ident (a fixed
+    # date keeps the apply reproducible). Patches carrying headers keep theirs.
+    git init -q
+    git -c user.email=build@localhost -c user.name=dist add -A
+    git -c user.email=build@localhost -c user.name=dist commit -q -m "base"
     n=0
     for p in $series; do
       echo "  $p"
-      patch -p1 --fuzz=0 -N --no-backup-if-mismatch < ${patchesDir}/$p
+      if head -8 ${patchesDir}/$p | grep -q '^From: '; then
+        git -c user.email=build@localhost -c user.name=dist am --3way ${patchesDir}/$p
+      else
+        { printf 'From: dist <build@localhost>\nDate: Thu, 01 Jan 2026 00:00:00 +0000\n'
+          cat ${patchesDir}/$p
+        } | git -c user.email=build@localhost -c user.name=dist am --3way
+      fi
       n=$((n+1))
     done
+    # The history was only the vehicle for --3way; the build does not want it,
+    # and leaving it would put a .git tree into the derivation output's inputs.
+    rm -rf .git
     echo "Applied $n wine patches"
   '';
 
