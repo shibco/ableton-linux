@@ -1,0 +1,108 @@
+# Nix packaging check for PRs/pushes that touch the flake, plus a manual
+# trigger for checking any other ref on demand:
+#
+#   gh workflow run ci-flake.yml --repo <owner>/ableton-linux --ref <branch>
+#
+# ci-pr-build.yml already answers "do these patches compile" through the
+# container. This workflow answers a different question: does the Nix
+# packaging still produce a correct tree. Everything it can catch that the
+# container cannot lives in nix/ableton-wine.nix's installPhase, postFixup and
+# installCheckPhase - what gets staged, what the provenance stamp records, and
+# the full build-audit.sh run over the finished tree.
+#
+# Scoped to the flake files on purpose. A change under scripts/ or patches/
+# also changes what the package stages and audits, but adding those paths here
+# would run a Wine build on nearly every PR. Use workflow_dispatch when a
+# scripts/ change needs the packaging checked before merge.
+#
+# Cost: with no binary cache the build compiles Wine from source, which took
+# 14m53s on a 6-vCPU VM (--disable-tests saves roughly 40% of that). Only
+# flake.lock and nix/wine.nix rehash the Wine derivation; every other file in
+# the trigger list rebuilds ableton-wine alone, which is seconds once Wine is
+# in the store. Setting CACHIX_CACHE and CACHIX_AUTH_TOKEN turns the common
+# case into that seconds-long path - see the cachix step below.
+#
+# Runs with the default pull_request token (read-only, no secrets) and relies
+# on this repo's "require approval for first-time contributors" setting, same
+# as ci-pr-build.yml.
+name: ci-flake
+
+# The same path list appears twice (pull_request and push) rather than via a
+# YAML anchor: GitHub's workflow parser doesn't support them, so this stays
+# boring and duplicated on purpose.
+on:
+  pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - .github/workflows/ci-flake.yml
+  push:
+    branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - .github/workflows/ci-flake.yml
+  workflow_dispatch: {}
+
+# A new push to the same PR makes the previous, now-stale run pointless;
+# cancel it instead of burning runner minutes on both.
+concurrency:
+  group: ci-flake-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  flake:
+    runs-on: ubuntu-latest
+    # Job level, not step level: a step's own env block is applied after its
+    # if is evaluated, so the cachix step below could never see it there.
+    env:
+      CACHIX_CACHE: ${{ secrets.CACHIX_CACHE }}
+    # A cold Wine build is the worst case; the cached path finishes in under a
+    # minute. High enough that a slow runner is not reported as a hang.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      # A from-source Wine build plus its closure does not fit alongside the
+      # runner's preinstalled Android SDK, .NET and GHC trees. Removing them
+      # reclaims roughly 25 GB and costs about a minute.
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Optional. With no CACHIX_CACHE secret this step is skipped and the
+      # build compiles Wine from source; with one, Wine is substituted and the
+      # run finishes in seconds. Fork PRs get no secrets, so they always take
+      # the cold path.
+      - uses: cachix/cachix-action@v15
+        if: env.CACHIX_CACHE != ''
+        with:
+          name: ${{ secrets.CACHIX_CACHE }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # Evaluation only: resolves every derivation and validates the app
+      # definitions without entering a build phase. Seconds, and it reports a
+      # malformed flake before the build below spends any time on it.
+      - name: nix flake check
+        run: nix flake check --no-build .
+
+      # The build is the point. The flake asserts its own gates during it -
+      # both patch series against patches/SERIES.sha256, ntsync compiled into
+      # wineserver and ntdll, winealsa and winegstreamer present, PipeASIO
+      # registering end to end in a throwaway prefix, and build-audit.sh over
+      # the finished tree. --print-build-logs puts that output in this
+      # transcript rather than only in nix's log store.
+      - name: nix build .#ableton-wine
+        run: nix build --no-link --print-out-paths --print-build-logs .#ableton-wine
