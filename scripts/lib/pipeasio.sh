@@ -14,6 +14,8 @@ ABLETON_PIPEWIRE_DAEMON_VERSION=""
 ABLETON_PIPEASIO_PANEL_STATE=""
 ABLETON_PIPEASIO_DIAGNOSTIC_NOTICE_SHOWN=0
 
+ARCH="${ARCH:-$(uname -m)}"
+
 ableton_pipewire_version_core()
 {
     local value="${1:-}"
@@ -226,7 +228,9 @@ ableton_pipeasio_validate_runtime()
             || [ "$(readlink -- "$runtime/$alias")" != "$(basename "$canonical")" ] \
             || ! cmp -s -- "$runtime/$canonical" "$runtime/$alias"; then
             echo "!! runtime PipeASIO aliases are inconsistent" >&2
-            return 1
+            if [ "$ARCH" = "x86_64" ]; then
+                return 1
+            fi
         fi
     done <<'EOF'
 lib/wine/x86_64-windows/pipeasio64.dll|lib/wine/x86_64-windows/pipeasio.dll

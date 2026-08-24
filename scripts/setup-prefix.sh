@@ -1124,6 +1124,7 @@ wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d 2
 wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$smoothing_order" /f
 ableton_wineserver_wait
 
+if [ "$ARCH" = "x86_64"]; then
 echo "== [4/6] register packaged PipeASIO =="
 # Recheck at the last safe point.  The prefix is still the sibling staging
 # copy, so a service/client change cannot leave the retained prefix half
@@ -1159,6 +1160,7 @@ EOF
     echo "   seeded $pipeasio_cfg (2 in / 2 out, fixed 256-frame buffer)"
 elif [ -L "$pipeasio_cfg" ] && [ ! -e "$pipeasio_cfg" ]; then
     echo "   kept your dangling PipeASIO configuration link: $pipeasio_cfg"
+fi
 fi
 
 echo "== [5/6] set portal policy and scope the Push USB bridge to its helpers =="

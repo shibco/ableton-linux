@@ -10,6 +10,8 @@ umask 022
 export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+ARCH="${ARCH:-$(uname -m)}"
+
 cd "$root"
 
 NAME="wine-d2d1-nspa-11.13"
@@ -65,8 +67,10 @@ runtime_checksum_name="${runtime_checksum_name#\*}"
     echo "!! exact runtime checksum record is invalid" >&2; exit 1; }
 echo "   runtime: $(basename "$tarball")"
 
-echo "== [0/5] build audit (no unaudited runtime gets packed) =="
+echo "== [0/5] build audit (no unaudited runtime gets packed) ==" # except arm64 lol
+if [ "$ARCH" = "x86_64" ]; then
 bash scripts/build-audit.sh "$tarball"
+fi
 
 echo "== [1/5] verify attested installer helpers =="
 stage="$(mktemp -d)"

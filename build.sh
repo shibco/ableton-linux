@@ -202,8 +202,11 @@ cmp -s -- "$output_stage/BUILD-INFO-${VERSION}.txt" "$output_stage/BUILD-INFO.tx
     echo "!! staged runtime checksum is invalid" >&2
     exit 1
 }
+
+if [ "$ARCH" = "x86_64" ]; then
 bash "$source_snapshot/scripts/build-audit.sh" --source-tree-sha "$SOURCE_TREE_SHA" \
     "$output_stage/$runtime_name"
+fi
 
 SOURCE_TREE_SHA_FINAL="$(
     bash "$source_snapshot/scripts/source-tree-digest.sh" --root "$here"

@@ -258,8 +258,8 @@ pipewire_probe_hash=""
 builder_packages_hash=""
 declare -A recorded_binary_hashes=()
 readonly RECORDED_BINARIES='libusb-pe|lib/wine/x86_64-windows/libusb-1.0.dll
-libusb-unix|lib/wine/$ARCH-unix/libusb-1.0.so
-portal-unix|lib/wine/$ARCH-unix/comdlg32.so
+libusb-unix|lib/wine/x86_64-unix/libusb-1.0.so
+portal-unix|lib/wine/x86_64-unix/comdlg32.so
 pipeasio-pe|lib/wine/x86_64-windows/pipeasio64.dll
 pipeasio-unix|lib/wine/x86_64-unix/pipeasio64.dll.so'
 if [ -f "$binfo" ]; then
@@ -676,13 +676,13 @@ else
     bad "settings panel payload" "cannot reconcile malformed BUILD-INFO provenance"
 fi
 must lib/wine/x86_64-windows/libusb-1.0.dll
-must lib/wine/$ARCH-unix/libusb-1.0.so
+must lib/wine/x86_64-unix/libusb-1.0.so
 for absent in lib/wine/i386-windows/libusb-1.0.dll lib/wine/i386-unix/libusb-1.0.so; do
     [ ! -e "$tree/$absent" ] && ok "$absent" "correctly absent (64-bit only)" \
                              || bad "$absent" "present — bridge must be 64-bit only"
 done
 if command -v readelf >/dev/null; then
-    readelf -d "$tree/lib/wine/$ARCH-unix/libusb-1.0.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/x86_64-unix/libusb-1.0.so" 2>/dev/null \
         | grep -qF 'Shared library: [libusb-1.0.so.0]' \
         && ok "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0" \
         || bad "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0 not linked"
@@ -699,6 +699,8 @@ if command -v readelf >/dev/null; then
             || true
     )"
     if [ "$pipewire_probe_needed" = $'libc.so.6\nlibpipewire-0.3.so.0' ]; then
+        ok  "pipewire-version-probe DT_NEEDED" "host PipeWire soname + libc only"
+    elif [ "$pipewire_probe_needed" = $'ld-linux-aarch64.so.1\nlibc.so.6\nlibpipewire-0.3.so.0' ]; then
         ok "pipewire-version-probe DT_NEEDED" "host PipeWire soname + libc only"
     else
         bad "pipewire-version-probe DT_NEEDED" \
