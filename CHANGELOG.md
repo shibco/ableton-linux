@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2026.08.24.1
 
 - **Push 3 finally works in controller mode with Live 12 (#254)!**
   - Live detects Push 3 and creates its control surface automatically. Leave
