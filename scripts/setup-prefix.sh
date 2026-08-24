@@ -365,7 +365,10 @@ if [ -e "$final_prefix" ] && ! ableton_prefix_marker_valid "$final_prefix" "$saf
            || ! chmod 600 "$adopt_tmp" \
            || ! mv -T -f -- "$adopt_tmp" "$adopt_marker" \
            || ! ableton_prefix_marker_valid "$final_prefix" "$safe_final"; then
-            rm -f -- "$adopt_tmp"
+            # The marker too, not just the staging file: once one exists,
+            # ableton_legacy_default_prefix_valid stops recognising the prefix,
+            # so a half-written one would refuse every later run as well.
+            rm -f -- "$adopt_tmp" "$adopt_marker"
             echo "!! could not adopt the existing Wine prefix: $final_prefix" >&2
             exit 2
         fi
@@ -1329,7 +1332,6 @@ else
                 end_session
             fi
         fi
-        [ ! -e "$unpack_dir" ] || rm -rf "$unpack_dir"
         if live_installed; then live_ready=1; fi
     fi
     [ ! -e "$unpack_dir" ] || rm -rf "$unpack_dir"

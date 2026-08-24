@@ -91,9 +91,9 @@ nix build .#ableton-linkd    # the Ableton Link peer only
 nix build                    # the full runtime -> result/
 ```
 
-The final `build-audit.sh` runs under `ABLETON_AUDIT_PROFILE=nix`. That profile reports six provenance records as skipped — the sanitizer runs, the no-Qt gate, the PipeWire probe test gate, the builder package manifest, the two installer helper hashes, and the git source-tree digest — because the container pipeline produces them and the Nix build does not run it. Every structural, patch, fingerprint and binary-hash check is unchanged, and the default `release` profile still fails on all six.
+The final `build-audit.sh` runs under `ABLETON_AUDIT_PROFILE=nix`. That profile reports six provenance records as skipped — the PipeASIO sanitizer runs, the no-Qt gate, the PipeWire probe test gate, the `cabextract-static` and `ableton-linkd` installer helper hashes, and the git source-tree digest — because the container pipeline produces them and the Nix build does not run it. The builder package manifest is not among them: the Nix build writes its own from the pinned closure, so that record is checked and passes. Every structural, patch, fingerprint and binary-hash check is unchanged, and the default `release` profile still fails on all six.
 
-The setup steps are also flake apps: `.#setup-prefix`, `.#setup-realtime` and `.#setup-link`. `.#wine` runs a Windows executable against the Ableton prefix on this runtime, and `.#check-ntsync` runs `scripts/check-ntsync.sh` with its Wine root already set to the store path.
+The setup steps are also flake apps: `.#setup-prefix`, `.#setup-realtime` and `.#setup-link`. `.#wine` runs a Windows executable against the Ableton prefix on this runtime, `.#check-ntsync` runs `scripts/check-ntsync.sh` with its Wine root already set to the store path, and `.#audio-report` prints the read-only audio diagnostic an issue report is expected to carry.
 
 ## Configure Ableton Link
 

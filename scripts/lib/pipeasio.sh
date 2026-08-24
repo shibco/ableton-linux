@@ -133,7 +133,7 @@ ableton_pipeasio_validate_panel()
             # runtime that identifies itself as nix the record names the version
             # actually built against instead.
             if [ "$(ableton_pipeasio_build_info_value "$info" dist-version)" = nix ]; then
-                panel_re='^([0-9a-f]{64}) \(Qt [0-9]+\.[0-9]+(\.[0-9]+)? link\)$'
+                panel_re='^([0-9a-f]{64}) \(Qt [0-9]+\.[0-9]+ link\)$'
             else
                 panel_re='^([0-9a-f]{64}) \(Qt 6\.2 link\)$'
             fi

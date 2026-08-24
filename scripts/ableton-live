@@ -415,7 +415,7 @@ fi
 # missing or changed entry can be repaired before the next browser round trip.
 repair_handler_entries() {
     local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    local staged id type current want tmp rewrite i repaired=0
+    local staged id type current want tmp rewrite wrote i repaired=0
     local -a ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
     local -a types=(x-scheme-handler/ableton application/x-wine-extension-auz)
     for id in "${ids[@]}"; do
@@ -457,13 +457,16 @@ repair_handler_entries() {
             echo "ableton-live: failed to install $apps/$id" >&2
             continue
         fi
+        # wrote, not an emptied $tmp: clearing the variable loses the path and
+        # leaves the partial file in place, once per launch with a new pid.
+        wrote=1
         if [ "$rewrite" -eq 1 ]; then
-            printf '%s\n' "$want" > "$tmp" || tmp=""
+            printf '%s\n' "$want" > "$tmp" || wrote=0
         else
-            cp -- "$staged" "$tmp" || tmp=""
+            cp -- "$staged" "$tmp" || wrote=0
         fi
-        if [ -z "$tmp" ] || ! mv -f -- "$tmp" "$apps/$id"; then
-            [ -z "$tmp" ] || rm -f -- "$tmp"
+        if [ "$wrote" -eq 0 ] || ! mv -f -- "$tmp" "$apps/$id"; then
+            rm -f -- "$tmp"
             echo "ableton-live: failed to install $apps/$id" >&2
             continue
         fi
