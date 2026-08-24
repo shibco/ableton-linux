@@ -407,8 +407,7 @@ env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
 
 #### Check that your processor is running at full speed
 
-Many versions of Linux use aggressive power saving techniques - including CPU throttling
-- to save energy use. But a processor that slows itself down to save power will struggle
+Many versions of Linux use aggressive power saving techniques - including CPU throttling - to save energy use. But a processor that slows itself down to save power will struggle
 to play audio properly, and when this happens, Live's audio starts to distort and crackle.
 
 By default, the launcher switches your Linux computer to its performance power profile 
