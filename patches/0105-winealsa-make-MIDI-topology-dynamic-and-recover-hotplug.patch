@@ -1,0 +1,4049 @@
+From 7d518cfe8bb1e26bc476eea04cabb3f156b28f60 Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Sat, 22 Aug 2026 23:38:15 +0200
+Subject: [PATCH 100/100] winealsa: make MIDI topology dynamic and recover
+ hotplug
+
+Track ALSA sequencer changes after WinMM initialization and publish coherent, stable endpoint snapshots. Preserve open handles across reconnect, clean interrupted input state, and notify hosts after publication.
+
+Teach WinMM to refresh MIDI mappings without invalidating open handles, and retain zero-device drivers so devices appearing later can be enumerated.
+
+Refs #46.
+---
+ dlls/mmdevapi/main.c               |   27 +-
+ dlls/mmdevapi/unixlib.h            |    2 +
+ dlls/winealsa.drv/alsa.c           |    2 +
+ dlls/winealsa.drv/alsamidi.c       | 2320 ++++++++++++++++++++++------
+ dlls/winealsa.drv/unixlib.h        |    1 +
+ dlls/winecoreaudio.drv/coreaudio.c |    2 +
+ dlls/winecoreaudio.drv/coremidi.c  |   15 +
+ dlls/wineoss.drv/oss.c             |    2 +
+ dlls/wineoss.drv/ossmidi.c         |   15 +
+ dlls/winepulse.drv/pulse.c         |    2 +
+ dlls/winmm/lolvldrv.c              |  300 +++-
+ dlls/winmm/tests/midi.c            |    3 +
+ dlls/winmm/winemm.h                |    8 +-
+ dlls/winmm/winmm.c                 |    9 +-
+ include/mmddk.h                    |    6 +
+ 15 files changed, 2236 insertions(+), 478 deletions(-)
+
+diff --git a/dlls/mmdevapi/main.c b/dlls/mmdevapi/main.c
+index 70eace8..d8c9983 100644
+--- a/dlls/mmdevapi/main.c
++++ b/dlls/mmdevapi/main.c
+@@ -25,6 +25,8 @@
+ #include "windef.h"
+ #include "winbase.h"
+ #include "wingdi.h"
++#include "winuser.h"
++#include "dbt.h"
+ 
+ #include "ole2.h"
+ #include "olectl.h"
+@@ -44,6 +46,7 @@
+ 
+ #include "mmdevapi_private.h"
+ #include "wine/debug.h"
++#include "wine/exception.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
+ 
+@@ -351,6 +354,12 @@ static void notify_client(struct notify_context *notify)
+                     notify->instance, notify->param_1, notify->param_2 );
+ }
+ 
++static void CALLBACK midi_reset_notify_finally(BOOL normal)
++{
++    (void)normal;
++    MIDI_CALL( midi_notify_done, NULL );
++}
++
+ static DWORD WINAPI notify_thread( void *p )
+ {
+     struct midi_notify_wait_params params;
+@@ -363,8 +372,11 @@ static DWORD WINAPI notify_thread( void *p )
+ 
+     while (1)
+     {
++        memset( &notify, 0, sizeof(notify) );
+         MIDI_CALL( midi_notify_wait, &params );
+         if (quit) break;
++        if (notify.device_change)
++            BroadcastSystemMessageW( 0, NULL, WM_DEVICECHANGE, DBT_DEVNODES_CHANGED, 0 );
+         if (notify.send_notify) notify_client(&notify);
+     }
+     return 0;
+@@ -417,11 +429,23 @@ DWORD WINAPI midMessage( UINT id, UINT msg, DWORD_PTR user, DWORD_PTR param1, DW
+     params.param_2 = param2;
+     params.err     = &err;
+     params.notify  = &notify;
++    memset( &notify, 0, sizeof(notify) );
+ 
+     do
+     {
+         MIDI_CALL( midi_in_message, &params );
+-        if ((!err || err == ERROR_RETRY) && notify.send_notify) notify_client( &notify );
++        if ((!err || err == ERROR_RETRY) && notify.send_notify)
++        {
++            if (msg == MIDM_RESET)
++            {
++                __TRY
++                {
++                    notify_client( &notify );
++                }
++                __FINALLY(midi_reset_notify_finally);
++            }
++            else notify_client( &notify );
++        }
+     } while (err == ERROR_RETRY);
+ 
+     return err;
+@@ -442,6 +466,7 @@ DWORD WINAPI modMessage( UINT id, UINT msg, DWORD_PTR user, DWORD_PTR param1, DW
+     params.param_2 = param2;
+     params.err     = &err;
+     params.notify  = &notify;
++    memset( &notify, 0, sizeof(notify) );
+ 
+     MIDI_CALL( midi_out_message, &params );
+     if (!err && notify.send_notify) notify_client( &notify );
+diff --git a/dlls/mmdevapi/unixlib.h b/dlls/mmdevapi/unixlib.h
+index ddb6bd1..9e10a63 100644
+--- a/dlls/mmdevapi/unixlib.h
++++ b/dlls/mmdevapi/unixlib.h
+@@ -271,6 +271,7 @@ struct midi_init_params
+ struct notify_context
+ {
+     BOOL send_notify;
++    BOOL device_change;
+     WORD dev_id;
+     WORD msg;
+     UINT_PTR param_1;
+@@ -357,6 +358,7 @@ enum unix_funcs
+     midi_out_message,
+     midi_in_message,
+     midi_notify_wait,
++    midi_notify_done,
+     aux_message,
+     funcs_count
+ };
+diff --git a/dlls/winealsa.drv/alsa.c b/dlls/winealsa.drv/alsa.c
+index 9afca51..b24d1d0 100644
+--- a/dlls/winealsa.drv/alsa.c
++++ b/dlls/winealsa.drv/alsa.c
+@@ -2453,6 +2453,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     alsa_midi_out_message,
+     alsa_midi_in_message,
+     alsa_midi_notify_wait,
++    alsa_midi_notify_done,
+     alsa_not_implemented,
+ };
+ 
+@@ -2904,6 +2905,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+     alsa_wow64_midi_out_message,
+     alsa_wow64_midi_in_message,
+     alsa_wow64_midi_notify_wait,
++    alsa_midi_notify_done,
+     alsa_not_implemented,
+ };
+ 
+diff --git a/dlls/winealsa.drv/alsamidi.c b/dlls/winealsa.drv/alsamidi.c
+index 4b65307..e8ca4a5 100644
+--- a/dlls/winealsa.drv/alsamidi.c
++++ b/dlls/winealsa.drv/alsamidi.c
+@@ -29,8 +29,14 @@
+ #include "config.h"
+ 
+ #include <stdarg.h>
++#include <ctype.h>
++#include <dirent.h>
++#include <errno.h>
++#include <limits.h>
++#include <poll.h>
+ #include <stdio.h>
+ #include <stdint.h>
++#include <stdlib.h>
+ #include <unistd.h>
+ #include <pthread.h>
+ #include <time.h>
+@@ -50,9 +56,25 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(midi);
+ 
++#define MIDI_INTERFACE_LEN 256
++#define MIDI_IDENTITY_LEN (PATH_MAX + 256)
++
+ struct midi_dest
+ {
+     BOOL                bEnabled;
++    BOOL                online;
++    BOOL                connected;
++    BOOL                seen;
++    unsigned int        reconnect_attempts;
++    UINT                token;
++    UINT                open_dev_id;
++    int                 client_type;
++    int                 port_id;
++    char                client_name[128];
++    char                port_name[128];
++    BOOL                strong_identity;
++    char                identity[MIDI_IDENTITY_LEN];
++    WCHAR               interface_name[MIDI_INTERFACE_LEN];
+     MIDIOPENDESC        midiDesc;
+     BYTE                runningStatus;
+     WORD                wFlags;
+@@ -60,10 +82,26 @@ struct midi_dest
+     snd_seq_t          *seq;
+     snd_seq_addr_t      addr;
+     int                 port_out;
++    struct midi_dest   *next;
+ };
+ 
+ struct midi_src
+ {
++    BOOL                online;
++    BOOL                connected;
++    BOOL                seen;
++    BOOL                closing;
++    unsigned int        reconnect_attempts;
++    unsigned int        open_generation;
++    UINT                token;
++    UINT                open_dev_id;
++    int                 client_type;
++    int                 port_id;
++    char                client_name[128];
++    char                port_name[128];
++    BOOL                strong_identity;
++    char                identity[MIDI_IDENTITY_LEN];
++    WCHAR               interface_name[MIDI_INTERFACE_LEN];
+     int                 state; /* -1 disabled, 0 is no recording started, 1 in recording, bit 2 set if in sys exclusive recording */
+     MIDIOPENDESC        midiDesc;
+     WORD                wFlags;
+@@ -73,29 +111,72 @@ struct midi_src
+     snd_seq_t          *seq;
+     snd_seq_addr_t      addr;
+     int                 port_in;
++    uint64_t            active_notes[16][2];
++    BOOL                sustain[16];
++    struct midi_src    *next;
++};
++
++struct required_notify_entry
++{
++    struct midi_src *src;
++    unsigned int open_generation;
++    pthread_t owner;
++    BOOL owner_valid;
++    BOOL synchronous;
++    struct required_notify_entry *next;
++};
++
++struct notify_entry
++{
++    struct notify_context context;
++    struct midi_src *src;
++    unsigned int open_generation;
++    BOOL owned_header;
++    struct required_notify_entry *required;
+ };
+ 
+ static pthread_mutex_t seq_mutex = PTHREAD_MUTEX_INITIALIZER;
+ static pthread_mutex_t in_buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
++static pthread_rwlock_t topology_lock = PTHREAD_RWLOCK_INITIALIZER;
+ 
+ static unsigned int num_dests, num_srcs;
+-static struct midi_dest *dests;
+-static struct midi_src *srcs;
++static BOOL snapshot_dirty;
++static struct midi_dest **dests;
++static struct midi_src **srcs;
++static struct midi_dest *all_dests, **last_dest = &all_dests;
++static struct midi_src *all_srcs, **last_src = &all_srcs;
++static UINT next_dest_token = 1, next_src_token = 1;
+ static snd_seq_t *midi_seq;
+ static unsigned int seq_refs;
+ static int port_in = -1;
+ 
+ static unsigned int num_midi_in_started;
+-static int rec_cancel_pipe[2];
++static pthread_mutex_t rec_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
++static int rec_cancel_pipe[2] = {-1, -1};
+ static pthread_t rec_thread_id;
+ 
++static pthread_mutex_t topology_init_mutex = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t topology_init_cond = PTHREAD_COND_INITIALIZER;
++static BOOL topology_started, topology_ready, topology_quit;
++static int topology_cancel_pipe[2] = {-1, -1};
++static pthread_t topology_thread_id;
++static BOOL topology_retrying;
++
+ static pthread_mutex_t notify_mutex = PTHREAD_MUTEX_INITIALIZER;
+ static pthread_cond_t notify_read_cond = PTHREAD_COND_INITIALIZER;
+ static pthread_cond_t notify_write_cond = PTHREAD_COND_INITIALIZER;
++static pthread_cond_t notify_done_cond = PTHREAD_COND_INITIALIZER;
+ static BOOL notify_quit;
++static BOOL device_change_pending;
++static BOOL notify_thread_known, notify_inflight;
++static pthread_t notify_thread_id;
++static struct midi_src *notify_inflight_src;
++static unsigned int notify_inflight_generation;
++static struct required_notify_entry *notify_inflight_required;
++static struct required_notify_entry *required_notifies;
+ #define NOTIFY_BUFFER_SIZE 64 + 1 /* + 1 for the sentinel */
+-static struct notify_context notify_buffer[NOTIFY_BUFFER_SIZE];
+-static struct notify_context *notify_read = notify_buffer, *notify_write = notify_buffer;
++static struct notify_entry notify_buffer[NOTIFY_BUFFER_SIZE];
++static struct notify_entry *notify_read = notify_buffer, *notify_write = notify_buffer;
+ 
+ static void seq_lock(void)
+ {
+@@ -133,6 +214,7 @@ static void set_in_notify(struct notify_context *notify, struct midi_src *src, W
+                           UINT_PTR param_1, UINT_PTR param_2)
+ {
+     notify->send_notify = TRUE;
++    notify->device_change = FALSE;
+     notify->dev_id = dev_id;
+     notify->msg = msg;
+     notify->param_1 = param_1;
+@@ -143,13 +225,19 @@ static void set_in_notify(struct notify_context *notify, struct midi_src *src, W
+     notify->instance = src->midiDesc.dwInstance;
+ }
+ 
++static void set_device_change_notify(struct notify_context *notify)
++{
++    memset(notify, 0, sizeof(*notify));
++    notify->device_change = TRUE;
++}
++
+ /*
+  * notify buffer: The notification ring buffer is implemented so that
+  * there is always at least one unused sentinel before the current
+  * read position in order to allow detection of the full vs empty
+  * state.
+  */
+-static struct notify_context *notify_buffer_next(struct notify_context *notify)
++static struct notify_entry *notify_buffer_next(struct notify_entry *notify)
+ {
+     if (++notify >= notify_buffer + ARRAY_SIZE(notify_buffer))
+         notify = notify_buffer;
+@@ -167,16 +255,22 @@ static BOOL notify_buffer_full(void)
+     return notify_buffer_next(notify_write) == notify_read;
+ }
+ 
+-static BOOL notify_buffer_add(struct notify_context *notify)
++static BOOL notify_buffer_add(const struct notify_context *notify, struct midi_src *src,
++                              unsigned int generation, BOOL owned_header,
++                              struct required_notify_entry *required)
+ {
+     if (notify_buffer_full()) return FALSE;
+ 
+-    *notify_write = *notify;
++    notify_write->context = *notify;
++    notify_write->src = src;
++    notify_write->open_generation = generation;
++    notify_write->owned_header = owned_header;
++    notify_write->required = required;
+     notify_write = notify_buffer_next(notify_write);
+     return TRUE;
+ }
+ 
+-static BOOL notify_buffer_remove(struct notify_context *notify)
++static BOOL notify_buffer_remove(struct notify_entry *notify)
+ {
+     if (notify_buffer_empty()) return FALSE;
+ 
+@@ -189,14 +283,22 @@ static void notify_post(struct notify_context *notify)
+ {
+     pthread_mutex_lock(&notify_mutex);
+ 
+-    if (notify)
++    if (notify && notify->device_change && !notify_quit)
+     {
+-        while (notify_buffer_full())
++        device_change_pending = TRUE;
++    }
++    else if (notify && !notify_quit)
++    {
++        while (!notify_quit && notify_buffer_full())
+             pthread_cond_wait(&notify_write_cond, &notify_mutex);
+ 
+-        notify_buffer_add(notify);
++        if (!notify_quit) notify_buffer_add(notify, NULL, 0, FALSE, NULL);
++    }
++    else if (!notify)
++    {
++        notify_quit = TRUE;
++        pthread_cond_broadcast(&notify_write_cond);
+     }
+-    else notify_quit = TRUE;
+     pthread_cond_signal(&notify_read_cond);
+ 
+     pthread_mutex_unlock(&notify_mutex);
+@@ -231,13 +333,7 @@ static snd_seq_t *seq_open(int *port_in_ret)
+             if (port_in < 0)
+                 TRACE("Unable to create input port\n");
+             else
+-            {
+                 TRACE("Input port %d created successfully\n", port_in);
+-                /* Subscribe to the system announce port so the record thread
+-                 * sees ports (re)appear and can re-wire hotplugged devices. */
+-                if (snd_seq_connect_from(midi_seq, port_in, SND_SEQ_CLIENT_SYSTEM, SND_SEQ_PORT_SYSTEM_ANNOUNCE) < 0)
+-                    WARN("Could not subscribe to the system announce port\n");
+-            }
+         }
+         *port_in_ret = port_in;
+     }
+@@ -291,10 +387,177 @@ static int alsa_to_win_device_type(unsigned int type)
+ /* Build the display name winmm exposes for a seq port: "client - port",
+  * falling back to the port name alone if that would overflow.  Must stay
+  * stable across replug so hotplug re-matching by name works. */
++static const char midi_ks_category[] = "{6994ad04-93ef-11d0-a3cc-00a0c9223196}";
++
++struct usb_card_info
++{
++    unsigned int vid, pid;
++    int midi_iface;
++    char path[PATH_MAX];
++    char serial[256];
++};
++
++static BOOL sysfs_read_hex(const char *dir, const char *file, unsigned int *value)
++{
++    char path[PATH_MAX];
++    FILE *stream;
++    int ret;
++
++    if (snprintf(path, sizeof(path), "%s/%s", dir, file) >= sizeof(path)) return FALSE;
++    if (!(stream = fopen(path, "r"))) return FALSE;
++    ret = fscanf(stream, "%x", value);
++    fclose(stream);
++    return ret == 1;
++}
++
++static BOOL sysfs_read_text(const char *dir, const char *file, char *value, size_t size)
++{
++    char path[PATH_MAX], *newline;
++    FILE *stream;
++
++    if (snprintf(path, sizeof(path), "%s/%s", dir, file) >= sizeof(path)) return FALSE;
++    if (!(stream = fopen(path, "r"))) return FALSE;
++    if (!fgets(value, size, stream)) value[0] = 0;
++    fclose(stream);
++    if ((newline = strpbrk(value, "\r\n"))) *newline = 0;
++    return !!value[0];
++}
++
++static int usb_midi_interface(const char *device_dir)
++{
++    struct dirent *entry;
++    DIR *dir;
++    int number = -1, count = 0;
++
++    if (!(dir = opendir(device_dir))) return -1;
++    while ((entry = readdir(dir)))
++    {
++        unsigned int iface_class, iface_subclass, iface_number;
++        char path[PATH_MAX];
++
++        if (!strchr(entry->d_name, ':')) continue;
++        if (snprintf(path, sizeof(path), "%s/%s", device_dir, entry->d_name) >= sizeof(path)) continue;
++        if (!sysfs_read_hex(path, "bInterfaceClass", &iface_class) || iface_class != 0x01) continue;
++        if (!sysfs_read_hex(path, "bInterfaceSubClass", &iface_subclass) || iface_subclass != 0x03) continue;
++        if (!sysfs_read_hex(path, "bInterfaceNumber", &iface_number)) continue;
++        number = iface_number;
++        if (++count > 1)
++        {
++            number = -1;
++            break;
++        }
++    }
++    closedir(dir);
++    return number;
++}
++
++static BOOL get_usb_card_info(int card, struct usb_card_info *info)
++{
++    char link[64], resolved[PATH_MAX];
++
++    memset(info, 0, sizeof(*info));
++    info->midi_iface = -1;
++    if (card < 0) return FALSE;
++    snprintf(link, sizeof(link), "/sys/class/sound/card%d/device", card);
++    if (!realpath(link, resolved)) return FALSE;
++
++    for (;;)
++    {
++        char *slash;
++        unsigned int iface_class, iface_subclass, iface_number;
++
++        /* cardN/device normally resolves below the exact USB interface.  Keep
++         * that interface while walking up to the parent USB device. */
++        if (info->midi_iface < 0 &&
++            sysfs_read_hex(resolved, "bInterfaceClass", &iface_class) && iface_class == 0x01 &&
++            sysfs_read_hex(resolved, "bInterfaceSubClass", &iface_subclass) && iface_subclass == 0x03 &&
++            sysfs_read_hex(resolved, "bInterfaceNumber", &iface_number))
++            info->midi_iface = iface_number;
++
++        if (sysfs_read_hex(resolved, "idVendor", &info->vid) &&
++            sysfs_read_hex(resolved, "idProduct", &info->pid))
++        {
++            snprintf(info->path, sizeof(info->path), "%s", resolved);
++            sysfs_read_text(resolved, "serial", info->serial, sizeof(info->serial));
++            if (info->midi_iface < 0) info->midi_iface = usb_midi_interface(resolved);
++            return TRUE;
++        }
++        if (!(slash = strrchr(resolved, '/')) || slash == resolved) break;
++        *slash = 0;
++    }
++    return FALSE;
++}
++
++static void sanitize_interface_component(const char *src, char *dst, size_t size)
++{
++    char *out = dst, *end = dst + size - 1;
++
++    while (*src && out < end)
++    {
++        unsigned char ch = *src++;
++        *out++ = isalnum(ch) ? tolower(ch) : '_';
++    }
++    *out = 0;
++}
++
++static BOOL set_usb_identity(snd_seq_client_info_t *cinfo, snd_seq_port_info_t *pinfo,
++                             BOOL *strong_identity,
++                             char identity[MIDI_IDENTITY_LEN],
++                             WCHAR interface_name[MIDI_INTERFACE_LEN])
++{
++    struct usb_card_info info;
++    char interface_path[MIDI_INTERFACE_LEN], instance[128];
++    const char *path_component;
++    int len, port = snd_seq_port_info_get_port(pinfo);
++
++    identity[0] = 0;
++    interface_name[0] = 0;
++    *strong_identity = FALSE;
++    if (!get_usb_card_info(snd_seq_client_info_get_card(cinfo), &info)) return FALSE;
++
++    if (info.serial[0])
++        len = snprintf(identity, MIDI_IDENTITY_LEN, "usb:%04x:%04x:serial:%s:interface:%02x:port:%d",
++                       info.vid, info.pid, info.serial, info.midi_iface, port);
++    else
++        len = snprintf(identity, MIDI_IDENTITY_LEN, "usb:%04x:%04x:path:%s:interface:%02x:port:%d",
++                       info.vid, info.pid, info.path, info.midi_iface, port);
++    if (len < 0 || len >= MIDI_IDENTITY_LEN)
++    {
++        identity[0] = 0;
++        return FALSE;
++    }
++
++    path_component = info.serial[0] ? info.serial : strrchr(info.path, '/');
++    if (!info.serial[0] && path_component) ++path_component;
++    if (!path_component) path_component = info.path;
++    sanitize_interface_component(path_component, instance, sizeof(instance));
++    if (info.midi_iface >= 0)
++        len = snprintf(interface_path, sizeof(interface_path),
++                       "\\\\?\\usb#vid_%04x&pid_%04x&mi_%02x#%s&port%d#%s",
++                       info.vid, info.pid, info.midi_iface, instance, port, midi_ks_category);
++    else
++        len = snprintf(interface_path, sizeof(interface_path),
++                       "\\\\?\\usb#vid_%04x&pid_%04x#%s&port%d#%s",
++                       info.vid, info.pid, instance, port, midi_ks_category);
++    if (len >= 0 && len < sizeof(interface_path))
++        ntdll_umbstowcs(interface_path, len + 1, interface_name, MIDI_INTERFACE_LEN);
++    *strong_identity = info.midi_iface >= 0;
++    return TRUE;
++}
++
+ static unsigned int port_display_name(snd_seq_client_info_t *cinfo, snd_seq_port_info_t *pinfo,
+-                                      char name[MAXPNAMELEN])
++                                      BOOL usb, BOOL is_out, char name[MAXPNAMELEN])
+ {
+     unsigned int len = strlen(snd_seq_port_info_get_name(pinfo));
++    int port = snd_seq_port_info_get_port(pinfo);
++
++    if (usb)
++    {
++        if (!port) snprintf(name, MAXPNAMELEN, "%s", snd_seq_client_info_get_name(cinfo));
++        else snprintf(name, MAXPNAMELEN, is_out ? "MIDIOUT%d (%s)" : "MIDIIN%d (%s)",
++                      port + 1, snd_seq_client_info_get_name(cinfo));
++        return strlen(name);
++    }
+ 
+     if ((strlen(snd_seq_client_info_get_name(cinfo)) + len + 3) < MAXPNAMELEN) {
+         sprintf(name, "%s - %s", snd_seq_client_info_get_name(cinfo), snd_seq_port_info_get_name(pinfo));
+@@ -307,179 +570,1052 @@ static unsigned int port_display_name(snd_seq_client_info_t *cinfo, snd_seq_port
+     return len;
+ }
+ 
+-static void port_add(snd_seq_client_info_t* cinfo, snd_seq_port_info_t* pinfo, unsigned int cap, unsigned int type)
+-{
+-    char name[MAXPNAMELEN];
+-    unsigned int len;
+-    struct midi_dest *dest;
+-    struct midi_src *src;
++static UINT get_device_interface(UINT msg, const WCHAR *name, void *param, UINT_PTR size)
++{
++    const WCHAR *end = name;
++    ULONG bytes;
++
++    if (!*name) return MMSYSERR_NOTSUPPORTED;
++    if (!param) return MMSYSERR_INVALPARAM;
++    while (*end) ++end;
++    bytes = (end - name + 1) * sizeof(*name);
++    if (msg == DRV_QUERYDEVICEINTERFACESIZE)
++    {
++        *(ULONG *)param = bytes;
++        return MMSYSERR_NOERROR;
++    }
++    if (size < bytes) return MMSYSERR_INVALPARAM;
++    memcpy(param, name, bytes);
++    return MMSYSERR_NOERROR;
++}
++
++struct observed_port
++{
++    snd_seq_addr_t addr;
++    unsigned int cap;
++    unsigned int type;
++    int client_type;
++    int port_id;
++    char client_name[128];
++    char port_name[128];
++    BOOL usb_device;
++    BOOL strong_identity;
++    char identity[MIDI_IDENTITY_LEN];
++    WCHAR interface_name[MIDI_INTERFACE_LEN];
++    MIDIOUTCAPSW out_caps;
++    MIDIINCAPSW in_caps;
++    BOOL dest_matched;
++    BOOL src_matched;
++};
++
++struct pending_notify
++{
++    struct notify_context context;
++    struct midi_src *src;
++    unsigned int open_generation;
++    BOOL owned_header;
++    struct required_notify_entry *required;
++    struct pending_notify *next;
++};
++
++static void fill_out_caps(struct observed_port *port, snd_seq_client_info_t *cinfo,
++                          snd_seq_port_info_t *pinfo)
++{
++    char name[MAXPNAMELEN];
++    unsigned int len = port_display_name(cinfo, pinfo, port->usb_device, TRUE, name);
++
++    memset(&port->out_caps, 0, sizeof(port->out_caps));
++    port->out_caps.wMid = 0x00ff;
++    port->out_caps.wPid = 0x0001;
++    port->out_caps.vDriverVersion = 0x001;
++    port->out_caps.wChannelMask = 0xffff;
++    port->out_caps.wTechnology = alsa_to_win_device_type(port->type);
++    ntdll_umbstowcs(name, len + 1, port->out_caps.szPname, ARRAY_SIZE(port->out_caps.szPname));
++    if (port->out_caps.wTechnology != MOD_MIDIPORT)
++    {
++        port->out_caps.dwSupport = MIDICAPS_VOLUME | MIDICAPS_LRVOLUME;
++        port->out_caps.wVoices = 16;
++        port->out_caps.wNotes = 16;
++    }
++}
++
++static void fill_in_caps(struct observed_port *port, snd_seq_client_info_t *cinfo,
++                         snd_seq_port_info_t *pinfo)
++{
++    char name[MAXPNAMELEN];
++    unsigned int len = port_display_name(cinfo, pinfo, port->usb_device, FALSE, name);
++
++    memset(&port->in_caps, 0, sizeof(port->in_caps));
++    port->in_caps.wMid = 0x00ff;
++    port->in_caps.wPid = 0x0001;
++    port->in_caps.vDriverVersion = 0x001;
++    ntdll_umbstowcs(name, len + 1, port->in_caps.szPname, ARRAY_SIZE(port->in_caps.szPname));
++}
++
++static BOOL enumerate_ports(snd_seq_t *seq, struct observed_port **ports_ret, unsigned int *count_ret)
++{
++    snd_seq_client_info_t *cinfo;
++    snd_seq_port_info_t *pinfo;
++    struct observed_port *ports = NULL;
++    unsigned int count = 0, pass;
++    int data_client = -1, monitor_client = snd_seq_client_id(seq);
++    BOOL data_client_ref = FALSE;
++
++    cinfo = calloc(1, snd_seq_client_info_sizeof());
++    pinfo = calloc(1, snd_seq_port_info_sizeof());
++    if (!cinfo || !pinfo) goto failed;
++
++    seq_lock();
++    if (midi_seq)
++    {
++        data_client = snd_seq_client_id(midi_seq);
++        ++seq_refs;
++        data_client_ref = TRUE;
++    }
++    seq_unlock();
++
++    /* Keep Wine's historical device-ID order: internal ports, then external
++     * ports.  Live persists these IDs in a few older code paths. */
++    for (pass = 0; pass < 2; ++pass)
++    {
++        snd_seq_client_info_set_client(cinfo, -1);
++        while (snd_seq_query_next_client(seq, cinfo) >= 0)
++        {
++            int client = snd_seq_client_info_get_client(cinfo);
++
++            if (client == SND_SEQ_CLIENT_SYSTEM || client == monitor_client || client == data_client)
++                continue;
++
++            snd_seq_port_info_set_client(pinfo, client);
++            snd_seq_port_info_set_port(pinfo, -1);
++            while (snd_seq_query_next_port(seq, pinfo) >= 0)
++            {
++                struct observed_port *new_ports, *port;
++                unsigned int cap = snd_seq_port_info_get_capability(pinfo);
++                unsigned int type = snd_seq_port_info_get_type(pinfo);
++
++                if (!type || (cap & SND_SEQ_PORT_CAP_NO_EXPORT) ||
++                    !(cap & (SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_WRITE)) ||
++                    (!!(type & SND_SEQ_PORT_TYPE_PORT) != !!pass))
++                    continue;
++
++                if (!(new_ports = realloc(ports, (count + 1) * sizeof(*ports)))) goto failed;
++                ports = new_ports;
++                port = &ports[count++];
++                memset(port, 0, sizeof(*port));
++                port->addr = *snd_seq_port_info_get_addr(pinfo);
++                port->cap = cap;
++                port->type = type;
++                port->client_type = snd_seq_client_info_get_type(cinfo);
++                port->port_id = snd_seq_port_info_get_port(pinfo);
++                snprintf(port->client_name, sizeof(port->client_name), "%s",
++                         snd_seq_client_info_get_name(cinfo));
++                snprintf(port->port_name, sizeof(port->port_name), "%s",
++                         snd_seq_port_info_get_name(pinfo));
++                port->usb_device = set_usb_identity(cinfo, pinfo, &port->strong_identity,
++                                                    port->identity, port->interface_name);
++                if (cap & SND_SEQ_PORT_CAP_WRITE) fill_out_caps(port, cinfo, pinfo);
++                if (cap & SND_SEQ_PORT_CAP_READ) fill_in_caps(port, cinfo, pinfo);
++            }
++        }
++    }
++
++    if (data_client_ref) seq_close();
++    free(cinfo);
++    free(pinfo);
++    *ports_ret = ports;
++    *count_ret = count;
++    return TRUE;
++
++failed:
++    if (data_client_ref) seq_close();
++    free(cinfo);
++    free(pinfo);
++    free(ports);
++    return FALSE;
++}
++
++static BOOL dest_key_equal(const struct midi_dest *dest, const struct observed_port *port)
++{
++    if (dest->strong_identity || port->strong_identity)
++        return dest->strong_identity && port->strong_identity && !strcmp(dest->identity, port->identity);
++    return dest->client_type == port->client_type && dest->port_id == port->port_id &&
++           !strcmp(dest->client_name, port->client_name) && !strcmp(dest->port_name, port->port_name);
++}
++
++static BOOL src_key_equal(const struct midi_src *src, const struct observed_port *port)
++{
++    if (src->strong_identity || port->strong_identity)
++        return src->strong_identity && port->strong_identity && !strcmp(src->identity, port->identity);
++    return src->client_type == port->client_type && src->port_id == port->port_id &&
++           !strcmp(src->client_name, port->client_name) && !strcmp(src->port_name, port->port_name);
++}
++
++static BOOL observed_key_equal(const struct observed_port *left, const struct observed_port *right)
++{
++    if (left->strong_identity || right->strong_identity)
++        return left->strong_identity && right->strong_identity && !strcmp(left->identity, right->identity);
++    return left->client_type == right->client_type && left->port_id == right->port_id &&
++           !strcmp(left->client_name, right->client_name) && !strcmp(left->port_name, right->port_name);
++}
++
++static void update_dest_identity(struct midi_dest *dest, const struct observed_port *port)
++{
++    dest->addr = port->addr;
++    dest->client_type = port->client_type;
++    dest->port_id = port->port_id;
++    dest->strong_identity = port->strong_identity;
++    snprintf(dest->client_name, sizeof(dest->client_name), "%s", port->client_name);
++    snprintf(dest->port_name, sizeof(dest->port_name), "%s", port->port_name);
++    snprintf(dest->identity, sizeof(dest->identity), "%s", port->identity);
++    memcpy(dest->interface_name, port->interface_name, sizeof(dest->interface_name));
++    dest->caps = port->out_caps;
++}
++
++static void update_src_identity(struct midi_src *src, const struct observed_port *port)
++{
++    src->addr = port->addr;
++    src->client_type = port->client_type;
++    src->port_id = port->port_id;
++    src->strong_identity = port->strong_identity;
++    snprintf(src->client_name, sizeof(src->client_name), "%s", port->client_name);
++    snprintf(src->port_name, sizeof(src->port_name), "%s", port->port_name);
++    snprintf(src->identity, sizeof(src->identity), "%s", port->identity);
++    memcpy(src->interface_name, port->interface_name, sizeof(src->interface_name));
++    src->caps = port->in_caps;
++}
++
++static struct midi_dest *new_dest(const struct observed_port *port)
++{
++    struct midi_dest *dest = calloc(1, sizeof(*dest));
++
++    if (!dest) return NULL;
++    dest->token = next_dest_token++;
++    dest->bEnabled = TRUE;
++    dest->online = TRUE;
++    dest->seen = TRUE;
++    dest->port_out = -1;
++    update_dest_identity(dest, port);
++    *last_dest = dest;
++    last_dest = &dest->next;
++    return dest;
++}
++
++static struct midi_src *new_src(const struct observed_port *port)
++{
++    struct midi_src *src = calloc(1, sizeof(*src));
++
++    if (!src) return NULL;
++    src->token = next_src_token++;
++    src->online = TRUE;
++    src->seen = TRUE;
++    update_src_identity(src, port);
++    *last_src = src;
++    last_src = &src->next;
++    return src;
++}
++
++static void reset_dest_after_reconnect(struct midi_dest *dest)
++{
++    unsigned int channel, controller;
++
++    if (!dest->seq || dest->port_out < 0) return;
++    for (channel = 0; channel < 16; ++channel)
++    {
++        static const unsigned char controllers[] = {MIDI_CTL_SUSTAIN, MIDI_CTL_ALL_NOTES_OFF,
++                                                     MIDI_CTL_RESET_CONTROLLERS};
++        for (controller = 0; controller < ARRAY_SIZE(controllers); ++controller)
++        {
++            snd_seq_event_t event;
++            snd_seq_ev_clear(&event);
++            snd_seq_ev_set_direct(&event);
++            snd_seq_ev_set_source(&event, dest->port_out);
++            snd_seq_ev_set_subs(&event);
++            snd_seq_ev_set_controller(&event, channel, controllers[controller], 0);
++            snd_seq_event_output_direct(dest->seq, &event);
++        }
++    }
++    dest->runningStatus = 0;
++}
++
++static void reconnect_dest(struct midi_dest *dest, snd_seq_addr_t old_addr)
++{
++    BOOL same_addr;
++    int ret;
++
++    if (!dest->midiDesc.hMidi || !dest->seq || dest->port_out < 0) return;
++    if (topology_retrying && dest->connected) return;
++    same_addr = old_addr.client == dest->addr.client && old_addr.port == dest->addr.port;
++    seq_lock();
++    if (dest->connected && !same_addr)
++        snd_seq_disconnect_to(dest->seq, dest->port_out, old_addr.client, old_addr.port);
++    ret = snd_seq_connect_to(dest->seq, dest->port_out, dest->addr.client, dest->addr.port);
++    dest->connected = ret >= 0 || ret == -EBUSY || ret == -EEXIST;
++    if (dest->connected)
++    {
++        dest->reconnect_attempts = 0;
++        if (ret >= 0) reset_dest_after_reconnect(dest);
++    }
++    else
++    {
++        if (!dest->reconnect_attempts) dest->reconnect_attempts = 8;
++        if (topology_retrying && !--dest->reconnect_attempts)
++            ERR("MidiOut '%s - %s' reconnect retries exhausted\n",
++                dest->client_name, dest->port_name);
++    }
++    seq_unlock();
++    if (ret < 0 && ret != -EBUSY && ret != -EEXIST)
++        WARN("Could not re-subscribe MidiOut '%s - %s' to %d:%d: %s\n", dest->client_name,
++             dest->port_name, dest->addr.client, dest->addr.port, snd_strerror(ret));
++}
++
++static void reconnect_src(struct midi_src *src, snd_seq_addr_t old_addr)
++{
++    BOOL same_addr;
++    int ret;
++
++    if (!src->midiDesc.hMidi || !src->seq || src->port_in < 0) return;
++    if (topology_retrying && src->connected) return;
++    same_addr = old_addr.client == src->addr.client && old_addr.port == src->addr.port;
++    seq_lock();
++    if (src->connected && !same_addr)
++        snd_seq_disconnect_from(src->seq, src->port_in, old_addr.client, old_addr.port);
++    ret = snd_seq_connect_from(src->seq, src->port_in, src->addr.client, src->addr.port);
++    src->connected = ret >= 0 || ret == -EBUSY || ret == -EEXIST;
++    if (src->connected) src->reconnect_attempts = 0;
++    else
++    {
++        if (!src->reconnect_attempts) src->reconnect_attempts = 8;
++        if (topology_retrying && !--src->reconnect_attempts)
++            ERR("MidiIn '%s - %s' reconnect retries exhausted\n",
++                src->client_name, src->port_name);
++    }
++    seq_unlock();
++    if (ret < 0 && ret != -EBUSY && ret != -EEXIST)
++        WARN("Could not re-subscribe MidiIn '%s - %s' to %d:%d: %s\n", src->client_name,
++             src->port_name, src->addr.client, src->addr.port, snd_strerror(ret));
++}
++
++static char wow64_midi_hdr_cookie;
++
++static struct required_notify_entry *register_required_notify(struct midi_src *src,
++                                                               BOOL synchronous)
++{
++    struct required_notify_entry *required = malloc(sizeof(*required));
++
++    if (!required) return NULL;
++    required->src = src;
++    required->open_generation = src->open_generation;
++    required->owner = pthread_self();
++    required->owner_valid = synchronous;
++    required->synchronous = synchronous;
++    pthread_mutex_lock(&notify_mutex);
++    required->next = required_notifies;
++    required_notifies = required;
++    pthread_mutex_unlock(&notify_mutex);
++    return required;
++}
++
++static void remove_required_notify_locked(struct required_notify_entry *required)
++{
++    struct required_notify_entry **cursor;
++
++    for (cursor = &required_notifies; *cursor; cursor = &(*cursor)->next)
++    {
++        if (*cursor != required) continue;
++        *cursor = required->next;
++        free(required);
++        pthread_cond_broadcast(&notify_done_cond);
++        return;
++    }
++}
++
++static BOOL append_pending_notify(struct pending_notify **head, struct pending_notify ***tail,
++                                  struct midi_src *src, const struct notify_context *context)
++{
++    struct pending_notify *pending = malloc(sizeof(*pending));
++    BOOL required = context->msg == MIM_LONGDATA || context->msg == MIM_LONGERROR;
++
++    if (!pending) return FALSE;
++    pending->required = required ? register_required_notify(src, FALSE) : NULL;
++    if (required && !pending->required)
++    {
++        free(pending);
++        return FALSE;
++    }
++    pending->context = *context;
++    pending->src = src;
++    pending->open_generation = src->open_generation;
++    pending->owned_header = (context->msg == MIM_LONGDATA || context->msg == MIM_LONGERROR) &&
++                            ((MIDIHDR *)context->param_1)->dwReserved[6] ==
++                            (DWORD_PTR)&wow64_midi_hdr_cookie;
++    pending->next = NULL;
++    **tail = pending;
++    *tail = &pending->next;
++    return TRUE;
++}
++
++static BOOL notify_post_current(struct midi_src *src, unsigned int generation,
++                                const struct notify_context *context, BOOL owned_header,
++                                struct required_notify_entry *required)
++{
++    for (;;)
++    {
++        BOOL valid, quit, posted = FALSE;
++
++        /* Validate and enqueue as one operation with respect to close.  Never
++         * wait for ring space while holding the topology lock. */
++        pthread_rwlock_rdlock(&topology_lock);
++        valid = (!src->closing || required) && src->midiDesc.hMidi &&
++                src->open_generation == generation;
++        pthread_mutex_lock(&notify_mutex);
++        quit = notify_quit;
++        if (valid && !quit && !notify_buffer_full())
++        {
++            notify_buffer_add(context, src, generation, owned_header, required);
++            pthread_cond_signal(&notify_read_cond);
++            posted = TRUE;
++        }
++        /* Keep notify_mutex across the topology unlock so close cannot signal
++         * between our full check and the atomic condition wait below. */
++        pthread_rwlock_unlock(&topology_lock);
++        if (valid && !quit && !posted && notify_buffer_full())
++            pthread_cond_wait(&notify_write_cond, &notify_mutex);
++        pthread_mutex_unlock(&notify_mutex);
++        if (!valid || quit || posted) return posted;
++    }
++}
++
++static BOOL required_notify_pending_other(struct midi_src *src, unsigned int generation,
++                                          pthread_t self)
++{
++    struct required_notify_entry *entry;
++
++    for (entry = required_notifies; entry; entry = entry->next)
++        if (entry->src == src && entry->open_generation == generation &&
++            (!entry->owner_valid || !pthread_equal(entry->owner, self)))
++            return TRUE;
++    return FALSE;
++}
++
++static void notify_cancel_source(struct midi_src *src, unsigned int generation)
++{
++    struct notify_entry kept[NOTIFY_BUFFER_SIZE], entry;
++    unsigned int count = 0, i;
++    pthread_t self = pthread_self();
++
++    pthread_mutex_lock(&notify_mutex);
++    while (notify_buffer_remove(&entry))
++    {
++        if (entry.src == src && entry.open_generation == generation && !entry.required)
++        {
++            if (entry.owned_header) free((void *)entry.context.param_1);
++        }
++        else kept[count++] = entry;
++    }
++    for (i = 0; i < count; ++i)
++        notify_buffer_add(&kept[i].context, kept[i].src, kept[i].open_generation,
++                          kept[i].owned_header, kept[i].required);
++    pthread_cond_broadcast(&notify_write_cond);
++
++    /* notify_wait marks a callback in flight until the notification thread
++     * calls it again.  A close from that callback is already ordered after
++     * the callback, so only another thread must wait for the acknowledgement. */
++    while ((notify_inflight && notify_inflight_src == src &&
++           notify_inflight_generation == generation &&
++            (!notify_thread_known || !pthread_equal(self, notify_thread_id))) ||
++           required_notify_pending_other(src, generation, self))
++        pthread_cond_wait(&notify_done_cond, &notify_mutex);
++    pthread_mutex_unlock(&notify_mutex);
++}
++
++static void post_pending_notifies(struct pending_notify *pending)
++{
++    struct pending_notify *next;
++
++    while (pending)
++    {
++        BOOL posted;
++
++        next = pending->next;
++        posted = notify_post_current(pending->src, pending->open_generation, &pending->context,
++                                     pending->owned_header, pending->required);
++        if (!posted && pending->required)
++        {
++            pthread_mutex_lock(&notify_mutex);
++            remove_required_notify_locked(pending->required);
++            pthread_mutex_unlock(&notify_mutex);
++        }
++        if (!posted && pending->owned_header) free((void *)pending->context.param_1);
++        free(pending);
++        pending = next;
++    }
++}
++
++static void cleanup_disconnected_src(struct midi_src *src, struct pending_notify **head,
++                                     struct pending_notify ***tail)
++{
++    struct notify_context notify;
++    unsigned int channel, note;
++    UINT current_time = get_time_msec() - src->startTime;
++    MIDIHDR *hdr;
++
++    if (!src->midiDesc.hMidi) return;
++    for (channel = 0; channel < 16; ++channel)
++    {
++        if (src->sustain[channel])
++        {
++            set_in_notify(&notify, src, src->open_dev_id, MIM_DATA,
++                          (MIDI_CTL_SUSTAIN << 8) | MIDI_CMD_CONTROL | channel, current_time);
++            append_pending_notify(head, tail, src, &notify);
++        }
++        for (note = 0; note < 128; ++note)
++        {
++            if (!(src->active_notes[channel][note / 64] & ((uint64_t)1 << (note % 64)))) continue;
++            set_in_notify(&notify, src, src->open_dev_id, MIM_DATA,
++                          (note << 8) | MIDI_CMD_NOTE_OFF | channel, current_time);
++            append_pending_notify(head, tail, src, &notify);
++        }
++    }
++    memset(src->active_notes, 0, sizeof(src->active_notes));
++    memset(src->sustain, 0, sizeof(src->sustain));
++
++    in_buffer_lock();
++    hdr = src->lpQueueHdr;
++    if (hdr && hdr->dwBytesRecorded)
++    {
++        set_in_notify(&notify, src, src->open_dev_id, MIM_LONGERROR, (DWORD_PTR)hdr, current_time);
++        if (append_pending_notify(head, tail, src, &notify))
++        {
++            src->lpQueueHdr = hdr->lpNext;
++            hdr->dwFlags &= ~MHDR_INQUEUE;
++            hdr->dwFlags |= MHDR_DONE;
++        }
++    }
++    in_buffer_unlock();
++}
++
++static BOOL publish_snapshots(void)
++{
++    struct midi_dest *dest;
++    struct midi_src *src;
++    struct midi_dest **new_dests = NULL;
++    struct midi_src **new_srcs = NULL;
++    unsigned int dest_count = 0, src_count = 0, i;
++
++    for (dest = all_dests; dest; dest = dest->next) if (dest->online) ++dest_count;
++    for (src = all_srcs; src; src = src->next) if (src->online) ++src_count;
++    if (dest_count && !(new_dests = malloc(dest_count * sizeof(*new_dests)))) return FALSE;
++    if (src_count && !(new_srcs = malloc(src_count * sizeof(*new_srcs))))
++    {
++        free(new_dests);
++        return FALSE;
++    }
++    for (dest = all_dests, i = 0; dest; dest = dest->next) if (dest->online) new_dests[i++] = dest;
++    for (src = all_srcs, i = 0; src; src = src->next) if (src->online) new_srcs[i++] = src;
++    free(dests);
++    free(srcs);
++    dests = new_dests;
++    srcs = new_srcs;
++    num_dests = dest_count;
++    num_srcs = src_count;
++    return TRUE;
++}
++
++/* Preserve the disconnect edge even when ALSA reuses the same address before
++ * the debounce window closes.  Otherwise held notes and a partial SysEx could
++ * leak into the next physical session. */
++static void mark_port_offline(snd_seq_addr_t addr)
++{
++    struct pending_notify *pending = NULL, **pending_tail = &pending;
++    struct midi_dest *dest;
++    struct midi_src *src;
++    BOOL changed = FALSE, published = FALSE;
++
++    pthread_rwlock_wrlock(&topology_lock);
++    for (dest = all_dests; dest; dest = dest->next)
++        if (dest->online && dest->addr.client == addr.client && dest->addr.port == addr.port)
++        {
++            dest->online = dest->connected = FALSE;
++            dest->reconnect_attempts = 0;
++            dest->runningStatus = 0;
++            changed = TRUE;
++        }
++    for (src = all_srcs; src; src = src->next)
++        if (src->online && src->addr.client == addr.client && src->addr.port == addr.port)
++        {
++            src->online = src->connected = FALSE;
++            src->reconnect_attempts = 0;
++            cleanup_disconnected_src(src, &pending, &pending_tail);
++            changed = TRUE;
++        }
++    if (changed)
++    {
++        snapshot_dirty = TRUE;
++        if (!(published = publish_snapshots())) ERR("Out of memory publishing MIDI disconnect\n");
++    }
++    pthread_rwlock_unlock(&topology_lock);
++
++    if (published)
++    {
++        struct notify_context notify;
++        set_device_change_notify(&notify);
++        notify_post(&notify);
++    }
++    post_pending_notifies(pending);
++}
++
++static BOOL reconcile_ports(struct observed_port *ports, unsigned int count)
++{
++    struct pending_notify *pending = NULL, **pending_tail = &pending;
++    struct midi_dest *dest;
++    struct midi_src *src;
++    BOOL changed = FALSE;
++    unsigned int i, j;
++
++    pthread_rwlock_wrlock(&topology_lock);
++    for (dest = all_dests; dest; dest = dest->next) dest->seen = FALSE;
++    for (src = all_srcs; src; src = src->next) src->seen = FALSE;
++
++    /* An ALSA address is only an optimization, never an identity.  It may be
++     * reused for unrelated clients.  Reuse it only when the hardware/weak key
++     * also agrees; this keeps duplicate controllers stable at a fixed address. */
++    for (i = 0; i < count; ++i)
++    {
++        if (ports[i].cap & SND_SEQ_PORT_CAP_WRITE)
++            for (dest = all_dests; dest; dest = dest->next)
++                if (!dest->seen && dest->addr.client == ports[i].addr.client &&
++                    dest->addr.port == ports[i].addr.port && dest_key_equal(dest, &ports[i]))
++                {
++                    snd_seq_addr_t old_addr = dest->addr;
++                    MIDIOUTCAPSW old_caps = dest->caps;
++
++                    dest->seen = ports[i].dest_matched = TRUE;
++                    if (!dest->online || memcmp(&old_caps, &ports[i].out_caps, sizeof(old_caps)))
++                        changed = TRUE;
++                    dest->online = TRUE;
++                    update_dest_identity(dest, &ports[i]);
++                    reconnect_dest(dest, old_addr);
++                    break;
++                }
++        if (ports[i].cap & SND_SEQ_PORT_CAP_READ)
++            for (src = all_srcs; src; src = src->next)
++                if (!src->seen && src->addr.client == ports[i].addr.client &&
++                    src->addr.port == ports[i].addr.port && src_key_equal(src, &ports[i]))
++                {
++                    snd_seq_addr_t old_addr = src->addr;
++                    MIDIINCAPSW old_caps = src->caps;
++
++                    src->seen = ports[i].src_matched = TRUE;
++                    if (!src->online || memcmp(&old_caps, &ports[i].in_caps, sizeof(old_caps)))
++                        changed = TRUE;
++                    src->online = TRUE;
++                    update_src_identity(src, &ports[i]);
++                    reconnect_src(src, old_addr);
++                    break;
++                }
++    }
++
++    for (i = 0; i < count; ++i)
++    {
++        if ((ports[i].cap & SND_SEQ_PORT_CAP_WRITE) && !ports[i].dest_matched)
++        {
++            unsigned int port_matches = 0, record_matches = 0;
++            struct midi_dest *match = NULL, *reusable = NULL;
++
++            for (j = 0; j < count; ++j)
++                if ((ports[j].cap & SND_SEQ_PORT_CAP_WRITE) &&
++                    observed_key_equal(&ports[j], &ports[i])) ++port_matches;
++            for (dest = all_dests; dest; dest = dest->next)
++                if (dest_key_equal(dest, &ports[i]))
++                {
++                    ++record_matches;
++                    if (!dest->seen) match = dest;
++                    if (!dest->seen && !dest->midiDesc.hMidi && !reusable) reusable = dest;
++                }
++            if (port_matches == 1 && record_matches == 1)
++            {
++                snd_seq_addr_t old_addr = match->addr;
++                MIDIOUTCAPSW old_caps = match->caps;
++
++                match->seen = ports[i].dest_matched = TRUE;
++                if (!match->online || old_addr.client != ports[i].addr.client ||
++                    old_addr.port != ports[i].addr.port ||
++                    memcmp(&old_caps, &ports[i].out_caps, sizeof(old_caps))) changed = TRUE;
++                match->online = TRUE;
++                update_dest_identity(match, &ports[i]);
++                /* Re-issuing the subscription verifies the link when EXIT and
++                 * START coalesce back to the same ALSA address. */
++                reconnect_dest(match, old_addr);
++            }
++            else if (reusable)
++            {
++                snd_seq_addr_t old_addr = reusable->addr;
++
++                reusable->seen = ports[i].dest_matched = TRUE;
++                reusable->online = TRUE;
++                update_dest_identity(reusable, &ports[i]);
++                reconnect_dest(reusable, old_addr);
++                changed = TRUE;
++            }
++            else if ((dest = new_dest(&ports[i])))
++            {
++                ports[i].dest_matched = TRUE;
++                changed = TRUE;
++            }
++        }
++
++        if ((ports[i].cap & SND_SEQ_PORT_CAP_READ) && !ports[i].src_matched)
++        {
++            unsigned int port_matches = 0, record_matches = 0;
++            struct midi_src *match = NULL, *reusable = NULL;
++
++            for (j = 0; j < count; ++j)
++                if ((ports[j].cap & SND_SEQ_PORT_CAP_READ) &&
++                    observed_key_equal(&ports[j], &ports[i])) ++port_matches;
++            for (src = all_srcs; src; src = src->next)
++                if (src_key_equal(src, &ports[i]))
++                {
++                    ++record_matches;
++                    if (!src->seen) match = src;
++                    if (!src->seen && !src->midiDesc.hMidi && !reusable) reusable = src;
++                }
++            if (port_matches == 1 && record_matches == 1)
++            {
++                snd_seq_addr_t old_addr = match->addr;
++                MIDIINCAPSW old_caps = match->caps;
++
++                match->seen = ports[i].src_matched = TRUE;
++                if (!match->online || old_addr.client != ports[i].addr.client ||
++                    old_addr.port != ports[i].addr.port ||
++                    memcmp(&old_caps, &ports[i].in_caps, sizeof(old_caps))) changed = TRUE;
++                match->online = TRUE;
++                update_src_identity(match, &ports[i]);
++                reconnect_src(match, old_addr);
++            }
++            else if (reusable)
++            {
++                snd_seq_addr_t old_addr = reusable->addr;
++
++                reusable->seen = ports[i].src_matched = TRUE;
++                reusable->online = TRUE;
++                update_src_identity(reusable, &ports[i]);
++                reconnect_src(reusable, old_addr);
++                changed = TRUE;
++            }
++            else if ((src = new_src(&ports[i])))
++            {
++                ports[i].src_matched = TRUE;
++                changed = TRUE;
++            }
++        }
++    }
++
++    for (dest = all_dests; dest; dest = dest->next)
++        if (!dest->seen && dest->online)
++        {
++            dest->online = dest->connected = FALSE;
++            dest->reconnect_attempts = 0;
++            dest->runningStatus = 0;
++            changed = TRUE;
++        }
++    for (src = all_srcs; src; src = src->next)
++        if (!src->seen && src->online)
++        {
++            src->online = src->connected = FALSE;
++            src->reconnect_attempts = 0;
++            cleanup_disconnected_src(src, &pending, &pending_tail);
++            changed = TRUE;
++        }
++
++    snapshot_dirty |= changed;
++    if (!publish_snapshots())
++    {
++        ERR("Out of memory publishing MIDI topology\n");
++        changed = FALSE;
++    }
++    else
++    {
++        changed = snapshot_dirty;
++        snapshot_dirty = FALSE;
++    }
++    pthread_rwlock_unlock(&topology_lock);
++
++    if (changed)
++    {
++        struct notify_context notify;
++        set_device_change_notify(&notify);
++        notify_post(&notify);
++    }
++    post_pending_notifies(pending);
++    return changed;
++}
++
++static BOOL rescan_topology(snd_seq_t *seq)
++{
++    struct observed_port *ports;
++    unsigned int count;
++    BOOL ret;
++
++    if (!enumerate_ports(seq, &ports, &count)) return FALSE;
++    ret = reconcile_ports(ports, count);
++    free(ports);
++    return ret;
++}
++
++static void set_topology_ready(void)
++{
++    pthread_mutex_lock(&topology_init_mutex);
++    topology_ready = TRUE;
++    pthread_cond_broadcast(&topology_init_cond);
++    pthread_mutex_unlock(&topology_init_mutex);
++}
++
++static BOOL topology_should_quit(void)
++{
++    BOOL quit;
++
++    pthread_mutex_lock(&topology_init_mutex);
++    quit = topology_quit;
++    pthread_mutex_unlock(&topology_init_mutex);
++    return quit;
++}
++
++static BOOL topology_cancelled(int timeout)
++{
++    struct pollfd fd = {topology_cancel_pipe[0], POLLIN, 0};
++    return poll(&fd, 1, timeout) > 0 && (fd.revents & POLLIN);
++}
++
++static BOOL topology_needs_retry(void)
++{
++    struct midi_dest *dest;
++    struct midi_src *src;
++    BOOL retry = FALSE;
++
++    pthread_rwlock_rdlock(&topology_lock);
++    for (dest = all_dests; dest && !retry; dest = dest->next)
++        retry = dest->online && dest->midiDesc.hMidi && !dest->connected && dest->reconnect_attempts;
++    for (src = all_srcs; src && !retry; src = src->next)
++        retry = src->online && src->midiDesc.hMidi && !src->connected && src->reconnect_attempts;
++    pthread_rwlock_unlock(&topology_lock);
++    return retry;
++}
++
++static void *topology_thread_proc(void *arg)
++{
++    snd_seq_t *seq = NULL;
++    BOOL ready = FALSE;
++
++    while (!topology_should_quit())
++    {
++        int port, nfds, ret;
++        struct pollfd *fds;
++
++        if (snd_seq_open(&seq, "default", SND_SEQ_OPEN_INPUT, SND_SEQ_NONBLOCK) < 0)
++        {
++            if (!ready) { set_topology_ready(); ready = TRUE; }
++            if (topology_cancelled(250)) break;
++            continue;
++        }
++        snd_seq_set_client_name(seq, "WINE MIDI topology");
++        port = snd_seq_create_simple_port(seq, "WINE MIDI topology",
++                                         SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE,
++                                         SND_SEQ_PORT_TYPE_APPLICATION);
++        if (port < 0 || snd_seq_connect_from(seq, port, SND_SEQ_CLIENT_SYSTEM,
++                                             SND_SEQ_PORT_SYSTEM_ANNOUNCE) < 0)
++        {
++            WARN("Could not subscribe MIDI topology monitor to System Announce\n");
++            snd_seq_close(seq);
++            seq = NULL;
++            if (!ready) { set_topology_ready(); ready = TRUE; }
++            if (topology_cancelled(250)) break;
++            continue;
++        }
+ 
+-    if (cap & SND_SEQ_PORT_CAP_WRITE) {
+-        TRACE("OUT (%d:%s:%s:%d:%s:%x)\n",snd_seq_client_info_get_client(cinfo),
+-              snd_seq_client_info_get_name(cinfo),
+-              snd_seq_client_info_get_type(cinfo) == SND_SEQ_USER_CLIENT ? "user" : "kernel",
+-              snd_seq_port_info_get_port(pinfo),
+-              snd_seq_port_info_get_name(pinfo),
+-              type);
+-
+-        if (!type)
+-            return;
+-
+-        dests = realloc( dests, (num_dests + 1) * sizeof(*dests) );
+-        dest = dests + num_dests;
+-        memset( dest, 0, sizeof(*dest) );
+-        dest->addr = *snd_seq_port_info_get_addr(pinfo);
+-
+-        /* Manufac ID. We do not have access to this with soundcard.h
+-         * Does not seem to be a problem, because in mmsystem.h only
+-         * Microsoft's ID is listed.
+-         */
+-        dest->caps.wMid = 0x00FF;
+-        dest->caps.wPid = 0x0001;     /* FIXME Product ID  */
+-        /* Product Version. We simply say "1" */
+-        dest->caps.vDriverVersion = 0x001;
+-        /* The following are mandatory for MOD_MIDIPORT */
+-        dest->caps.wChannelMask = 0xFFFF;
+-        dest->caps.wVoices      = 0;
+-        dest->caps.wNotes       = 0;
+-        dest->caps.dwSupport    = 0;
+-
+-        /* Try to use both client and port names, if this is too long take the port name only.
+-           In the second case the port name should be explicit enough due to its big size.
+-        */
+-        len = port_display_name(cinfo, pinfo, name);
+-        ntdll_umbstowcs( name, len + 1, dest->caps.szPname, ARRAY_SIZE(dest->caps.szPname));
+-
+-        dest->caps.wTechnology = alsa_to_win_device_type(type);
+-
+-        if (MOD_MIDIPORT != dest->caps.wTechnology) {
+-            /* FIXME Do we have this information?
+-             * Assuming the soundcards can handle
+-             * MIDICAPS_VOLUME and MIDICAPS_LRVOLUME but
+-             * not MIDICAPS_CACHE.
+-             */
+-            dest->caps.dwSupport = MIDICAPS_VOLUME|MIDICAPS_LRVOLUME;
+-            dest->caps.wVoices   = 16;
+-
+-            /* FIXME Is it possible to know the maximum
+-             * number of simultaneous notes of a soundcard ?
+-             * I believe we don't have this information, but
+-             * it's probably equal or more than wVoices
+-             */
+-            dest->caps.wNotes     = 16;
++        rescan_topology(seq);
++        if (!ready) { set_topology_ready(); ready = TRUE; }
++        nfds = snd_seq_poll_descriptors_count(seq, POLLIN) + 1;
++        if (!(fds = calloc(nfds, sizeof(*fds)))) break;
++
++        while (!topology_should_quit())
++        {
++            BOOL cancelled = FALSE, dirty = FALSE, failed = FALSE;
++
++            fds[0].fd = topology_cancel_pipe[0];
++            fds[0].events = POLLIN;
++            snd_seq_poll_descriptors(seq, fds + 1, nfds - 1, POLLIN);
++            ret = poll(fds, nfds, 250);
++            if (ret < 0 && errno == EINTR) continue;
++            if (ret < 0 || (fds[0].revents & POLLIN)) break;
++            if (!ret)
++            {
++                if (topology_needs_retry())
++                {
++                    topology_retrying = TRUE;
++                    rescan_topology(seq);
++                    topology_retrying = FALSE;
++                }
++                continue;
++            }
++            for (;;)
++            {
++                snd_seq_event_t *event = NULL;
++                ret = snd_seq_event_input(seq, &event);
++                if (ret == -EAGAIN) break;
++                if (ret < 0) { failed = TRUE; break; }
++                if (event && event->source.client == SND_SEQ_CLIENT_SYSTEM &&
++                    event->source.port == SND_SEQ_PORT_SYSTEM_ANNOUNCE &&
++                    (event->type == SND_SEQ_EVENT_PORT_START || event->type == SND_SEQ_EVENT_PORT_EXIT ||
++                     event->type == SND_SEQ_EVENT_PORT_CHANGE))
++                {
++                    if (event->type == SND_SEQ_EVENT_PORT_EXIT)
++                        mark_port_offline(event->data.addr);
++                    dirty = TRUE;
++                }
++                if (event) snd_seq_free_event(event);
++            }
++            if (failed) break;
++            if (dirty)
++            {
++                uint64_t now = get_time_msec(), deadline = now + 200, quiet_until = now + 50;
++
++                /* ALSA publishes composite devices as a burst. Coalesce a 50 ms
++                 * quiet period, but force publication after 200 ms under churn. */
++                while (now < quiet_until && now < deadline)
++                {
++                    int timeout = min(quiet_until, deadline) - now;
++
++                    ret = poll(fds, nfds, timeout);
++                    if (ret < 0 && errno == EINTR) continue;
++                    if (ret < 0) { failed = TRUE; break; }
++                    if (ret > 0 && (fds[0].revents & POLLIN)) { cancelled = TRUE; break; }
++                    if (ret > 0)
++                    {
++                        snd_seq_event_t *event = NULL;
++
++                        while (snd_seq_event_input(seq, &event) >= 0)
++                        {
++                            if (event)
++                            {
++                                if (event->source.client == SND_SEQ_CLIENT_SYSTEM &&
++                                    event->source.port == SND_SEQ_PORT_SYSTEM_ANNOUNCE &&
++                                    event->type == SND_SEQ_EVENT_PORT_EXIT)
++                                    mark_port_offline(event->data.addr);
++                                snd_seq_free_event(event);
++                            }
++                            event = NULL;
++                        }
++                        now = get_time_msec();
++                        quiet_until = min(now + 50, deadline);
++                    }
++                    else break;
++                    now = get_time_msec();
++                }
++                if (failed || cancelled) break;
++                rescan_topology(seq);
++            }
+         }
+-        dest->bEnabled            = TRUE;
+-        dest->port_out            = -1;
+-
+-        TRACE("MidiOut[%d]\tname='%s' techn=%d voices=%d notes=%d chnMsk=%04x support=%d\n"
+-              "\tALSA info: midi dev-type=%x, capa=0\n",
+-              num_dests, wine_dbgstr_w(dest->caps.szPname),
+-              dest->caps.wTechnology,
+-              dest->caps.wVoices, dest->caps.wNotes,
+-              dest->caps.wChannelMask, (unsigned)dest->caps.dwSupport,
+-              type);
+-
+-        num_dests++;
+-    }
+-    if (cap & SND_SEQ_PORT_CAP_READ) {
+-        TRACE("IN  (%d:%s:%s:%d:%s:%x)\n",snd_seq_client_info_get_client(cinfo),
+-              snd_seq_client_info_get_name(cinfo),
+-              snd_seq_client_info_get_type(cinfo) == SND_SEQ_USER_CLIENT ? "user" : "kernel",
+-              snd_seq_port_info_get_port(pinfo),
+-              snd_seq_port_info_get_name(pinfo),
+-              type);
+-
+-        if (!type)
+-            return;
+-
+-        srcs = realloc( srcs, (num_srcs + 1) * sizeof(*srcs) );
+-        src = srcs + num_srcs;
+-        memset( src, 0, sizeof(*src) );
+-        src->addr = *snd_seq_port_info_get_addr(pinfo);
+-
+-        /* Manufac ID. We do not have access to this with soundcard.h
+-         * Does not seem to be a problem, because in mmsystem.h only
+-         * Microsoft's ID is listed.
+-         */
+-        src->caps.wMid = 0x00FF;
+-        src->caps.wPid = 0x0001;      /* FIXME Product ID  */
+-        /* Product Version. We simply say "1" */
+-        src->caps.vDriverVersion = 0x001;
+-        src->caps.dwSupport = 0; /* mandatory with MIDIINCAPS */
+-
+-        /* Try to use both client and port names, if this is too long take the port name only.
+-           In the second case the port name should be explicit enough due to its big size.
+-        */
+-        len = port_display_name(cinfo, pinfo, name);
+-        ntdll_umbstowcs( name, len + 1, src->caps.szPname, ARRAY_SIZE(src->caps.szPname));
+-        src->state = 0;
+-
+-        TRACE("MidiIn [%d]\tname='%s' support=%d\n"
+-              "\tALSA info: midi dev-type=%x, capa=0\n",
+-              num_srcs, wine_dbgstr_w(src->caps.szPname), (unsigned)src->caps.dwSupport, type);
+-
+-        num_srcs++;
++        free(fds);
++        snd_seq_close(seq);
++        seq = NULL;
++        if (!topology_should_quit()) reconcile_ports(NULL, 0);
+     }
++    if (seq) snd_seq_close(seq);
++    if (!ready) set_topology_ready();
++    return NULL;
+ }
+ 
+ static UINT alsa_midi_init(void)
+ {
+-    static BOOL init_done;
+-    snd_seq_client_info_t *cinfo;
+-    snd_seq_port_info_t *pinfo;
+-    snd_seq_t *seq;
+-
+-    if (init_done)
+-        return ERROR_ALREADY_INITIALIZED;
+-
+-    TRACE("Initializing the MIDI variables.\n");
+-    init_done = TRUE;
+-
+-    /* try to open device */
+-    if (!(seq = seq_open(NULL)))
+-        return ERROR_OPEN_FAILED;
+-
+-    cinfo = calloc( 1, snd_seq_client_info_sizeof() );
+-    pinfo = calloc( 1, snd_seq_port_info_sizeof() );
+-
+-    /* First, search for all internal midi devices */
+-    snd_seq_client_info_set_client(cinfo, -1);
+-    while (snd_seq_query_next_client(seq, cinfo) >= 0) {
+-        snd_seq_port_info_set_client(pinfo, snd_seq_client_info_get_client(cinfo));
+-        snd_seq_port_info_set_port(pinfo, -1);
+-        while (snd_seq_query_next_port(seq, pinfo) >= 0) {
+-            unsigned int cap = snd_seq_port_info_get_capability(pinfo);
+-            unsigned int type = snd_seq_port_info_get_type(pinfo);
+-            if (!(type & SND_SEQ_PORT_TYPE_PORT))
+-                port_add(cinfo, pinfo, cap, type);
+-        }
+-    }
++    UINT ret = NOERROR;
+ 
+-    /* Second, search for all external ports */
+-    snd_seq_client_info_set_client(cinfo, -1);
+-    while (snd_seq_query_next_client(seq, cinfo) >= 0) {
+-        snd_seq_port_info_set_client(pinfo, snd_seq_client_info_get_client(cinfo));
+-        snd_seq_port_info_set_port(pinfo, -1);
+-        while (snd_seq_query_next_port(seq, pinfo) >= 0) {
+-            unsigned int cap = snd_seq_port_info_get_capability(pinfo);
+-            unsigned int type = snd_seq_port_info_get_type(pinfo);
+-            if (type & SND_SEQ_PORT_TYPE_PORT)
+-                port_add(cinfo, pinfo, cap, type);
++    pthread_mutex_lock(&topology_init_mutex);
++    if (!topology_started)
++    {
++        pthread_mutex_lock(&notify_mutex);
++        notify_quit = FALSE;
++        device_change_pending = FALSE;
++        notify_thread_known = notify_inflight = FALSE;
++        notify_inflight_src = NULL;
++        notify_inflight_generation = 0;
++        notify_inflight_required = NULL;
++        notify_read = notify_write = notify_buffer;
++        pthread_mutex_unlock(&notify_mutex);
++        topology_quit = topology_ready = FALSE;
++        if (pipe(topology_cancel_pipe) || pthread_create(&topology_thread_id, NULL, topology_thread_proc, NULL))
++        {
++            WARN("Could not start ALSA MIDI topology monitor\n");
++            if (topology_cancel_pipe[0] >= 0) close(topology_cancel_pipe[0]);
++            if (topology_cancel_pipe[1] >= 0) close(topology_cancel_pipe[1]);
++            topology_cancel_pipe[0] = topology_cancel_pipe[1] = -1;
++            ret = ERROR_OPEN_FAILED;
+         }
++        else topology_started = TRUE;
+     }
+-    seq_close();
+-    free( cinfo );
+-    free( pinfo );
+-
+-    TRACE("End\n");
+-
+-    return NOERROR;
++    while (topology_started && !topology_ready)
++        pthread_cond_wait(&topology_init_cond, &topology_init_mutex);
++    pthread_mutex_unlock(&topology_init_mutex);
++    return ret;
+ }
+ 
+ NTSTATUS alsa_midi_release(void *args)
+ {
+-    /* stop the notify_wait thread */
++    BOOL started, stop_rec_thread = FALSE;
++    struct required_notify_entry *required;
++    struct notify_entry entry;
++
++    pthread_mutex_lock(&topology_init_mutex);
++    topology_quit = TRUE;
++    started = topology_started;
++    if (started) write(topology_cancel_pipe[1], "x", 1);
++    pthread_mutex_unlock(&topology_init_mutex);
++
++    /* Unblock any topology/input producer waiting for notification space
++     * before joining it.  Further posts are discarded during unload. */
+     notify_post(NULL);
++    if (started)
++    {
++        pthread_join(topology_thread_id, NULL);
++        close(topology_cancel_pipe[0]);
++        close(topology_cancel_pipe[1]);
++        pthread_mutex_lock(&topology_init_mutex);
++        topology_cancel_pipe[0] = topology_cancel_pipe[1] = -1;
++        topology_started = topology_ready = FALSE;
++        pthread_mutex_unlock(&topology_init_mutex);
++    }
++
++    /* No producer may outlive the notification consumer.  Open MIDI input
++     * handles are normally closed first, but process teardown is allowed to
++     * unload the driver with handles outstanding. */
++    pthread_mutex_lock(&rec_thread_mutex);
++    if (num_midi_in_started)
++    {
++        write(rec_cancel_pipe[1], "x", 1);
++        stop_rec_thread = TRUE;
++        num_midi_in_started = 0;
++    }
++    if (stop_rec_thread)
++    {
++        pthread_join(rec_thread_id, NULL);
++        close(rec_cancel_pipe[0]);
++        close(rec_cancel_pipe[1]);
++        rec_cancel_pipe[0] = rec_cancel_pipe[1] = -1;
++    }
++    pthread_mutex_unlock(&rec_thread_mutex);
++
++    pthread_mutex_lock(&notify_mutex);
++    while (notify_buffer_remove(&entry))
++        if (entry.owned_header) free((void *)entry.context.param_1);
++    notify_read = notify_write = notify_buffer;
++    notify_inflight_required = NULL;
++    while ((required = required_notifies))
++    {
++        required_notifies = required->next;
++        free(required);
++    }
++    pthread_cond_broadcast(&notify_done_cond);
++    pthread_mutex_unlock(&notify_mutex);
+ 
+     return STATUS_SUCCESS;
+ }
+@@ -488,6 +1624,7 @@ static void set_out_notify(struct notify_context *notify, struct midi_dest *dest
+                            UINT_PTR param_1, UINT_PTR param_2)
+ {
+     notify->send_notify = TRUE;
++    notify->device_change = FALSE;
+     notify->dev_id = dev_id;
+     notify->msg = msg;
+     notify->param_1 = param_1;
+@@ -498,9 +1635,64 @@ static void set_out_notify(struct notify_context *notify, struct midi_dest *dest
+     notify->instance = dest->midiDesc.dwInstance;
+ }
+ 
+-static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, struct notify_context *notify)
++static struct midi_dest *find_dest(UINT_PTR token)
+ {
+-    int ret;
++    struct midi_dest *dest;
++    for (dest = all_dests; dest; dest = dest->next) if (dest->token == token) return dest;
++    return NULL;
++}
++
++static struct midi_src *find_src(UINT_PTR token)
++{
++    struct midi_src *src;
++    for (src = all_srcs; src; src = src->next) if (src->token == token) return src;
++    return NULL;
++}
++
++static struct midi_dest *get_dest_by_id(UINT id)
++{
++    if (id & MIDI_ENDPOINT_ID_FLAG) return find_dest(id & ~MIDI_ENDPOINT_ID_FLAG);
++    return id < num_dests ? dests[id] : NULL;
++}
++
++static struct midi_src *get_src_by_id(UINT id)
++{
++    if (id & MIDI_ENDPOINT_ID_FLAG) return find_src(id & ~MIDI_ENDPOINT_ID_FLAG);
++    return id < num_srcs ? srcs[id] : NULL;
++}
++
++static UINT midi_out_snapshot(UINT capacity, UINT *ids, UINT *count)
++{
++    UINT i, ret = MMSYSERR_NOERROR;
++
++    if (!count) return MMSYSERR_INVALPARAM;
++    pthread_rwlock_rdlock(&topology_lock);
++    *count = num_dests;
++    if (ids && capacity >= num_dests)
++        for (i = 0; i < num_dests; ++i) ids[i] = MIDI_ENDPOINT_ID_FLAG | dests[i]->token;
++    else if (ids || capacity) ret = MMSYSERR_INVALPARAM;
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
++}
++
++static UINT midi_in_snapshot(UINT capacity, UINT *ids, UINT *count)
++{
++    UINT i, ret = MMSYSERR_NOERROR;
++
++    if (!count) return MMSYSERR_INVALPARAM;
++    pthread_rwlock_rdlock(&topology_lock);
++    *count = num_srcs;
++    if (ids && capacity >= num_srcs)
++        for (i = 0; i < num_srcs; ++i) ids[i] = MIDI_ENDPOINT_ID_FLAG | srcs[i]->token;
++    else if (ids || capacity) ret = MMSYSERR_INVALPARAM;
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
++}
++
++static UINT midi_out_open(UINT dev_id, UINT_PTR *user, MIDIOPENDESC *midi_desc, UINT flags,
++                          struct notify_context *notify)
++{
++    int ret = -1;
+     int port_out;
+     char port_out_name[32];
+     snd_seq_t *midi_seq;
+@@ -513,21 +1705,28 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
+         WARN("Invalid Parameter !\n");
+         return MMSYSERR_INVALPARAM;
+     }
+-    if (dev_id >= num_dests) return MMSYSERR_BADDEVICEID;
+-    dest = dests + dev_id;
++    pthread_rwlock_wrlock(&topology_lock);
++    if (!(dest = get_dest_by_id(dev_id)))
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        return MMSYSERR_BADDEVICEID;
++    }
+     if (dest->midiDesc.hMidi != 0)
+     {
+         WARN("device already open !\n");
++        pthread_rwlock_unlock(&topology_lock);
+         return MMSYSERR_ALLOCATED;
+     }
+-    if (!dest->bEnabled)
++    if (!dest->online)
+     {
+         WARN("device disabled !\n");
++        pthread_rwlock_unlock(&topology_lock);
+         return MIDIERR_NODEVICE;
+     }
+     if ((flags & ~CALLBACK_TYPEMASK) != 0)
+     {
+         WARN("bad dwFlags\n");
++        pthread_rwlock_unlock(&topology_lock);
+         return MMSYSERR_INVALFLAG;
+     }
+ 
+@@ -537,10 +1736,14 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
+     case MOD_MIDIPORT:
+     case MOD_SYNTH:
+         if (!(midi_seq = seq_open(NULL)))
++        {
++            pthread_rwlock_unlock(&topology_lock);
+             return MMSYSERR_ALLOCATED;
++        }
+         break;
+     default:
+         WARN("Technology not supported (yet) %d !\n", dest->caps.wTechnology);
++        pthread_rwlock_unlock(&topology_lock);
+         return MMSYSERR_NOTENABLED;
+     }
+ 
+@@ -548,14 +1751,16 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
+     dest->wFlags = HIWORD(flags & CALLBACK_TYPEMASK);
+     dest->midiDesc = *midi_desc;
+     dest->seq = midi_seq;
++    for (dest->open_dev_id = 0; dest->open_dev_id < num_dests; ++dest->open_dev_id)
++        if (dests[dest->open_dev_id] == dest) break;
+ 
+     seq_lock();
+     /* Create a port dedicated to a specific device */
+     /* Keep the old name without a number for the first port */
+-    if (dev_id)
+-        sprintf(port_out_name, "WINE ALSA Output #%d", dev_id);
++    if (dest->token != 1)
++        sprintf(port_out_name, "WINE ALSA Output #%u", dest->token);
+ 
+-    port_out = snd_seq_create_simple_port(midi_seq, dev_id ? port_out_name : "WINE ALSA Output",
++    port_out = snd_seq_create_simple_port(midi_seq, dest->token != 1 ? port_out_name : "WINE ALSA Output",
+                                           SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ | SND_SEQ_PORT_CAP_SUBS_WRITE,
+                                           SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_APPLICATION);
+ 
+@@ -580,32 +1785,49 @@ static UINT midi_out_open(WORD dev_id, MIDIOPENDESC *midi_desc, UINT flags, stru
+     }
+     seq_unlock();
+ 
+-    if (port_out < 0)
++    if (port_out < 0 || ret < 0)
++    {
++        if (port_out >= 0)
++        {
++            seq_lock();
++            snd_seq_delete_simple_port(midi_seq, port_out);
++            seq_unlock();
++        }
++        dest->midiDesc.hMidi = 0;
++        dest->seq = NULL;
++        dest->port_out = -1;
++        dest->connected = FALSE;
++        seq_close();
++        pthread_rwlock_unlock(&topology_lock);
+         return MMSYSERR_NOTENABLED;
++    }
+ 
+     TRACE("Output port :%d connected %d:%d\n", port_out, dest->addr.client, dest->addr.port);
+ 
++    dest->connected = TRUE;
++    *user = dest->token;
+     set_out_notify(notify, dest, dev_id, MOM_OPEN, 0, 0);
++    pthread_rwlock_unlock(&topology_lock);
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_out_close(WORD dev_id, struct notify_context *notify)
++static UINT midi_out_close(UINT_PTR token, struct notify_context *notify)
+ {
+     struct midi_dest *dest;
+ 
+-    TRACE("(%04X);\n", dev_id);
+-
+-    if (dev_id >= num_dests)
++    TRACE("(%lu);\n", (unsigned long)token);
++    pthread_rwlock_wrlock(&topology_lock);
++    if (!(dest = find_dest(token)))
+     {
+-        WARN("bad device ID : %d\n", dev_id);
++        WARN("bad device token %lu\n", (unsigned long)token);
++        pthread_rwlock_unlock(&topology_lock);
+         return MMSYSERR_BADDEVICEID;
+     }
+ 
+-    dest = dests + dev_id;
+-
+     if (dest->midiDesc.hMidi == 0)
+     {
+         WARN("device not opened !\n");
++        pthread_rwlock_unlock(&topology_lock);
+         return MMSYSERR_ERROR;
+     }
+ 
+@@ -615,6 +1837,7 @@ static UINT midi_out_close(WORD dev_id, struct notify_context *notify)
+     if (dest->seq == NULL)
+     {
+         WARN("can't close !\n");
++        pthread_rwlock_unlock(&topology_lock);
+         return MMSYSERR_ERROR;
+     }
+ 
+@@ -633,29 +1856,24 @@ static UINT midi_out_close(WORD dev_id, struct notify_context *notify)
+         break;
+     default:
+         WARN("Technology not supported (yet) %d !\n", dest->caps.wTechnology);
++        pthread_rwlock_unlock(&topology_lock);
+         return MMSYSERR_NOTENABLED;
+     }
+ 
+-    set_out_notify(notify, dest, dev_id, MOM_CLOSE, 0, 0);
++    set_out_notify(notify, dest, dest->open_dev_id, MOM_CLOSE, 0, 0);
+ 
+     dest->midiDesc.hMidi = 0;
++    dest->connected = FALSE;
+ 
++    pthread_rwlock_unlock(&topology_lock);
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_out_data(WORD dev_id, UINT data)
++static UINT midi_out_data_locked(struct midi_dest *dest, UINT data)
+ {
+     BYTE evt = LOBYTE(LOWORD(data)), d1, d2;
+-    struct midi_dest *dest;
+-
+-    TRACE("(%04X, %08X);\n", dev_id, data);
+-
+-    if (dev_id >= num_dests) return MMSYSERR_BADDEVICEID;
+-    dest = dests + dev_id;
+ 
+-    if (!dest->bEnabled) return MIDIERR_NODEVICE;
+-
+-    if (dest->seq == NULL)
++    if (!dest->online || !dest->connected || dest->seq == NULL)
+     {
+         WARN("can't play !\n");
+         return MIDIERR_NODEVICE;
+@@ -790,26 +2008,34 @@ static UINT midi_out_data(WORD dev_id, UINT data)
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_out_long_data(WORD dev_id, MIDIHDR *hdr, UINT hdr_size, struct notify_context *notify)
++static UINT midi_out_data(UINT_PTR token, UINT data)
+ {
+     struct midi_dest *dest;
++    UINT ret;
++
++    TRACE("(%lu, %08X);\n", (unsigned long)token, data);
++    pthread_rwlock_rdlock(&topology_lock);
++    if (!(dest = find_dest(token)) || !dest->midiDesc.hMidi)
++        ret = MMSYSERR_BADDEVICEID;
++    else
++        ret = midi_out_data_locked(dest, data);
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
++}
++
++static UINT midi_out_long_data_locked(struct midi_dest *dest, MIDIHDR *hdr, UINT hdr_size,
++                                      struct notify_context *notify)
++{
+     int len_add = 0;
+     BYTE *data, *new_data = NULL;
+     snd_seq_event_t event;
+ 
+-    TRACE("(%04X, %p, %08X);\n", dev_id, hdr, hdr_size);
+-
+     /* Note: MS doc does not say much about the dwBytesRecorded member of the MIDIHDR structure
+      * but it seems to be used only for midi input.
+      * Taking a look at the WAVEHDR structure (which is quite similar) confirms this assumption.
+      */
+ 
+-    if (dev_id >= num_dests) return MMSYSERR_BADDEVICEID;
+-    dest = dests + dev_id;
+-
+-    if (!dest->bEnabled) return MIDIERR_NODEVICE;
+-
+-    if (dest->seq == NULL)
++    if (!dest->online || !dest->connected || dest->seq == NULL)
+     {
+         WARN("can't play !\n");
+         return MIDIERR_NODEVICE;
+@@ -885,13 +2111,29 @@ static UINT midi_out_long_data(WORD dev_id, MIDIHDR *hdr, UINT hdr_size, struct
+     dest->runningStatus = 0;
+     hdr->dwFlags &= ~MHDR_INQUEUE;
+     hdr->dwFlags |= MHDR_DONE;
+-    set_out_notify(notify, dest, dev_id, MOM_DONE, (DWORD_PTR)hdr, 0);
++    set_out_notify(notify, dest, dest->open_dev_id, MOM_DONE, (DWORD_PTR)hdr, 0);
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_out_prepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
++static UINT midi_out_long_data(UINT_PTR token, MIDIHDR *hdr, UINT hdr_size,
++                               struct notify_context *notify)
++{
++    struct midi_dest *dest;
++    UINT ret;
++
++    TRACE("(%lu, %p, %08X);\n", (unsigned long)token, hdr, hdr_size);
++    pthread_rwlock_rdlock(&topology_lock);
++    if (!(dest = find_dest(token)) || !dest->midiDesc.hMidi)
++        ret = MMSYSERR_BADDEVICEID;
++    else
++        ret = midi_out_long_data_locked(dest, hdr, hdr_size, notify);
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
++}
++
++static UINT midi_out_prepare(UINT_PTR token, MIDIHDR *hdr, UINT hdr_size)
+ {
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr || !hdr->lpData)
+         return MMSYSERR_INVALPARAM;
+@@ -904,9 +2146,9 @@ static UINT midi_out_prepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_out_unprepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
++static UINT midi_out_unprepare(UINT_PTR token, MIDIHDR *hdr, UINT hdr_size)
+ {
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr || !hdr->lpData)
+         return MMSYSERR_INVALPARAM;
+@@ -919,50 +2161,87 @@ static UINT midi_out_unprepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_out_get_devcaps(WORD dev_id, MIDIOUTCAPSW *caps, UINT size)
++static UINT midi_out_get_devcaps(UINT dev_id, UINT_PTR token, MIDIOUTCAPSW *caps, UINT size)
+ {
++    struct midi_dest *dest;
++    UINT ret = MMSYSERR_NOERROR;
++
+     TRACE("(%04X, %p, %08X);\n", dev_id, caps, size);
+ 
+-    if (dev_id >= num_dests) return MMSYSERR_BADDEVICEID;
+     if (!caps) return MMSYSERR_INVALPARAM;
+-
+-    memcpy(caps, &dests[dev_id].caps, min(size, sizeof(*caps)));
+-
+-    return MMSYSERR_NOERROR;
++    pthread_rwlock_rdlock(&topology_lock);
++    if (token)
++    {
++        if (!(dest = find_dest(token))) ret = MMSYSERR_BADDEVICEID;
++        else memcpy(caps, &dest->caps, min(size, sizeof(*caps)));
++    }
++    else if (!(dest = get_dest_by_id(dev_id))) ret = MMSYSERR_BADDEVICEID;
++    else memcpy(caps, &dest->caps, min(size, sizeof(*caps)));
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
+ }
+ 
+-static UINT midi_out_get_volume(WORD dev_id, UINT* volume)
++static UINT midi_out_get_volume(UINT dev_id, UINT_PTR token, UINT* volume)
+ {
+-    if (!volume) return MMSYSERR_INVALPARAM;
+-    if (dev_id >= num_dests) return MMSYSERR_BADDEVICEID;
++    struct midi_dest *dest;
++    UINT ret;
+ 
+-    *volume = 0xFFFFFFFF;
+-    return (dests[dev_id].caps.dwSupport & MIDICAPS_VOLUME) ? 0 : MMSYSERR_NOTSUPPORTED;
++    if (!volume) return MMSYSERR_INVALPARAM;
++    pthread_rwlock_rdlock(&topology_lock);
++    if (token)
++    {
++        if (!(dest = find_dest(token))) ret = MMSYSERR_BADDEVICEID;
++        else
++        {
++            *volume = 0xffffffff;
++            ret = (dest->caps.dwSupport & MIDICAPS_VOLUME) ? 0 : MMSYSERR_NOTSUPPORTED;
++        }
++    }
++    else if (!(dest = get_dest_by_id(dev_id))) ret = MMSYSERR_BADDEVICEID;
++    else
++    {
++        *volume = 0xffffffff;
++        ret = (dest->caps.dwSupport & MIDICAPS_VOLUME) ? 0 : MMSYSERR_NOTSUPPORTED;
++    }
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
+ }
+ 
+-static UINT midi_out_reset(WORD dev_id)
++static UINT midi_out_reset(UINT_PTR token)
+ {
++    struct midi_dest *dest;
+     unsigned chn;
++    UINT ret = MMSYSERR_NOERROR;
+ 
+-    TRACE("(%04X);\n", dev_id);
+-
+-    if (dev_id >= num_dests) return MMSYSERR_BADDEVICEID;
+-    if (!dests[dev_id].bEnabled) return MIDIERR_NODEVICE;
++    TRACE("(%lu);\n", (unsigned long)token);
++    pthread_rwlock_rdlock(&topology_lock);
++    if (!(dest = find_dest(token)) || !dest->midiDesc.hMidi)
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        return MMSYSERR_BADDEVICEID;
++    }
++    if (!dest->online || !dest->connected)
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        return MIDIERR_NODEVICE;
++    }
+ 
+     /* stop all notes */
+     for (chn = 0; chn < 16; chn++)
+     {
+         /* turn off every note */
+-        midi_out_data(dev_id, (MIDI_CTL_ALL_NOTES_OFF << 8) | MIDI_CMD_CONTROL | chn);
++        ret = midi_out_data_locked(dest, (MIDI_CTL_ALL_NOTES_OFF << 8) | MIDI_CMD_CONTROL | chn);
+         /* resets controller settings */
+-        midi_out_data(dev_id, (MIDI_CTL_RESET_CONTROLLERS << 8) | MIDI_CMD_CONTROL | chn);
++        if (!ret) ret = midi_out_data_locked(dest, (MIDI_CTL_RESET_CONTROLLERS << 8) | MIDI_CMD_CONTROL | chn);
+     }
+-    dests[dev_id].runningStatus = 0;
++    dest->runningStatus = 0;
++    pthread_rwlock_unlock(&topology_lock);
+     /* FIXME: the LongData buffers must also be returned to the app */
+-    return MMSYSERR_NOERROR;
++    return ret;
+ }
+ 
+-static void handle_sysex_event(struct midi_src *src, BYTE *data, UINT len)
++static void handle_sysex_event(struct midi_src *src, BYTE *data, UINT len,
++                               struct pending_notify **head, struct pending_notify ***tail)
+ {
+     UINT pos = 0, copy_len, current_time = get_time_msec() - src->startTime;
+     struct notify_context notify;
+@@ -984,35 +2263,45 @@ static void handle_sysex_event(struct midi_src *src, BYTE *data, UINT len)
+         if ((hdr->dwBytesRecorded == hdr->dwBufferLength) ||
+             (*(BYTE*)(hdr->lpData + hdr->dwBytesRecorded - 1) == 0xF7))
+         { /* buffer full or end of sysex message */
++            set_in_notify(&notify, src, src->open_dev_id, MIM_LONGDATA, (DWORD_PTR)hdr, current_time);
++            if (!append_pending_notify(head, tail, src, &notify)) break;
+             src->lpQueueHdr = hdr->lpNext;
+             hdr->dwFlags &= ~MHDR_INQUEUE;
+             hdr->dwFlags |= MHDR_DONE;
+-            set_in_notify(&notify, src, src - srcs, MIM_LONGDATA, (DWORD_PTR)hdr, current_time);
+-            notify_post(&notify);
+         }
+     }
+ 
+     in_buffer_unlock();
+ }
+ 
+-static void handle_regular_event(struct midi_src *src, snd_seq_event_t *ev)
++static BOOL handle_regular_event(struct midi_src *src, snd_seq_event_t *ev,
++                                 struct notify_context *notify)
+ {
+     UINT data = 0, value, current_time = get_time_msec() - src->startTime;
+-    struct notify_context notify;
+ 
+     switch (ev->type)
+     {
+     case SND_SEQ_EVENT_NOTEOFF:
+         data = (ev->data.note.velocity << 16) | (ev->data.note.note << 8) | MIDI_CMD_NOTE_OFF | ev->data.control.channel;
++        src->active_notes[ev->data.note.channel][ev->data.note.note / 64] &=
++            ~((uint64_t)1 << (ev->data.note.note % 64));
+         break;
+     case SND_SEQ_EVENT_NOTEON:
+         data = (ev->data.note.velocity << 16) | (ev->data.note.note << 8) | MIDI_CMD_NOTE_ON | ev->data.control.channel;
++        if (ev->data.note.velocity)
++            src->active_notes[ev->data.note.channel][ev->data.note.note / 64] |=
++                (uint64_t)1 << (ev->data.note.note % 64);
++        else
++            src->active_notes[ev->data.note.channel][ev->data.note.note / 64] &=
++                ~((uint64_t)1 << (ev->data.note.note % 64));
+         break;
+     case SND_SEQ_EVENT_KEYPRESS:
+         data = (ev->data.note.velocity << 16) | (ev->data.note.note << 8) | MIDI_CMD_NOTE_PRESSURE | ev->data.control.channel;
+         break;
+     case SND_SEQ_EVENT_CONTROLLER:
+         data = (ev->data.control.value << 16) | (ev->data.control.param << 8) | MIDI_CMD_CONTROL | ev->data.control.channel;
++        if (ev->data.control.param == MIDI_CTL_SUSTAIN)
++            src->sustain[ev->data.control.channel] = ev->data.control.value >= 64;
+         break;
+     case SND_SEQ_EVENT_PITCHBEND:
+         value = ev->data.control.value + 0x2000;
+@@ -1055,114 +2344,40 @@ static void handle_regular_event(struct midi_src *src, snd_seq_event_t *ev)
+ 
+     if (data != 0)
+     {
+-        set_in_notify(&notify, src, src - srcs, MIM_DATA, data, current_time);
+-        notify_post(&notify);
+-    }
+-}
+-
+-/* A seq port appeared (device plugged in, or a client like PipeWire's
+- * Midi-Bridge re-created a port).  If its display name matches a device we
+- * enumerated at init, adopt the new address and re-subscribe any open
+- * input/output — subscriptions die silently when the old port went away. */
+-static void handle_port_start(snd_seq_addr_t addr)
+-{
+-    snd_seq_client_info_t *cinfo;
+-    snd_seq_port_info_t *pinfo;
+-    char name[MAXPNAMELEN];
+-    WCHAR nameW[MAXPNAMELEN];
+-    unsigned int cap, type, len;
+-    struct midi_dest *dest;
+-    struct midi_src *src;
+-    int ret = 0;
+-
+-    cinfo = calloc( 1, snd_seq_client_info_sizeof() );
+-    pinfo = calloc( 1, snd_seq_port_info_sizeof() );
+-
+-    seq_lock();
+-    if (!midi_seq || addr.client == snd_seq_client_id(midi_seq) ||
+-        snd_seq_get_any_client_info(midi_seq, addr.client, cinfo) < 0 ||
+-        snd_seq_get_any_port_info(midi_seq, addr.client, addr.port, pinfo) < 0)
+-        ret = -1;
+-    seq_unlock();
+-    if (ret < 0)
+-        goto done;
+-
+-    cap = snd_seq_port_info_get_capability(pinfo);
+-    type = snd_seq_port_info_get_type(pinfo);
+-    if (!type || (cap & SND_SEQ_PORT_CAP_NO_EXPORT))
+-        goto done;
+-
+-    len = port_display_name(cinfo, pinfo, name);
+-    ntdll_umbstowcs(name, len + 1, nameW, ARRAY_SIZE(nameW));
+-
+-    if (cap & SND_SEQ_PORT_CAP_READ)
+-    {
+-        for (src = srcs; src < srcs + num_srcs; src++)
+-        {
+-            if (wcscmp(src->caps.szPname, nameW)) continue;
+-            TRACE("re-attaching MidiIn %u '%s' to %d:%d\n",
+-                  (unsigned int)(src - srcs), name, addr.client, addr.port);
+-            src->addr = addr;
+-            if (src->midiDesc.hMidi && src->seq)
+-            {
+-                seq_lock();
+-                ret = snd_seq_connect_from(src->seq, src->port_in, addr.client, addr.port);
+-                seq_unlock();
+-                if (ret < 0)
+-                    WARN("Could not re-subscribe MidiIn '%s' to %d:%d: %s\n",
+-                         name, addr.client, addr.port, snd_strerror(ret));
+-            }
+-            break;
+-        }
+-    }
+-    if (cap & SND_SEQ_PORT_CAP_WRITE)
+-    {
+-        for (dest = dests; dest < dests + num_dests; dest++)
+-        {
+-            if (wcscmp(dest->caps.szPname, nameW)) continue;
+-            TRACE("re-attaching MidiOut %u '%s' to %d:%d\n",
+-                  (unsigned int)(dest - dests), name, addr.client, addr.port);
+-            dest->addr = addr;
+-            if (dest->midiDesc.hMidi && dest->seq && dest->port_out >= 0)
+-            {
+-                seq_lock();
+-                ret = snd_seq_connect_to(dest->seq, dest->port_out, addr.client, addr.port);
+-                seq_unlock();
+-                if (ret < 0)
+-                    WARN("Could not re-subscribe MidiOut '%s' to %d:%d: %s\n",
+-                         name, addr.client, addr.port, snd_strerror(ret));
+-            }
+-            break;
+-        }
++        set_in_notify(notify, src, src->open_dev_id, MIM_DATA, data, current_time);
++        return TRUE;
+     }
+-
+-done:
+-    free( cinfo );
+-    free( pinfo );
++    return FALSE;
+ }
+ 
+ static void midi_handle_event(snd_seq_event_t *ev)
+ {
++    struct pending_notify *pending = NULL, **pending_tail = &pending;
++    struct notify_context notify;
+     struct midi_src *src;
+-
+-    if (ev->source.client == SND_SEQ_CLIENT_SYSTEM && ev->source.port == SND_SEQ_PORT_SYSTEM_ANNOUNCE)
+-    {
+-        if (ev->type == SND_SEQ_EVENT_PORT_START)
+-            handle_port_start(ev->data.addr);
+-        return;
+-    }
++    unsigned int open_generation;
++    BOOL post_notify = FALSE;
+ 
+     /* Find the target device */
+-    for (src = srcs; src < srcs + num_srcs; src++)
++    pthread_rwlock_rdlock(&topology_lock);
++    for (src = all_srcs; src; src = src->next)
+         if ((ev->source.client == src->addr.client) && (ev->source.port == src->addr.port))
+             break;
+-    if ((src == srcs + num_srcs) || (src->state != 1))
++    if (!src || src->closing || !src->online || !src->connected || src->state != 1)
++    {
++        pthread_rwlock_unlock(&topology_lock);
+         return;
++    }
++    open_generation = src->open_generation;
+ 
+     if (ev->type == SND_SEQ_EVENT_SYSEX)
+-        handle_sysex_event(src, ev->data.ext.ptr, ev->data.ext.len);
++        handle_sysex_event(src, ev->data.ext.ptr, ev->data.ext.len, &pending, &pending_tail);
+     else
+-        handle_regular_event(src, ev);
++        post_notify = handle_regular_event(src, ev, &notify);
++    pthread_rwlock_unlock(&topology_lock);
++
++    if (post_notify) notify_post_current(src, open_generation, &notify, FALSE, NULL);
++    post_pending_notifies(pending);
+ }
+ 
+ static void *rec_thread_proc(void *arg)
+@@ -1175,6 +2390,7 @@ static void *rec_thread_proc(void *arg)
+     /* Add on one for the read end of the cancel pipe */
+     num_fds = snd_seq_poll_descriptors_count(midi_seq, POLLIN) + 1;
+     pollfd = malloc(num_fds * sizeof(struct pollfd));
++    if (!pollfd) return NULL;
+ 
+     while(1)
+     {
+@@ -1216,7 +2432,8 @@ static void *rec_thread_proc(void *arg)
+     return 0;
+ }
+ 
+-static UINT midi_in_open(WORD dev_id, MIDIOPENDESC *desc, UINT flags, struct notify_context *notify)
++static UINT midi_in_open(UINT dev_id, UINT_PTR *user, MIDIOPENDESC *desc, UINT flags,
++                         struct notify_context *notify)
+ {
+     struct midi_src *src;
+     int ret = 0, port_in;
+@@ -1232,21 +2449,28 @@ static UINT midi_in_open(WORD dev_id, MIDIOPENDESC *desc, UINT flags, struct not
+ 
+     /* FIXME: check that contents of desc are correct */
+ 
+-    if (dev_id >= num_srcs)
++    pthread_mutex_lock(&rec_thread_mutex);
++    pthread_rwlock_wrlock(&topology_lock);
++    if (!(src = get_src_by_id(dev_id)))
+     {
+         WARN("dev_id too large (%u) !\n", dev_id);
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MMSYSERR_BADDEVICEID;
+     }
+-    src = srcs + dev_id;
+ 
+-    if (src->state == -1)
++    if (!src->online)
+     {
+         WARN("device disabled\n");
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MIDIERR_NODEVICE;
+     }
+     if (src->midiDesc.hMidi)
+     {
+         WARN("device already open !\n");
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MMSYSERR_ALLOCATED;
+     }
+     if (flags & MIDI_IO_STATUS)
+@@ -1257,111 +2481,189 @@ static UINT midi_in_open(WORD dev_id, MIDIOPENDESC *desc, UINT flags, struct not
+     if (flags & ~CALLBACK_TYPEMASK)
+     {
+         FIXME("Bad flags %08X\n", flags);
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MMSYSERR_INVALFLAG;
+     }
+ 
+     if (!(midi_seq = seq_open(&port_in)))
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MMSYSERR_ERROR;
++    }
+ 
+     src->wFlags = HIWORD(flags & CALLBACK_TYPEMASK);
+ 
+     src->lpQueueHdr = NULL;
++    if (!++src->open_generation) ++src->open_generation;
++    src->closing = FALSE;
+     src->midiDesc = *desc;
+     src->state = 0;
+     src->startTime = 0;
+     src->seq = midi_seq;
+     src->port_in = port_in;
++    for (src->open_dev_id = 0; src->open_dev_id < num_srcs; ++src->open_dev_id)
++        if (srcs[src->open_dev_id] == src) break;
+ 
+     /* Connect our app port to the device port */
+     seq_lock();
+     ret = snd_seq_connect_from(midi_seq, port_in, src->addr.client, src->addr.port);
+     seq_unlock();
+     if (ret < 0)
++    {
++        src->midiDesc.hMidi = 0;
++        src->seq = NULL;
++        seq_close();
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MMSYSERR_NOTENABLED;
++    }
++    src->connected = TRUE;
+ 
+     TRACE("Input port :%d connected %d:%d\n", port_in, src->addr.client, src->addr.port);
+ 
+     if (num_midi_in_started++ == 0)
+     {
+-        pipe(rec_cancel_pipe);
+-        if (pthread_create(&rec_thread_id, NULL, rec_thread_proc, midi_seq))
++        if (pipe(rec_cancel_pipe) || pthread_create(&rec_thread_id, NULL, rec_thread_proc, midi_seq))
+         {
+-            close(rec_cancel_pipe[0]);
+-            close(rec_cancel_pipe[1]);
++            if (rec_cancel_pipe[0] >= 0) close(rec_cancel_pipe[0]);
++            if (rec_cancel_pipe[1] >= 0) close(rec_cancel_pipe[1]);
++            rec_cancel_pipe[0] = rec_cancel_pipe[1] = -1;
+             num_midi_in_started = 0;
+             WARN("Couldn't create thread for midi-in\n");
++            src->midiDesc.hMidi = 0;
++            src->seq = NULL;
++            src->connected = FALSE;
+             seq_close();
++            pthread_rwlock_unlock(&topology_lock);
++            pthread_mutex_unlock(&rec_thread_mutex);
+             return MMSYSERR_ERROR;
+         }
+     }
+ 
++    *user = src->token;
+     set_in_notify(notify, src, dev_id, MIM_OPEN, 0, 0);
++    pthread_rwlock_unlock(&topology_lock);
++    pthread_mutex_unlock(&rec_thread_mutex);
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_in_close(WORD dev_id, struct notify_context *notify)
++static UINT midi_in_close(UINT_PTR token, struct notify_context *notify)
+ {
+     struct midi_src *src;
++    BOOL stop_thread = FALSE;
+ 
+-    TRACE("(%04X);\n", dev_id);
+-
+-    if (dev_id >= num_srcs)
++    TRACE("(%lu);\n", (unsigned long)token);
++    pthread_mutex_lock(&rec_thread_mutex);
++    pthread_rwlock_wrlock(&topology_lock);
++    if (!(src = find_src(token)))
+     {
+-        WARN("dev_id too big (%u) !\n", dev_id);
++        WARN("bad device token %lu\n", (unsigned long)token);
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MMSYSERR_BADDEVICEID;
+     }
+-    src = srcs + dev_id;
+     if (!src->midiDesc.hMidi)
+     {
+         WARN("device not opened !\n");
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
++        return MMSYSERR_ERROR;
++    }
++    if (src->closing)
++    {
++        WARN("device already closing !\n");
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MMSYSERR_ERROR;
+     }
+     if (src->lpQueueHdr)
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
++        return MIDIERR_STILLPLAYING;
++    }
++    pthread_mutex_lock(&notify_mutex);
++    if (required_notify_pending_other(src, src->open_generation, pthread_self()))
++    {
++        pthread_mutex_unlock(&notify_mutex);
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MIDIERR_STILLPLAYING;
++    }
++    pthread_mutex_unlock(&notify_mutex);
+ 
+     if (src->seq == NULL)
+     {
+         WARN("ooops !\n");
++        pthread_rwlock_unlock(&topology_lock);
++        pthread_mutex_unlock(&rec_thread_mutex);
+         return MMSYSERR_ERROR;
+     }
+-    if (--num_midi_in_started == 0)
++    if (num_midi_in_started && --num_midi_in_started == 0)
+     {
+         TRACE("Stopping thread for midi-in\n");
+         write(rec_cancel_pipe[1], "x", 1);
++        stop_thread = TRUE;
++    }
++    src->closing = TRUE;
++    pthread_mutex_lock(&notify_mutex);
++    pthread_cond_broadcast(&notify_write_cond);
++    pthread_mutex_unlock(&notify_mutex);
++    pthread_rwlock_unlock(&topology_lock);
++
++    if (stop_thread)
++    {
+         pthread_join(rec_thread_id, NULL);
+         close(rec_cancel_pipe[0]);
+         close(rec_cancel_pipe[1]);
++        rec_cancel_pipe[0] = rec_cancel_pipe[1] = -1;
+         TRACE("Stopped thread for midi-in\n");
+     }
+ 
++    /* Do not hold the open/close mutex while waiting for a callback which may
++     * itself make a re-entrant close call. */
++    pthread_mutex_unlock(&rec_thread_mutex);
++    notify_cancel_source(src, src->open_generation);
++    pthread_mutex_lock(&rec_thread_mutex);
++    pthread_rwlock_wrlock(&topology_lock);
+     seq_lock();
+-    snd_seq_disconnect_from(src->seq, src->port_in, src->addr.client, src->addr.port);
++    if (src->connected)
++        snd_seq_disconnect_from(src->seq, src->port_in, src->addr.client, src->addr.port);
+     seq_unlock();
+     seq_close();
+ 
+-    set_in_notify(notify, src, dev_id, MIM_CLOSE, 0, 0);
++    set_in_notify(notify, src, src->open_dev_id, MIM_CLOSE, 0, 0);
+     src->midiDesc.hMidi = 0;
+     src->seq = NULL;
++    src->connected = FALSE;
++    memset(src->active_notes, 0, sizeof(src->active_notes));
++    memset(src->sustain, 0, sizeof(src->sustain));
+ 
++    pthread_rwlock_unlock(&topology_lock);
++    pthread_mutex_unlock(&rec_thread_mutex);
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_in_add_buffer(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
++static UINT midi_in_add_buffer(UINT_PTR token, MIDIHDR *hdr, UINT hdr_size)
+ {
+     struct midi_src *src;
+     MIDIHDR **next;
+ 
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
+-
+-    if (dev_id >= num_srcs) return MMSYSERR_BADDEVICEID;
+-    src = srcs + dev_id;
+-    if (src->state == -1) return MIDIERR_NODEVICE;
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (!hdr || hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr->dwBufferLength)
+         return MMSYSERR_INVALPARAM;
+     if (hdr->dwFlags & MHDR_INQUEUE) return MIDIERR_STILLPLAYING;
+     if (!(hdr->dwFlags & MHDR_PREPARED)) return MIDIERR_UNPREPARED;
+ 
++    pthread_rwlock_rdlock(&topology_lock);
++    if (!(src = find_src(token)) || !src->midiDesc.hMidi || src->closing)
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        return MMSYSERR_BADDEVICEID;
++    }
+     in_buffer_lock();
+ 
+     hdr->dwFlags &= ~WHDR_DONE;
+@@ -1374,13 +2676,14 @@ static UINT midi_in_add_buffer(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+     *next = hdr;
+ 
+     in_buffer_unlock();
++    pthread_rwlock_unlock(&topology_lock);
+ 
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_in_prepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
++static UINT midi_in_prepare(UINT_PTR token, MIDIHDR *hdr, UINT hdr_size)
+ {
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr || !hdr->lpData)
+         return MMSYSERR_INVALPARAM;
+@@ -1394,9 +2697,9 @@ static UINT midi_in_prepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_in_unprepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
++static UINT midi_in_unprepare(UINT_PTR token, MIDIHDR *hdr, UINT hdr_size)
+ {
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (hdr_size < offsetof(MIDIHDR, dwOffset) || !hdr || !hdr->lpData)
+         return MMSYSERR_INVALPARAM;
+@@ -1410,74 +2713,122 @@ static UINT midi_in_unprepare(WORD dev_id, MIDIHDR *hdr, UINT hdr_size)
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_in_get_devcaps(WORD dev_id, MIDIINCAPSW *caps, UINT size)
++static UINT midi_in_get_devcaps(UINT dev_id, UINT_PTR token, MIDIINCAPSW *caps, UINT size)
+ {
++    struct midi_src *src;
++    UINT ret = MMSYSERR_NOERROR;
++
+     TRACE("(%04X, %p, %08X);\n", dev_id, caps, size);
+ 
+-    if (dev_id >= num_srcs) return MMSYSERR_BADDEVICEID;
+     if (!caps) return MMSYSERR_INVALPARAM;
++    pthread_rwlock_rdlock(&topology_lock);
++    if (token)
++    {
++        if (!(src = find_src(token))) ret = MMSYSERR_BADDEVICEID;
++        else memcpy(caps, &src->caps, min(size, sizeof(*caps)));
++    }
++    else if (!(src = get_src_by_id(dev_id))) ret = MMSYSERR_BADDEVICEID;
++    else memcpy(caps, &src->caps, min(size, sizeof(*caps)));
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
++}
+ 
+-    memcpy(caps, &srcs[dev_id].caps, min(size, sizeof(*caps)));
+-
+-    return MMSYSERR_NOERROR;
++static UINT midi_out_get_interface(UINT dev_id, UINT_PTR token, UINT msg, void *buffer, UINT_PTR size)
++{
++    struct midi_dest *dest;
++    UINT ret;
++
++    pthread_rwlock_rdlock(&topology_lock);
++    if (token) dest = find_dest(token);
++    else dest = get_dest_by_id(dev_id);
++    ret = dest ? get_device_interface(msg, dest->interface_name, buffer, size) : MMSYSERR_BADDEVICEID;
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
+ }
+ 
+-static UINT midi_in_start(WORD dev_id)
++static UINT midi_in_get_interface(UINT dev_id, UINT_PTR token, UINT msg, void *buffer, UINT_PTR size)
+ {
+     struct midi_src *src;
++    UINT ret;
++
++    pthread_rwlock_rdlock(&topology_lock);
++    if (token) src = find_src(token);
++    else src = get_src_by_id(dev_id);
++    ret = src ? get_device_interface(msg, src->interface_name, buffer, size) : MMSYSERR_BADDEVICEID;
++    pthread_rwlock_unlock(&topology_lock);
++    return ret;
++}
+ 
+-    TRACE("(%04X);\n", dev_id);
++static UINT midi_in_start(UINT_PTR token)
++{
++    struct midi_src *src;
+ 
+-    if (dev_id >= num_srcs) return MMSYSERR_BADDEVICEID;
+-    src = srcs + dev_id;
+-    if (src->state == -1) return MIDIERR_NODEVICE;
++    TRACE("(%lu);\n", (unsigned long)token);
++    pthread_rwlock_wrlock(&topology_lock);
++    if (!(src = find_src(token)) || !src->midiDesc.hMidi || src->closing)
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        return MMSYSERR_BADDEVICEID;
++    }
+ 
+     src->state = 1;
+     src->startTime = get_time_msec();
++    pthread_rwlock_unlock(&topology_lock);
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT midi_in_stop(WORD dev_id)
++static UINT midi_in_stop(UINT_PTR token)
+ {
+     struct midi_src *src;
+ 
+-    TRACE("(%04X);\n", dev_id);
+-
+-    if (dev_id >= num_srcs) return MMSYSERR_BADDEVICEID;
+-    src = srcs + dev_id;
+-    if (src->state == -1) return MIDIERR_NODEVICE;
++    TRACE("(%lu);\n", (unsigned long)token);
++    pthread_rwlock_wrlock(&topology_lock);
++    if (!(src = find_src(token)) || !src->midiDesc.hMidi || src->closing)
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        return MMSYSERR_BADDEVICEID;
++    }
+ 
+     src->state = 0;
++    pthread_rwlock_unlock(&topology_lock);
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static DWORD midi_in_reset(WORD dev_id, struct notify_context *notify)
++static DWORD midi_in_reset(UINT_PTR token, struct notify_context *notify)
+ {
+     UINT cur_time = get_time_msec();
+     UINT err = MMSYSERR_NOERROR;
++    struct required_notify_entry *required;
+     struct midi_src *src;
+     MIDIHDR *hdr;
+ 
+-    TRACE("(%04X);\n", dev_id);
+-
+-    if (dev_id >= num_srcs) return MMSYSERR_BADDEVICEID;
+-    src = srcs + dev_id;
+-    if (src->state == -1) return MIDIERR_NODEVICE;
++    TRACE("(%lu);\n", (unsigned long)token);
++    pthread_rwlock_rdlock(&topology_lock);
++    if (!(src = find_src(token)) || !src->midiDesc.hMidi || src->closing)
++    {
++        pthread_rwlock_unlock(&topology_lock);
++        return MMSYSERR_BADDEVICEID;
++    }
+ 
+     in_buffer_lock();
+ 
+     if (src->lpQueueHdr)
+     {
+-        hdr = src->lpQueueHdr;
+-        src->lpQueueHdr = hdr->lpNext;
+-        hdr->dwFlags &= ~MHDR_INQUEUE;
+-        hdr->dwFlags |= MHDR_DONE;
+-        set_in_notify(notify, src, dev_id, MIM_LONGDATA, (DWORD_PTR)hdr, cur_time - src->startTime);
+-        if (src->lpQueueHdr) err = ERROR_RETRY; /* ask the client to call again */
++        if (!(required = register_required_notify(src, TRUE))) err = MMSYSERR_NOMEM;
++        else
++        {
++            hdr = src->lpQueueHdr;
++            src->lpQueueHdr = hdr->lpNext;
++            hdr->dwFlags &= ~MHDR_INQUEUE;
++            hdr->dwFlags |= MHDR_DONE;
++            set_in_notify(notify, src, src->open_dev_id, MIM_LONGDATA, (DWORD_PTR)hdr,
++                          cur_time - src->startTime);
++            if (src->lpQueueHdr) err = ERROR_RETRY; /* ask the client to call again */
++        }
+     }
+ 
+     in_buffer_unlock();
+-
++    pthread_rwlock_unlock(&topology_lock);
+     return err;
+ }
+ 
+@@ -1485,7 +2836,7 @@ NTSTATUS alsa_midi_out_message(void *args)
+ {
+     struct midi_out_message_params *params = args;
+ 
+-    params->notify->send_notify = FALSE;
++    memset(params->notify, 0, sizeof(*params->notify));
+ 
+     switch (params->msg)
+     {
+@@ -1499,37 +2850,51 @@ NTSTATUS alsa_midi_out_message(void *args)
+         *params->err = MMSYSERR_NOERROR;
+         break;
+     case MODM_OPEN:
+-        *params->err = midi_out_open(params->dev_id, (MIDIOPENDESC *)params->param_1, params->param_2, params->notify);
++        *params->err = midi_out_open(params->dev_id, (UINT_PTR *)params->user,
++                                     (MIDIOPENDESC *)params->param_1, params->param_2, params->notify);
+         break;
+     case MODM_CLOSE:
+-        *params->err = midi_out_close(params->dev_id, params->notify);
++        *params->err = midi_out_close(params->user, params->notify);
+         break;
+     case MODM_DATA:
+-        *params->err = midi_out_data(params->dev_id, params->param_1);
++        *params->err = midi_out_data(params->user, params->param_1);
+         break;
+     case MODM_LONGDATA:
+-        *params->err = midi_out_long_data(params->dev_id, (MIDIHDR *)params->param_1, params->param_2, params->notify);
++        *params->err = midi_out_long_data(params->user, (MIDIHDR *)params->param_1,
++                                          params->param_2, params->notify);
+         break;
+     case MODM_PREPARE:
+-        *params->err = midi_out_prepare(params->dev_id, (MIDIHDR *)params->param_1, params->param_2);
++        *params->err = midi_out_prepare(params->user, (MIDIHDR *)params->param_1, params->param_2);
+         break;
+     case MODM_UNPREPARE:
+-        *params->err = midi_out_unprepare(params->dev_id, (MIDIHDR *)params->param_1, params->param_2);
++        *params->err = midi_out_unprepare(params->user, (MIDIHDR *)params->param_1, params->param_2);
+         break;
+     case MODM_GETDEVCAPS:
+-        *params->err = midi_out_get_devcaps(params->dev_id, (MIDIOUTCAPSW *)params->param_1, params->param_2);
++        *params->err = midi_out_get_devcaps(params->dev_id, params->user,
++                                            (MIDIOUTCAPSW *)params->param_1, params->param_2);
+         break;
+     case MODM_GETNUMDEVS:
++        pthread_rwlock_rdlock(&topology_lock);
+         *params->err = num_dests;
++        pthread_rwlock_unlock(&topology_lock);
++        break;
++    case DRV_QUERYMIDISNAPSHOT:
++        *params->err = midi_out_snapshot(params->dev_id, (UINT *)params->param_1,
++                                         (UINT *)params->param_2);
+         break;
+     case MODM_GETVOLUME:
+-        *params->err = midi_out_get_volume(params->dev_id, (UINT *)params->param_1);
++        *params->err = midi_out_get_volume(params->dev_id, params->user, (UINT *)params->param_1);
+         break;
+     case MODM_SETVOLUME:
+         *params->err = 0;
+         break;
+     case MODM_RESET:
+-        *params->err = midi_out_reset(params->dev_id);
++        *params->err = midi_out_reset(params->user);
++        break;
++    case DRV_QUERYDEVICEINTERFACESIZE:
++    case DRV_QUERYDEVICEINTERFACE:
++        *params->err = midi_out_get_interface(params->dev_id, params->user, params->msg,
++                                              (void *)params->param_1, params->param_2);
+         break;
+     default:
+         TRACE("Unsupported message\n");
+@@ -1543,7 +2908,7 @@ NTSTATUS alsa_midi_in_message(void *args)
+ {
+     struct midi_in_message_params *params = args;
+ 
+-    params->notify->send_notify = FALSE;
++    memset(params->notify, 0, sizeof(*params->notify));
+ 
+     switch (params->msg)
+     {
+@@ -1557,34 +2922,47 @@ NTSTATUS alsa_midi_in_message(void *args)
+         *params->err = MMSYSERR_NOERROR;
+         break;
+     case MIDM_OPEN:
+-        *params->err = midi_in_open(params->dev_id, (MIDIOPENDESC *)params->param_1, params->param_2, params->notify);
++        *params->err = midi_in_open(params->dev_id, (UINT_PTR *)params->user,
++                                    (MIDIOPENDESC *)params->param_1, params->param_2, params->notify);
+         break;
+     case MIDM_CLOSE:
+-        *params->err = midi_in_close(params->dev_id, params->notify);
++        *params->err = midi_in_close(params->user, params->notify);
+         break;
+     case MIDM_ADDBUFFER:
+-        *params->err = midi_in_add_buffer(params->dev_id, (MIDIHDR *)params->param_1, params->param_2);
++        *params->err = midi_in_add_buffer(params->user, (MIDIHDR *)params->param_1, params->param_2);
+         break;
+     case MIDM_PREPARE:
+-        *params->err = midi_in_prepare(params->dev_id, (MIDIHDR *)params->param_1, params->param_2);
++        *params->err = midi_in_prepare(params->user, (MIDIHDR *)params->param_1, params->param_2);
+         break;
+     case MIDM_UNPREPARE:
+-        *params->err = midi_in_unprepare(params->dev_id, (MIDIHDR *)params->param_1, params->param_2);
++        *params->err = midi_in_unprepare(params->user, (MIDIHDR *)params->param_1, params->param_2);
+         break;
+     case MIDM_GETDEVCAPS:
+-        *params->err = midi_in_get_devcaps(params->dev_id, (MIDIINCAPSW *)params->param_1, params->param_2);
++        *params->err = midi_in_get_devcaps(params->dev_id, params->user,
++                                           (MIDIINCAPSW *)params->param_1, params->param_2);
+         break;
+     case MIDM_GETNUMDEVS:
++        pthread_rwlock_rdlock(&topology_lock);
+         *params->err = num_srcs;
++        pthread_rwlock_unlock(&topology_lock);
++        break;
++    case DRV_QUERYMIDISNAPSHOT:
++        *params->err = midi_in_snapshot(params->dev_id, (UINT *)params->param_1,
++                                        (UINT *)params->param_2);
+         break;
+     case MIDM_START:
+-        *params->err = midi_in_start(params->dev_id);
++        *params->err = midi_in_start(params->user);
+         break;
+     case MIDM_STOP:
+-        *params->err = midi_in_stop(params->dev_id);
++        *params->err = midi_in_stop(params->user);
+         break;
+     case MIDM_RESET:
+-        *params->err = midi_in_reset(params->dev_id, params->notify);
++        *params->err = midi_in_reset(params->user, params->notify);
++        break;
++    case DRV_QUERYDEVICEINTERFACESIZE:
++    case DRV_QUERYDEVICEINTERFACE:
++        *params->err = midi_in_get_interface(params->dev_id, params->user, params->msg,
++                                             (void *)params->param_1, params->param_2);
+         break;
+     default:
+         TRACE("Unsupported message\n");
+@@ -1597,23 +2975,75 @@ NTSTATUS alsa_midi_in_message(void *args)
+ NTSTATUS alsa_midi_notify_wait(void *args)
+ {
+     struct midi_notify_wait_params *params = args;
++    struct notify_entry entry = {0};
+ 
+     pthread_mutex_lock(&notify_mutex);
+ 
+-    while (!notify_quit && notify_buffer_empty())
++    notify_thread_id = pthread_self();
++    notify_thread_known = TRUE;
++    if (notify_inflight)
++    {
++        if (notify_inflight_required)
++            remove_required_notify_locked(notify_inflight_required);
++        notify_inflight = FALSE;
++        notify_inflight_src = NULL;
++        notify_inflight_generation = 0;
++        notify_inflight_required = NULL;
++        pthread_cond_broadcast(&notify_done_cond);
++    }
++
++    while (!notify_quit && !device_change_pending && notify_buffer_empty())
+         pthread_cond_wait(&notify_read_cond, &notify_mutex);
+ 
+     *params->quit = notify_quit;
+     if (!notify_quit)
+     {
+-        notify_buffer_remove(params->notify);
+-        pthread_cond_signal(&notify_write_cond);
++        memset(params->notify, 0, sizeof(*params->notify));
++        if (device_change_pending)
++        {
++            device_change_pending = FALSE;
++            set_device_change_notify(params->notify);
++        }
++        else
++        {
++            notify_buffer_remove(&entry);
++            *params->notify = entry.context;
++            if (entry.src)
++            {
++                notify_inflight = TRUE;
++                notify_inflight_src = entry.src;
++                notify_inflight_generation = entry.open_generation;
++                notify_inflight_required = entry.required;
++                if (entry.required)
++                {
++                    entry.required->owner = pthread_self();
++                    entry.required->owner_valid = TRUE;
++                }
++            }
++            pthread_cond_signal(&notify_write_cond);
++        }
+     }
+     pthread_mutex_unlock(&notify_mutex);
+ 
+     return STATUS_SUCCESS;
+ }
+ 
++NTSTATUS alsa_midi_notify_done(void *args)
++{
++    struct required_notify_entry *entry;
++    pthread_t self = pthread_self();
++
++    pthread_mutex_lock(&notify_mutex);
++    for (entry = required_notifies; entry; entry = entry->next)
++    {
++        if (!entry->synchronous || !pthread_equal(entry->owner, self)) continue;
++        remove_required_notify_locked(entry);
++        break;
++    }
++    pthread_mutex_unlock(&notify_mutex);
++    return STATUS_SUCCESS;
++}
++
+ #ifdef _WIN64
+ 
+ typedef UINT PTR32;
+@@ -1621,6 +3051,7 @@ typedef UINT PTR32;
+ struct notify_context32
+ {
+     BOOL send_notify;
++    BOOL device_change;
+     WORD dev_id;
+     WORD msg;
+     UINT param_1;
+@@ -1631,10 +3062,17 @@ struct notify_context32
+     UINT instance;
+ };
+ 
++C_ASSERT(offsetof(struct notify_context32, device_change) == 4);
++C_ASSERT(offsetof(struct notify_context32, dev_id) == 8);
++C_ASSERT(offsetof(struct notify_context32, param_1) == 12);
++C_ASSERT(offsetof(struct notify_context32, instance) == 32);
++C_ASSERT(sizeof(struct notify_context32) == 36);
++
+ static void notify_to_notify32(struct notify_context32 *notify32,
+                                const struct notify_context *notify)
+ {
+     notify32->send_notify = notify->send_notify;
++    notify32->device_change = notify->device_change;
+     notify32->dev_id = notify->dev_id;
+     notify32->msg = notify->msg;
+     notify32->param_1 = notify->param_1;
+@@ -1668,9 +3106,9 @@ struct midi_hdr32
+     UINT dwReserved[8];
+ };
+ 
+-static UINT wow64_midi_out_prepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr_size)
++static UINT wow64_midi_out_prepare(UINT_PTR token, struct midi_hdr32 *hdr, UINT hdr_size)
+ {
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (hdr_size < offsetof(struct midi_hdr32, dwOffset) || !hdr || !hdr->lpData)
+         return MMSYSERR_INVALPARAM;
+@@ -1683,9 +3121,9 @@ static UINT wow64_midi_out_prepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT wow64_midi_out_unprepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr_size)
++static UINT wow64_midi_out_unprepare(UINT_PTR token, struct midi_hdr32 *hdr, UINT hdr_size)
+ {
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (hdr_size < offsetof(struct midi_hdr32, dwOffset) || !hdr || !hdr->lpData)
+         return MMSYSERR_INVALPARAM;
+@@ -1716,6 +3154,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+     struct notify_context notify;
+     MIDIOPENDESC open_desc;
+     MIDIHDR hdr;
++    UINT_PTR open_user = 0;
+     struct midi_out_message_params params =
+     {
+         .dev_id = params32->dev_id,
+@@ -1727,6 +3166,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     switch (params32->msg)
+     {
+@@ -1742,6 +3182,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+         open_desc.rgIds.wDeviceID = desc32->rgIds.wDeviceID;
+ 
+         params.param_1 = (UINT_PTR)&open_desc;
++        params.user = (UINT_PTR)&open_user;
+         break;
+ 
+     case MODM_LONGDATA:
+@@ -1759,13 +3200,13 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+     case MODM_PREPARE: /* prepare and unprepare are easier to handle explicitly */
+         hdr32 = ULongToPtr(params32->param_1);
+ 
+-        *params.err = wow64_midi_out_prepare(params32->dev_id, hdr32, params32->param_2);
++        *params.err = wow64_midi_out_prepare(params32->user, hdr32, params32->param_2);
+         return STATUS_SUCCESS;
+ 
+     case MODM_UNPREPARE:
+         hdr32 = ULongToPtr(params32->param_1);
+ 
+-        *params.err = wow64_midi_out_unprepare(params32->dev_id, hdr32, params32->param_2);
++        *params.err = wow64_midi_out_unprepare(params32->user, hdr32, params32->param_2);
+         return STATUS_SUCCESS;
+     }
+ 
+@@ -1773,6 +3214,9 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+ 
+     switch (params32->msg)
+     {
++    case MODM_OPEN:
++        if (!*params.err) *(UINT *)ULongToPtr(params32->user) = open_user;
++        break;
+     case MODM_LONGDATA:
+         hdr32 = ULongToPtr(params32->param_1);
+ 
+@@ -1780,7 +3224,7 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+         break;
+     }
+ 
+-    if (notify.send_notify)
++    if (notify.send_notify || notify.device_change)
+     {
+         notify_to_notify32(notify32, &notify);
+ 
+@@ -1790,9 +3234,9 @@ NTSTATUS alsa_wow64_midi_out_message(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
+-static UINT wow64_midi_in_prepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr_size)
++static UINT wow64_midi_in_prepare(UINT_PTR token, struct midi_hdr32 *hdr, UINT hdr_size)
+ {
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (hdr_size < offsetof(struct midi_hdr32, dwOffset) || !hdr || !hdr->lpData)
+         return MMSYSERR_INVALPARAM;
+@@ -1806,9 +3250,9 @@ static UINT wow64_midi_in_prepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr_
+     return MMSYSERR_NOERROR;
+ }
+ 
+-static UINT wow64_midi_in_unprepare(WORD dev_id, struct midi_hdr32 *hdr, UINT hdr_size)
++static UINT wow64_midi_in_unprepare(UINT_PTR token, struct midi_hdr32 *hdr, UINT hdr_size)
+ {
+-    TRACE("(%04X, %p, %d);\n", dev_id, hdr, hdr_size);
++    TRACE("(%lu, %p, %d);\n", (unsigned long)token, hdr, hdr_size);
+ 
+     if (hdr_size < offsetof(struct midi_hdr32, dwOffset) || !hdr || !hdr->lpData)
+         return MMSYSERR_INVALPARAM;
+@@ -1840,6 +3284,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+     struct notify_context notify;
+     MIDIOPENDESC open_desc;
+     MIDIHDR *hdr = NULL;
++    UINT_PTR open_user = 0;
+     struct midi_in_message_params params =
+     {
+         .dev_id = params32->dev_id,
+@@ -1851,6 +3296,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     switch (params32->msg)
+     {
+@@ -1866,6 +3312,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+         open_desc.rgIds.wDeviceID = desc32->rgIds.wDeviceID;
+ 
+         params.param_1 = (UINT_PTR)&open_desc;
++        params.user = (UINT_PTR)&open_user;
+         break;
+ 
+     case MIDM_ADDBUFFER:
+@@ -1875,6 +3322,7 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+         hdr->lpData = ULongToPtr(hdr32->lpData);
+         hdr->dwBufferLength = hdr32->dwBufferLength;
+         hdr->dwFlags = hdr32->dwFlags;
++        hdr->dwReserved[6] = (DWORD_PTR)&wow64_midi_hdr_cookie;
+         hdr->dwReserved[7] = params32->param_1; /* keep hdr32 for MIM_LONGDATA notification */
+ 
+         params.param_1 = (UINT_PTR)hdr;
+@@ -1884,13 +3332,13 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+     case MIDM_PREPARE: /* prepare and unprepare are easier to handle explicitly */
+         hdr32 = ULongToPtr(params32->param_1);
+ 
+-        *params.err = wow64_midi_in_prepare(params32->dev_id, hdr32, params32->param_2);
++        *params.err = wow64_midi_in_prepare(params32->user, hdr32, params32->param_2);
+         return STATUS_SUCCESS;
+ 
+     case MIDM_UNPREPARE:
+         hdr32 = ULongToPtr(params32->param_1);
+ 
+-        *params.err = wow64_midi_in_unprepare(params32->dev_id, hdr32, params32->param_2);
++        *params.err = wow64_midi_in_unprepare(params32->user, hdr32, params32->param_2);
+         return STATUS_SUCCESS;
+     }
+ 
+@@ -1898,6 +3346,9 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+ 
+     switch (params32->msg)
+     {
++    case MIDM_OPEN:
++        if (!*params.err) *(UINT *)ULongToPtr(params32->user) = open_user;
++        break;
+     case MIDM_ADDBUFFER:
+         hdr32 = ULongToPtr(params32->param_1);
+ 
+@@ -1912,11 +3363,11 @@ NTSTATUS alsa_wow64_midi_in_message(void *args)
+         break;
+     }
+ 
+-    if (notify.send_notify)
++    if (notify.send_notify || notify.device_change)
+     {
+         notify_to_notify32(notify32, &notify);
+ 
+-        if (notify.msg == MIM_LONGDATA)
++        if (notify.msg == MIM_LONGDATA || notify.msg == MIM_LONGERROR)
+         {
+             hdr = (MIDIHDR *)notify.param_1;
+             notify32->param_1 = hdr->dwReserved[7];
+@@ -1946,14 +3397,15 @@ NTSTATUS alsa_wow64_midi_notify_wait(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     alsa_midi_notify_wait(&params);
+ 
+-    if (!*params.quit && notify.send_notify)
++    if (!*params.quit && (notify.send_notify || notify.device_change))
+     {
+         notify_to_notify32(notify32, &notify);
+ 
+-        if (notify.msg == MIM_LONGDATA)
++        if (notify.msg == MIM_LONGDATA || notify.msg == MIM_LONGERROR)
+         {
+             hdr = (MIDIHDR *)notify.param_1;
+             notify32->param_1 = hdr->dwReserved[7];
+diff --git a/dlls/winealsa.drv/unixlib.h b/dlls/winealsa.drv/unixlib.h
+index 1a517b1..617a192 100644
+--- a/dlls/winealsa.drv/unixlib.h
++++ b/dlls/winealsa.drv/unixlib.h
+@@ -22,6 +22,7 @@ NTSTATUS alsa_midi_release(void *args);
+ NTSTATUS alsa_midi_out_message(void *args);
+ NTSTATUS alsa_midi_in_message(void *args);
+ NTSTATUS alsa_midi_notify_wait(void *args);
++NTSTATUS alsa_midi_notify_done(void *args);
+ 
+ #ifdef _WIN64
+ NTSTATUS alsa_wow64_midi_out_message(void *args);
+diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
+index c7e0dc2..a267681 100644
+--- a/dlls/winecoreaudio.drv/coreaudio.c
++++ b/dlls/winecoreaudio.drv/coreaudio.c
+@@ -1802,6 +1802,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     unix_midi_in_message,
+     unix_midi_notify_wait,
+     unix_not_implemented,
++    unix_not_implemented,
+ };
+ 
+ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
+@@ -2252,6 +2253,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+     unix_wow64_midi_in_message,
+     unix_wow64_midi_notify_wait,
+     unix_not_implemented,
++    unix_not_implemented,
+ };
+ 
+ C_ASSERT(ARRAYSIZE(__wine_unix_call_wow64_funcs) == funcs_count);
+diff --git a/dlls/winecoreaudio.drv/coremidi.c b/dlls/winecoreaudio.drv/coremidi.c
+index 98d1ace..3d993d1 100644
+--- a/dlls/winecoreaudio.drv/coremidi.c
++++ b/dlls/winecoreaudio.drv/coremidi.c
+@@ -146,6 +146,7 @@ static void set_in_notify(struct notify_context *notify, struct midi_src *src, W
+                           UINT_PTR param_1, UINT_PTR param_2)
+ {
+     notify->send_notify = TRUE;
++    notify->device_change = FALSE;
+     notify->dev_id = dev_id;
+     notify->msg = msg;
+     notify->param_1 = param_1;
+@@ -550,6 +551,7 @@ static void set_out_notify(struct notify_context *notify, struct midi_dest *dest
+                            UINT_PTR param_1, UINT_PTR param_2)
+ {
+     notify->send_notify = TRUE;
++    notify->device_change = FALSE;
+     notify->dev_id = dev_id;
+     notify->msg = msg;
+     notify->param_1 = param_1;
+@@ -1144,6 +1146,7 @@ NTSTATUS unix_midi_out_message(void *args)
+     struct midi_out_message_params *params = args;
+ 
+     params->notify->send_notify = FALSE;
++    params->notify->device_change = FALSE;
+ 
+     switch (params->msg)
+     {
+@@ -1199,6 +1202,7 @@ NTSTATUS unix_midi_in_message(void *args)
+     struct midi_in_message_params *params = args;
+ 
+     params->notify->send_notify = FALSE;
++    params->notify->device_change = FALSE;
+ 
+     switch (params->msg)
+     {
+@@ -1283,6 +1287,7 @@ NTSTATUS unix_wow64_midi_init(void *args)
+ struct notify_context32
+ {
+     BOOL send_notify;
++    BOOL device_change;
+     WORD dev_id;
+     WORD msg;
+     UINT param_1;
+@@ -1293,10 +1298,17 @@ struct notify_context32
+     UINT instance;
+ };
+ 
++C_ASSERT(offsetof(struct notify_context32, device_change) == 4);
++C_ASSERT(offsetof(struct notify_context32, dev_id) == 8);
++C_ASSERT(offsetof(struct notify_context32, param_1) == 12);
++C_ASSERT(offsetof(struct notify_context32, instance) == 32);
++C_ASSERT(sizeof(struct notify_context32) == 36);
++
+ static void notify_to_notify32(struct notify_context32 *notify32,
+                                const struct notify_context *notify)
+ {
+     notify32->send_notify = notify->send_notify;
++    notify32->device_change = notify->device_change;
+     notify32->dev_id = notify->dev_id;
+     notify32->msg = notify->msg;
+     notify32->param_1 = notify->param_1;
+@@ -1389,6 +1401,7 @@ NTSTATUS unix_wow64_midi_out_message(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     switch (params32->msg)
+     {
+@@ -1513,6 +1526,7 @@ NTSTATUS unix_wow64_midi_in_message(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     switch (params32->msg)
+     {
+@@ -1608,6 +1622,7 @@ NTSTATUS unix_wow64_midi_notify_wait(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     unix_midi_notify_wait(&params);
+ 
+diff --git a/dlls/wineoss.drv/oss.c b/dlls/wineoss.drv/oss.c
+index 431264f..818c26c 100644
+--- a/dlls/wineoss.drv/oss.c
++++ b/dlls/wineoss.drv/oss.c
+@@ -1668,6 +1668,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     oss_midi_out_message,
+     oss_midi_in_message,
+     oss_midi_notify_wait,
++    oss_not_implemented,
+     oss_aux_message,
+ };
+ 
+@@ -2158,6 +2159,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+     oss_wow64_midi_out_message,
+     oss_wow64_midi_in_message,
+     oss_wow64_midi_notify_wait,
++    oss_not_implemented,
+     oss_wow64_aux_message,
+ };
+ 
+diff --git a/dlls/wineoss.drv/ossmidi.c b/dlls/wineoss.drv/ossmidi.c
+index f584491..afea23c 100644
+--- a/dlls/wineoss.drv/ossmidi.c
++++ b/dlls/wineoss.drv/ossmidi.c
+@@ -254,6 +254,7 @@ static void set_in_notify(struct notify_context *notify, struct midi_src *src, W
+                           UINT_PTR param_1, UINT_PTR param_2)
+ {
+     notify->send_notify = TRUE;
++    notify->device_change = FALSE;
+     notify->dev_id = dev_id;
+     notify->msg = msg;
+     notify->param_1 = param_1;
+@@ -621,6 +622,7 @@ static void set_out_notify(struct notify_context *notify, struct midi_dest *dest
+                            UINT_PTR param_1, UINT_PTR param_2)
+ {
+     notify->send_notify = TRUE;
++    notify->device_change = FALSE;
+     notify->dev_id = dev_id;
+     notify->msg = msg;
+     notify->param_1 = param_1;
+@@ -1656,6 +1658,7 @@ NTSTATUS oss_midi_out_message(void *args)
+     struct midi_out_message_params *params = args;
+ 
+     params->notify->send_notify = FALSE;
++    params->notify->device_change = FALSE;
+ 
+     switch (params->msg)
+     {
+@@ -1716,6 +1719,7 @@ NTSTATUS oss_midi_in_message(void *args)
+     struct midi_in_message_params *params = args;
+ 
+     params->notify->send_notify = FALSE;
++    params->notify->device_change = FALSE;
+ 
+     switch (params->msg)
+     {
+@@ -1795,6 +1799,7 @@ typedef UINT PTR32;
+ struct notify_context32
+ {
+     BOOL send_notify;
++    BOOL device_change;
+     WORD dev_id;
+     WORD msg;
+     UINT param_1;
+@@ -1805,10 +1810,17 @@ struct notify_context32
+     UINT instance;
+ };
+ 
++C_ASSERT(offsetof(struct notify_context32, device_change) == 4);
++C_ASSERT(offsetof(struct notify_context32, dev_id) == 8);
++C_ASSERT(offsetof(struct notify_context32, param_1) == 12);
++C_ASSERT(offsetof(struct notify_context32, instance) == 32);
++C_ASSERT(sizeof(struct notify_context32) == 36);
++
+ static void notify_to_notify32(struct notify_context32 *notify32,
+                                const struct notify_context *notify)
+ {
+     notify32->send_notify = notify->send_notify;
++    notify32->device_change = notify->device_change;
+     notify32->dev_id = notify->dev_id;
+     notify32->msg = notify->msg;
+     notify32->param_1 = notify->param_1;
+@@ -1901,6 +1913,7 @@ NTSTATUS oss_wow64_midi_out_message(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     switch (params32->msg)
+     {
+@@ -2025,6 +2038,7 @@ NTSTATUS oss_wow64_midi_in_message(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     switch (params32->msg)
+     {
+@@ -2120,6 +2134,7 @@ NTSTATUS oss_wow64_midi_notify_wait(void *args)
+         .notify = &notify
+     };
+     notify32->send_notify = FALSE;
++    notify32->device_change = FALSE;
+ 
+     oss_midi_notify_wait(&params);
+ 
+diff --git a/dlls/winepulse.drv/pulse.c b/dlls/winepulse.drv/pulse.c
+index ef13a1e..b834268 100644
+--- a/dlls/winepulse.drv/pulse.c
++++ b/dlls/winepulse.drv/pulse.c
+@@ -2567,6 +2567,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     pulse_not_implemented,
+     pulse_not_implemented,
+     pulse_not_implemented,
++    pulse_not_implemented,
+ };
+ 
+ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == funcs_count);
+@@ -3059,6 +3060,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+     pulse_not_implemented,
+     pulse_not_implemented,
+     pulse_not_implemented,
++    pulse_not_implemented,
+ };
+ 
+ C_ASSERT(ARRAYSIZE(__wine_unix_call_wow64_funcs) == funcs_count);
+diff --git a/dlls/winmm/lolvldrv.c b/dlls/winmm/lolvldrv.c
+index b0283e7..922ed9c 100644
+--- a/dlls/winmm/lolvldrv.c
++++ b/dlls/winmm/lolvldrv.c
+@@ -44,6 +44,9 @@ typedef struct tagWINE_LLTYPE {
+     UINT		wMaxId;		/* number of loaded devices (sum across all loaded drivers) */
+     LPWINE_MLD		lpMlds;		/* "static" mlds to access the part though device IDs */
+     int			nMapper;	/* index to mapper */
++    LPWINE_MLD          *dynamicMlds;   /* pointer-stable mappings for hotplug-capable MIDI IDs */
++    UINT                 dynamicCapacity;
++    WINE_MLD             mapperMld;
+ } WINE_LLTYPE;
+ 
+ static WINE_LLTYPE llTypes[MMDRV_MAX] = {
+@@ -59,9 +62,157 @@ static BOOL drivers_loaded;
+ static int MMDrvsHi;
+ static WINE_MM_DRIVER	MMDrvs[8];
+ static LPWINE_MLD	MM_MLDrvs[40];
++static SRWLOCK midi_refresh_lock = SRWLOCK_INIT;
+ 
+ static void MMDRV_Init(void);
+ 
++static BOOL is_midi_type(UINT type)
++{
++    return type == MMDRV_MIDIIN || type == MMDRV_MIDIOUT;
++}
++
++static BOOL ensure_dynamic_mlds(WINE_LLTYPE *llType, UINT count)
++{
++    LPWINE_MLD *mlds;
++    UINT i;
++
++    if (count <= llType->dynamicCapacity) return TRUE;
++    if (!(mlds = realloc(llType->dynamicMlds, count * sizeof(*mlds)))) return FALSE;
++    llType->dynamicMlds = mlds;
++    for (i = llType->dynamicCapacity; i < count; ++i)
++    {
++        if (!(mlds[i] = calloc(1, sizeof(*mlds[i]))))
++        {
++            llType->dynamicCapacity = i;
++            return FALSE;
++        }
++    }
++    llType->dynamicCapacity = count;
++    return TRUE;
++}
++
++static void rebuild_midi_mappings(UINT type, UINT driver_limit, UINT *const driver_ids[])
++{
++    WINE_LLTYPE *llType = &llTypes[type];
++    UINT i;
++
++    for (i = 0; i < driver_limit; ++i)
++    {
++        WINE_MM_DRIVER_PART *part = &MMDrvs[i].parts[type];
++        UINT id, local_id = 0;
++
++        if (MMDrvs[i].bIsMapper) continue;
++        id = part->nIDMin;
++        while (id < part->nIDMax)
++        {
++            WINE_MLD *mld = llType->dynamicMlds[id];
++            mld->uDeviceID = id;
++            mld->uDriverID = driver_ids && driver_ids[i] ? driver_ids[i][local_id] : local_id;
++            ++local_id;
++            mld->type = type;
++            mld->mmdIndex = i;
++            mld->isHandle = FALSE;
++            mld->dwDriverInstance = 0;
++            ++id;
++        }
++    }
++}
++
++static BOOL get_midi_snapshot(WINE_MM_DRIVER_PART *part, UINT **ids_ret, UINT *count_ret)
++{
++    UINT *ids = NULL, capacity = 0, count = 0, attempt;
++    DWORD ret;
++
++    for (attempt = 0; attempt < 8; ++attempt)
++    {
++        ret = part->fnMessage32(0, DRV_QUERYMIDISNAPSHOT, 0, 0, (DWORD_PTR)&count);
++        if (ret != MMSYSERR_NOERROR || count > 0x7fff) break;
++        if (!count)
++        {
++            *ids_ret = NULL;
++            *count_ret = 0;
++            return TRUE;
++        }
++        if (capacity < count)
++        {
++            UINT *new_ids = realloc(ids, count * sizeof(*ids));
++
++            if (!new_ids) break;
++            ids = new_ids;
++            capacity = count;
++        }
++        ret = part->fnMessage32(capacity, DRV_QUERYMIDISNAPSHOT, 0,
++                                (DWORD_PTR)ids, (DWORD_PTR)&count);
++        if (ret == MMSYSERR_NOERROR && count <= capacity)
++        {
++            *ids_ret = ids;
++            *count_ret = count;
++            return TRUE;
++        }
++    }
++    free(ids);
++    return FALSE;
++}
++
++static void MMDRV_RefreshMidi(UINT type)
++{
++    WINE_LLTYPE *llType = &llTypes[type];
++    UINT counts[ARRAY_SIZE(MMDrvs)] = {0};
++    UINT *driver_ids[ARRAY_SIZE(MMDrvs)] = {0};
++    UINT count, driver_limit, i, total = 0;
++
++    if (!is_midi_type(type) || !drivers_loaded) return;
++    AcquireSRWLockExclusive(&midi_refresh_lock);
++    EnterCriticalSection(&WINMM_cs);
++    driver_limit = MMDrvsHi;
++    LeaveCriticalSection(&WINMM_cs);
++
++    /* Low-level drivers may initialize Unix state or wait for topology.  Do
++     * not call them while holding WinMM's process-wide critical section. */
++    for (i = 0; i < driver_limit; ++i)
++    {
++        WINE_MM_DRIVER_PART *part = &MMDrvs[i].parts[type];
++        UINT msg = type == MMDRV_MIDIIN ? MIDM_GETNUMDEVS : MODM_GETNUMDEVS;
++
++        if (MMDrvs[i].bIsMapper || !part->fnMessage32) continue;
++        if (!get_midi_snapshot(part, &driver_ids[i], &count))
++        {
++            count = part->fnMessage32(0, msg, 0, 0, 0);
++            if (HIWORD(count)) count = 0;
++        }
++        if (count > 0x7fff - total)
++        {
++            WARN("Clamping %s device count to the WinMM handle namespace\n", llType->typestr);
++            count = 0x7fff - total;
++        }
++        counts[i] = count;
++        total += count;
++    }
++
++    EnterCriticalSection(&WINMM_cs);
++    if (!ensure_dynamic_mlds(llType, total))
++    {
++        ERR("Out of memory refreshing %s mappings\n", llType->typestr);
++        LeaveCriticalSection(&WINMM_cs);
++        goto done;
++    }
++    total = 0;
++    for (i = 0; i < driver_limit; ++i)
++    {
++        WINE_MM_DRIVER_PART *part = &MMDrvs[i].parts[type];
++        part->nIDMin = total;
++        total += counts[i];
++        part->nIDMax = total;
++    }
++    llType->wMaxId = total;
++    rebuild_midi_mappings(type, driver_limit, driver_ids);
++    LeaveCriticalSection(&WINMM_cs);
++
++done:
++    for (i = 0; i < driver_limit; ++i) free(driver_ids[i]);
++    ReleaseSRWLockExclusive(&midi_refresh_lock);
++}
++
+ static void MMDRV_InitSingleType(UINT type) {
+     if (!drivers_loaded) {
+         drivers_loaded = TRUE;
+@@ -74,10 +225,16 @@ static void MMDRV_InitSingleType(UINT type) {
+  */
+ UINT	MMDRV_GetNum(UINT type)
+ {
++    UINT count;
++
+     TRACE("(%04x)\n", type);
+     assert(type < MMDRV_MAX);
+     MMDRV_InitSingleType(type);
+-    return llTypes[type].wMaxId;
++    MMDRV_RefreshMidi(type);
++    EnterCriticalSection(&WINMM_cs);
++    count = llTypes[type].wMaxId;
++    LeaveCriticalSection(&WINMM_cs);
++    return count;
+ }
+ 
+ /**************************************************************************
+@@ -89,33 +246,54 @@ DWORD  MMDRV_Message(LPWINE_MLD mld, UINT wMsg, DWORD_PTR dwParam1,
+     LPWINE_MM_DRIVER 		lpDrv;
+     DWORD			ret;
+     WINE_MM_DRIVER_PART*	part;
+-    WINE_LLTYPE*		llType = &llTypes[mld->type];
++    DWORD_PTR driver_instance;
++    UINT type, device_id, driver_id, mmd_index;
++    BOOL is_handle;
++
++    EnterCriticalSection(&WINMM_cs);
++    type = mld->type;
++    device_id = mld->uDeviceID;
++    driver_id = mld->uDriverID;
++    mmd_index = mld->mmdIndex;
++    driver_instance = mld->dwDriverInstance;
++    is_handle = mld->isHandle;
+ 
+     TRACE("(%s %d %u 0x%08Ix 0x%08Ix 0x%08Ix)\n",
+-	  llTypes[mld->type].typestr, mld->uDeviceID, wMsg,
+-	  mld->dwDriverInstance, dwParam1, dwParam2);
+-
+-    if ((UINT16)mld->uDeviceID == (UINT16)-1) {
+-        if (llType->nMapper == -1) {
+-	    WARN("uDev=-1 requested on non-mapped ll type %s\n",
+-		 llTypes[mld->type].typestr);
+-	    return MMSYSERR_BADDEVICEID;
+-        }
+-    } else {
+-	if (mld->uDeviceID >= llType->wMaxId) {
+-	    WARN("uDev(%u) requested >= max (%d)\n", mld->uDeviceID, llType->wMaxId);
+-	    return MMSYSERR_BADDEVICEID;
+-	}
++		  llTypes[type].typestr, device_id, wMsg, driver_instance, dwParam1, dwParam2);
++
++    if ((UINT16)device_id == (UINT16)-1) {
++        if (llTypes[type].nMapper == -1) {
++		    WARN("uDev=-1 requested on non-mapped ll type %s\n",
++			 llTypes[type].typestr);
++		    LeaveCriticalSection(&WINMM_cs);
++		    return MMSYSERR_BADDEVICEID;
++		}
++    } else if (!is_handle) {
++		if (device_id >= llTypes[type].wMaxId) {
++		    WARN("uDev(%u) requested >= max (%d)\n", device_id, llTypes[type].wMaxId);
++		    LeaveCriticalSection(&WINMM_cs);
++		    return MMSYSERR_BADDEVICEID;
++		}
++
++        /* The pointer returned for a numeric ID is shared and may have been
++         * refreshed by another thread.  Resolve the current mapping while the
++         * table is locked, then carry the driver's stable endpoint ID across
++         * the low-level call. */
++        mld = is_midi_type(type) ? llTypes[type].dynamicMlds[device_id] :
++                                   &llTypes[type].lpMlds[device_id];
++        driver_id = mld->uDriverID;
++        mmd_index = mld->mmdIndex;
+     }
+ 
+-    lpDrv = &MMDrvs[mld->mmdIndex];
+-    part = &lpDrv->parts[mld->type];
++    lpDrv = &MMDrvs[mmd_index];
++    part = &lpDrv->parts[type];
+ 
+     assert(part->fnMessage32);
++    LeaveCriticalSection(&WINMM_cs);
+ 
+     TRACE("Calling message(dev=%d msg=%u usr=0x%08Ix p1=0x%08Ix p2=0x%08Ix)\n",
+-          mld->uDeviceID, wMsg, mld->dwDriverInstance, dwParam1, dwParam2);
+-    ret = part->fnMessage32(mld->uDeviceID, wMsg, mld->dwDriverInstance, dwParam1, dwParam2);
++	          driver_id, wMsg, driver_instance, dwParam1, dwParam2);
++    ret = part->fnMessage32(driver_id, wMsg, driver_instance, dwParam1, dwParam2);
+     TRACE("=> %s\n", WINMM_ErrorToString(ret));
+ 
+     return ret;
+@@ -148,6 +326,7 @@ LPWINE_MLD	MMDRV_Alloc(UINT size, UINT type, LPHANDLE hndl, DWORD* dwFlags,
+     *hndl = (HANDLE)(i | 0x8000);
+ 
+     mld->type = type;
++    mld->isHandle = TRUE;
+     if ((UINT_PTR)*hndl < MMDRV_GetNum(type) || ((UINT_PTR)*hndl >> 16)) {
+ 	/* FIXME: those conditions must be fulfilled so that:
+ 	 * - we can distinguish between device IDs and handles
+@@ -189,26 +368,37 @@ DWORD MMDRV_Open(LPWINE_MLD mld, UINT wMsg, DWORD_PTR dwParam1, DWORD dwFlags)
+     DWORD		dwRet = MMSYSERR_BADDEVICEID;
+     DWORD_PTR		dwInstance;
+     WINE_LLTYPE*	llType = &llTypes[mld->type];
++    WINE_MLD *mapping = NULL;
+     TRACE("(%p, %04x, 0x%08Ix, 0x%08lx)\n", mld, wMsg, dwParam1, dwFlags);
+ 
+-    mld->dwDriverInstance = (DWORD_PTR)&dwInstance;
++    MMDRV_RefreshMidi(mld->type);
++    EnterCriticalSection(&WINMM_cs);
+ 
+     if (mld->uDeviceID == (UINT)-1 || mld->uDeviceID == (UINT16)-1) {
+         TRACE("MAPPER mode requested !\n");
+         if (llType->nMapper == -1) {
+             WARN("Mapper not supported for type %s\n", llTypes[mld->type].typestr);
++            LeaveCriticalSection(&WINMM_cs);
+             return MMSYSERR_BADDEVICEID;
+         }
+-        mld->mmdIndex = llType->lpMlds[-1].mmdIndex;
+-        TRACE("Setting mmdIndex to %u\n", mld->mmdIndex);
+-        dwRet = MMDRV_Message(mld, wMsg, dwParam1, dwFlags);
++        mapping = is_midi_type(mld->type) ? &llType->mapperMld : &llType->lpMlds[-1];
+     } else {
+ 	if (mld->uDeviceID < llType->wMaxId) {
+-	    mld->mmdIndex = llType->lpMlds[mld->uDeviceID].mmdIndex;
+-	    TRACE("Setting mmdIndex to %u\n", mld->mmdIndex);
+-	    dwRet = MMDRV_Message(mld, wMsg, dwParam1, dwFlags);
++	    mapping = is_midi_type(mld->type) ? llType->dynamicMlds[mld->uDeviceID] :
++	                                         &llType->lpMlds[mld->uDeviceID];
+ 	}
+     }
++    if (mapping)
++    {
++        mld->mmdIndex = mapping->mmdIndex;
++        mld->uDriverID = mapping->uDriverID;
++        TRACE("Setting mmdIndex to %u, driver id to %u\n", mld->mmdIndex, mld->uDriverID);
++    }
++    LeaveCriticalSection(&WINMM_cs);
++    if (!mapping) return MMSYSERR_BADDEVICEID;
++
++    mld->dwDriverInstance = (DWORD_PTR)&dwInstance;
++    dwRet = MMDRV_Message(mld, wMsg, dwParam1, dwFlags);
+     if (dwRet == MMSYSERR_NOERROR)
+ 	mld->dwDriverInstance = dwInstance;
+     return dwRet;
+@@ -230,9 +420,9 @@ static LPWINE_MLD MMDRV_GetByID(UINT uDevID, UINT type)
+ {
+     TRACE("(%04x, %04x)\n", uDevID, type);
+     if (uDevID < llTypes[type].wMaxId)
+-	return &llTypes[type].lpMlds[uDevID];
++	return is_midi_type(type) ? llTypes[type].dynamicMlds[uDevID] : &llTypes[type].lpMlds[uDevID];
+     if ((uDevID == (UINT16)-1 || uDevID == (UINT)-1) && llTypes[type].nMapper != -1)
+-	return &llTypes[type].lpMlds[-1];
++	return is_midi_type(type) ? &llTypes[type].mapperMld : &llTypes[type].lpMlds[-1];
+     return NULL;
+ }
+ 
+@@ -248,9 +438,7 @@ LPWINE_MLD	MMDRV_Get(HANDLE _hndl, UINT type, BOOL bCanBeID)
+     assert(type < MMDRV_MAX);
+     MMDRV_InitSingleType(type);
+ 
+-    if (hndl >= llTypes[type].wMaxId &&
+-	hndl != (UINT16)-1 && hndl != (UINT)-1) {
+-	if (hndl & 0x8000) {
++    if (hndl != (UINT16)-1 && hndl != (UINT)-1 && (hndl & 0x8000)) {
+ 	    UINT idx = hndl & ~0x8000;
+ 	    if (idx < ARRAY_SIZE(MM_MLDrvs)) {
+                 __TRY
+@@ -264,10 +452,12 @@ LPWINE_MLD	MMDRV_Get(HANDLE _hndl, UINT type, BOOL bCanBeID)
+                 }
+                 __ENDTRY;
+ 	    }
+-	}
+     }
+     if (mld == NULL && bCanBeID) {
++	MMDRV_RefreshMidi(type);
++	EnterCriticalSection(&WINMM_cs);
+ 	mld = MMDRV_GetByID(hndl, type);
++	LeaveCriticalSection(&WINMM_cs);
+     }
+     return mld;
+ }
+@@ -353,6 +543,34 @@ static  BOOL	MMDRV_InitPerType(LPWINE_MM_DRIVER lpDrv, UINT type, UINT wMsg)
+     if (HIWORD(count))
+         return FALSE;
+ 
++    /* A MIDI driver's inventory may be empty until ALSA appears or a device is
++     * plugged in.  Keep its entry point installed and use mappings which can
++     * be rebuilt without invalidating an open handle. */
++    if (is_midi_type(type))
++    {
++        if (lpDrv->bIsMapper)
++        {
++            llTypes[type].nMapper = MMDrvsHi;
++            llTypes[type].mapperMld.uDeviceID = (UINT)-1;
++            llTypes[type].mapperMld.uDriverID = (UINT)-1;
++            llTypes[type].mapperMld.type = type;
++            llTypes[type].mapperMld.mmdIndex = MMDrvsHi;
++            llTypes[type].mapperMld.isHandle = FALSE;
++            llTypes[type].mapperMld.dwDriverInstance = 0;
++        }
++        else
++        {
++            if (count > 0x7fff - llTypes[type].wMaxId)
++                count = 0x7fff - llTypes[type].wMaxId;
++            if (!ensure_dynamic_mlds(&llTypes[type], llTypes[type].wMaxId + count)) return FALSE;
++            part->nIDMin = llTypes[type].wMaxId;
++            llTypes[type].wMaxId += count;
++            part->nIDMax = llTypes[type].wMaxId;
++            rebuild_midi_mappings(type, MMDrvsHi + 1, NULL);
++        }
++        return TRUE;
++    }
++
+     /* got some drivers */
+     if (lpDrv->bIsMapper) {
+         llTypes[type].nMapper = MMDrvsHi;
+@@ -375,16 +593,20 @@ static  BOOL	MMDRV_InitPerType(LPWINE_MM_DRIVER lpDrv, UINT type, UINT wMsg)
+     if (lpDrv->bIsMapper) {
+ 	TRACE("%s:Trans[%d] -> %s\n", llTypes[type].typestr, -1, MMDrvs[llTypes[type].nMapper].drvname);
+ 	llTypes[type].lpMlds[-1].uDeviceID = (UINT)-1;
++	llTypes[type].lpMlds[-1].uDriverID = (UINT)-1;
+ 	llTypes[type].lpMlds[-1].type = type;
+ 	llTypes[type].lpMlds[-1].mmdIndex = llTypes[type].nMapper;
++	llTypes[type].lpMlds[-1].isHandle = FALSE;
+ 	llTypes[type].lpMlds[-1].dwDriverInstance = 0;
+     }
+     for (i = k = 0; i <= MMDrvsHi; i++) {
+ 	while (MMDrvs[i].parts[type].nIDMin <= k && k < MMDrvs[i].parts[type].nIDMax) {
+ 	    TRACE("%s:Trans[%d] -> %s\n", llTypes[type].typestr, k, MMDrvs[i].drvname);
+ 	    llTypes[type].lpMlds[k].uDeviceID = k;
++	    llTypes[type].lpMlds[k].uDriverID = k;
+ 	    llTypes[type].lpMlds[k].type = type;
+ 	    llTypes[type].lpMlds[k].mmdIndex = i;
++	    llTypes[type].lpMlds[k].isHandle = FALSE;
+ 	    llTypes[type].lpMlds[k].dwDriverInstance = 0;
+ 	    k++;
+ 	}
+@@ -516,7 +738,7 @@ static  BOOL	MMDRV_ExitPerType(LPWINE_MM_DRIVER lpDrv, UINT type)
+  */
+ void MMDRV_Exit(void)
+ {
+-    unsigned int i;
++    unsigned int i, type;
+     TRACE("()\n");
+ 
+     for (i = 0; i < ARRAY_SIZE(MM_MLDrvs); i++)
+@@ -547,10 +769,12 @@ void MMDRV_Exit(void)
+         free(llTypes[MMDRV_AUX].lpMlds - 1);
+     if (llTypes[MMDRV_MIXER].lpMlds)
+         free(llTypes[MMDRV_MIXER].lpMlds - 1);
+-    if (llTypes[MMDRV_MIDIIN].lpMlds)
+-        free(llTypes[MMDRV_MIDIIN].lpMlds - 1);
+-    if (llTypes[MMDRV_MIDIOUT].lpMlds)
+-        free(llTypes[MMDRV_MIDIOUT].lpMlds - 1);
++    for (type = MMDRV_MIDIIN; type <= MMDRV_MIDIOUT; ++type)
++    {
++        for (i = 0; i < llTypes[type].dynamicCapacity; ++i)
++            free(llTypes[type].dynamicMlds[i]);
++        free(llTypes[type].dynamicMlds);
++    }
+     if (llTypes[MMDRV_WAVEIN].lpMlds)
+         free(llTypes[MMDRV_WAVEIN].lpMlds - 1);
+     if (llTypes[MMDRV_WAVEOUT].lpMlds)
+diff --git a/dlls/winmm/tests/midi.c b/dlls/winmm/tests/midi.c
+index 70a5375..6213975 100644
+--- a/dlls/winmm/tests/midi.c
++++ b/dlls/winmm/tests/midi.c
+@@ -189,6 +189,9 @@ static void test_midiIn_device(UINT udev, HWND hwnd)
+         rc = midiInPrepareHeader(hm, &mhdr, offsetof(MIDIHDR,dwOffset));
+         ok(!rc, "midiInPrepare rc=%s\n", mmsys_error(rc));
+         ok(mhdr.dwFlags == (MHDR_PREPARED|MHDR_INQUEUE), "dwFlags=%lx\n", mhdr.dwFlags);
++
++        rc = midiInClose(hm);
++        ok(rc == MIDIERR_STILLPLAYING, "midiInClose rc=%s\n", mmsys_error(rc));
+     }
+     rc = midiInReset(hm); /* Return any pending buffer */
+     ok(!rc, "midiInReset rc=%s\n", mmsys_error(rc));
+diff --git a/dlls/winmm/winemm.h b/dlls/winmm/winemm.h
+index 0bae816..c7df054 100644
+--- a/dlls/winmm/winemm.h
++++ b/dlls/winmm/winemm.h
+@@ -69,9 +69,11 @@ typedef struct tagWINE_MM_DRIVER {
+ 
+ typedef struct tagWINE_MLD {
+ /* EPP struct tagWINE_MLD*	lpNext; */		/* not used so far */
+-       UINT			uDeviceID;
+-       UINT			type;
+-       UINT			mmdIndex;		/* index to low-level driver in MMDrvs table */
++	UINT			uDeviceID;
++	UINT			uDriverID;		/* low-level driver-local device ID */
++	UINT			type;
++	UINT			mmdIndex;		/* index to low-level driver in MMDrvs table */
++	BOOL			isHandle;		/* opened instance, not an ID mapping */
+        DWORD_PTR		dwDriverInstance;	/* this value is driver related, as opposed to
+ 							 * opendesc.dwInstance which is client (callback) related */
+        WORD			dwFlags;
+diff --git a/dlls/winmm/winmm.c b/dlls/winmm/winmm.c
+index 73050e0..0127133 100644
+--- a/dlls/winmm/winmm.c
++++ b/dlls/winmm/winmm.c
+@@ -755,7 +755,7 @@ UINT WINAPI midiInClose(HMIDIIN hMidiIn)
+ 	return MMSYSERR_INVALHANDLE;
+ 
+     dwRet = MMDRV_Close(wmld, MIDM_CLOSE);
+-    MMDRV_Free(hMidiIn, wmld);
++    if (dwRet == MMSYSERR_NOERROR) MMDRV_Free(hMidiIn, wmld);
+     return dwRet;
+ }
+ 
+@@ -882,7 +882,12 @@ UINT WINAPI midiInMessage(HMIDIIN hMidiIn, UINT uMessage,
+     TRACE("(%p, %04X, %08IX, %08IX)\n", hMidiIn, uMessage, dwParam1, dwParam2);
+ 
+     if ((wmld = MMDRV_Get(hMidiIn, MMDRV_MIDIIN, FALSE)) == NULL)
+-	return MMSYSERR_INVALHANDLE;
++    {
++        /* Physical-feature messages use a device ID, not an open handle. */
++        if ((wmld = MMDRV_Get(hMidiIn, MMDRV_MIDIIN, TRUE)) != NULL)
++            return MMDRV_PhysicalFeatures(wmld, uMessage, dwParam1, dwParam2);
++        return MMSYSERR_INVALHANDLE;
++    }
+ 
+     switch (uMessage) {
+     case MIDM_OPEN:
+diff --git a/include/mmddk.h b/include/mmddk.h
+index 8baf42b..1df7966 100644
+--- a/include/mmddk.h
++++ b/include/mmddk.h
+@@ -84,6 +84,12 @@ typedef struct {
+ #define DRV_QUERYFUNCTIONINSTANCEID	(DRV_RESERVED + 17)
+ #define DRV_QUERYFUNCTIONINSTANCEIDSIZE	(DRV_RESERVED + 18)
+ 
++/* Wine-internal message used by hotplug-capable MIDI drivers.  The device ID
++ * is the output-array capacity, param1 is a UINT array, and param2 receives
++ * the current count.  Returned endpoint IDs have the high bit set. */
++#define DRV_QUERYMIDISNAPSHOT		(DRVM_USER + 0x100)
++#define MIDI_ENDPOINT_ID_FLAG		0x80000000u
++
+ #define DRVM_MAPPER_PREFERRED_FLAGS_PREFERREDONLY   0x00000001
+ 
+ #define WODM_INIT		DRVM_INIT
+-- 
+2.55.0
+

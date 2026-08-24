@@ -1,18 +1,20 @@
-# MIDI device reconnects
+# MIDI device hotplug
 
-Wine's ALSA MIDI driver subscribed to devices present at startup but did not
-restore the subscription after one disappeared and returned. Live then kept a
-stale port or received no input from the reconnected controller.
+Wine now watches the Linux MIDI list for the full Ableton Live session.
 
-[Patch 0028](../patches/0028-winealsa-re-subscribe-MIDI-devices-when-they-reappea.patch)
-retains the selected device identity and subscribes again when the same ALSA
-sequencer port reappears.
+A controller connected after Live starts appears in the Windows MIDI list.
+Returning controllers keep their open input and output connections when their
+device details identify one controller. Wine also ends held notes and sustain
+when an input leaves. It ends long messages in progress.
 
-Check the host graph with `aconnect -l`; `amidi -l` covers raw MIDI devices and
-does not show the sequencer connections Wine uses. Exercise disconnect and
-reconnect while Live runs, then send notes, controls, and clock data.
+Use `aconnect -l` to inspect the Linux MIDI graph. The automated check is:
 
-The patch covers a device known when Wine started. Discovery of a completely
-new MIDI device during the same Live process remains a separate case. A Live
-process started while the audio stack was unavailable may need a restart even
-after the host graph recovers.
+```bash
+./tools/test-midi-hotplug.sh
+```
+
+The check covers new devices, removal, repeated return, changed Linux device
+numbers, duplicate names and Windows device-change messages. Release approval
+adds real USB hardware and a supported Ableton Live build.
+
+[Issue 46](https://github.com/shibco/ableton-linux/issues/46) tracks this work.

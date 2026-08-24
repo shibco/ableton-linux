@@ -1,0 +1,61 @@
+Subject: d2d1: preserve the target pixel format across resize
+
+An hwnd render target can use an opaque pixel format. Resize rebuilt its bitmap
+with default properties, which changed the alpha mode to premultiplied.
+d2d_device_context_can_draw_cleartype() requires D2D1_ALPHA_MODE_IGNORE, so
+every resizable Direct2D window lost ClearType permanently on its first resize,
+and the subpixel rasteriser and per-channel blend became unreachable for the
+rest of the target's life.
+
+Pass the pixel format the target already reports, and derive the bitmap options
+from the surface, which is what passing no properties did. Naming a fixed
+D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW pair instead would
+drop D2D1_BITMAP_OPTIONS_GDI_COMPATIBLE: a target created with
+D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE has a swapchain flagged
+DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE, so its buffer reports that option, and
+d2d_bitmap_check_options_with_surface() accepts the narrower request without
+complaint. GetDC would then fail with D2DERR_TARGET_NOT_GDI_COMPATIBLE after
+the first resize.
+
+Measured with an hwnd render target created opaque: per-channel spread over the
+drawn text is 67.44 before a resize and 0.00 after it without this change, and
+64.79 either side with it. Measured with one created
+D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE: GetDC succeeds either side of a resize.
+
+diff --git a/dlls/d2d1/hwnd_render_target.c b/dlls/d2d1/hwnd_render_target.c
+index b60cb30..e5c6439 100644
+--- a/dlls/d2d1/hwnd_render_target.c
++++ b/dlls/d2d1/hwnd_render_target.c
+@@ -693,6 +693,7 @@ static D2D1_WINDOW_STATE STDMETHODCALLTYPE d2d_hwnd_render_target_CheckWindowSta
+ static HRESULT STDMETHODCALLTYPE d2d_hwnd_render_target_Resize(ID2D1HwndRenderTarget *iface, const D2D1_SIZE_U *size)
+ {
+     struct d2d_hwnd_render_target *render_target = impl_from_ID2D1HwndRenderTarget(iface);
++    D2D1_BITMAP_PROPERTIES1 bitmap_desc = {0};
+     IDXGISurface1 *dxgi_surface;
+     ID2D1DeviceContext *context;
+     ID2D1Bitmap1 *bitmap;
+@@ -700,6 +701,7 @@ static HRESULT STDMETHODCALLTYPE d2d_hwnd_render_target_Resize(ID2D1HwndRenderTa
+ 
+     TRACE("iface %p, width %u, height %u.\n", iface, size->width, size->height);
+ 
++    bitmap_desc.pixelFormat = ID2D1RenderTarget_GetPixelFormat(render_target->dxgi_target);
+     ID2D1RenderTarget_QueryInterface(render_target->dxgi_target, &IID_ID2D1DeviceContext, (void **)&context);
+     ID2D1DeviceContext_SetTarget(context, NULL);
+ 
+@@ -714,7 +716,15 @@ static HRESULT STDMETHODCALLTYPE d2d_hwnd_render_target_Resize(ID2D1HwndRenderTa
+             return hr;
+         }
+ 
+-        hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface(context, (IDXGISurface *)dxgi_surface, NULL, &bitmap);
++        /* Derive the options from the surface, as passing no properties did.
++         * A target created with D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE has a
++         * swapchain flagged DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE, so its buffer
++         * reports D2D1_BITMAP_OPTIONS_GDI_COMPATIBLE. Naming a fixed pair here
++         * drops that flag and GetDC then fails with
++         * D2DERR_TARGET_NOT_GDI_COMPATIBLE. */
++        bitmap_desc.bitmapOptions = d2d_get_bitmap_options_for_surface((IDXGISurface *)dxgi_surface);
++        hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface(context, (IDXGISurface *)dxgi_surface,
++                &bitmap_desc, &bitmap);
+         IDXGISurface1_Release(dxgi_surface);
+         if (FAILED(hr))
+         {

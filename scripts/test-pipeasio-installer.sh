@@ -53,7 +53,8 @@ run_isolated()
         XDG_STATE_HOME="$base/xdg/state" \
         XDG_CACHE_HOME="$base/xdg/cache" \
         XDG_RUNTIME_DIR="$base/xdg/run" \
-        TMPDIR="$base/tmp" "$@"
+        TMPDIR="$base/tmp" ABLETON_SHORTCUTS=preserve \
+        ABLETON_MAX_AUDIO_THREADS=off "$@"
 }
 
 write_probe()
@@ -375,7 +376,7 @@ make_runtime_only_kit()
         "$payload/$runtime_name/lib/wine/x86_64-unix"
     cp -- "$here/install.sh" "$here/installer.sh" "$here/setup-prefix.sh" \
         "$kit/scripts/"
-    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
+    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
         "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
     printf '%s\n' "$version" > "$kit/VERSION"
     make_runtime "$payload/$runtime_name" "$base/BUILD-INFO.txt" built
@@ -714,6 +715,13 @@ literal_link_digest="$({ printf 'symlink\0'; readlink -n -- "$panel_command"; } 
     || fail "panel ownership hashed the symlink referent instead of its literal target"
 manifest_has_path "$manifest" "$panel_desktop" || fail "panel desktop ownership was not recorded"
 manifest_has_path "$manifest" "$panel_icon" || fail "panel icon ownership was not recorded"
+live_options="$base/xdg/data/ableton-wine/lib/live-options.sh"
+[ -f "$live_options" ] && [ "$(stat -c '%a' "$live_options")" = 644 ] \
+    || fail "The installer writes the audio thread settings script with mode 644."
+cmp -s -- "$here/lib/live-options.sh" "$live_options" \
+    || fail "The installed audio thread settings script matches its source file."
+manifest_has_path "$manifest" "$live_options" \
+    || fail "The installation record lists the audio thread settings script."
 ok "built panel installs transactionally under custom XDG paths"
 
 for durable_tool in audio-report.sh setup-realtime.sh rollback.sh; do
@@ -3045,8 +3053,8 @@ make_commit_preflight_kit()
     local base="$1" kit="$1/commit-kit"
     mkdir -p -- "$kit/scripts/lib"
     cp -- "$here/installer.sh" "$kit/scripts/"
-    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/manifest.sh" \
-        "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
+    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
+        "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
     cat > "$kit/scripts/install.sh" <<'EOF'
 #!/bin/sh
 set -eu

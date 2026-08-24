@@ -11,40 +11,67 @@ AG** and respects the Ableton terms of service.
 
 [Download the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
 
+Follow the project on [Bluesky](https://bsky.app/profile/wires.sh) to stay up to date.
+
 ## Features
 
-- Live 12 Intro, Standard, Suite, Lite, Trial, and beta support
-- Experimental Live 11, Max for Live, and Max 9 support
-- Push 1 and Push 2 support (Push 3 and Move support coming soon!)
-- Local-network Ableton Link support
-- Experimental support for Ableton's forthcoming Extensions SDK
-- Compatibility with Ableton's Splice integration
-- Automatic recovery when in-use audio hardware or startup-detected MIDI
-  controllers briefly disconnect
+This project supports:
+
+   - **Software:**
+      - **Live 12** - Intro, Standard, Suite, Lite and Trial
+      - **Live 11** - Intro, Standard, Suite, Lite and Trial
+      - **Cycling '74** - Max 8, Max 9 and Max for Live (Live 11 and 12)
+      - **Live 12+ Beta**
+      - **Splice integration**
+      - **Ableton Cloud**
+      - **Ableton Link**
+      - **Experimental Extensions SDK support**
+   - **Hardware:**
+      - **Push 1**
+      - **Push 2**
+      - **Push 3**
+
+_**Ableton Move** support is coming soon._
+
+The Ableton-Linux runtime supports everyday writing, production and live
+performance with:
+
+- MIDI controllers and audio interfaces that can appear, disconnect and return
+  while Live stays open
 - Low-latency PipeASIO audio for live performance
-- Linux desktop integration with native file types and dialogs
+- Linux desktop integration with native file types and dialogs, advanced font rendering
+  and reuse of your own desktop fonts in application windows
 - Automatic light and dark desktop theme detection
 - No-fuss support for desktop resolutions, HiDPI displays, and fractional scaling
 - Fixes for VST-specific display, audio, and stability problems
+- Optimisations that help Live and Max start faster, use fewer resources and
+  run more reliably under Wine
 - Dozens of nice-to-haves, quality-of-life fixes, and other polish
 - Auditable builds with pinned inputs, checksum verification, and public documentation
+
+We also have a separate, early AArch64 build for Apple Silicon computers that
+run Asahi Linux.
 
 ## Installation
 
 ### Requirements
 
-You need an x86-64 Linux system that meets Ableton Live's hardware requirements.
+The main installer needs an x86-64 Linux system that meets Ableton Live's
+hardware requirements.
 
 Additionally, you need:
 
 - glibc 2.35 or newer
-- PipeWire 1.4.2+ recommended (earlier versions will work but are not supported)
+- PipeWire 1.4.2 or newer
+- [Linux 6.14 or newer with active NTSync](TROUBLESHOOTING.md#live-reports-that-ntsync-is-inactive)
 - GStreamer with its base and good plugin sets
 - GNU coreutils, `tar`, `zstd`, and `flock`
 - your installation files and activation details from Ableton
 
 For most people, a modern and up-to-date Linux distribution, such as SteamOS,
-Ubuntu, CachyOS, or Arch, will already fulfil these requirements. 
+Ubuntu, CachyOS, or Arch, will already fulfil the userspace requirements.
+NTSync support varies between distributions. Some systems need newer system or
+kernel packages; the linked check confirms when it is ready for Live.
 
 Some distros - such as Debian 12, Linux Mint, and Pop!_OS 24.04 and earlier - 
 ship an older version of the Linux audio system, Pipewire. If you are running
@@ -100,13 +127,14 @@ You can also specify a Live Set to quickly open on launch:
 ableton-live "/path/to/Your Set.als"
 ```
 
-The `ableton-live` command accepts a number of options (called _environment variables_) that change
-how it behaves. [We document each of them and their effects](ENVIRONMENT_VARIABLES.md), but you can 
-also read about them like this:
+Environment variables change how the `ableton-live` command behaves. The
+launcher explains every available setting and its default:
 
 ```bash
-ableton-live --help
+ableton-live --config
 ```
+
+Run `ableton-live --help` for its command-line options.
 
 For more details on how to run Live 11, follow the [Live 11 instructions](#live-11).
 
@@ -128,9 +156,10 @@ then from a terminal, use this command:
 sh ~/Downloads/install-ableton-latest.run update
 ```
 
-The update process will install new fixes and features listed in the release notes 
-to your Live Linux environment. Your Live installation, authorization, and projects will
-be preserved, but anything related to the Runtime (and Live's settings) may be changed.
+The update installs the fixes and features in the
+[changelog](CHANGELOG.md). It preserves your Live installation, authorisation
+and projects. Read the latest entry before updating because a release can
+change a launcher default or ask you to select a renamed device again.
 
 ### Uninstalling
 
@@ -251,20 +280,53 @@ controllers.
 ### Ableton Push 1 and 2 setup
 
 1. Connect your Ableton Push.
-2. Launch Ableton Live.
+2. Start Ableton Live.
 
 Live detects Push 1 automatically.
 
-For Push 2, configure exactly one control-surface row under
-**Settings/Preferences > Link, Tempo & MIDI**:
+For Push 2, configure one control-surface row under
+Settings or Preferences > Link, Tempo and MIDI:
 
-- **Control Surface:** Push2
-- **Input:** Ableton Push 2 Live Port
-- **Output:** Ableton Push 2 Live Port
+- control surface: `Push2`
+- input: `Ableton Push 2 Live Port`
+- output: `Ableton Push 2 Live Port`
 
-Enable the input and output **Remote** switches. See
-[Push troubleshooting](TROUBLESHOOTING.md#push-2-does-not-connect) if its
-display does not start.
+Turn on the input and output Remote switches. Use the
+[Push 2 connection steps](TROUBLESHOOTING.md#push-2-connection-steps)
+for a dark display.
+
+### Ableton Push 3 setup
+
+Push 3 controller mode works with Live 12. Hardware tests covered a controller
+model and a standalone model in control mode.
+
+1. Add USB access for your desktop session.
+
+   ```bash
+   printf '%s\n' 'SUBSYSTEM=="usb", ATTR{idVendor}=="2982", ATTR{idProduct}=="1969", MODE="0660", TAG+="uaccess"' |
+     sudo tee /etc/udev/rules.d/60-ableton-push3.rules >/dev/null
+   ```
+
+2. Reload the device rules.
+
+   ```bash
+   sudo udevadm control --reload-rules
+   ```
+
+3. Select control mode on a standalone Push 3.
+4. Disconnect and reconnect Push 3.
+5. Start Live.
+
+Keep the Push 3 control-surface rows empty. Live creates the control surface
+automatically. A successful connection clears Push's connection screen and
+brings its display and controls to life. If Live offers a firmware update,
+follow the power prompt and start Live again after Push restarts.
+
+Use the
+[Push 3 connection steps](TROUBLESHOOTING.md#push-3-stays-on-the-connection-screen)
+when Push keeps showing its connection screen. The
+[Push 3 technical note](notes/ABLETON-WINE-PUSH3-USB.md) records the design,
+test results, and current limits.
 
 ## Ableton Link
 
@@ -288,8 +350,8 @@ When you install Ableton Live, by default we include Link via a custom-designed
 system service called `ableton-linkd`. This service starts when you launch Live or Max
 and closes when those applications close. This is `session` mode.
 
-During installation, you can change this depending on your own preference. To do so, 
-append `--link` to any `install` or `update` command:
+During installation, you can change this depending on your own preference. Add
+one of these options to any `install` or `update` command:
 
 - `--link=session` runs Link while Live or Max is open. This is the default.
 - `--link=always` starts Link after you log in and keeps it running.
@@ -320,7 +382,8 @@ sh ~/Downloads/install-ableton-latest.run link disable
 ```
 
 This removes only the Link files, settings, and firewall rule that this project
-added. Run `link status` to see whether Link is running.
+added. Run `sh ~/Downloads/install-ableton-latest.run link status` to see
+whether Link is running.
 
 ## Getting help
 
@@ -352,11 +415,14 @@ Maintained by [Cade 'shibco' Diehm](https://shiba.computer/about) and
 [Lucas 'ClickSentinel' Gillingham](https://github.com/ClickSentinel), with help from
 [trendwhore](https://github.com/trendwhore), 
 [jackson-57](https://github.com/jackson-57),
+[seebass22](https://github.com/seebass22),
 [jttdev](https://github.com/jttdev),
 [astrazds](https://github.com/astrazds),
-[Version33](https://github.com/Version33), and
+[Version33](https://github.com/Version33),
+[Sajattack](https://github.com/sajattack) (for the Aarch64 port work),
 [0tanh](https://github.com/0tanh). [yioannides](https://github.com/yioannides)
-made the application and MIME icons.
+made the application and MIME icons and [haushaushaus](https://github.com/haushaushaus)
+provided the Ableton project and sets we use for benchmarking and testing.
 
 This project is based on the `d2d1-dcomp` stack from 
 [giang17/wine](https://github.com/giang17/wine), specifically, we forked

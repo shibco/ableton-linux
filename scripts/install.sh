@@ -481,12 +481,12 @@ validate_runtime_payload()
 
 validate_integration_sources()
 {
-    local required probe_source=""
+    local required probe_source="" ntsync_probe_source=""
     for required in ableton-live max9 detect-scale.sh detect-theme.sh shortcut-hold.sh \
-                    setup-realtime.sh audio-report.sh rollback.sh; do
+                    setup-realtime.sh audio-report.sh check-ntsync.sh rollback.sh; do
         [ -f "$here/$required" ] || { echo "!! installer kit is missing scripts/$required" >&2; return 1; }
     done
-    for required in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
+    for required in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh; do
         [ -f "$here/lib/$required" ] || { echo "!! installer kit is missing scripts/lib/$required" >&2; return 1; }
     done
     for required in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
@@ -497,6 +497,16 @@ validate_integration_sources()
     done
     [ -n "$probe_source" ] || {
         echo "!! installer kit is missing its PipeWire compatibility check" >&2
+        return 1
+    }
+    for required in "$here/ntsyncprobe.exe" \
+                    "$root/beta/tester-kit/probes/windows/ntsyncprobe.exe"; do
+        [ -f "$required" ] || continue
+        ntsync_probe_source="$required"
+        break
+    done
+    [ -n "$ntsync_probe_source" ] || {
+        echo "!! installer kit is missing its NTSync semantics probe" >&2
         return 1
     }
     for required in ableton-live.desktop.in ableton-linux-protocol.desktop.in \
@@ -564,6 +574,7 @@ if [ "$dry_run" -eq 1 ]; then
     if [ "$want_integration" -eq 1 ]; then
         printf '  write launcher: %s/ableton-live\n' "$bin"
         printf '  write launcher support and recovery tools below: %s\n' "$data"
+        printf '  write NTSync diagnostic: %s/{check-ntsync.sh,ntsyncprobe.exe}\n' "$data"
         printf '  write helper assets when packaged: %s/{setsyscolors.exe,learnheal.exe}\n' "$data"
         printf '  write desktop entries: %s/{ableton-live,%s,%s}\n' \
             "$apps" "$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID"
@@ -731,28 +742,42 @@ desktop_entry_is_foreign()
 {
     local target="$1" owner="$2"
     [ -e "$target" ] || return 1
-    ! grep -qF "$owner" "$target"
+    ! grep -qxF "Exec=$owner %f" "$target" \
+        && ! grep -qxF "Exec=$owner %u" "$target"
 }
 
 install_integration()
 {
     local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d i
     local live_desktop_foreign=0 max_desktop_foreign=0 max_protocol_foreign=0 foreign=0
-    local probe_source="" mime_stage="" mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    local probe_source="" ntsync_probe_source="" mime_stage="" mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
     local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
     local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
     local -a handler_templates=(ableton-linux-protocol ableton-linux-auz)
     echo "== install launchers and host integration =="
-    for tool in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
+    for tool in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
-    ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live"
+    # An update refreshes this project launcher when its saved checksum differs.
+    # The update preserves a symlink.
+    ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live" file refresh-stale-record
     for tool in detect-scale.sh detect-theme.sh shortcut-hold.sh; do
         ableton_install_file 644 "$here/$tool" "$data/$tool"
     done
-    for tool in setup-realtime.sh audio-report.sh rollback.sh; do
+    for tool in setup-realtime.sh audio-report.sh check-ntsync.sh rollback.sh; do
         ableton_install_file 755 "$here/$tool" "$data/$tool"
     done
+    for source in "$here/ntsyncprobe.exe" \
+                  "$root/beta/tester-kit/probes/windows/ntsyncprobe.exe"; do
+        [ -f "$source" ] || continue
+        ntsync_probe_source="$source"
+        break
+    done
+    [ -n "$ntsync_probe_source" ] || {
+        echo "!! installer kit is missing its NTSync semantics probe" >&2
+        return 1
+    }
+    ableton_install_file 644 "$ntsync_probe_source" "$data/ntsyncprobe.exe"
     for source in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
                   "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
         [ -x "$source" ] || continue
@@ -797,9 +822,9 @@ install_integration()
         echo "   preserving foreign $apps/ableton-live.desktop"
         echo "   the Live file types stay with their current application"
     else
-        # The launcher rewrites this generated entry after Live starts.
-        # A stale manifest digest must not stop a later install or update.
-        ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop" file replace-modified
+        # The launcher updates this generated entry after Live starts. An update
+        # refreshes the entry when its saved checksum differs.
+        ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop" file refresh-stale-record
     fi
     rm -f -- "$tmp"
 
@@ -1033,10 +1058,10 @@ elif [ "$want_integration" -eq 1 ]; then
         if ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT" >/dev/null 2>&1; then
             ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install
         else
-            echo "   kept existing PipeASIO panel links; this runtime uses a different contract"
+            echo "   kept existing PipeASIO panel links because this runtime uses another panel format"
         fi
     else
-        echo "   no current PipeASIO panel contract; launcher integration continues without it"
+        echo "   launcher integration continues with the available PipeASIO files"
     fi
 fi
 
@@ -1071,6 +1096,7 @@ trap - EXIT
 echo "OK: selected components installed transactionally"
 if [ "$want_integration" -eq 1 ]; then
     printf '   Audio report: %s/audio-report.sh\n' "$data"
+    printf '   NTSync check: %s/check-ntsync.sh\n' "$data"
     printf '   Realtime setup: %s/setup-realtime.sh\n' "$data"
     printf '   Runtime rollback: %s/rollback.sh\n' "$data"
 fi

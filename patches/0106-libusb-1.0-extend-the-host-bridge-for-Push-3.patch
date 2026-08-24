@@ -1,0 +1,223 @@
+Subject: libusb-1.0: extend the host bridge for Push 3
+
+---
+ dlls/libusb-1.0/libusb-1.0.spec |  4 +++
+ dlls/libusb-1.0/libusb.c        | 72 ++++++++++++++++++++++++++++++++++++++++-
+ dlls/libusb-1.0/unixlib.c       | 25 ++++++++++++--
+ dlls/libusb-1.0/unixlib.h       | 13 ++++++++
+ 4 files changed, 111 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/libusb-1.0/libusb-1.0.spec b/dlls/libusb-1.0/libusb-1.0.spec
+index 2b1d14a..6a4b4aa 100644
+--- a/dlls/libusb-1.0/libusb-1.0.spec
++++ b/dlls/libusb-1.0/libusb-1.0.spec
+@@ -1,4 +1,5 @@
+ 4   stdcall libusb_alloc_transfer(long)
++8   stdcall libusb_bulk_transfer(ptr long ptr long ptr long)
+ 10  stdcall libusb_cancel_transfer(ptr)
+ 12  stdcall libusb_claim_interface(ptr long)
+ 16  stdcall libusb_close(ptr)
+@@ -9,8 +10,11 @@
+ 72  stdcall libusb_get_device_descriptor(ptr ptr)
+ 74  stdcall libusb_get_device_list(ptr ptr)
+ 110 stdcall libusb_handle_events_timeout(ptr ptr)
++116 stdcall libusb_hotplug_deregister_callback(ptr long)
++118 stdcall libusb_hotplug_register_callback(ptr long long long long long ptr ptr ptr)
+ 120 stdcall libusb_init(ptr)
+ 132 stdcall libusb_open(ptr ptr)
+ 140 stdcall libusb_release_interface(ptr long)
+ 154 varargs libusb_set_option(ptr long)
++159 stdcall libusb_strerror(long)
+ 161 stdcall libusb_submit_transfer(ptr)
+diff --git a/dlls/libusb-1.0/libusb.c b/dlls/libusb-1.0/libusb.c
+index cea773b..467a519 100644
+--- a/dlls/libusb-1.0/libusb.c
++++ b/dlls/libusb-1.0/libusb.c
+@@ -118,6 +118,11 @@ struct libusb_iso_packet_descriptor
+ struct libusb_transfer;
+ typedef void (WINAPI *libusb_transfer_cb_fn)(struct libusb_transfer *transfer);
+ 
++typedef int libusb_hotplug_callback_handle;
++typedef int (WINAPI *libusb_hotplug_callback_fn)(struct libusb_context *context,
++                                                 struct libusb_device *device,
++                                                 int event, void *user_data);
++
+ struct libusb_transfer
+ {
+     struct libusb_device_handle *dev_handle;
+@@ -411,7 +416,8 @@ static int interface_operation(struct libusb_device_handle *handle, int interfac
+     struct libusb_interface_params params = {0};
+     NTSTATUS status;
+ 
+-    if (!handle || interface_number != 0) return LIBUSB_ERROR_INVALID_PARAM;
++    if (!handle || interface_number < 0 || interface_number > 255)
++        return LIBUSB_ERROR_INVALID_PARAM;
+     params.handle = handle->native;
+     params.interface_number = interface_number;
+     status = WINE_UNIX_CALL(func, &params);
+@@ -539,6 +545,29 @@ int WINAPI libusb_handle_events_timeout(struct libusb_context *context, const st
+     return params.result;
+ }
+ 
++int WINAPI libusb_bulk_transfer(struct libusb_device_handle *handle, unsigned char endpoint,
++                                unsigned char *data, int length, int *transferred,
++                                unsigned int timeout)
++{
++    struct libusb_bulk_transfer_params params = {0};
++    NTSTATUS status;
++
++    TRACE("%p, %#x, %p, %d, %p, %u\n", handle, endpoint, data, length, transferred, timeout);
++
++    if (transferred) *transferred = 0;
++    if (!handle || length < 0 || (length && !data)) return LIBUSB_ERROR_INVALID_PARAM;
++
++    params.handle = handle->native;
++    params.buffer = (UINT_PTR)data;
++    params.timeout = timeout;
++    params.length = length;
++    params.endpoint = endpoint;
++    status = UNIX_CALL(libusb_bulk_transfer, &params);
++    if (unix_call_failed(status, "libusb_bulk_transfer")) return LIBUSB_ERROR_OTHER;
++    if (transferred) *transferred = params.transferred;
++    return params.result;
++}
++
+ const char * WINAPI libusb_error_name(int error)
+ {
+     switch (error)
+@@ -561,6 +590,47 @@ const char * WINAPI libusb_error_name(int error)
+     }
+ }
+ 
++const char * WINAPI libusb_strerror(int error)
++{
++    switch (error)
++    {
++        case LIBUSB_SUCCESS: return "Success";
++        case LIBUSB_ERROR_IO: return "Input/Output Error";
++        case LIBUSB_ERROR_INVALID_PARAM: return "Invalid parameter";
++        case LIBUSB_ERROR_ACCESS: return "Access denied (insufficient permissions)";
++        case LIBUSB_ERROR_NO_DEVICE: return "No such device (it may have been disconnected)";
++        case LIBUSB_ERROR_NOT_FOUND: return "Entity not found";
++        case LIBUSB_ERROR_BUSY: return "Resource busy";
++        case LIBUSB_ERROR_TIMEOUT: return "Operation timed out";
++        case LIBUSB_ERROR_OVERFLOW: return "Overflow";
++        case LIBUSB_ERROR_PIPE: return "Pipe error";
++        case LIBUSB_ERROR_INTERRUPTED: return "System call interrupted (perhaps due to signal)";
++        case LIBUSB_ERROR_NO_MEM: return "Insufficient memory";
++        case LIBUSB_ERROR_NOT_SUPPORTED: return "Operation not supported or unimplemented on this platform";
++        default: return "Other error";
++    }
++}
++
++int WINAPI libusb_hotplug_register_callback(struct libusb_context *context, int events, int flags,
++                                            int vendor_id, int product_id, int dev_class,
++                                            libusb_hotplug_callback_fn callback, void *user_data,
++                                            libusb_hotplug_callback_handle *callback_handle)
++{
++    TRACE("%p, %#x, %#x, %04x, %04x, %d, %p, %p, %p\n", context, events, flags, vendor_id,
++          product_id, dev_class, callback, user_data, callback_handle);
++
++    /* Ableton's Windows libusb 1.0.23 build reports no hotplug support, so the
++     * helper already handles this result and polls the device list instead. */
++    if (callback_handle) *callback_handle = 0;
++    return LIBUSB_ERROR_NOT_SUPPORTED;
++}
++
++void WINAPI libusb_hotplug_deregister_callback(struct libusb_context *context,
++                                               libusb_hotplug_callback_handle callback_handle)
++{
++    TRACE("%p, %d\n", context, callback_handle);
++}
++
+ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
+ {
+     if (reason == DLL_PROCESS_ATTACH)
+diff --git a/dlls/libusb-1.0/unixlib.c b/dlls/libusb-1.0/unixlib.c
+index 28aeabd..3261158 100644
+--- a/dlls/libusb-1.0/unixlib.c
++++ b/dlls/libusb-1.0/unixlib.c
+@@ -212,7 +212,7 @@ static NTSTATUS wrap_libusb_claim_interface(void *args)
+ {
+     struct libusb_interface_params *params = args;
+ 
+-    if (params->interface_number != 0)
++    if (params->interface_number < 0 || params->interface_number > 255)
+         params->result = LIBUSB_ERROR_INVALID_PARAM;
+     else
+         params->result = libusb_claim_interface(device_handle_from_handle(params->handle),
+@@ -224,7 +224,7 @@ static NTSTATUS wrap_libusb_release_interface(void *args)
+ {
+     struct libusb_interface_params *params = args;
+ 
+-    if (params->interface_number != 0)
++    if (params->interface_number < 0 || params->interface_number > 255)
+         params->result = LIBUSB_ERROR_INVALID_PARAM;
+     else
+         params->result = libusb_release_interface(device_handle_from_handle(params->handle),
+@@ -367,6 +367,26 @@ static NTSTATUS wrap_libusb_handle_events_timeout(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
++static NTSTATUS wrap_libusb_bulk_transfer(void *args)
++{
++    struct libusb_bulk_transfer_params *params = args;
++    int transferred = 0;
++
++    if (!params->handle || params->length < 0 || (params->length && !params->buffer))
++    {
++        params->transferred = 0;
++        params->result = LIBUSB_ERROR_INVALID_PARAM;
++        return STATUS_SUCCESS;
++    }
++
++    params->result = libusb_bulk_transfer(device_handle_from_handle(params->handle),
++                                          params->endpoint,
++                                          (unsigned char *)(uintptr_t)params->buffer,
++                                          params->length, &transferred, params->timeout);
++    params->transferred = transferred;
++    return STATUS_SUCCESS;
++}
++
+ const unixlib_entry_t __wine_unix_call_funcs[] =
+ {
+     [unix_process_attach] = wrap_process_attach,
+@@ -386,6 +406,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     [unix_libusb_submit_transfer] = wrap_libusb_submit_transfer,
+     [unix_libusb_cancel_transfer] = wrap_libusb_cancel_transfer,
+     [unix_libusb_handle_events_timeout] = wrap_libusb_handle_events_timeout,
++    [unix_libusb_bulk_transfer] = wrap_libusb_bulk_transfer,
+ };
+ 
+ C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == unix_funcs_count);
+diff --git a/dlls/libusb-1.0/unixlib.h b/dlls/libusb-1.0/unixlib.h
+index 750dc18..a08db5a 100644
+--- a/dlls/libusb-1.0/unixlib.h
++++ b/dlls/libusb-1.0/unixlib.h
+@@ -153,6 +153,18 @@ struct libusb_handle_events_timeout_params
+     INT32 result;
+ };
+ 
++struct libusb_bulk_transfer_params
++{
++    UINT64 handle;
++    UINT64 buffer;
++    UINT32 timeout;
++    INT32 length;
++    INT32 transferred;
++    UINT8 endpoint;
++    UINT8 reserved[3];
++    INT32 result;
++};
++
+ struct libusb_transfer_callback_params
+ {
+     struct dispatch_callback_params dispatch;
+@@ -181,6 +193,7 @@ enum libusb_unix_funcs
+     unix_libusb_submit_transfer,
+     unix_libusb_cancel_transfer,
+     unix_libusb_handle_events_timeout,
++    unix_libusb_bulk_transfer,
+     unix_funcs_count,
+ };
+ 

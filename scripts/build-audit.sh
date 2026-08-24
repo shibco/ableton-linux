@@ -10,8 +10,8 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0099-ntdll-grow-the-reserved-pool-instead-of-unordered-mmap.patch'
-readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
+readonly REQUIRED_WINE_TAIL='0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch'
+readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0012-recover-selected-routes-after-hotplug.patch'
 
 check_required_series_tails()
 {
@@ -158,6 +158,10 @@ declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
 )
+for consolidated_gap in 0072 0074 0090 0091 0092 0093 0094 0095 0097 0098; do
+    SERIES_GAPS[$consolidated_gap]="consolidated in 0100"
+done
+unset consolidated_gap
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
     num="${f%%-*}"
@@ -371,22 +375,17 @@ FINGERPRINTS='
 0068|ascii|lib/wine/x86_64-windows/wined3d.dll|WINE_D3D_FORCE_GPU_RENDERING
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0071|ascii|lib/wine/x86_64-windows/wined3d.dll|Sustained present-size mismatch
-0072|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDrag
-0074|ascii|lib/wine/x86_64-unix/winex11.so|pinch begin on
 0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
 0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
-0090|ascii|lib/wine/x86_64-unix/winex11.so|smooth scroll delta
-0091|ascii|lib/wine/x86_64-unix/winex11.so|nudge slots full, dropping the schedule
-0092|ascii|lib/wine/x86_64-unix/winex11.so|pinch table full, dropping begin from source
-0093|ascii|lib/wine/x86_64-unix/winex11.so|lost X focus to another client while clipping
-0094|ascii|lib/wine/x86_64-unix/winex11.so|XWayland warp emulation activated after observed failed warps
-0095|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDragThrow
 0096|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
-0097|ascii|lib/wine/x86_64-unix/winex11.so|Wine ignores pointer motion from a scroll report while a button is held
-0098|ascii|lib/wine/x86_64-unix/winex11.so|X server delivered core MotionNotify while XI scroll motion is suspended
+0100|ascii|lib/wine/x86_64-unix/winex11.so|ptr lease event=restore
+0101|ascii|lib/wine/x86_64-windows/user32.dll|dnd target=%p event=release
+0105|ascii|lib/wine/x86_64-unix/winealsa.so|WINE MIDI topology
+0105|ascii|lib/wine/x86_64-windows/winmm.dll|Out of memory refreshing %s mappings
+0106|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
@@ -397,10 +396,13 @@ pipeasio/0008|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-daemon-version
 pipeasio/0009|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-honest-realtime
 pipeasio/0010|wide|bin/pipeasio-settings|pick a preset or type any value
 pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
+pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotplug
 '
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,
 # stored as UTF-16 by QStringLiteral, hence the wide encoding.
+# Patch 0105 supplies the MIDI device path used for Push 3 discovery. Its
+# winealsa and winmm fingerprints above verify that implementation.
 PIPEASIO_MARKER_TODO='
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
@@ -459,6 +461,9 @@ STAMP_ONLY='
 0078|logic-only (initial monitor DPI seeded in the create_window request; MR 11573 backport, no new string literal)
 0079|logic-only (standalone-surface window search gated on a private-data marker; adds no string literal)
 0099|logic-only (reserved pool grown with further arenas once map_reserved_area declines, keeping anonymous views ascending; new TRACE only, adds no string literal)
+0102|logic-only (natural modes use outlines; GDI-compatible and aliased modes keep strikes; adds no string literal)
+0103|logic-only (natural rendering quantised to 16 horizontal phases, glyph cache budget scaled with the phase count; adds no string literal)
+0104|logic-only (resize derives target bitmap options from the DXGI surface and preserves its pixel format; adds no string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
