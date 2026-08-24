@@ -305,9 +305,9 @@ if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
     >"$base/enable.out" 2>"$base/enable.err"; then
     fail "Link installation accepts an incompatible architecture"
 fi
-grep -qF 'this command requires $ARCH' "$base/enable.err" \
+grep -qF 'this command requires x86_64 or aarch64' "$base/enable.err" \
     || fail "architecture refusal does not identify the failing requirement"
-ok "maintenance commands remain available off $ARCH while install commands refuse"
+ok "maintenance commands remain available off x86_64 or aarch64 while install commands refuse"
 
 base="$(new_env link-status-read-only)"
 mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine"

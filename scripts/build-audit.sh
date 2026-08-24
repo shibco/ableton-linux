@@ -686,7 +686,7 @@ if command -v readelf >/dev/null; then
         | grep -qF 'Shared library: [libusb-1.0.so.0]' \
         && ok "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0" \
         || bad "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0 not linked"
-    readelf -d "$tree/lib/wine/x86_64H-unix/pipeasio.dll.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null \
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
         && ok "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
         || bad "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"

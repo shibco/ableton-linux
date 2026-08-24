@@ -13,7 +13,6 @@ ABLETON_PIPEWIRE_CLIENT_VERSION=""
 ABLETON_PIPEWIRE_DAEMON_VERSION=""
 ABLETON_PIPEASIO_PANEL_STATE=""
 ABLETON_PIPEASIO_DIAGNOSTIC_NOTICE_SHOWN=0
-ARCH="${ARCH:-$(uname -m)}"
 
 ableton_pipewire_version_core()
 {
@@ -394,7 +393,7 @@ ableton_pipeasio_qt_advice()
         path="$(qtpaths6 --plugin-dir 2>/dev/null || true)"
         [ -z "$path" ] || roots+=("$path")
     fi
-    roots+=(/usr/lib/$ARCH-linux-gnu/qt6/plugins /usr/lib64/qt6/plugins /usr/lib/qt6/plugins)
+    roots+=(/usr/lib/x86_64-linux-gnu/qt6/plugins /usr/lib64/qt6/plugins /usr/lib/qt6/plugins)
     for entry in "${roots[@]}"; do
         [ -n "$entry" ] || continue
         case "$entry" in */platforms) base="$entry" ;; *) base="$entry/platforms" ;; esac

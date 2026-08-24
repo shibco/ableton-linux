@@ -11,7 +11,6 @@ ABLETON_RUNTIME_NAME="wine-d2d1-nspa-11.13"
 # be overwritten by any prefix that registers the same scheme.
 ABLETON_PROTOCOL_DESKTOP_ID="io.github.shibco.ableton-linux.protocol.desktop"
 ABLETON_AUZ_DESKTOP_ID="io.github.shibco.ableton-linux.auz.desktop"
-ARCH="${ARCH:-$(uname -m)}"
 
 ableton_config_error()
 {
@@ -175,8 +174,8 @@ ableton_legacy_default_runtime_valid()
     info="$runtime/ABLETON-WINE-BUILD-INFO.txt"
     [ -f "$info" ] && [ ! -L "$info" ] \
         && [ -x "$runtime/bin/wine" ] && [ -x "$runtime/bin/wineserver" ] \
-        && [ -f "$runtime/lib/wine/$ARCH-windows/pipeasio64.dll" ] \
-        && [ -f "$runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so" ] || return 1
+        && [ -f "$runtime/lib/wine/x86_64-windows/pipeasio64.dll" ] \
+        && [ -f "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so" ] || return 1
     pe_count="$(grep -Ec '^pipeasio-pe:[[:space:]]+[0-9a-f]{64}([[:space:]]|$)' "$info" 2>/dev/null || true)"
     unix_count="$(grep -Ec '^pipeasio-unix:[[:space:]]+[0-9a-f]{64}([[:space:]]|$)' "$info" 2>/dev/null || true)"
     [ "$pe_count" -eq 1 ] && [ "$unix_count" -eq 1 ] \
@@ -185,8 +184,8 @@ ableton_legacy_default_runtime_valid()
         && [ "$(grep -c '^dist-version:' "$info" 2>/dev/null || true)" -eq 1 ] || return 1
     pe_hash="$(sed -n 's/^pipeasio-pe:[[:space:]]*\([0-9a-f]\{64\}\).*$/\1/p' "$info")"
     unix_hash="$(sed -n 's/^pipeasio-unix:[[:space:]]*\([0-9a-f]\{64\}\).*$/\1/p' "$info")"
-    [ "$(sha256sum -- "$runtime/lib/wine/$ARCH-windows/pipeasio64.dll" | awk '{print $1}')" = "$pe_hash" ] \
-        && [ "$(sha256sum -- "$runtime/lib/wine/$ARCH-unix/pipeasio64.dll.so" | awk '{print $1}')" = "$unix_hash" ]
+    [ "$(sha256sum -- "$runtime/lib/wine/x86_64-windows/pipeasio64.dll" | awk '{print $1}')" = "$pe_hash" ] \
+        && [ "$(sha256sum -- "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so" | awk '{print $1}')" = "$unix_hash" ]
 }
 
 ableton_legacy_default_prefix_valid()

@@ -223,8 +223,8 @@ make_runtime()
 {
     local runtime="$1" external="$2" mode="$3"
     mkdir -p -- "$runtime/bin" \
-        "$runtime/lib/wine/$ARCH-windows" \
-        "$runtime/lib/wine/$ARCH-unix"
+        "$runtime/lib/wine/x86_64-windows" \
+        "$runtime/lib/wine/x86_64-unix"
     printf 'PE PipeASIO fixture\n' > "$runtime/lib/wine/x86_64-windows/pipeasio64.dll"
     ln -s -- pipeasio64.dll "$runtime/lib/wine/x86_64-windows/pipeasio.dll"
     printf 'Unix PipeASIO fixture\n' > "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so"
@@ -373,8 +373,8 @@ make_runtime_only_kit()
     local kit="$base/kit" runtime_name=wine-d2d1-nspa-11.13
     local payload="$base/payload"
     mkdir -p -- "$kit/scripts/lib" "$kit/dist" "$kit/bin" \
-        "$payload/$runtime_name/lib/wine/$ARCH-windows" \
-        "$payload/$runtime_name/lib/wine/$ARCH-unix"
+        "$payload/$runtime_name/lib/wine/x86_64-windows" \
+        "$payload/$runtime_name/lib/wine/x86_64-unix"
     cp -- "$here/install.sh" "$here/installer.sh" "$here/setup-prefix.sh" \
         "$kit/scripts/"
     cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
