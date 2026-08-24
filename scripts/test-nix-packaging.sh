@@ -202,30 +202,43 @@ check "a search directory find cannot read answers empty" "$unreadable_answer" "
 check "a search directory find cannot read does not fail the caller" "$unreadable_rc" 0
 
 # --- build-audit.sh: the rpath rule -----------------------------------------
-# A build-container rpath resolves on no user's machine; a store-only one is
-# the nix package pinning its closure. Driven through a stub readelf, so the
-# verdict is a function of the recorded rpath alone -- no compiler, no ELF
-# fixtures, same answer on every host.
-rpath_verdict()   # <file> <RPATH/RUNPATH line readelf prints> [readelf exit]
+# A build-container rpath resolves on no user's machine. A store-only one is
+# the nix package pinning its closure, and is a pass ONLY under that profile:
+# a release tarball carrying one runs on the machine that built it and nowhere
+# else. Driven through a stub readelf, so the verdict is a function of the
+# recorded rpath and the profile alone -- no compiler, no ELF fixtures.
+rpath_verdict()   # <profile> <file> <RPATH line readelf prints> [readelf exit]
 (
-    fixture="$2" rc="${3:-0}"
+    # SC2034: read by the rpath_check lifted in below, which shellcheck cannot
+    # see through the eval.
+    # shellcheck disable=SC2034
+    AUDIT_PROFILE="$1" fixture="$3" rc="${4:-0}"
     ok()      { printf 'PASS|%s\n' "$2"; }
     bad()     { printf 'FAIL|%s\n' "$2"; }
     readelf() { printf '%s\n' "$fixture"; return "$rc"; }
     eval "$(lift "$here/build-audit.sh" rpath_check)"
-    rpath_check label "$1" none
+    rpath_check label "$2" none
 )
 elf="$work/binary"; : > "$elf"
+container=' 0x1d (RUNPATH)  Library runpath: [/build/stage/lib]'
+store=' 0x1d (RUNPATH)  Library runpath: [/nix/store/aaa/lib]'
+
 # An absent binary and a clean one both leave the rpath empty, and only one of
 # them is a pass. Reported, never waved through and never an aborted audit.
 check "a missing binary is a failure, not an absent rpath" \
-    "$(rpath_verdict "$work/gone" '')" "FAIL|missing: $work/gone"
+    "$(rpath_verdict nix "$work/gone" '')" "FAIL|missing: $work/gone"
 check "a build-container rpath is refused" \
-    "$(rpath_verdict "$elf" ' 0x1d (RUNPATH)  Library runpath: [/build/stage/lib]')" \
+    "$(rpath_verdict nix "$elf" "$container")" \
     'FAIL|carries a build-container rpath: /build/stage/lib'
 check "a store-only rpath is the nix package's pin" \
-    "$(rpath_verdict "$elf" ' 0x1d (RUNPATH)  Library runpath: [/nix/store/aaa/lib]')" \
+    "$(rpath_verdict nix "$elf" "$store")" \
     'PASS|nix store pin (/nix/store/aaa/lib)'
+# The release profile must not inherit the nix allowance: a tarball binary
+# pinned to somebody's store is not portable, whatever the path looks like.
+check "the release profile refuses a store rpath too" \
+    "$(rpath_verdict release "$elf" "$store")" \
+    'FAIL|carries an rpath: /nix/store/aaa/lib'
+
 # readelf exits 1 on a file that exists but is not an ELF; pipefail turns that
 # into a failed assignment and set -e would end the audit with no summary line.
 # errexit is not in force inside a command substitution, so rpath_verdict above
@@ -233,6 +246,7 @@ check "a store-only rpath is the nix package's pin" \
 # way build-audit.sh does, at top level with its status untested.
 cat > "$work/abort-probe.sh" <<PROBE
 set -euo pipefail
+AUDIT_PROFILE=nix
 ok()  { :; }
 bad() { :; }
 readelf() { printf '\n'; return 1; }
