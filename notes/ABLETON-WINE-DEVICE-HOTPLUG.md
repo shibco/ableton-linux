@@ -25,6 +25,11 @@ details. They use displayed names as the final match field.
 Each connection returns after the device details identify one device. A route
 waits in silence when the details identify several devices.
 
+PipeASIO compares a location field only when both records carry it. PipeWire
+must report the bus path of a returning serial-less interface for the location
+check to run. Without it, PipeASIO matches by name, and a twin of the same
+model can take the route.
+
 Wine ends held notes, sustain, and long messages when a MIDI input leaves.
 PipeASIO sends silence while an audio interface is away.
 
@@ -40,7 +45,10 @@ The automated MIDI probe checks these cases:
 - duplicate port names keep separate device records.
 - an exclusive test link reserves both MIDI directions for 3 seconds during reconnection.
 - a repeated cycle removes and restores open connections under a changed ALSA client ID.
-- 2 Wine processes keep their internal monitor ports private.
+- 2 Wine processes keep each other's MIDI clients out of their device lists.
+- a reserved link gets the reservation time plus the 10-second retry period.
+- a reservation that outlasts the retry period reconnects, with Wine's error
+  log on.
 - each published device list sends a Windows device change message.
 
 The PipeASIO checks cover device identity, duplicate channel names, delayed
@@ -109,6 +117,60 @@ A different physical path leaves the route silent until you select a device.
 The Windows probe writes CRLF. The shell helper removes carriage returns before
 it checks a line-end anchor. The conversion lets the rapid cycle reach device
 removal and reconnection.
+
+## Fixes from 26 August 2026
+
+The pull request review asked to keep Wine's MIDI data ports out of other
+Wine processes' device lists, for a busy-link allowance that follows the
+retry period, and for a note on the PipeASIO location check. The allowance check found 2 faults behind the review's timing report:
+a reservation longer than the retry period never reconnected, and the monitor
+thread crashed the process when it logged the exhausted retries.
+
+### Hidden Wine clients
+
+Wine skips the sequencer clients that other Wine processes create: the data
+client `WINE midi driver` and the monitor client `WINE MIDI topology`. Their
+application ports carry MIDI that the other process already sends or receives,
+so they are not devices. Listing them let one Wine process route its output
+straight back into another's input, and shifted Live's device numbers when a
+second Wine program started.
+
+The data ports stay exported, so ALSA and PipeWire routing tools still reach
+Live's ports. A patchbay route from Live's output ports delivers. A route into
+Live's input port delivers nothing: Wine matches each input event to the
+device it opened. The 2-process case opens a MIDI input and output in the
+first process before it inspects the second list.
+
+### Long reservations
+
+ALSA notifies only the port owner when a subscription ends. Wine cannot see
+another client release its exclusive reservation, so a reservation longer than
+the 10-second retry period left the open connection disconnected until the
+next port event. Wine now keeps trying every 2 seconds after the fast retries,
+for as long as the port stays online. The connection returns within about 2
+seconds of the release.
+
+The busy-link case gives a reserved link the reservation time plus the
+10-second retry period. The earlier flat 2-second allowance hid the fault
+behind a timeout. `HOTPLUG_BLOCK_MS` sets the reservation length. The
+long-reservation case holds the link for 12 seconds and reaches the slow
+retries.
+
+### Monitor thread debug output
+
+The topology monitor is a plain pthread without a Windows thread block. Wine's
+debug output reads that block, so any message from the monitor thread faulted
+the process. The error for exhausted retries fired 10 seconds into a long
+reservation and crashed Live whenever Wine's error log was on. The launcher
+turns the log off, so this hit people who ran Wine directly or debugged the
+feature. The monitor thread now writes its messages to the standard error
+stream under the same `midi` channel switches. The long-reservation case runs
+with the error log on.
+
+### PipeASIO location check
+
+The location check runs only when both records carry the field. The matching
+rules above record the dependency on PipeWire's bus path.
 
 ## Source records
 

@@ -7,6 +7,13 @@ wine_bin="${WINE_BIN:-wine}"
 midiwatch_exe="${MIDIWATCH_EXE:-$here/midiwatch.exe}"
 stage_timeout_ms="${HOTPLUG_TIMEOUT_MS:-10000}"
 cycles="${HOTPLUG_CYCLES:-3}"
+busy_block_ms="${HOTPLUG_BLOCK_MS:-3000}"
+# Patch 0105 retries a pending MIDI link every 250 ms for about 10 seconds,
+# then every 2 seconds while the port stays online. A reserved link gets the
+# whole 10-second period after its reservation ends. The long case reserves
+# the link for 2 seconds past that period to reach the slow retries.
+reconnect_retry_ms=10000
+long_block_ms=$((reconnect_retry_ms + 2000))
 created_work_dir=0
 case_number=0
 declare -a background_pids=()
@@ -186,20 +193,30 @@ stop_extra_reserve_blockers() {
 }
 
 run_monitor_leak_case() {
-    local dir="$work_dir/monitor-leak" outer_seconds
+    local dir="$work_dir/monitor-leak" name="AH${$}Leak" outer_seconds
     local first_log="$dir/watcher-1.txt" second_log="$dir/watcher-2.txt"
-    local first_pid second_pid
+    local fake_log="$dir/fakectl.txt" first_pid second_pid
 
     mkdir -p -- "$dir"
-    outer_seconds=$((stage_timeout_ms / 1000 + 10))
+    outer_seconds=$((5 * stage_timeout_ms / 1000 + 10))
 
-    # The first Wine process creates its private MIDI monitor. The second
-    # process confirms that Wine excludes private ports from its device list.
-    start_watcher "$first_log" "$outer_seconds"
+    # The first Wine process creates its private MIDI monitor, then opens a
+    # MIDI input and output on the test controller so its data ports exist.
+    start_watcher "$first_log" "$outer_seconds" --assert-cycle "$name" 1 1 \
+        "$stage_timeout_ms" 1
     first_pid=$STARTED_PID
-    wait_for_text "$first_log" '^watching without open' "$stage_timeout_ms" ||
+    wait_for_text "$first_log" '^ASSERT BASELINE ' "$stage_timeout_ms" ||
         { fail "monitor-leak: first watcher reached the WinMM initialisation timeout"; return 1; }
+    start_fake "$fake_log" "$name" --duplex --ports 1 --interval-ms 50
+    wait_for_text "$first_log" '^ASSERT READY_FOR_REMOVE cycle=1$' "$stage_timeout_ms" ||
+        {
+            stop_process "$first_pid"
+            fail "monitor-leak: first watcher reached the open-handle timeout"
+            return 1
+        }
 
+    # The second process confirms that Wine excludes every private port of
+    # the first process from its device list.
     start_watcher "$second_log" "$outer_seconds"
     second_pid=$STARTED_PID
     wait_for_text "$second_log" '^watching without open' "$stage_timeout_ms" ||
@@ -209,20 +226,21 @@ run_monitor_leak_case() {
             return 1
         }
 
-    if grep -q 'WINE MIDI topology' "$first_log" "$second_log"; then
+    if grep -q 'WINE MIDI topology\|WINE midi driver\|WINE ALSA' "$first_log" "$second_log"; then
         stop_process "$first_pid"
         stop_process "$second_pid"
-        fail "monitor-leak: Wine MIDI list contains a WINE MIDI topology port"
+        fail "monitor-leak: a Wine MIDI list contains another Wine process's port"
         return 1
     fi
 
     stop_process "$first_pid"
     stop_process "$second_pid"
-    printf 'PASS: topology monitor stays private to its own process\n'
+    printf 'PASS: Wine processes do not list each other\x27s MIDI ports\n'
 }
 
 run_cycle_case() {
     local label="$1" name_suffix="$2" test_cycles="$3" block_ms="$4"
+    local debug="${5:-${WINEDEBUG:--all}}"
     local name="AH${$}${name_suffix}" dir="$work_dir/$label"
     local watcher_log="$dir/midiwatch.txt" target_log target_pid watcher_pid
     local previous_id current_id cycle watcher_rc outer_seconds
@@ -232,11 +250,11 @@ run_cycle_case() {
     local -a replacement_args
 
     mkdir -p -- "$dir"
-    if (( block_ms && test_timeout_ms < block_ms + 2000 )); then
-        test_timeout_ms=$((block_ms + 2000))
+    if (( block_ms && test_timeout_ms < block_ms + reconnect_retry_ms )); then
+        test_timeout_ms=$((block_ms + reconnect_retry_ms))
     fi
     outer_seconds=$(((3 + 5 * test_cycles) * (test_timeout_ms / 1000 + 1) + 10))
-    start_watcher "$watcher_log" "$outer_seconds" --assert-cycle "$name" 1 1 \
+    WINEDEBUG="$debug" start_watcher "$watcher_log" "$outer_seconds" --assert-cycle "$name" 1 1 \
         "$test_timeout_ms" "$test_cycles"
     watcher_pid=$STARTED_PID
     wait_for_text "$watcher_log" '^ASSERT BASELINE ' "$test_timeout_ms" ||
@@ -314,6 +332,9 @@ fi
 if [[ ! $cycles =~ ^[0-9]+$ || $cycles -lt 1 || $cycles -gt 100 ]]; then
     fail "HOTPLUG_CYCLES must be between 1 and 100"; exit 2
 fi
+if [[ ! $busy_block_ms =~ ^[0-9]+$ || $busy_block_ms -lt 100 || $busy_block_ms -gt 60000 ]]; then
+    fail "HOTPLUG_BLOCK_MS must be between 100 and 60000"; exit 2
+fi
 if [[ ! -e /dev/snd/seq ]]; then
     printf 'SKIP: /dev/snd/seq is unavailable\n'
     exit 77
@@ -342,7 +363,10 @@ run_add_case duplex-add 1 1 --duplex --ports 1 || exit 1
 run_add_case input-only-add 1 0 --input-only --ports 1 || exit 1
 run_add_case output-only-add 0 1 --output-only --ports 1 || exit 1
 run_add_case duplicate-multiport-add 2 2 --duplex --ports 2 --duplicate-names || exit 1
-run_cycle_case busy-link-retry Busy 1 3000 || exit 1
+run_cycle_case busy-link-retry Busy 1 "$busy_block_ms" || exit 1
+# Wine's error log stays on here: the monitor thread reports the exhausted
+# fast retries, and that report once faulted the process.
+run_cycle_case long-reservation Long 1 "$long_block_ms" err+midi || exit 1
 run_cycle_case rapid-cycle Cycle "$cycles" 0 || exit 1
 run_monitor_leak_case || exit 1
 

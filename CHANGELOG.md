@@ -2,21 +2,21 @@
 
 ## Unreleased
 
-- we fixed the device reconnection changes from
-  [pull request 245](https://github.com/shibco/ableton-linux/pull/245):
-  - the Wine MIDI driver hides its internal monitor from other Wine programs.
-  - the Live session keeps its MIDI device numbers when another Wine program
-    starts.
-  - a controller reserved by another program waits for Wine to confirm its own
-    MIDI link.
-  - the Wine MIDI driver retries a returning controller for about 10 seconds.
-  - the MIDI monitor uses a larger event pool for controllers with several
-    ports.
-  - the PipeASIO driver restores a serial-less interface at its original
-    physical port.
-  - a serial-less interface at another physical port waits for your selection.
-  - the rapid reconnection test completes its removal step after it converts
-    Windows line endings.
+- **Reconnected MIDI controllers no longer go missing or silent, and audio no
+  longer lands on the wrong interface (follow-up to #245):**
+  - Wine programs no longer list each other's internal MIDI ports, so MIDI
+    device numbers stay put when a second Wine program starts, and Live no
+    longer opens its own Push 3 helper's ports as MIDI devices (#26).
+  - A controller reserved by another program stays disconnected until Wine
+    holds its own MIDI link.
+  - Wine retries a returning controller for about 10 seconds instead of 2.
+  - A controller that another program keeps reserved for longer than 10
+    seconds reconnects once that program lets go.
+  - Live no longer crashes 10 seconds into such a reservation when Wine's
+    error log is on.
+  - PipeASIO restores a serial-less interface at its original physical port.
+    The same model at another port waits for your selection.
+  - Thanks Lucas Gillingham (@ClickSentinel) for the review.
 
 ## 2026.08.24.1
 
