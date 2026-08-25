@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- **Reconnected MIDI controllers no longer go missing or silent, and audio no
+  longer lands on the wrong interface (follow-up to #245):**
+  - Wine programs no longer list each other's internal MIDI ports, so MIDI
+    device numbers stay put when a second Wine program starts, and Live no
+    longer opens its own Push 3 helper's ports as MIDI devices (#26).
+  - A controller reserved by another program stays disconnected until Wine
+    holds its own MIDI link.
+  - Wine retries a returning controller for about 10 seconds instead of 2.
+  - A controller that another program keeps reserved for longer than 10
+    seconds reconnects once that program lets go.
+  - Live no longer crashes 10 seconds into such a reservation when Wine's
+    error log is on.
+  - PipeASIO restores a serial-less interface at its original physical port.
+    The same model at another port waits for your selection.
+  - Thanks Lucas Gillingham (@ClickSentinel) for the review.
+
 ## 2026.08.24.2
 
 - **Ableton Live on Linux now builds and runs with Nix (#237):**

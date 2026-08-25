@@ -1,12 +1,11 @@
-/* fakectl.c — configurable ALSA-seq MIDI controller for hotplug tests.
+/* fakectl.c provides a configurable ALSA sequencer controller for hotplug tests.
  *
- * The default is compatible with the original probe: one duplex "FakeCtl"
- * port sends a note-on/note-off pair every 500 ms. Options allow tests to
- * create input-only, output-only, multi-port, and duplicate-name devices.
- * Restarting the process models a device replug; a zero-port instance can
- * reserve the old ALSA client id so the replacement must receive a new one.
+ * The default creates one duplex port named "FakeCtl". It sends one note pair
+ * every 500 ms. Options create single-direction, multi-port, and duplicate-name
+ * devices. A timed reservation exercises Wine's retry path for busy ports.
+ * A zero-port instance reserves an ALSA client ID during a reconnection test.
  *
- * build: cc -O2 -Wall -Wextra -o fakectl fakectl.c -lasound
+ * The shell probe compiles this helper before each test run.
  */
 #include <alsa/asoundlib.h>
 #include <errno.h>
@@ -32,6 +31,7 @@ struct options
     unsigned int ports;
     unsigned int interval_ms;
     unsigned int lifetime_ms;
+    unsigned int block_connections_ms;
     unsigned int note;
     int duplicate_names;
 };
@@ -46,6 +46,7 @@ static void usage(const char *program)
            "  --output-only        expose WinMM output ports and receive notes\n"
            "  --duplex             expose both directions (default)\n"
            "  --duplicate-names    give every port the same name\n"
+           "  --block-connections-ms N  reserve each MIDI link for N ms (default: 0)\n"
            "  --interval-ms N      note interval, 10..60000 (default: 500)\n"
            "  --lifetime-ms N      exit after N ms; 0 runs until killed\n"
            "  --note N             first MIDI note, 0..127 (default: 60)\n",
@@ -75,6 +76,7 @@ static int parse_options(int argc, char **argv, struct options *options)
     options->ports = 1;
     options->interval_ms = 500;
     options->lifetime_ms = 0;
+    options->block_connections_ms = 0;
     options->note = 60;
     options->duplicate_names = 0;
 
@@ -100,6 +102,10 @@ static int parse_options(int argc, char **argv, struct options *options)
         else if (!strcmp(argv[i], "--lifetime-ms") && i + 1 < argc)
         {
             if (!parse_uint(argv[++i], 0, 86400000, &options->lifetime_ms)) return 0;
+        }
+        else if (!strcmp(argv[i], "--block-connections-ms") && i + 1 < argc)
+        {
+            if (!parse_uint(argv[++i], 0, 60000, &options->block_connections_ms)) return 0;
         }
         else if (!strcmp(argv[i], "--note") && i + 1 < argc)
         {
@@ -142,21 +148,62 @@ static void send_note_pair(snd_seq_t *seq, int port, unsigned int note)
     snd_seq_event_output_direct(seq, &event);
 }
 
-static void drain_input(snd_seq_t *seq)
+static int set_exclusive_subscription(snd_seq_t *seq, int sender_port, int dest_port,
+                                      int subscribe)
+{
+    snd_seq_port_subscribe_t *subscription;
+    snd_seq_addr_t sender = {snd_seq_client_id(seq), sender_port};
+    snd_seq_addr_t dest = {snd_seq_client_id(seq), dest_port};
+    int result;
+
+    if (snd_seq_port_subscribe_malloc(&subscription) < 0) return -ENOMEM;
+    snd_seq_port_subscribe_set_sender(subscription, &sender);
+    snd_seq_port_subscribe_set_dest(subscription, &dest);
+    snd_seq_port_subscribe_set_exclusive(subscription, 1);
+    result = subscribe ? snd_seq_subscribe_port(seq, subscription)
+                       : snd_seq_unsubscribe_port(seq, subscription);
+    snd_seq_port_subscribe_free(subscription);
+    return result;
+}
+
+static int set_port_capabilities(snd_seq_t *seq, int port, unsigned int capabilities)
+{
+    snd_seq_port_info_t *info;
+    int result;
+
+    if (snd_seq_port_info_malloc(&info) < 0) return -ENOMEM;
+    if ((result = snd_seq_get_port_info(seq, port, info)) >= 0)
+    {
+        snd_seq_port_info_set_capability(info, capabilities);
+        result = snd_seq_set_port_info(seq, port, info);
+    }
+    snd_seq_port_info_free(info);
+    return result;
+}
+
+static void drain_input(snd_seq_t *seq, const int *internal_ports, unsigned int port_count)
 {
     snd_seq_event_t *event;
     int result;
 
     while ((result = snd_seq_event_input(seq, &event)) >= 0)
     {
-        printf("RX port=%d source=%d:%d type=%d",
-               event->dest.port, event->source.client, event->source.port,
-               event->type);
-        if (event->type == SND_SEQ_EVENT_NOTEON || event->type == SND_SEQ_EVENT_NOTEOFF)
-            printf(" channel=%u note=%u velocity=%u", event->data.note.channel,
-                   event->data.note.note, event->data.note.velocity);
-        putchar('\n');
-        fflush(stdout);
+        unsigned int i;
+        int internal = 0;
+
+        for (i = 0; i < port_count; i++)
+            if (event->dest.port == internal_ports[i]) internal = 1;
+        if (!internal)
+        {
+            printf("RX port=%d source=%d:%d type=%d",
+                   event->dest.port, event->source.client, event->source.port,
+                   event->type);
+            if (event->type == SND_SEQ_EVENT_NOTEON || event->type == SND_SEQ_EVENT_NOTEOFF)
+                printf(" channel=%u note=%u velocity=%u", event->data.note.channel,
+                       event->data.note.note, event->data.note.velocity);
+            putchar('\n');
+            fflush(stdout);
+        }
         snd_seq_free_event(event);
     }
 
@@ -174,7 +221,10 @@ int main(int argc, char **argv)
     unsigned long long started, next_note;
     unsigned int sequence = 0, i;
     int ports[MAX_PORTS];
+    int block_sources[MAX_PORTS];
+    int block_dests[MAX_PORTS];
     int capabilities = 0;
+    int blocks_active;
 
     if (!parse_options(argc, argv, &options))
     {
@@ -199,15 +249,22 @@ int main(int argc, char **argv)
     if (options.mode & MODE_WINMM_OUTPUT)
         capabilities |= SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE;
 
+    for (i = 0; i < MAX_PORTS; i++)
+        block_sources[i] = block_dests[i] = -1;
+
     for (i = 0; i < options.ports; i++)
     {
         char name[128];
+        int initial_capabilities = capabilities;
 
         if (options.ports == 1 || options.duplicate_names)
             snprintf(name, sizeof(name), "%s", options.port_name);
         else
             snprintf(name, sizeof(name), "%s %u", options.port_name, i + 1);
-        ports[i] = snd_seq_create_simple_port(seq, name, capabilities,
+        /* Create the reserved port with private access.
+         * Publish it after its test links are ready. */
+        if (options.block_connections_ms) initial_capabilities |= SND_SEQ_PORT_CAP_NO_EXPORT;
+        ports[i] = snd_seq_create_simple_port(seq, name, initial_capabilities,
                 SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_HARDWARE |
                 SND_SEQ_PORT_TYPE_PORT);
         if (ports[i] < 0)
@@ -216,23 +273,81 @@ int main(int argc, char **argv)
             snd_seq_close(seq);
             return 1;
         }
+
+        if (options.block_connections_ms && (options.mode & MODE_WINMM_OUTPUT))
+        {
+            block_sources[i] = snd_seq_create_simple_port(seq, "test output blocker",
+                    SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ |
+                    SND_SEQ_PORT_CAP_NO_EXPORT, SND_SEQ_PORT_TYPE_APPLICATION);
+            if (block_sources[i] < 0 ||
+                set_exclusive_subscription(seq, block_sources[i], ports[i], 1) < 0)
+            {
+                fprintf(stderr, "ALSA rejected the exclusive output test link\n");
+                snd_seq_close(seq);
+                return 1;
+            }
+        }
+        if (options.block_connections_ms && (options.mode & MODE_WINMM_INPUT))
+        {
+            block_dests[i] = snd_seq_create_simple_port(seq, "test input blocker",
+                    SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE |
+                    SND_SEQ_PORT_CAP_NO_EXPORT, SND_SEQ_PORT_TYPE_APPLICATION);
+            if (block_dests[i] < 0 ||
+                set_exclusive_subscription(seq, ports[i], block_dests[i], 1) < 0)
+            {
+                fprintf(stderr, "ALSA rejected the exclusive input test link\n");
+                snd_seq_close(seq);
+                return 1;
+            }
+        }
+        if (options.block_connections_ms &&
+            set_port_capabilities(seq, ports[i], capabilities) < 0)
+        {
+            fprintf(stderr, "ALSA rejected the visible test port publication\n");
+            snd_seq_close(seq);
+            return 1;
+        }
         printf("PORT index=%u id=%d name=%s\n", i, ports[i], name);
     }
 
-    printf("READY client=%d ports=%u mode=%s duplicate_names=%d name=%s\n",
+    printf("READY client=%d ports=%u mode=%s duplicate_names=%d block_connections_ms=%u name=%s\n",
            snd_seq_client_id(seq), options.ports,
            options.mode == MODE_DUPLEX ? "duplex" :
            options.mode == MODE_WINMM_INPUT ? "input" : "output",
-           options.duplicate_names, options.client_name);
+           options.duplicate_names, options.block_connections_ms, options.client_name);
     fflush(stdout);
 
     started = next_note = monotonic_ms();
+    blocks_active = options.block_connections_ms != 0;
     for (;;)
     {
         unsigned long long now = monotonic_ms();
         struct timespec pause = {0, 10000000};
 
-        drain_input(seq);
+        if (blocks_active && now - started >= options.block_connections_ms)
+        {
+            for (i = 0; i < options.ports; i++)
+            {
+                if (block_sources[i] >= 0 &&
+                    set_exclusive_subscription(seq, block_sources[i], ports[i], 0) < 0)
+                {
+                    fprintf(stderr, "ALSA rejected the output test link release\n");
+                    snd_seq_close(seq);
+                    return 1;
+                }
+                if (block_dests[i] >= 0 &&
+                    set_exclusive_subscription(seq, ports[i], block_dests[i], 0) < 0)
+                {
+                    fprintf(stderr, "ALSA rejected the input test link release\n");
+                    snd_seq_close(seq);
+                    return 1;
+                }
+            }
+            blocks_active = 0;
+            printf("UNBLOCK elapsed_ms=%llu\n", now - started);
+            fflush(stdout);
+        }
+        drain_input(seq, block_dests, options.ports);
         if ((options.mode & MODE_WINMM_INPUT) && options.ports && now >= next_note)
         {
             for (i = 0; i < options.ports; i++)

@@ -409,9 +409,15 @@ Apply them in sequence with the rest of the series.
   `Resize` and derives the replacement bitmap options from its DXGI surface.
   This retains both opaque-target ClearType and GDI-compatible `GetDC`.
 - `0105` refreshes ALSA MIDI endpoints throughout each Wine process. It keeps
-  open handles tied to stable device details and publishes Windows device
-  changes after each snapshot. See
-  `notes/ABLETON-WINE-DEVICE-HOTPLUG.md`.
+  open connections tied to stable device details. The monitor is a private
+  ALSA port, and each Wine process skips other Wine processes' sequencer
+  clients, so their ports are not devices. The data ports stay visible to
+  ALSA routing tools. The monitor uses an input pool of 1,000 events. Wine confirms its exact
+  subscription after ALSA reports a busy port. Wine retries pending
+  subscriptions every 250 ms for about 10 seconds, then every 2 seconds while
+  the port stays online. The monitor thread writes its debug messages to the
+  standard error stream, as it has no Windows thread block.
+  `notes/ABLETON-WINE-DEVICE-HOTPLUG.md` records the design and checks.
 - `0106` extends the patch 0032 USB bridge for Push 3. Add synchronous bulk
   transfer, error text, and hotplug registration exports. Accept USB interface
   numbers from 0 to 255. The helper polls after the hotplug registration result.
