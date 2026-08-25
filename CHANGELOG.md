@@ -18,6 +18,26 @@
     The same model at another port waits for your selection.
   - Thanks Lucas Gillingham (@ClickSentinel) for the review.
 
+## 2026.08.24.2
+
+- **Ableton Live on Linux now builds and runs with Nix (#237):**
+  - If you use Nix, `nix run .` builds the runtime and launches Live.
+  - The Nix build uses the same sources and the same patch set as the installer
+    build, and it passes the same quality checks. The result is the same
+    verified runtime.
+  - Each setup step runs as a Nix command: the Wine prefix, real-time audio and
+    Ableton Link. You can run them again after an update.
+  - The audio report and the NTSync check run as Nix commands too, so you can
+    gather the same diagnostics you would from the installer.
+- **An update to a Nix install keeps working:**
+  - The launcher always points at the current Nix build. An update does not
+    leave an old or missing install behind.
+  - A session that is running stays running across an update.
+  - Thanks Lucas Gillingham (@ClickSentinel) for the flake and the Nix runtime
+    support, @Version33 for the original flake, @realitymolder for splitting it
+    from the general fixes, Immabed for the NixOS testing and the PipeASIO
+    settings report, and @shibco for the review.
+
 ## 2026.08.24.1
 
 - **Push 3 finally works in controller mode with Live 12 (#254)!**

@@ -81,6 +81,8 @@ for arg in "$@"; do
 done
 
 linkctl="$ABLETON_DATA_HOME/ableton-linkctl"
+# Packaged installs (nix) stage it under the runtime root instead of $HOME.
+[ -x "$linkctl" ] || linkctl="$WINE_ROOT/share/ableton-wine/scripts/ableton-linkctl"
 if [ "$ABLETON_LINK_MODE" != off ] && [ -x "$linkctl" ]; then
     "$linkctl" start || echo "max9: configured Link anchor failed to start" >&2
 fi

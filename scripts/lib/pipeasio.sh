@@ -113,7 +113,7 @@ ableton_pipeasio_build_info_value()
 ableton_pipeasio_validate_panel()
 {
     local runtime="${1:?runtime root required}" info="${2:-$1/ABLETON-WINE-BUILD-INFO.txt}"
-    local mode record expected actual count=0 part
+    local mode record expected actual count=0 part panel_re
     [ -s "$info" ] || { echo "!! runtime build information is missing" >&2; return 1; }
     mode="$(ableton_pipeasio_build_info_value "$info" pipeasio-panel)" || {
         echo "!! runtime has an invalid PipeASIO panel record" >&2; return 1; }
@@ -127,7 +127,17 @@ ableton_pipeasio_validate_panel()
 
     case "$mode" in
         built)
-            [[ "$record" =~ ^([0-9a-f]{64})\ \(Qt\ 6\.2\ link\)$ ]] || {
+            # The release build links jammy's Qt 6.2 and records exactly that,
+            # so the canonical form is pinned and any other version is refused.
+            # The Nix package links whatever Qt 6 its nixpkgs carries, so on a
+            # runtime that identifies itself as nix the record names the version
+            # actually built against instead.
+            if [ "$(ableton_pipeasio_build_info_value "$info" dist-version)" = nix ]; then
+                panel_re='^([0-9a-f]{64}) \(Qt [0-9]+\.[0-9]+ link\)$'
+            else
+                panel_re='^([0-9a-f]{64}) \(Qt 6\.2 link\)$'
+            fi
+            [[ "$record" =~ $panel_re ]] || {
                 echo "!! runtime has a malformed built-panel record" >&2; return 1; }
             expected="${BASH_REMATCH[1]}"
             [ "$count" -eq 3 ] && [ -x "$runtime/bin/pipeasio-settings" ] \
@@ -180,7 +190,15 @@ ableton_pipeasio_validate_runtime()
     fi
     dist_version="$(ableton_pipeasio_build_info_value "$info" dist-version)" || {
         echo "!! runtime has no unique distribution version" >&2; return 1; }
-    [[ "$dist_version" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] || {
+    # "nix" is the Nix package's distribution identity: the store hash, not a
+    # release date, identifies that build, and setup-prefix.sh validates the
+    # runtime it was started from. Accepted only for a runtime that is actually
+    # in the store, so a tarball runtime cannot use the name to skip the version
+    # check. Where a caller names the version it expects - install.sh matching a
+    # runtime against its payload - the comparison below rejects "nix" anyway,
+    # it equalling no release version.
+    [[ "$dist_version" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] \
+        || { [ "$dist_version" = nix ] && [ "${runtime#/nix/store/}" != "$runtime" ]; } || {
         echo "!! runtime has an invalid distribution version" >&2; return 1; }
     if [ -n "$expected_version" ] && [ "$dist_version" != "$expected_version" ]; then
         echo "!! runtime build information belongs to version $dist_version, not $expected_version" >&2
