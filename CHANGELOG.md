@@ -16,7 +16,8 @@
     error log is on.
   - PipeASIO restores a serial-less interface at its original physical port.
     The same model at another port waits for your selection.
-  - Thanks Lucas Gillingham (@ClickSentinel) for the review.
+  - Thanks Lucas Gillingham (@ClickSentinel) for the review, and @Velkas and
+    Soonganoid (Discord) for the Push 3 reports and the `aconnect` diagnosis.
 
 ## 2026.08.24.2
 
