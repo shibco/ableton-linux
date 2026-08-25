@@ -376,25 +376,18 @@ FINGERPRINTS='
 0068|ascii|lib/wine/$ARCH-windows/wined3d.dll|WINE_D3D_FORCE_GPU_RENDERING
 0069|ascii|lib/wine/$ARCH-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0071|ascii|lib/wine/$ARCH-windows/wined3d.dll|Sustained present-size mismatch
-0072|ascii|lib/wine/$ARCH-unix/winex11.so|MiddleDrag
-0074|ascii|lib/wine/$ARCH-unix/winex11.so|pinch begin on
 0075|ascii|lib/wine/$ARCH-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
 0076|ascii|lib/wine/$ARCH-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
 0080|ascii|lib/wine/$ARCH-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/$ARCH-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/$ARCH-unix/win32u.so|DesktopUIFont
-0090|ascii|lib/wine/$ARCH-unix/winex11.so|smooth scroll delta
-0091|ascii|lib/wine/$ARCH-unix/winex11.so|nudge slots full, dropping the schedule
-0092|ascii|lib/wine/$ARCH-unix/winex11.so|pinch table full, dropping begin from source
-0093|ascii|lib/wine/$ARCH-unix/winex11.so|lost X focus to another client while clipping
-0094|ascii|lib/wine/$ARCH-unix/winex11.so|XWayland warp emulation activated after observed failed warps
-0095|ascii|lib/wine/$ARCH-unix/winex11.so|MiddleDragThrow
 0096|ascii|lib/wine/$ARCH-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
 0100|ascii|lib/wine/$ARCH-unix/winex11.so|ptr lease event=restore
 0101|ascii|lib/wine/$ARCH-windows/user32.dll|dnd target=%p event=release
 0105|ascii|lib/wine/$ARCH-unix/winealsa.so|WINE MIDI topology
 0105|ascii|lib/wine/$ARCH-windows/winmm.dll|Out of memory refreshing %s mappings
 0106|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
+0107|ascii|lib/wine/$ARCH-windows/ntdll.dll|RtlWow64SuspendThread
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
@@ -473,7 +466,6 @@ STAMP_ONLY='
 0102|logic-only (natural modes use outlines; GDI-compatible and aliased modes keep strikes; adds no string literal)
 0103|logic-only (natural rendering quantised to 16 horizontal phases, glyph cache budget scaled with the phase count; adds no string literal)
 0104|logic-only (resize derives target bitmap options from the DXGI surface and preserves its pixel format; adds no string literal)
-0107|logic-only (leave me alone)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
