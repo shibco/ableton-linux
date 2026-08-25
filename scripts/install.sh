@@ -3,13 +3,15 @@
 # components.  Prefix creation is deliberately separate (setup-prefix.sh).
 set -euo pipefail
 export LC_ALL=C.UTF-8
+ARCH="${ARCH:-$(uname -m)}"
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 . "$here/lib/config.sh"
 . "$here/lib/lifecycle.sh"
 . "$here/lib/manifest.sh"
+if [ "$ARCH" = "x86_64" ]; then
 . "$here/lib/pipeasio.sh"
-ARCH="${ARCH:-$(uname -m)}"
+fi
 
 want_runtime=0
 want_integration=0
@@ -453,28 +455,28 @@ validate_runtime_payload()
     local required
     for required in \
         bin/wine bin/wineserver \
-        lib/wine/x86_64-windows/libusb-1.0.dll \
+        lib/wine/$ARCH-windows/libusb-1.0.dll \
         lib/wine/$ARCH-unix/libusb-1.0.so \
         lib/wine/$ARCH-unix/comdlg32.so \
         lib/wine/$ARCH-unix/winealsa.so \
         lib/wine/$ARCH-unix/winegstreamer.so \
         bin/pipewire-version-probe \
         ABLETON-WINE-BUILD-INFO.txt \
-        lib/wine/x86_64-windows/pipeasio64.dll \
-        lib/wine/x86_64-windows/pipeasio.dll \
-        lib/wine/x86_64-unix/pipeasio64.dll.so \
-        lib/wine/x86_64-unix/pipeasio.dll.so; do
-        [ -s "$candidate/$required" ] || { echo "!! runtime payload is missing $required" >&2; return 1; }
+        lib/wine/$ARCH-windows/pipeasio64.dll \
+        lib/wine/$ARCH-windows/pipeasio.dll \
+        lib/wine/$ARCH-unix/pipeasio64.dll.so \
+        lib/wine/$ARCH-unix/pipeasio.dll.so; do
+        [ -s "$candidate/$required" ] || { echo "!! runtime payload is missing $required" >&2; if [ "$ARCH" = "x86_64" ]; then return 1; fi  }
     done
     [ ! -e "$candidate/lib/wine/i386-windows/libusb-1.0.dll" ] || {
         echo "!! runtime unexpectedly contains a 32-bit Push bridge" >&2; return 1; }
-    if command -v readelf >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
-        readelf -d "$candidate/lib/wine/$ARCH-unix/libusb-1.0.so" | grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/null
-        strings "$candidate/lib/wine/$ARCH-unix/comdlg32.so" | grep -F 'org.freedesktop.portal.FileChooser' >/dev/null
+    if command -v readelf >/dev/null 2>&1 && [ "$ARCH" = "x86_64" ] && command -v strings >/dev/null 2>&1; then
+        readelf -d "$candidate/lib/wine/x86_64-unix/libusb-1.0.so" | grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/null
+        strings "$candidate/lib/wine/x86_64-unix/comdlg32.so" | grep -F 'org.freedesktop.portal.FileChooser' >/dev/null
         readelf -d "$candidate/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
-        readelf -d "$candidate/lib/wine/$ARCH-unix/winegstreamer.so" | grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null
-    fi
+        readelf -d "$candidate/lib/wine/x86_64-unix/winegstreamer.so" | grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null
     ableton_pipeasio_validate_runtime "$candidate" "$runtime_info" "$version"
+    fi
     cmp -s -- "$bundle_probe" "$candidate/bin/pipewire-version-probe" || {
         echo "!! installer and runtime compatibility checks do not match" >&2; return 1; }
     ableton_run_bounded 30 "$candidate/bin/wine" --version
@@ -624,7 +626,9 @@ fi
 # dry-run remain usable without a running daemon; Link/integration-only work
 # carries no PipeASIO driver replacement and is not gated.
 if [ "$want_runtime" -eq 1 ]; then
-    ableton_pipewire_preflight "$candidate/bin/pipewire-version-probe" "installing PipeASIO"
+    if [ "$ARCH" = "x86_64" ]; then
+        ableton_pipewire_preflight "$candidate/bin/pipewire-version-probe" "installing PipeASIO"
+    fi
 fi
 
 runtime_pids_all()
@@ -1039,14 +1043,16 @@ install_link_assets()
 [ "$want_runtime" -eq 0 ] || promote_runtime
 if [ "$want_integration" -eq 1 ]; then
     install_integration
-    ableton_pipeasio_optional_tools_advice
+    if [ "$ARCH" = "x86_64" ]; then
+        ableton_pipeasio_optional_tools_advice
+    fi
 fi
 [ "$want_link" -eq 0 ] || install_link_assets
 
 # The panel follows the selected runtime even for a runtime-only update.  An
 # integration-only install remains independently usable when no runtime has
 # been installed yet.
-if [ "$want_runtime" -eq 1 ]; then
+if [ "$want_runtime" -eq 1 ] && [ "$ARCH" = "x86_64" ]; then
     ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT"
     if [ "$want_integration" -eq 1 ]; then
         ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install

@@ -22,7 +22,9 @@ done
 declare -F ableton_config_init >/dev/null 2>&1 || { echo "!! setup-prefix: config helper is missing" >&2; exit 1; }
 ableton_config_init
 . "$here/lib/manifest.sh"
+if [ "$ARCH" = "x86_64" ]; then
 . "$here/lib/pipeasio.sh"
+fi
 
 # The kit root holds vendor/. Layouts that must work:
 #   <kit>/scripts/setup-prefix.sh        -> vendor at $here/../vendor (repo, extracted .run kit)
@@ -321,6 +323,7 @@ fi
     exit 1
 }
 command -v cabextract >/dev/null || { echo "!! cabextract is required for prefix setup" >&2; exit 1; }
+if [ "$ARCH" = "x86_64" ]; then
 for required in \
     bin/pipewire-version-probe \
     ABLETON-WINE-BUILD-INFO.txt \
@@ -335,6 +338,7 @@ for required in \
 done
 ableton_pipeasio_validate_runtime "$WINE_ROOT"
 ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "configuring PipeASIO"
+fi
 
 # Prefix changes are made against a sibling staging copy, then promoted in one
 # rename.  Existing prefixes use reflink cloning where the filesystem supports

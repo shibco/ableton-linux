@@ -6,6 +6,7 @@ set -euo pipefail
 export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+ARCH="${ARCH:-$(uname -m)}"
 
 if [ -d "$here/../bin" ]; then
     kit_bin="$(cd "$here/../bin" && pwd)"
@@ -13,9 +14,10 @@ if [ -d "$here/../bin" ]; then
 fi
 . "$here/lib/config.sh"
 . "$here/lib/lifecycle.sh"
+if [ $ARCH = "x86_64" ]; then
 . "$here/lib/pipeasio.sh"
+fi
 . "$here/lib/manifest.sh"
-ARCH="${ARCH:-$(uname -m)}"
 
 usage()
 {
@@ -442,7 +444,9 @@ if [ "$dry_run" -eq 0 ]; then
             pipewire_probe="$ABLETON_WINE_ROOT/bin/pipewire-version-probe" ;;
     esac
     if [ -n "$pipewire_probe" ]; then
-        ableton_pipewire_preflight "$pipewire_probe" "changing PipeASIO"
+        if [ "$ARCH" = "x86_64" ]; then
+            ableton_pipewire_preflight "$pipewire_probe" "changing PipeASIO"
+        fi
     fi
 fi
 
