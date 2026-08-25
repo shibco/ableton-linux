@@ -1138,8 +1138,8 @@ if ldd "$WINE_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null \
 fi
 [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pipewire-0" ] || \
     echo "!! no PipeWire socket at ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pipewire-0 - Live will list no PipeASIO device until the PipeWire daemon runs"
-#ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "registering PipeASIO"
-#ableton_pipeasio_register wine ableton_wineserver_wait
+ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "registering PipeASIO"
+ableton_pipeasio_register wine ableton_wineserver_wait
 
 # Seed the driver defaults once; the file is the config surface (PIPEASIO_*
 # environment variables override it per launch, see the README).

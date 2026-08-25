@@ -145,9 +145,9 @@ if [ "$ARCH" == "aarch64" ]; then
     echo "== [0/8] FEX ARM64EC =="
 
     git clone --single-branch --branch=FEX-2608 --recursive --depth=1 https://github.com/FEX-Emu/FEX \
-        && test -e /work/FEX/Source/Common/cpp-optparse/LICENSE
+        && test -e $WORK/FEX/Source/Common/cpp-optparse/LICENSE
 
-    cd /work/FEX
+    cd $WORK/FEX
     mkdir build-arm64ec
     cd build-arm64ec
     cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DCMAKE_INSTALL_LIBDIR=$PREFIX_ROOT/lib/wine/aarch64-windows -DENABLE_LTO=False -DMINGW_TRIPLE=arm64ec-w64-mingw32 -DBUILD_TESTING=False -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT ..
@@ -161,7 +161,7 @@ if [ "$ARCH" == "aarch64" ]; then
     ninja
     ninja install
     cd ..
-    cd /work
+    cd $WORK
 fi
 
 echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.13 @ 5c23dd1c) =="
@@ -419,7 +419,7 @@ pipeasio_cmake_configure() {
     shift
         PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
-        CC=clang CXX=clang++ \
+        CC=gcc CXX=g++ \
         cmake -S . -B "$build_dir" -G Ninja \
             -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
             -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
@@ -494,7 +494,7 @@ pipeasio_cmake_configure build \
     -DCMAKE_INSTALL_PREFIX="$CONFIGURE_PREFIX" \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
     -DBUILD_SETTINGS_PANEL="$PIPEASIO_BUILD_SETTINGS_PANEL" \
-    -DBUILD_TESTS=$BUILD_TESTS
+    -DBUILD_TESTS=ON
 cmake --build build -j "$JOBS"
 
 
@@ -521,7 +521,7 @@ pipeasio_cmake_configure build-noqt \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
     -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=TRUE \
     -DBUILD_SETTINGS_PANEL=ON \
-    -DBUILD_TESTS=$BUILD_TESTS
+    -DBUILD_TESTS=ON
 mapfile -t noqt_unit_targets < <(pipeasio_unit_targets build-noqt)
 [ "${#noqt_unit_targets[@]}" -gt 0 ] || {
     echo "!! no unit-labelled CTest targets found in the no-Qt build" >&2
@@ -669,19 +669,15 @@ rm -f "$PREFIX_ROOT"/bin/widl "$PREFIX_ROOT"/bin/winebuild "$PREFIX_ROOT"/bin/wi
       "$PREFIX_ROOT"/bin/winedump "$PREFIX_ROOT"/bin/wineg++ "$PREFIX_ROOT"/bin/winegcc \
       "$PREFIX_ROOT"/bin/winemaker "$PREFIX_ROOT"/bin/wmc "$PREFIX_ROOT"/bin/wrc \
       "$PREFIX_ROOT"/bin/function_grep.pl
+
+
 # BUILD-INFO must hash the files as shipped, i.e. post-strip
 bridge_pe_sha="$(sha256sum "$bridge_pe" | awk '{print $1}')"
 bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
 pipewire_probe_sha="$(sha256sum "$pipewire_probe" | awk '{print $1}')"
 
-if [ "$ARCH" = "aarch64" ]; then
-	mkdir -p "$PREFIX_ROOT/lib/wine/x86_64-windows"
-	mkdir -p "$PREFIX_ROOT/lib/wine/x86_64-unix"
-	cp /work/x86_64-windows/*.dll "$PREFIX_ROOT/lib/wine/x86_64-windows/"
-	cp /work/x86_64-unix/*.dll.so "$PREFIX_ROOT/lib/wine/x86_64-unix/"
-fi
-
+if [ "$ARCH" = "x86_64" ]; then
 pipeasio_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio64.dll"
 pipeasio_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so"
 test -s "$pipeasio_pe"
@@ -689,6 +685,7 @@ test -s "$pipeasio_unix"
 pipeasio_pe_sha="$(sha256sum "$pipeasio_pe" | awk '{print $1}')"
 pipeasio_unix_sha="$(sha256sum "$pipeasio_unix" | awk '{print $1}')"
 echo "   PipeASIO: PE $pipeasio_pe_sha / Unix $pipeasio_unix_sha"
+fi
 
 echo "== [6/8] package =="
 # Keep the resolved package closure beside BUILD-INFO so its digest is useful
@@ -744,8 +741,10 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "libusb-pe:    $bridge_pe_sha"
     echo "libusb-unix:  $bridge_unix_sha"
     echo "portal-unix:  $portal_unix_sha"
+if [ "$ARCH" = "x86_64" ]; then
     echo "pipeasio-pe:  $pipeasio_pe_sha"
     echo "pipeasio-unix: $pipeasio_unix_sha"
+fi
     echo "built-on:     Ubuntu 22.04 (glibc 2.35)"
 } > "$build_info"
 cp "$build_info" "$OUT/BUILD-INFO-${VERSION}.txt"

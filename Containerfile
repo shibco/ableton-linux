@@ -149,12 +149,6 @@ RUN if [ "$ARCH" = "aarch64" ]; then \
     && test -e /opt/llvm-mingw-ucrt-aarch64/bin/arm64ec-w64-mingw32-clang \
 ;fi
 
-# Vendored pipeasio x86_64 for arm64
-RUN mkdir -p /work/x86_64-windows
-RUN mkdir -p /work/x86_64-unix
-COPY vendor/pipeasio*.dll /work/x86_64-windows
-COPY vendor/pipeasio*.dll.so /work/x86_64-unix
-
 WORKDIR /work
 
 
