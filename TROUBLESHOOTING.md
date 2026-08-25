@@ -49,6 +49,7 @@ have already fixed your issue.
   - [An audio interface does not appear](#an-audio-interface-does-not-appear)
   - [Push 2 connection steps](#push-2-connection-steps)
   - [Push 3 stays on the connection screen](#push-3-stays-on-the-connection-screen)
+  - [Push 3 plays notes on its own](#push-3-plays-notes-on-its-own)
   - [Ableton Move support](#ableton-move-support)
 - [Ableton Link](#ableton-link)
   - [Ableton Link does not find peers](#ableton-link-does-not-find-peers)
@@ -933,6 +934,38 @@ If Push stays on the connection screen, open a
 [new issue](https://github.com/shibco/ableton-linux/issues/new/choose). Include
 your distribution, desktop, Live version, firmware version and the output from
 `lsusb -d 2982:1969`.
+
+### Push 3 plays notes on its own
+
+Update this project, then start Live again:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run update
+```
+
+Live runs a separate helper for Push 3. Before this fix, Live and the helper
+saw each other's MIDI connection as a device, and one of them opened the
+other's output as an input. Live's own pad lights then came back as notes on
+channel 1, so pads stuck and repeated at full speed.
+
+If you cannot update yet, cut the loop by hand after each Live start. List
+the MIDI connections:
+
+```bash
+aconnect -l
+```
+
+Find the `WINE ALSA Output` port that shows `Connecting To` a port 0 under a
+second `WINE midi driver` client. Remove that one connection, with your own
+numbers in place of `131:1 129:0`:
+
+```bash
+aconnect -d 131:1 129:0
+```
+
+If the notes continue after the update, open a
+[new issue](https://github.com/shibco/ableton-linux/issues/new/choose) and
+include the output of `aconnect -l`.
 
 ### Ableton Move support
 

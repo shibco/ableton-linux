@@ -4,7 +4,7 @@ Push 3 controller mode works with Live 12. The release-candidate implementation
 reached `Push is go` in three hardware validation sessions. The later Ubuntu
 and Arch-based sessions exercised the physical surface.
 
-The current Wine series carries two patches used by Push 3:
+The current Wine series has two patches that target  Push 3:
 
 - [patch 0106](../patches/0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch)
   extends the USB bridge for the Push 3 helper
@@ -74,7 +74,7 @@ Patch 0106 adds the 4 exports that `Push3.exe` imports:
 - `libusb_hotplug_register_callback`
 - `libusb_hotplug_deregister_callback`
 
-The synchronous bulk transfer passes one request to host libusb. A timeout
+The synchronous bulk transfer passes a request to host libusb. A timeout
 value of zero waits indefinitely, following libusb rules.
 
 The hotplug registration export returns `LIBUSB_ERROR_NOT_SUPPORTED`.
@@ -107,6 +107,44 @@ to the Push 3 Live port.
 
 Patch 0105 gives every USB MIDI port a Windows-style name. Existing Live MIDI
 device and control-surface assignments may need to be selected again.
+
+## Live and Push3.exe share one MIDI driver
+
+Live and `Push3.exe` are separate Wine processes. Each loads winealsa and
+opens its own ALSA sequencer client named `WINE midi driver`. Each client
+creates application ports: `WINE ALSA Input` for the open WinMM inputs and
+`WINE ALSA Output #N` for every open WinMM output. Wine subscribes these
+ports to the device ports.
+
+Until 26 August 2026 the driver hid only the sequencer clients of its own
+process from the device list. The other process's application ports passed
+the filter and appeared as WinMM devices, for example `WINE ALSA Output #7`
+as a MIDI input. The client and port names together overflow `MAXPNAMELEN`,
+so WinMM shows the port name alone. One process opened
+the other's output as an input. The `aconnect` output from the report shows
+the result: the `WINE ALSA Output #7` port of one client subscribed to port 0,
+`WINE ALSA Input`, of the other. Push pad lights are note-on messages on
+channel 1, so every pad light arrived in Live as a new note. A pad press lit
+the pad, the light came back as a press, and the note repeated.
+
+Two testers reported this on
+[issue 26](https://github.com/shibco/ableton-linux/issues/26) on 25 August
+2026. `aconnect -d 131:1 129:0` removed the subscription and stopped the
+notes until the next Live start.
+
+Patch 0105 now skips every user client named `WINE midi driver` or
+`WINE MIDI topology`, not only the client ids the current process owns.
+Upstream Wine uses the first name too, so plug-in bridges that run on plain
+Wine stay hidden as well. The topology monitor port also contains
+`SND_SEQ_PORT_CAP_NO_EXPORT`, so routing tools no longer offer it as a
+device. The data ports keep their export capability: PipeWire drops
+`NO_EXPORT` ports from its graph, and users route PipeWire MIDI into Live
+through those ports.
+
+The `monitor-leak` case in `tools/test-midi-hotplug.sh` covers this. A second
+Wine process must list none of the first process's ports. The
+[hidden Wine clients section](ABLETON-WINE-DEVICE-HOTPLUG.md#hidden-wine-clients)
+of the device hotplug note covers the routing consequences.
 
 ## Report history
 
@@ -164,9 +202,13 @@ The longer test measured `Push3.exe` at 0.0% of one CPU core during an idle
 uses Ableton's packaged executable. A Windows or macOS comparison can establish
 the platform baseline for the message rate.
 
+Both tests ran before the driver hid the other process's ports. The MIDI loop
+described above may explain the queue failures. A run after the fix can
+confirm that.
+
 ## USB probe
 
-The host probe shares one implementation between Push 2 and Push 3. The
+The host probe shares its implementation between Push 2 and Push 3. The
 `push2usb.c` and `push3usb.c` files select their device model.
 
 Compile and run the Push 3 probe:
