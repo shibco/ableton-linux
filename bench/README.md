@@ -60,6 +60,10 @@ By default a new ignored directory is created under `bench/reports/`. Use
   PipeWire ERR delta, node generations and quantum transitions, OSC DSP average
   and peak, observed `AudioCalc` worker count, Live's runtime-visible
   performance/efficiency-core counts, log evidence, and crackle classification.
+- Every set also retains endpoint `/proc/interrupts` and `/proc/softirqs`
+  snapshots with label/per-CPU deltas and actual rates, plus read-only endpoint
+  power-profile/hold and cpufreq-policy governor/min/max/EPP identity. The
+  suite profile's power state is explicitly only the ambient pre-launch value.
 - `sets/NN-SET/raw/`: before/after `/proc` snapshots, `pw-top`, PipeWire
   metadata events, OSC rows, launcher diagnostics, Live log slices, and matched
   xrun lines.
@@ -117,6 +121,26 @@ scripts/bench-suite.sh --tag before/my-change
 # install or enable exactly one change, then relaunch through the suite
 scripts/bench-suite.sh --tag after/my-change
 ```
+
+Create the automated pair report after both runs complete:
+
+```bash
+python3 scripts/bench-report.py compare \
+  --before bench/reports/BEFORE --after bench/reports/AFTER \
+  --output bench/reports/BEFORE-vs-AFTER
+# equivalent: make bench-compare BEFORE=... AFTER=... OUTPUT=...
+```
+
+This refuses incomplete runs, non-canonical sets, and nonmatching or
+non-30-second durations, then writes `comparison.json` plus `comparison.md`.
+It reports identity differences
+as confounders rather than hiding them, including hardware/audio/PipeWire,
+runtime/prefix/Live/config hashes, effective PipeASIO path, graph rate/quantum,
+performance-affecting launcher variables, and the exact `WINE_APC_FASTPATH`
+gate. Each set carries numeric before/after/delta/percent fields for CPU,
+scheduler/context-switch, PipeWire/OSC, task-churn, collector-coverage, and
+IRQ/softirq values. Missing values and zero baselines have explicit undefined
+statuses. One pair is descriptive evidence and never a significance claim.
 
 Compare the JSON values rather than drawing a conclusion from one total. The
 report separates host utilisation, endpoint-surviving Wine/Live tasks,

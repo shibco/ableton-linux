@@ -29,6 +29,39 @@ DEFAULT_NODE_RE = r"Ableton|Live|[Pp]ipe[Aa][Ss][Ii][Oo]"
 CANONICAL_SETS = (
     "Benchmark_Zero", "Benchmark_Empty", "Benchmark_Inbuilts", "Benchmark_Max4Live", "Benchmark_VSTs",
 )
+CANONICAL_MODES = {
+    "Benchmark_Zero": "idle-no-controller",
+    "Benchmark_Empty": "playback",
+    "Benchmark_Inbuilts": "playback",
+    "Benchmark_Max4Live": "playback",
+    "Benchmark_VSTs": "playback",
+}
+# Deliberately finite: these are benchmarkable Wine synchronization/realtime
+# gates used by this project or its retained CPU candidates.  Do not leak every
+# WINE_* variable into reports merely because it happens to be in the shell.
+BENCHMARK_WINE_ENV_KEYS = (
+    "WINE_APC_FASTPATH",
+    "WINE_MSG_FASTPATH",
+    "WINE_USER_APC_FASTPATH",
+    "WINE_HOOK_FASTPATH",
+    "WINEESYNC",
+    "WINEFSYNC",
+    "WINEFSYNC_FUTEX2",
+    "WINE_NTSYNC",
+    "STAGING_RT_PRIORITY_BASE",
+    "STAGING_RT_PRIORITY_SERVER",
+)
+BENCHMARK_ABLETON_ENV_KEYS = (
+    "ABLETON_DCOMP", "ABLETON_DPI_MODE", "ABLETON_LINKD", "ABLETON_LINKD_LINGER",
+    "ABLETON_LINK_MODE", "ABLETON_MAX_AUDIO_THREADS", "ABLETON_POWER", "ABLETON_RT",
+    "ABLETON_TEXT_SMOOTHING", "ABLETON_THEME_MODE", "ABLETON_TOPBAR_MODE", "ABLETON_UI_FONT",
+    "ABLETON_VDESK",
+)
+PROFILE_ENV_EXACT_KEYS = (
+    *BENCHMARK_WINE_ENV_KEYS,
+    "WINEDEBUG",
+)
+PROFILE_ENV_PREFIXES = ("ABLETON_", "PIPEASIO_", "WINED3D_")
 XRUN_RE = re.compile(
     r"\b(?:xrun|underrun|overrun)s?\b|missed.{0,24}(?:deadline|cycle)|"
     r"buffer.{0,16}(?:under|over)run",
@@ -175,6 +208,25 @@ def selected_lines(text: str, pattern: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if wanted.search(line)]
 
 
+def benchmark_environment(environment: dict[str, str] | None = None) -> dict[str, str]:
+    values = os.environ if environment is None else environment
+    return {
+        key: value for key, value in sorted(values.items())
+        if key in PROFILE_ENV_EXACT_KEYS or key.startswith(PROFILE_ENV_PREFIXES)
+    }
+
+
+def benchmark_gate_environment(environment: dict[str, str] | None = None) -> dict[str, str]:
+    """Return only performance gates, excluding paths and harness identity."""
+    values = benchmark_environment(environment)
+    return {
+        key: value for key, value in values.items()
+        if key in BENCHMARK_WINE_ENV_KEYS
+        or key.startswith("PIPEASIO_")
+        or key in BENCHMARK_ABLETON_ENV_KEYS
+    }
+
+
 def cpu_sysfs_inventory(root: Path = Path("/sys/devices/system/cpu")) -> dict[str, Any]:
     attributes = (
         "topology/physical_package_id", "topology/die_id", "topology/core_id",
@@ -182,6 +234,9 @@ def cpu_sysfs_inventory(root: Path = Path("/sys/devices/system/cpu")) -> dict[st
         "cpu_capacity", "online", "cpufreq/scaling_driver", "cpufreq/scaling_governor",
         "cpufreq/energy_performance_preference", "cpufreq/scaling_min_freq",
         "cpufreq/scaling_max_freq", "cpufreq/cpuinfo_max_freq",
+        "acpi_cppc/highest_perf", "acpi_cppc/nominal_perf",
+        "cpufreq/amd_pstate_prefcore_ranking", "cpufreq/amd_pstate_hw_prefcore",
+        "cpufreq/amd_pstate_max_freq", "cpufreq/amd_pstate_highest_perf",
     )
     cpus = []
     try:
@@ -198,12 +253,103 @@ def cpu_sysfs_inventory(root: Path = Path("/sys/devices/system/cpu")) -> dict[st
             if value:
                 record[attribute.replace("/", ".")] = value
         cpus.append(record)
+    amd_pstate = {}
+    for attribute in ("status", "prefcore", "dynamic_epp"):
+        value = read_text(root / "amd_pstate" / attribute).strip()
+        if value:
+            amd_pstate[attribute] = value
     return {
         "cpus": cpus,
         "online": read_text(root / "online").strip(),
         "offline": read_text(root / "offline").strip(),
         "isolated": read_text(root / "isolated").strip(),
         "nohz_full": read_text(root / "nohz_full").strip(),
+        "amd_pstate": amd_pstate,
+    }
+
+
+def audio_kernel_parameters(
+    root: Path = Path("/sys/module/snd_usb_audio/parameters"),
+) -> dict[str, Any]:
+    parameters = {}
+    for name in ("lowlatency", "autoclock", "implicit_fb", "quirk_flags"):
+        path = root / name
+        record: dict[str, Any] = {"path": str(path), "available": False, "value": None}
+        try:
+            record.update(available=True, value=path.read_text(errors="replace").strip())
+        except OSError as error:
+            record["reason"] = str(error)
+        parameters[name] = record
+    return {
+        "module": "snd_usb_audio",
+        "available": any(item["available"] for item in parameters.values()),
+        "parameters": parameters,
+        "scope": "Read-only snapshot; the benchmark harness does not change module parameters.",
+    }
+
+
+def cpu_policy_snapshot(
+    root: Path = Path("/sys/devices/system/cpu/cpufreq"),
+) -> dict[str, Any]:
+    begin_ns = time.monotonic_ns()
+    fields = (
+        "affected_cpus", "related_cpus", "scaling_driver", "scaling_governor",
+        "scaling_min_freq", "scaling_max_freq", "cpuinfo_max_freq",
+        "energy_performance_preference", "energy_performance_available_preferences",
+        "amd_pstate_prefcore_ranking", "amd_pstate_hw_prefcore",
+        "amd_pstate_max_freq", "amd_pstate_highest_perf",
+    )
+    try:
+        paths = sorted(
+            (path for path in root.glob("policy*") if re.fullmatch(r"policy\d+", path.name)),
+            key=lambda path: int(path.name.removeprefix("policy")),
+        )
+        error = None
+    except OSError as caught:
+        paths, error = [], str(caught)
+    policies = []
+    for path in paths:
+        record: dict[str, Any] = {"policy": path.name}
+        for field in fields:
+            value = read_text(path / field).strip()
+            if value:
+                record[field] = value
+        policies.append(record)
+    end_ns = time.monotonic_ns()
+    return {
+        "available": bool(policies),
+        "reason": error or (None if policies else "no-readable-cpufreq-policies"),
+        "policies": policies,
+        "monotonic_begin_ns": begin_ns,
+        "monotonic_end_ns": end_ns,
+        "monotonic_ns": (begin_ns + end_ns) // 2,
+        "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
+        "scope": "Endpoint governor/min/max/EPP identity only; instantaneous frequency is not sampled.",
+    }
+
+
+def power_endpoint_snapshot(raw_dir: Path, endpoint: str) -> dict[str, Any]:
+    begin_ns = time.monotonic_ns()
+    commands = {
+        name: command_capture(f"power-{endpoint}-{name}", argv, raw_dir, 5)
+        for name, argv in (
+            ("profile", ["powerprofilesctl", "get"]),
+            ("holds", ["powerprofilesctl", "list-holds"]),
+        )
+    }
+    end_ns = time.monotonic_ns()
+    successful = {name: item.get("available") and item.get("returncode") == 0 for name, item in commands.items()}
+    return {
+        "available": successful["profile"],
+        "profile": read_text(raw_dir / f"power-{endpoint}-profile.stdout.txt").strip() or None,
+        "holds_available": successful["holds"],
+        "holds": read_text(raw_dir / f"power-{endpoint}-holds.stdout.txt").strip() or None,
+        "commands": commands,
+        "monotonic_begin_ns": begin_ns,
+        "monotonic_end_ns": end_ns,
+        "monotonic_ns": (begin_ns + end_ns) // 2,
+        "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
+        "scope": "Read-only endpoint power profile and active-hold evidence.",
     }
 
 
@@ -476,9 +622,12 @@ def schedstat_values(text: str) -> dict[str, int] | None:
 
 
 def selected_environment(pid: int) -> dict[str, str]:
-    allowed_prefixes = (
-        "ABLETON_", "PIPEASIO_", "WINE", "WINED3D_", "WEBVIEW2_", "PIPEWIRE_",
-    )
+    allowed_prefixes = ("ABLETON_", "PIPEASIO_", "WINED3D_", "WEBVIEW2_", "PIPEWIRE_")
+    allowed_exact = set(PROFILE_ENV_EXACT_KEYS) | {
+        "WINEPREFIX", "WINESERVER", "WINEDLLOVERRIDES", "WINE_D3D_CONFIG",
+        "WINE_X11_FORCE_OFFSCREEN_CLASS", "WINE_WIN32_FULLSCREEN_CLASS",
+        "WINE_WIN32_RESIZABLE_CLASS", "WINE_DISABLE_UNIX_MOUNT_REPARSE",
+    }
     result: dict[str, str] = {}
     try:
         for item in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"):
@@ -486,7 +635,7 @@ def selected_environment(pid: int) -> dict[str, str]:
                 continue
             key, value = item.split(b"=", 1)
             name = key.decode(errors="replace")
-            if name.startswith(allowed_prefixes):
+            if name in allowed_exact or name.startswith(allowed_prefixes):
                 result[name] = value.decode(errors="replace")
     except OSError:
         pass
@@ -571,6 +720,145 @@ def host_cpu_snapshot() -> dict[str, list[int]]:
         except ValueError:
             continue
     return values
+
+
+def parse_kernel_counters(text: str) -> dict[str, Any]:
+    """Parse /proc/interrupts or /proc/softirqs without assuming label names."""
+    lines = text.splitlines()
+    if not lines:
+        return {"available": False, "reason": "empty-or-unreadable", "cpus": [], "labels": {}, "skipped_rows": []}
+    cpus = lines[0].split()
+    if not cpus or not all(re.fullmatch(r"CPU\d+", cpu) for cpu in cpus):
+        return {"available": False, "reason": "missing-cpu-header", "cpus": [], "labels": {}, "skipped_rows": lines[:1]}
+    labels: dict[str, Any] = {}
+    skipped = []
+    for raw_line in lines[1:]:
+        if not raw_line.strip():
+            continue
+        if ":" not in raw_line:
+            skipped.append(raw_line)
+            continue
+        raw_label, remainder = raw_line.split(":", 1)
+        label = raw_label.strip()
+        fields = remainder.split()
+        count_fields = []
+        while len(count_fields) < len(fields) and fields[len(count_fields)].isdigit():
+            count_fields.append(fields[len(count_fields)])
+        counts = [int(value) for value in count_fields]
+        if len(counts) == 1 and label in {"ERR", "MIS"}:
+            labels[label] = {
+                "scope": "global", "per_cpu": {}, "total": counts[0], "description": " ".join(fields[1:]),
+            }
+        elif len(counts) == len(cpus):
+            labels[label] = {
+                "scope": "per-cpu", "per_cpu": dict(zip(cpus, counts)), "total": sum(counts),
+                "description": " ".join(fields[len(cpus):]),
+            }
+        else:
+            skipped.append(raw_line)
+    return {"available": True, "reason": None, "cpus": cpus, "labels": labels, "skipped_rows": skipped}
+
+
+def kernel_counter_snapshot(paths: dict[str, Path] | None = None) -> dict[str, Any]:
+    sources = paths or {"interrupts": Path("/proc/interrupts"), "softirqs": Path("/proc/softirqs")}
+    result = {}
+    for name, path in sources.items():
+        begin_ns = time.monotonic_ns()
+        error = None
+        try:
+            raw = path.read_text(errors="replace")
+        except OSError as caught:
+            raw, error = "", str(caught)
+        end_ns = time.monotonic_ns()
+        parsed = parse_kernel_counters(raw)
+        if error:
+            parsed.update(available=False, reason=f"read-error: {error}")
+        parsed.update({
+            "source": str(path), "raw": raw, "captured_at": utc_now(),
+            "monotonic_begin_ns": begin_ns, "monotonic_end_ns": end_ns,
+            "monotonic_ns": (begin_ns + end_ns) // 2,
+            "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
+        })
+        result[name] = parsed
+    return result
+
+
+def kernel_counter_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    if not before.get("available") or not after.get("available"):
+        unavailable = [f"{side}: {item.get('reason', 'unavailable')}" for side, item in (
+            ("before", before), ("after", after),
+        ) if not item.get("available")]
+        return {
+            "available": False, "reason": "; ".join(unavailable), "total_delta": None,
+            "total_rate_per_second": None, "labels": {},
+        }
+    elapsed = max(0.000001, (after["monotonic_ns"] - before["monotonic_ns"]) / 1_000_000_000)
+    before_labels, after_labels = before.get("labels", {}), after.get("labels", {})
+    rows, comparable_total = {}, 0
+    for label in sorted(set(before_labels) | set(after_labels)):
+        first, last = before_labels.get(label), after_labels.get(label)
+        status, delta, per_cpu = "comparable", None, {}
+        if first is None:
+            status = "missing-before"
+        elif last is None:
+            status = "missing-after"
+        elif first.get("scope") != last.get("scope"):
+            status = "scope-changed"
+        else:
+            delta = counter_delta(first.get("total"), last.get("total"))
+            if delta is None:
+                status = "counter-reset"
+            else:
+                comparable_total += delta
+            per_cpu = {cpu: counter_delta(first.get("per_cpu", {}).get(cpu), last.get("per_cpu", {}).get(cpu))
+                       for cpu in sorted(set(first.get("per_cpu", {})) | set(last.get("per_cpu", {})))}
+            if status == "comparable" and any(value is None for value in per_cpu.values()):
+                status = "per-cpu-counter-reset-or-column-change"
+        rows[label] = {
+            "status": status, "scope": (last or first or {}).get("scope"),
+            "before": None if first is None else first.get("total"),
+            "after": None if last is None else last.get("total"), "delta": delta,
+            "rate_per_second": round(delta / elapsed, 6) if delta is not None else None,
+            "per_cpu_delta": per_cpu,
+            "description_before": None if first is None else first.get("description"),
+            "description_after": None if last is None else last.get("description"),
+        }
+    confounders = []
+    if before.get("cpus") != after.get("cpus"):
+        confounders.append("cpu-column-set-changed")
+    if before.get("skipped_rows") or after.get("skipped_rows") or any(row["status"] != "comparable" for row in rows.values()):
+        confounders.append("label-set-or-counter-discontinuity")
+    complete = not confounders
+    before_begin = before.get("monotonic_begin_ns", before["monotonic_ns"])
+    before_end = before.get("monotonic_end_ns", before["monotonic_ns"])
+    after_begin = after.get("monotonic_begin_ns", after["monotonic_ns"])
+    after_end = after.get("monotonic_end_ns", after["monotonic_ns"])
+    per_cpu = {cpu: sum(
+        row["per_cpu_delta"].get(cpu, 0) for row in rows.values()
+        if row["per_cpu_delta"].get(cpu) is not None
+    ) for cpu in after.get("cpus", [])}
+    return {
+        "available": True, "reason": None, "complete": complete, "confounders": confounders,
+        "cpus_before": before.get("cpus", []), "cpus_after": after.get("cpus", []), "elapsed_seconds": round(elapsed, 6),
+        "elapsed_lower_bound_seconds": round(max(0, after_begin - before_end) / 1_000_000_000, 6),
+        "elapsed_upper_bound_seconds": round(max(0, after_end - before_begin) / 1_000_000_000, 6),
+        "total_delta": comparable_total if complete else None, "comparable_label_delta": comparable_total,
+        "total_rate_per_second": round(comparable_total / elapsed, 6) if complete else None,
+        "per_cpu_delta": per_cpu if complete else None,
+        "per_cpu_rate_per_second": (
+            {cpu: round(value / elapsed, 6) for cpu, value in per_cpu.items()} if complete else None
+        ),
+        "labels": rows,
+    }
+
+
+def endpoint_collection_offsets(before: dict[str, Any], after: dict[str, Any], start_ns: int) -> dict[str, Any]:
+    offsets = lambda item: [  # noqa: E731
+        round((item[key] - start_ns) / 1_000_000_000, 6)
+        for key in ("monotonic_begin_ns", "monotonic_end_ns")
+    ]
+    return {"before_collection_offsets_seconds": offsets(before),
+            "after_collection_offsets_seconds": offsets(after)}
 
 
 def proc_snapshot(prefix: Path, wine_root: Path, explicit: Iterable[int]) -> dict[str, Any]:
@@ -1007,15 +1295,28 @@ def process_groups(delta: dict[str, Any], prefix: Path, wine_root: Path) -> dict
     for name, values in groups.items():
         cpu_values = [item["cpu_percent_of_one_core"] for item in values if item["cpu_percent_of_one_core"] is not None]
         context_values = [item["context_switches"] for item in values if item["context_switches"] is not None]
+        schedstat = {}
+        for key in ("runtime_ns", "run_delay_ns", "timeslices"):
+            sched_values = [item.get("schedstat", {}).get(key) for item in values]
+            schedstat[key] = (
+                sum(sched_values) if sched_values and all(value is not None for value in sched_values) else None
+            )
         summary[name] = {
-            "cpu_percent_of_one_core": round(sum(cpu_values), 4) if cpu_values else None,
-            "context_switches": sum(context_values) if context_values else None,
+            "cpu_percent_of_one_core": (
+                round(sum(cpu_values), 4) if cpu_values and len(cpu_values) == len(values) else None
+            ),
+            "context_switches": (
+                sum(context_values) if context_values and len(context_values) == len(values) else None
+            ),
+            "schedstat": schedstat,
             "pids": [item["pid"] for item in values],
         }
         if name == "live":
             threads = [thread for process in values for thread in process.get("threads", [])]
-            summary[name]["thread_count"] = len(threads)
-            summary[name]["audio_worker_count"] = sum(thread.get("comm") == "AudioCalc" for thread in threads)
+            summary[name]["thread_count"] = len(threads) if values else None
+            summary[name]["audio_worker_count"] = (
+                sum(thread.get("comm") == "AudioCalc" for thread in threads) if values else None
+            )
     return summary
 
 
@@ -1034,8 +1335,15 @@ def capture(args: argparse.Namespace) -> int:
     log_contexts = capture_log_context(baselines, raw)
     live_identity = parse_live_log_identity(log_contexts[0] if log_contexts else "")
 
+    power_before = power_endpoint_snapshot(raw, "before")
+    policy_before = cpu_policy_snapshot()
     before = proc_snapshot(prefix, wine_root, explicit)
+    kernel_before = kernel_counter_snapshot()
+    dump_json(raw / "power-before.json", power_before)
+    dump_json(raw / "cpu-policy-before.json", policy_before)
     dump_json(raw / "proc-before.json", before)
+    for name, snapshot in kernel_before.items():
+        (raw / f"proc-{name}-before.txt").write_text(snapshot.pop("raw"))
     started_at = utc_now()
     start_ns = time.monotonic_ns()
     pw_top_argv = ["pw-top", "-b"]
@@ -1069,13 +1377,25 @@ def capture(args: argparse.Namespace) -> int:
     for command in commands:
         command.terminate_at_deadline()
     after = proc_snapshot(prefix, wine_root, explicit)
+    kernel_after = kernel_counter_snapshot()
+    policy_after = cpu_policy_snapshot()
+    power_after = power_endpoint_snapshot(raw, "after")
     ended_at = utc_now()
     command_results = {command.name: command.stop() for command in commands}
     if args.osc == "off":
         command_results["osc"] = {"available": False, "reason": "set-has-no-controller"}
     dump_json(raw / "proc-after.json", after)
+    dump_json(raw / "cpu-policy-after.json", policy_after)
+    dump_json(raw / "power-after.json", power_after)
+    for name, snapshot in kernel_after.items():
+        (raw / f"proc-{name}-after.txt").write_text(snapshot.pop("raw"))
     delta = snapshots_delta(before, after)
     dump_json(raw / "proc-delta.json", delta)
+    kernel_deltas = {
+        name: kernel_counter_delta(kernel_before[name], kernel_after[name])
+        for name in ("interrupts", "softirqs")
+    }
+    dump_json(raw / "proc-kernel-counters-delta.json", kernel_deltas)
 
     pw_top = parse_pw_top(read_text(raw / "pw-top.tsv"), args.node_pattern)
     metadata = parse_metadata(read_text(raw / "pw-metadata.tsv"))
@@ -1125,12 +1445,47 @@ def capture(args: argparse.Namespace) -> int:
             "cpu_interval_bounds_seconds": [
                 delta["elapsed_lower_bound_seconds"], delta["elapsed_upper_bound_seconds"],
             ],
+            "kernel_counter_intervals": {
+                name: endpoint_collection_offsets(kernel_before[name], kernel_after[name], start_ns) | {
+                    "interval_midpoint_estimate_seconds": kernel_deltas[name].get("elapsed_seconds"),
+                    "interval_bounds_seconds": [
+                        kernel_deltas[name].get("elapsed_lower_bound_seconds"),
+                        kernel_deltas[name].get("elapsed_upper_bound_seconds"),
+                    ],
+                    "available": kernel_deltas[name].get("available", False),
+                }
+                for name in ("interrupts", "softirqs")
+            },
+            "endpoint_identity_intervals": {
+                name: endpoint_collection_offsets(first, last, start_ns)
+                for name, first, last in (
+                    ("cpu_policy", policy_before, policy_after),
+                    ("power", power_before, power_after),
+                )
+            },
             "scope": (
                 "The requested deadline is shared. Endpoint CPU accounting includes the explicitly reported "
-                "snapshot skew; each external collector reports its own observed supervision/output coverage."
+                "snapshot skew; interrupt and softirq counters have their own endpoint intervals; each external "
+                "collector reports its own observed supervision/output coverage."
             ),
         },
         "process": {"summary": process_groups(delta, prefix, wine_root), "details": delta},
+        "kernel_counters": kernel_deltas,
+        "endpoint_identity": {
+            "cpu_policy": {
+                "before": policy_before,
+                "after": policy_after,
+                "changed_within_window": policy_before.get("policies") != policy_after.get("policies"),
+            },
+            "power": {
+                "before": power_before,
+                "after": power_after,
+                "changed_within_window": (
+                    power_before.get("profile") != power_after.get("profile")
+                    or power_before.get("holds") != power_after.get("holds")
+                ),
+            },
+        },
         "pipewire": {"pw_top": pw_top, "settings": metadata},
         "osc_dsp": osc,
         "logs": logs,
@@ -1143,6 +1498,15 @@ def capture(args: argparse.Namespace) -> int:
             "proc_before": "raw/proc-before.json",
             "proc_after": "raw/proc-after.json",
             "proc_delta": "raw/proc-delta.json",
+            "proc_interrupts_before": "raw/proc-interrupts-before.txt",
+            "proc_interrupts_after": "raw/proc-interrupts-after.txt",
+            "proc_softirqs_before": "raw/proc-softirqs-before.txt",
+            "proc_softirqs_after": "raw/proc-softirqs-after.txt",
+            "proc_kernel_counters_delta": "raw/proc-kernel-counters-delta.json",
+            "cpu_policy_before": "raw/cpu-policy-before.json",
+            "cpu_policy_after": "raw/cpu-policy-after.json",
+            "power_before": "raw/power-before.json",
+            "power_after": "raw/power-after.json",
             "pw_top": "raw/pw-top.tsv",
             "pw_metadata": "raw/pw-metadata.tsv",
             "osc": "raw/osc.tsv",
@@ -1207,7 +1571,7 @@ def profile(args: argparse.Namespace) -> int:
     commands: dict[str, list[str]] = {
         "uname": ["uname", "-a"],
         "lscpu-json": ["lscpu", "-J"],
-        "lscpu-topology": ["lscpu", "-e=CPU,NODE,SOCKET,CORE,ONLINE,MAXMHZ,MINMHZ,MHZ"],
+        "lscpu-topology": ["lscpu", "-e=CPU,NODE,SOCKET,CORE,ONLINE,MAXMHZ,MINMHZ"],
         "lspci": ["lspci", "-nnk"],
         "lsusb": ["lsusb"],
         "glxinfo": ["glxinfo", "-B"],
@@ -1262,6 +1626,9 @@ def profile(args: argparse.Namespace) -> int:
     alsa_cards = read_text(raw / "proc-asound-cards.txt")
     playback_devices = read_text(raw / "aplay.stdout.txt")
     capture_devices = read_text(raw / "arecord.stdout.txt")
+    kernel_audio = audio_kernel_parameters()
+    kernel_audio["raw"] = "raw/snd-usb-audio-parameters.json"
+    dump_json(raw / "snd-usb-audio-parameters.json", kernel_audio)
     profile_value = {
         "schema": SCHEMA,
         "kind": "system-profile",
@@ -1285,6 +1652,11 @@ def profile(args: argparse.Namespace) -> int:
             },
             "audio_devices_raw": ["raw/proc-asound-cards.txt", "raw/aplay.stdout.txt", "raw/arecord.stdout.txt", "raw/lsusb.stdout.txt"],
             "power_profile": read_text(raw / "power-profile.stdout.txt").strip(),
+            "power_profile_scope": (
+                "Ambient pre-launch snapshot; every measured set separately records power profile and holds "
+                "at both CPU-accounting endpoints."
+            ),
+            "audio_kernel": kernel_audio,
         },
         "pipewire": {
             "versions": {
@@ -1344,10 +1716,8 @@ def profile(args: argparse.Namespace) -> int:
             "identity_hash": manifest_hash(config_records),
             "launcher_config": launcher_config_record,
             "pipeasio_effective_config": pipeasio_config_record,
-            "environment": {
-                key: value for key, value in sorted(os.environ.items())
-                if key.startswith(("ABLETON_", "PIPEASIO_", "WINEDEBUG", "WINED3D_"))
-            },
+            "environment": benchmark_environment(),
+            "benchmark_gates": benchmark_gate_environment(),
         },
         "live": live_inventory(prefix),
         "commands": results,
@@ -1405,8 +1775,8 @@ def markdown_report(report: dict[str, Any]) -> str:
         "",
         "## Results",
         "",
-        "| Set | Mode | Workers | Host CPU | Live CPU/core | Wine CPU/core | Task churn | PipeWire ERR | DSP avg / peak | Quantum changes | Crackle |",
-        "|---|---|---:|---:|---:|---:|---|---:|---:|---:|---|",
+        "| Set | Mode | Workers | Host CPU | Live CPU/core | Wine CPU/core | IRQ/s | SoftIRQ/s | Power start/end | CPU policy changed | Task churn | PipeWire ERR | DSP avg / peak | Quantum changes | Crackle |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|---:|---|",
     ]
     for item in report["sets"]:
         process = item.get("process", {}).get("summary", {})
@@ -1416,18 +1786,28 @@ def markdown_report(report: dict[str, Any]) -> str:
         pw = item.get("pipewire", {}).get("pw_top", {})
         dsp = item.get("osc_dsp", {})
         accounting = item.get("process", {}).get("details", {}).get("accounting", {})
+        counters = item.get("kernel_counters", {})
+        endpoint = item.get("endpoint_identity", {})
+        power = endpoint.get("power", {})
+        power_label = (
+            f"{power.get('before', {}).get('profile') or 'NA'} / "
+            f"{power.get('after', {}).get('profile') or 'NA'}"
+        )
         process_churn = accounting.get("processes", {})
         thread_churn = accounting.get("threads", {})
         churn = (
             f"P+{len(process_churn.get('born', []))}/-{len(process_churn.get('exited', []))}; "
             f"T+{len(thread_churn.get('born', []))}/-{len(thread_churn.get('exited', []))}"
         )
-        transitions = len(pw.get("quantum_transitions", [])) + len(item.get("pipewire", {}).get("settings", {}).get("transitions", []))
+        transitions = quantum_transition_count(item)
         number = lambda value: "NA" if value is None else f"{value:.2f}"  # noqa: E731
         lines.append(
             f"| {item.get('set')} | {item.get('mode')} | {process.get('live', {}).get('audio_worker_count', 'NA')} | "
             f"{number(host)}% | {number(live)}% | "
-            f"{number(wine)}% | {churn} | {pw.get('err_delta', 'NA')} | {number(dsp.get('average_percent'))} / "
+            f"{number(wine)}% | {number(counters.get('interrupts', {}).get('total_rate_per_second'))} | "
+            f"{number(counters.get('softirqs', {}).get('total_rate_per_second'))} | {power_label} | "
+            f"{'yes' if endpoint.get('cpu_policy', {}).get('changed_within_window') else 'no'} | {churn} | "
+            f"{pw.get('err_delta', 'NA')} | {number(dsp.get('average_percent'))} / "
             f"{number(dsp.get('peak_percent'))} | {transitions} | {item.get('crackle', {}).get('status', 'unknown')} |"
         )
     runtime = profile_value.get("runtime", {})
@@ -1457,7 +1837,9 @@ def markdown_report(report: dict[str, Any]) -> str:
         f"cores/socket `{cpu.get('Core(s) per socket', 'unknown')}`, sockets `{cpu.get('Socket(s)', 'unknown')}`",
         f"- GPU: `{'; '.join(system.get('gpu_lines', [])) or 'unknown'}`",
         f"- ALSA cards: `{' '.join(system.get('audio_devices', {}).get('alsa_cards', '').split()) or 'none reported'}`",
-        f"- Power profile: `{system.get('power_profile') or 'unknown'}`",
+        f"- Ambient pre-launch power profile: `{system.get('power_profile') or 'unknown'}`",
+        f"- snd_usb_audio parameters: `"
+        f"{json.dumps(system.get('audio_kernel', {}).get('parameters', {}), sort_keys=True)}`",
         f"- PipeWire: `{pipewire.get('versions', {}).get('pipewire') or 'unknown'}`; "
         f"WirePlumber `{pipewire.get('versions', {}).get('wireplumber') or 'unknown'}`",
         f"- Initial graph: rate `{settings.get('clock.rate', 'unknown')}`, quantum "
@@ -1509,6 +1891,455 @@ def markdown_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def load_json_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot load {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a JSON object in {path}")
+    return value
+
+
+def load_completed_run(path: Path) -> dict[str, Any]:
+    """Load the canonical raw run evidence, not a possibly stale report.json."""
+    run_dir = path.resolve()
+    run = load_json_object(run_dir / "run.json")
+    if (run.get("schema"), run.get("kind")) != (SCHEMA, "benchmark-run"):
+        raise ValueError(f"{run_dir}: incompatible run schema/kind")
+    if run.get("status") != "complete":
+        raise ValueError(f"{run_dir}: run status is {run.get('status')!r}, expected 'complete'")
+    if run.get("set_order") != list(CANONICAL_SETS):
+        raise ValueError(f"{run_dir}: set_order is not the canonical five-set order")
+    duration = run.get("duration_seconds_per_set")
+    if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+        raise ValueError(f"{run_dir}: invalid duration_seconds_per_set")
+    if duration != 30:
+        raise ValueError(f"{run_dir}: comparison requires the canonical 30-second protocol")
+    profile_path = run_dir / "profile/profile.json"
+    profile_value = load_json_object(profile_path)
+    if (profile_value.get("schema"), profile_value.get("kind")) != (SCHEMA, "system-profile"):
+        raise ValueError(f"{profile_path}: incompatible profile schema/kind")
+    sets = []
+    for name in CANONICAL_SETS:
+        matches = sorted((run_dir / "sets").glob(f"*-{name}/measurement.json"))
+        if len(matches) != 1:
+            raise ValueError(f"{run_dir}: expected one {name} measurement, found {len(matches)}")
+        measurement = load_json_object(matches[0])
+        if (measurement.get("schema"), measurement.get("kind")) != (SCHEMA, "set-measurement"):
+            raise ValueError(f"{matches[0]}: incompatible measurement schema/kind")
+        if measurement.get("set") != name:
+            raise ValueError(f"{matches[0]}: embedded set name does not match directory")
+        if measurement.get("mode") != CANONICAL_MODES[name]:
+            raise ValueError(f"{matches[0]}: unexpected mode {measurement.get('mode')!r}")
+        if measurement.get("duration_seconds") != duration:
+            raise ValueError(f"{matches[0]}: measurement duration differs from run duration")
+        sets.append(measurement)
+    return {"directory": str(run_dir), "run": run, "profile": profile_value, "sets": sets}
+
+
+def nested(value: dict[str, Any], *keys: str) -> Any:
+    current: Any = value
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def canonical_digest(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def value_present(value: Any, allow_empty: bool = False) -> bool:
+    return value is not None if allow_empty else value not in (None, "", [], {})
+
+
+def identity_comparison(
+    identifier: str, label: str, before: Any, after: Any, *, allow_empty: bool = False,
+) -> dict[str, Any]:
+    before_present = value_present(before, allow_empty)
+    after_present = value_present(after, allow_empty)
+    if not before_present and not after_present:
+        status = "match" if allow_empty else "missing-both"
+    elif not before_present or not after_present:
+        status = f"missing-{'before' if not before_present else 'after'}"
+    else:
+        status = "match" if before == after else "different"
+    return {
+        "id": identifier, "label": label, "status": status, "confounder": status != "match",
+        "before": before, "after": after,
+    }
+
+
+IDENTITY_SPECS = (
+    ("runtime_identity", "Runtime build/Wine/root", ("runtime",), False),
+    ("prefix_identity", "Wine prefix path/contents", ("prefix",), False),
+    ("live_install", "Live version/options/worker setting", ("live",), False),
+    ("cpu_description", "CPU description", ("system", "cpu"), False),
+    ("cpu_topology", "CPU topology", ("system", "cpu_topology"), False),
+    ("cpu_policy_profile", "Ambient CPU sysfs policy", ("system", "cpu_sysfs"), False),
+    ("system_software", "Kernel", ("system", "uname"), False),
+    ("os_release", "Operating system", ("system", "os_release"), False),
+    ("gpu", "GPU inventory", ("system", "gpu_lines"), False),
+    ("gpu_renderer", "GPU renderer", ("system", "gpu_renderer_lines"), False),
+    ("audio_devices", "ALSA/USB audio devices", ("system", "audio_devices"), False),
+    ("audio_kernel", "snd_usb_audio parameters", ("system", "audio_kernel"), False),
+    ("audio_profile", "Active WirePlumber profiles/routes", ("pipewire", "active_profile_lines"), False),
+    ("audio_profile_scope", "PipeWire profile capture scope", ("pipewire", "capture_scope"), False),
+    ("audio_profile_availability", "PipeWire profile capture availability", ("pipewire", "availability"), False),
+    ("pipewire_versions", "PipeWire/WirePlumber versions", ("pipewire", "versions"), False),
+    ("sample_rate", "PipeWire graph sample rate", ("pipewire", "settings", "values", "clock.rate"), False),
+    ("forced_sample_rate", "PipeWire forced sample rate", ("pipewire", "settings", "values", "clock.force-rate"), True),
+    ("quantum", "PipeWire graph quantum", ("pipewire", "settings", "values", "clock.quantum"), False),
+    ("minimum_quantum", "PipeWire minimum quantum", ("pipewire", "settings", "values", "clock.min-quantum"), True),
+    ("maximum_quantum", "PipeWire maximum quantum", ("pipewire", "settings", "values", "clock.max-quantum"), True),
+    ("forced_quantum", "PipeWire forced quantum", ("pipewire", "settings", "values", "clock.force-quantum"), True),
+    ("configuration", "Launcher/PipeASIO configuration identity", ("configuration", "identity_hash"), False),
+    ("pipeasio_config", "Effective PipeASIO config path/hash", ("configuration", "pipeasio_effective_config"), False),
+    ("benchmark_gates", "Wine/PipeASIO/launcher performance gates", ("configuration", "benchmark_gates"), True),
+    ("power_profile", "Ambient pre-launch power profile", ("system", "power_profile"), False),
+)
+
+
+def profile_identity_checks(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
+    first, last = before["profile"], after["profile"]
+    return [identity_comparison(identifier, label, nested(first, *path), nested(last, *path), allow_empty=allow_empty)
+            for identifier, label, path, allow_empty in IDENTITY_SPECS]
+
+
+def metric_comparison(
+    label: str, unit: str, before: Any, after: Any, confounders: list[str], *, numeric: bool = True,
+) -> dict[str, Any]:
+    valid = lambda value: (  # noqa: E731
+        isinstance(value, (int, float)) and not isinstance(value, bool) if numeric else value_present(value)
+    )
+    before_valid, after_valid = valid(before), valid(after)
+    if not before_valid or not after_valid:
+        status = "missing-both" if not before_valid and not after_valid else f"missing-{'before' if not before_valid else 'after'}"
+    else:
+        status = "comparable" if numeric else ("match" if before == after else "changed")
+    raw_delta = after - before if numeric and status == "comparable" else None
+    delta = round(raw_delta, 6) if raw_delta is not None else None
+    if not numeric:
+        percent, percent_status = None, "not-applicable"
+    elif status != "comparable":
+        percent, percent_status = None, status
+    elif before == 0:
+        percent, percent_status = None, "zero-baseline"
+    else:
+        percent, percent_status = round(raw_delta / before * 100, 6), "comparable"
+    metric_confounders = list(confounders)
+    if status.startswith("missing"):
+        metric_confounders.append(status)
+    return {
+        "label": label, "unit": unit, "before": before if before_valid else None,
+        "after": after if after_valid else None, "delta": delta, "percent_change": percent,
+        "comparison_status": status, "percent_status": percent_status,
+        "confounded": bool(metric_confounders),
+        "confounders": list(dict.fromkeys(metric_confounders)),
+    }
+
+
+def collector_observed(measurement: dict[str, Any], name: str) -> bool:
+    command = nested(measurement, "capture_commands", name) or {}
+    return bool(command.get("available") and nested(command, "timing", "output_line_count"))
+
+
+def quantum_transition_count(measurement: dict[str, Any]) -> int | None:
+    pw_top = nested(measurement, "pipewire", "pw_top")
+    settings = nested(measurement, "pipewire", "settings")
+    top_available = collector_observed(measurement, "pw-top")
+    metadata_available = collector_observed(measurement, "pw-metadata")
+    if not top_available and not metadata_available:
+        return None
+    pw_top = pw_top or {}
+    settings = settings or {}
+    return len(pw_top.get("quantum_transitions", [])) + sum(
+        "quantum" in str(item.get("key", "")) for item in settings.get("transitions", [])
+    )
+
+
+def task_churn_counts(measurement: dict[str, Any]) -> dict[str, int | None]:
+    accounting = nested(measurement, "process", "details", "accounting")
+    if not isinstance(accounting, dict):
+        return {key: None for key in (
+            "processes_born", "processes_exited", "threads_born", "threads_exited", "total",
+        )}
+    processes, threads = accounting.get("processes", {}), accounting.get("threads", {})
+    counts = {
+        "processes_born": len(processes.get("born", [])),
+        "processes_exited": len(processes.get("exited", [])),
+        "threads_born": len(threads.get("born", [])),
+        "threads_exited": len(threads.get("exited", [])),
+    }
+    counts["total"] = sum(counts.values())
+    return counts
+
+
+def measurement_confounders(measurement: dict[str, Any], side: str) -> list[str]:
+    values = [f"{side}:{item.get('kind', 'unspecified')}" for item in measurement.get("confounders", [])]
+    accounting = nested(measurement, "process", "details", "accounting") or {}
+    if accounting.get("confounded_by_task_churn"):
+        values.append(f"{side}:task-churn")
+    if nested(measurement, "pipewire", "pw_top", "identity_confounded"):
+        values.append(f"{side}:pipewire-node-identity-churn")
+    if not nested(measurement, "pipewire", "pw_top", "instrumented"):
+        values.append(f"{side}:pipewire-err-instrumentation-unavailable")
+    settings = nested(measurement, "pipewire", "settings", "transitions") or []
+    if settings:
+        values.append(f"{side}:pipewire-settings-transition")
+    if quantum_transition_count(measurement):
+        values.append(f"{side}:quantum-transition")
+    for name in ("pw-top", "pw-metadata", "osc"):
+        intentionally_off = name == "osc" and measurement.get("set") == "Benchmark_Zero"
+        if not intentionally_off and not collector_observed(measurement, name):
+            values.append(f"{side}:{name}-collector-unusable")
+    if measurement.get("set") != "Benchmark_Zero" and not nested(measurement, "osc_dsp", "sample_count"):
+        values.append(f"{side}:osc-dsp-no-valid-samples")
+    if nested(measurement, "crackle", "status") in ("detected", "manual"):
+        values.append(f"{side}:crackle-{nested(measurement, 'crackle', 'status')}")
+    for name in ("interrupts", "softirqs"):
+        counter = nested(measurement, "kernel_counters", name)
+        if not isinstance(counter, dict) or not counter.get("available") or not counter.get("complete"):
+            values.append(f"{side}:{name}-endpoint-accounting-incomplete")
+    for name in ("cpu_policy", "power"):
+        identity = nested(measurement, "endpoint_identity", name)
+        if not isinstance(identity, dict):
+            values.append(f"{side}:{name}-endpoint-identity-unavailable")
+            continue
+        if identity.get("changed_within_window"):
+            values.append(f"{side}:{name}-changed-within-window")
+        for endpoint in ("before", "after"):
+            if not nested(identity, endpoint, "available"):
+                values.append(f"{side}:{name}-{endpoint}-unavailable")
+    return list(dict.fromkeys(values))
+
+
+def endpoint_identity_value(measurement: dict[str, Any], name: str, endpoint: str) -> Any:
+    value = nested(measurement, "endpoint_identity", name, endpoint)
+    if not isinstance(value, dict):
+        return None
+    if name == "cpu_policy":
+        return {"available": value.get("available"), "policies": value.get("policies")}
+    return {
+        "available": value.get("available"), "profile": value.get("profile"),
+        "holds_available": value.get("holds_available"), "holds": value.get("holds"),
+    }
+
+
+METRIC_SPECS = (
+    ("host_cpu_percent", "Host CPU", "% total capacity", ("process", "details", "host_cpu_percent", "cpu")),
+    ("wine_prefix_cpu_percent", "Wine-prefix CPU (endpoint survivors)", "% one core", ("process", "summary", "wine_prefix", "cpu_percent_of_one_core")),
+    ("live_cpu_percent", "Live CPU", "% one core", ("process", "summary", "live", "cpu_percent_of_one_core")),
+    ("pipewire_cpu_percent", "PipeWire/WirePlumber CPU", "% one core", ("process", "summary", "pipewire", "cpu_percent_of_one_core")),
+    ("pipewire_err", "PipeWire ERR increase", "events", ("pipewire", "pw_top", "err_delta")),
+    ("osc_average_percent", "OSC DSP average", "%", ("osc_dsp", "average_percent")),
+    ("osc_peak_percent", "OSC DSP peak", "%", ("osc_dsp", "peak_percent")),
+    ("audio_worker_count", "Observed AudioCalc workers", "threads", ("process", "summary", "live", "audio_worker_count")),
+    ("cpu_interval_seconds", "CPU endpoint interval", "seconds", ("process", "details", "elapsed_seconds")),
+    ("interrupt_rate", "Hardware interrupts", "events/second", ("kernel_counters", "interrupts", "total_rate_per_second")),
+    ("softirq_rate", "Software interrupts", "events/second", ("kernel_counters", "softirqs", "total_rate_per_second")),
+)
+
+
+def set_metric_values(measurement: dict[str, Any]) -> dict[str, tuple[str, str, Any]]:
+    values = {identifier: (label, unit, nested(measurement, *path)) for identifier, label, unit, path in METRIC_SPECS}
+    values["quantum_transitions"] = ("Quantum transitions", "transitions", quantum_transition_count(measurement))
+    for group, label in (("live", "Live"), ("wine_prefix", "Wine prefix"), ("pipewire", "PipeWire")):
+        values[f"{group}_context_switches"] = (
+            f"{label} context switches", "switches", nested(measurement, "process", "summary", group, "context_switches"),
+        )
+        for key, suffix, unit in (
+            ("runtime_ns", "schedstat runtime", "nanoseconds"),
+            ("run_delay_ns", "schedstat run delay", "nanoseconds"),
+            ("timeslices", "schedstat timeslices", "timeslices"),
+        ):
+            values[f"{group}_schedstat_{key}"] = (
+                f"{label} {suffix}", unit, nested(measurement, "process", "summary", group, "schedstat", key),
+            )
+    churn = task_churn_counts(measurement)
+    for key, label in (
+        ("processes_born", "Endpoint processes born"),
+        ("processes_exited", "Endpoint processes exited"),
+        ("threads_born", "Endpoint threads born"),
+        ("threads_exited", "Endpoint threads exited"),
+        ("total", "Endpoint task churn total"),
+    ):
+        values[f"task_churn_{key}"] = (label, "tasks", churn[key])
+    for collector in ("pw-top", "pw-metadata", "osc"):
+        timing = nested(measurement, "capture_commands", collector, "timing") or {}
+        safe = collector.replace("-", "_")
+        values[f"{safe}_coverage_seconds"] = (
+            f"{collector} supervised coverage", "seconds", timing.get("supervision_interval_seconds"),
+        )
+        values[f"{safe}_output_span_seconds"] = (
+            f"{collector} observed output span", "seconds", timing.get("output_span_seconds"),
+        )
+        values[f"{safe}_output_lines"] = (
+            f"{collector} output lines", "lines", timing.get("output_line_count"),
+        )
+    return values
+
+
+def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    before_duration = before["run"]["duration_seconds_per_set"]
+    after_duration = after["run"]["duration_seconds_per_set"]
+    if before_duration != after_duration:
+        raise ValueError(
+            f"duration mismatch: before={before_duration}, after={after_duration}; rerun with one common duration"
+        )
+    identities = [identity_comparison(
+        "harness", "Benchmark harness/collector identity",
+        before["run"].get("harness"), after["run"].get("harness"),
+    ), *profile_identity_checks(before, after)]
+    global_confounders = [
+        f"identity:{item['id']}:{item['status']}" for item in identities if item["confounder"]
+    ]
+    sets = []
+    for first, last in zip(before["sets"], after["sets"]):
+        confounders = global_confounders + measurement_confounders(first, "before") + measurement_confounders(last, "after")
+        if first.get("live") != last.get("live"):
+            confounders.append("set-identity:Live-log-runtime/audio-identity")
+        if nested(first, "process", "summary", "live", "audio_worker_count") != nested(
+            last, "process", "summary", "live", "audio_worker_count"
+        ):
+            confounders.append("set-identity:observed-worker-count")
+        for name, label in (("cpu_policy", "CPU policy"), ("power", "power profile/holds")):
+            for endpoint in ("before", "after"):
+                if endpoint_identity_value(first, name, endpoint) != endpoint_identity_value(last, name, endpoint):
+                    confounders.append(f"set-identity:{label}-{endpoint}")
+        confounders = list(dict.fromkeys(confounders))
+        first_values, last_values = set_metric_values(first), set_metric_values(last)
+        metrics = {}
+        for identifier, (label, unit, first_value) in first_values.items():
+            metrics[identifier] = metric_comparison(
+                label, unit, first_value, last_values.get(identifier, (label, unit, None))[2], confounders,
+            )
+        metrics["crackle_status"] = metric_comparison(
+            "Crackle status", "category", nested(first, "crackle", "status"),
+            nested(last, "crackle", "status"), confounders, numeric=False,
+        )
+        for name, label in (("cpu_policy", "CPU policy"), ("power", "Power profile/holds")):
+            for endpoint in ("before", "after"):
+                metrics[f"{name}_{endpoint}"] = metric_comparison(
+                    f"{label} at {endpoint} endpoint", "category",
+                    endpoint_identity_value(first, name, endpoint),
+                    endpoint_identity_value(last, name, endpoint),
+                    confounders, numeric=False,
+                )
+        sets.append({
+            "set": first["set"], "mode": first["mode"], "confounded": bool(confounders),
+            "confounders": confounders, "metrics": metrics,
+            "kernel_counters": {"before": first.get("kernel_counters"), "after": last.get("kernel_counters")},
+        })
+    return {
+        "schema": SCHEMA,
+        "kind": "benchmark-comparison",
+        "generated_at": utc_now(),
+        "interpretation": (
+            "Descriptive before/after observation only. One run per side does not establish variance, "
+            "statistical significance, causality, or absence of audible crackle."
+        ),
+        "structure": {"compatible": True, "canonical_set_order": list(CANONICAL_SETS),
+                      "duration_seconds_per_set": before_duration},
+        "before": {"directory": before["directory"], "tag": before["run"].get("tag")},
+        "after": {"directory": after["directory"], "tag": after["run"].get("tag")},
+        "identity": identities,
+        "identity_confounders": global_confounders,
+        "sets": sets,
+    }
+
+
+def markdown_value(value: Any) -> str:
+    if value is None:
+        return "missing"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    if isinstance(value, (str, int, bool)):
+        rendered = str(value).replace("|", "\\|").replace("\n", " ")
+        return rendered if len(rendered) <= 64 else rendered[:61] + "..."
+    rendered = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    if len(rendered) <= 64:
+        return rendered.replace("|", "\\|")
+    return f"sha256:{canonical_digest(value)[:16]}"
+
+
+def markdown_metric(metric: dict[str, Any]) -> str:
+    before, after = markdown_value(metric["before"]), markdown_value(metric["after"])
+    if metric["unit"] == "category":
+        return f"{before} → {after}"
+    change = (
+        f"{metric['percent_change']:.2f}%" if metric["percent_change"] is not None
+        else metric["percent_status"]
+    )
+    return f"{before} → {after} ({change})"
+
+
+def comparison_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# Ableton Linux benchmark comparison",
+        "",
+        f"- Before: `{report['before'].get('tag') or 'unknown'}` at `{report['before']['directory']}`",
+        f"- After: `{report['after'].get('tag') or 'unknown'}` at `{report['after']['directory']}`",
+        f"- Canonical window: {report['structure']['duration_seconds_per_set']} seconds per set",
+        f"- Identity confounders: {len(report['identity_confounders'])}",
+        "",
+        "> **Interpretation:** Descriptive before/after observation only. One run per side does not establish variance, statistical significance, causality, or absence of audible crackle.",
+        "",
+        "## Identity confounders",
+        "",
+    ]
+    changed = [item for item in report["identity"] if item["confounder"]]
+    if changed:
+        for item in changed:
+            lines.append(
+                f"- {item['label']}: **{item['status']}**; before `{markdown_value(item['before'])}`, "
+                f"after `{markdown_value(item['after'])}`"
+            )
+    else:
+        lines.append("None recorded.")
+    summary_metrics = (
+        "host_cpu_percent", "wine_prefix_cpu_percent", "live_cpu_percent", "pipewire_cpu_percent",
+        "interrupt_rate", "softirq_rate", "pipewire_err", "osc_average_percent", "osc_peak_percent",
+        "audio_worker_count", "crackle_status",
+    )
+    lines.extend(["", "## Set summary", "", "| Set | " + " | ".join(
+        report["sets"][0]["metrics"][name]["label"] for name in summary_metrics
+    ) + " | Confounders |", "|---|" + "---:|" * len(summary_metrics) + "---:|"])
+    for item in report["sets"]:
+        lines.append(f"| {item['set']} | " + " | ".join(
+            markdown_metric(item["metrics"][name]) for name in summary_metrics
+        ) + f" | {len(item['confounders'])} |")
+    lines.extend([
+        "",
+        "All context-switch/schedstat, task-churn, collector-coverage, endpoint power/policy, IRQ/softirq label/per-CPU deltas, and explicit missing/zero-baseline states are retained in `comparison.json`.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def compare(args: argparse.Namespace) -> int:
+    try:
+        before = load_completed_run(Path(args.before))
+        after = load_completed_run(Path(args.after))
+        result = comparison_report(before, after)
+        output = Path(args.output).resolve()
+        if output.exists():
+            raise ValueError(f"output already exists: {output}")
+        before_path, after_path = Path(before["directory"]), Path(after["directory"])
+        if output in (before_path, after_path) or before_path in output.parents or after_path in output.parents:
+            raise ValueError("comparison output must be outside both source run directories")
+        output.mkdir(parents=True)
+        dump_json(output / "comparison.json", result)
+        (output / "comparison.md").write_text(comparison_markdown(result))
+        return 0
+    except (ValueError, OSError) as error:
+        print(f"comparison refused: {error}", file=sys.stderr)
+        return 2
+
+
 def render(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir).resolve()
     run_path = run_dir / "run.json"
@@ -1555,14 +2386,16 @@ def annotate(args: argparse.Namespace) -> int:
 
 
 def udp_available(args: argparse.Namespace) -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = None
     try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("127.0.0.1", args.port))
     except OSError as error:
         print(f"UDP 127.0.0.1:{args.port} unavailable: {error}", file=sys.stderr)
         return 1
     finally:
-        sock.close()
+        if sock is not None:
+            sock.close()
     return 0
 
 
@@ -1619,6 +2452,14 @@ def parser() -> argparse.ArgumentParser:
     render_parser = commands.add_parser("render")
     render_parser.add_argument("--run-dir", required=True)
     render_parser.set_defaults(func=render)
+
+    compare_parser = commands.add_parser(
+        "compare", help="compare two completed canonical runs without claiming significance"
+    )
+    compare_parser.add_argument("--before", required=True, help="completed baseline run directory")
+    compare_parser.add_argument("--after", required=True, help="completed candidate run directory")
+    compare_parser.add_argument("--output", required=True, help="new comparison output directory")
+    compare_parser.set_defaults(func=compare)
 
     annotate_parser = commands.add_parser("annotate", help="add a post-run manual crackle observation")
     annotate_parser.add_argument("--run-dir", required=True)

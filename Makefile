@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup refresh uninstall test test-bench test-glyph-path test-d2d-resize vendor-cache verify check pointer-safety-check clean distclean
+.PHONY: all build install setup refresh uninstall test test-bench bench-compare test-glyph-path test-d2d-resize vendor-cache verify check pointer-safety-check clean distclean
 
 all: build
 
@@ -33,6 +33,10 @@ test:                         ## run installer and launcher lifecycle gates
 test-bench:                    ## run deterministic benchmark parser/preflight tests
 	./scripts/test-bench-report.py
 	./scripts/test-bench-suite.sh
+
+bench-compare:                 ## compare completed runs (BEFORE=... AFTER=... OUTPUT=...)
+	@test -n "$(BEFORE)" -a -n "$(AFTER)" -a -n "$(OUTPUT)"
+	./scripts/bench-report.py compare --before "$(BEFORE)" --after "$(AFTER)" --output "$(OUTPUT)"
 
 test-glyph-path:              ## assert a built runtime's dwrite glyph path (RUNTIME=<root>)
 	./scripts/test-dwrite-glyph-path.sh $(RUNTIME)
