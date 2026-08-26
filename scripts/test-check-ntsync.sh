@@ -124,4 +124,3 @@ grep -q 'ntsync active (server holds /dev/full)' "$work/active-fd.out" \
 ok "matching wineserver device fd proves the active path"
 
 printf 'PASS: %d NTSync checker policy tests\n' "$pass"
-
