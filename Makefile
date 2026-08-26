@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup refresh uninstall test test-glyph-path test-d2d-resize vendor-cache verify check pointer-safety-check clean distclean
+.PHONY: all build install setup refresh uninstall test test-bench bench-compare test-glyph-path test-d2d-resize vendor-cache verify check pointer-safety-check clean distclean
 
 all: build
 
@@ -22,11 +22,22 @@ test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-tsan-policy.sh
 	./scripts/test-release-policy.sh
 	./scripts/test-shortcut-hold.sh
+	./scripts/test-cpu-topology.sh
 	./scripts/test-live-options.sh
 	./scripts/test-desktop-integration.sh
 	./scripts/test-nix-packaging.sh
 	./scripts/test-installer-lifecycle.sh
 	./scripts/test-pipeasio-installer.sh
+	./scripts/test-bench-report.py
+	./scripts/test-bench-suite.sh
+
+test-bench:                    ## run benchmark report and run checks
+	./scripts/test-bench-report.py
+	./scripts/test-bench-suite.sh
+
+bench-compare:                 ## compare completed runs (BEFORE=... AFTER=... OUTPUT=...)
+	@test -n "$(BEFORE)" -a -n "$(AFTER)" -a -n "$(OUTPUT)"
+	./scripts/bench-report.py compare --before "$(BEFORE)" --after "$(AFTER)" --output "$(OUTPUT)"
 
 test-glyph-path:              ## assert a built runtime's dwrite glyph path (RUNTIME=<root>)
 	./scripts/test-dwrite-glyph-path.sh $(RUNTIME)
