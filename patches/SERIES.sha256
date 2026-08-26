@@ -92,6 +92,7 @@ ef22b175d9a86906f2d6da3a57783621bae260e7f34eb25bb816e8104f87b990  0102-dwrite-us
 30349187c38d6ae69cc6ce6953ec66df66da4561f8c411b4f412889da190e79c  0104-d2d1-keep-target-pixel-format-on-resize.patch
 9b6f9bf2ee80a4a400d407847b7d4d6e90acfba82bedd4ccaac1368dd8ae2034  0105-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch
 69bcc0562e68b7663a482b98879a06897561c6f4510caaa7a2f7e162c10dabc7  0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch
+73197687e2c9dfb664ea032468f549ed8082310d092f82a3685279b4a1ec8f56  0107-win32u-restore-offscreen-client-content-on-expose.patch
 0cf53f4e8702b5242264a25a68f3c714e6ad00b0cc4ed1cd5ca24118952c8715  performance/0001-ntdll-alertable-sleep-fast-path.patch
 e2759a5aee2cc5820a3ed27d2d4f954a6a5262c1a95172ad11ffa5302c487387  pipeasio/0001-asio-clamp-unavailable-sample-rate-requests.patch
 b4d53b6ebb24e39c7d23efcbddd837149d4d08886167637a73bb085af851d2c1  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
@@ -104,3 +105,6 @@ adf7f8446f8b4e60ab7df8bf433f50fcfd65ddf123c731027e513f4057ad2207  pipeasio/0010-
 bea289bb6f78f4b217813c4457c54bf2e4224fb74bb0435ac17bbb50a1db5a53  pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch
 8542e3eb5f4e77559783b85bc741c1c21e99027e2e3989a1456909819385227e  pipeasio/0012-recover-selected-routes-after-hotplug.patch
 ec509d3559896a4c5f877ef4a8ba562bedbbb69e44891d18d475892a65d8a704  pipeasio/0013-avoid-redundant-output-fallback-publish.patch
+9979b4946153336604951fec83acfe3c264af0d5fe65d5c3da71757e31ab366d  pipeasio/0014-callback-phase-telemetry.patch
+54833329e71f9b15b15fe0c854464126a686ce64404b1c8bc070a8525a42065d  pipeasio/0015-nonblocking-telemetry-reporting.patch
+b2af1e38fac368b26c09513f4091cbeac1518cdcdfc3d7f46c42c912fdc12bfb  pipeasio/0016-classify-pipeasio-forcers-by-bound-node-id.patch

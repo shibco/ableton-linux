@@ -11,7 +11,7 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The Wine series contains 94 patch files and ends at 0106. The absent numbers
+The Wine series contains 95 patch files and ends at 0107. The absent numbers
 are 0027, 0044, 0072, 0074, 0090 through 0095, 0097, and 0098; their reasons
 are declared in `SERIES_GAPS` in `scripts/build-audit.sh`. Patch 0073 keeps
 the wheel coordinate fix separate. Patch 0100 combines 10 pointer patches.
@@ -428,3 +428,8 @@ Apply them in sequence with the rest of the series.
 - `0106` extends the patch 0032 USB bridge for Push 3. Add synchronous bulk
   transfer, error text, and hotplug registration exports. Accept USB interface
   numbers from 0 to 255. The helper polls after the hotplug registration result.
+- `0107` restores retained X11 offscreen client surfaces after a whole-client
+  expose, so a Direct3D frame copied before the window manager mapped the
+  window comes back without a new present from Live (issue 263). It uses a
+  window-owner-thread callback, revalidates geometry and ignores partial
+  exposes. See `notes/ABLETON-WINE-OFFSCREEN-EXPOSE.md`.

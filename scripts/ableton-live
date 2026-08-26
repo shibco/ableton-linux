@@ -30,6 +30,10 @@ ABLETON-LIVE VARIABLES:
         by default the launcher runs Live under SCHED_RR wherever
         realtime rights exist
 
+    ABLETON_NTSYNC_WARN=off
+        keep launch quiet while Wine uses its regular wait route;
+        run audio-report.sh to see current NTSync evidence
+
     ABLETON_MAX_AUDIO_THREADS=auto|off|<number>
         Set the audio thread count in Live 12. The default, auto, uses
         the physical CPU cores available to the launcher when that
@@ -435,6 +439,33 @@ export WINE_WIN32_RESIZABLE_CLASS="${WINE_WIN32_RESIZABLE_CLASS:-Ableton Live Wi
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
+
+# The build record confirms Wine NTSync support.
+# The host check looks for the kernel device used by the faster wait route.
+# The launcher prints guidance and continues with Wine's regular route.
+# scripts/check-ntsync.sh supplies proof from a running wineserver.
+warn_missing_ntsync()
+{
+    local rel major minor
+    rel="$(uname -r)"
+    major="${rel%%.*}"
+    minor="${rel#*.}"
+    minor="${minor%%[!0-9]*}"
+    echo "ableton-live: Wine uses its regular wait route. Add /dev/ntsync to use NTSync. Run audio-report.sh." >&2
+    case "$major" in ''|*[!0-9]*) return ;; esac
+    if [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "${minor:-0}" -ge 14 ]; }; then
+        if command -v modinfo >/dev/null 2>&1 && modinfo -n ntsync >/dev/null 2>&1; then
+            echo "ableton-live: kernel $rel has an NTSync module; load it with 'sudo modprobe ntsync' or rerun setup-realtime.sh" >&2
+        else
+            echo "ableton-live: kernel $rel needs CONFIG_NTSYNC; use a kernel built with that option" >&2
+        fi
+    else
+        echo "ableton-live: Linux 6.14 or newer provides NTSync; kernel $rel uses Wine's regular wait route" >&2
+    fi
+}
+if [ "${ABLETON_NTSYNC_WARN:-on}" != off ] && [ ! -c /dev/ntsync ]; then
+    warn_missing_ntsync
+fi
 
 # Keep Wine's Mono/.NET and HTML-help hooks out of Live: nothing in the
 # stack loads them. winemenubuilder.exe is deliberately absent here: setup-prefix.sh
