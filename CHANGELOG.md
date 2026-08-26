@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- audio reports now show the CPU layout that Linux gives Live:
+  - the report records the available CPU set, physical layout and Linux
+    processor preferences
+
 - **Live's dialogs keep their content when the desktop shows them (#263):**
   - Dialogs such as Separate Stems could open black until you clicked a
     control. Wine now restores retained dialog content after the desktop
