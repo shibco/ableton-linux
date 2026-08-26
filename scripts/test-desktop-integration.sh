@@ -168,17 +168,41 @@ grep -qF "close Live, then run $installed_ntsync_check for the dynamic proof" \
     "$base/audio-report.out" \
     || fail "installed audio report does not name the installed NTSync diagnostic"
 mkdir -p -- "$base/fake-wine/bin"
-printf '#!/bin/sh\nexit 0\n' > "$base/fake-wine/bin/wine"
-chmod +x "$base/fake-wine/bin/wine"
+for runtime_tool in wine wineserver; do
+    printf '#!/bin/sh\nexit 0\n' > "$base/fake-wine/bin/$runtime_tool"
+    chmod +x "$base/fake-wine/bin/$runtime_tool"
+done
 if run_isolated "$base" env ABLETON_WINE_ROOT="$base/fake-wine" \
     bash "$installed_ntsync_check" >"$base/ntsync.out" 2>"$base/ntsync.err"; then
     fail "NTSync diagnostic accepts a runtime without NTSync"
 fi
-! grep -q 'semantics probe not found' "$base/ntsync.err" \
+! grep -q 'Provide the NTSync probe at' "$base/ntsync.err" \
     || fail "installed NTSync diagnostic cannot find its packaged sibling probe"
-grep -q 'FAIL: ntsync not compiled in' "$base/ntsync.err" \
+grep -q 'FAIL: rebuild Wine with linux/ntsync.h' "$base/ntsync.err" \
     || fail "installed NTSync diagnostic does not reach its runtime check"
 ok "installer uses unique callback handlers and retires only its legacy entry"
+
+ownership_data="$base/ownership-data"
+ownership_check="$ownership_data/check-ntsync.sh"
+mkdir -p -- "$ownership_data"
+legacy_ntsync_owned()
+{
+    run_isolated "$base" env \
+        "ABLETON_DATA_HOME=$ownership_data" \
+        "ABLETON_BIN_HOME=$base/bin" \
+        "ABLETON_WINE_ROOT=$base/fake-wine" \
+        bash -c ". \"\$1\"; ableton_legacy_owned_path \"\$2\"" \
+        legacy-ntsync "$base/data/ableton-wine/lib/manifest.sh" "$ownership_check"
+}
+cp -- "$here/check-ntsync.sh" "$ownership_check"
+legacy_ntsync_owned || fail "legacy ownership rejects the current NTSync diagnostic"
+printf '# NT sync semantics hold\n' > "$ownership_check"
+legacy_ntsync_owned || fail "legacy ownership rejects the pre-rewrite NTSync diagnostic"
+printf '# foreign NTSync diagnostic\n' > "$ownership_check"
+if legacy_ntsync_owned; then
+    fail "legacy ownership accepts a foreign NTSync diagnostic"
+fi
+ok "legacy ownership recognises both project NTSync diagnostic generations"
 
 base="$(new_env registration-failure)"
 install_fake_desktop_tools "$base"
