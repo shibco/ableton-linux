@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Capture and render reproducible Ableton/PipeASIO benchmark evidence.
+"""Measure Ableton and PipeASIO CPU use and create benchmark reports.
 
-The shell suite owns Live's lifecycle.  This program owns read-only profiling,
-one deadline-aligned measurement window, deterministic parsers, and reports.
-It intentionally has no Wine termination code.
+The shell suite starts and closes Live. The program records system details,
+measures one timed set, and creates JSON and Markdown reports. The shell suite
+also manages the Wine session.
 """
 
 from __future__ import annotations
@@ -36,9 +36,8 @@ CANONICAL_MODES = {
     "Benchmark_Max4Live": "playback",
     "Benchmark_VSTs": "playback",
 }
-# Deliberately finite: these are benchmarkable Wine synchronization/realtime
-# gates used by this project or its retained CPU candidates.  Do not leak every
-# WINE_* variable into reports merely because it happens to be in the shell.
+# The report records the Wine CPU and audio settings used by the project.
+# Paths and other WINE_* values stay outside the report.
 BENCHMARK_WINE_ENV_KEYS = (
     "WINE_APC_FASTPATH",
     "WINE_MSG_FASTPATH",
@@ -217,7 +216,7 @@ def benchmark_environment(environment: dict[str, str] | None = None) -> dict[str
 
 
 def benchmark_gate_environment(environment: dict[str, str] | None = None) -> dict[str, str]:
-    """Return only performance gates, excluding paths and harness identity."""
+    """Return settings that can change CPU or audio results."""
     values = benchmark_environment(environment)
     return {
         key: value for key, value in values.items()
@@ -284,7 +283,7 @@ def audio_kernel_parameters(
         "module": "snd_usb_audio",
         "available": any(item["available"] for item in parameters.values()),
         "parameters": parameters,
-        "scope": "Read-only snapshot; the benchmark harness does not change module parameters.",
+        "scope": "Records snd_usb_audio parameter values at the start of the run.",
     }
 
 
@@ -324,7 +323,7 @@ def cpu_policy_snapshot(
         "monotonic_end_ns": end_ns,
         "monotonic_ns": (begin_ns + end_ns) // 2,
         "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
-        "scope": "Endpoint governor/min/max/EPP identity only; instantaneous frequency is not sampled.",
+        "scope": "Records CPU policy values at each CPU sample. Use another tool for momentary frequency.",
     }
 
 
@@ -349,20 +348,20 @@ def power_endpoint_snapshot(raw_dir: Path, endpoint: str) -> dict[str, Any]:
         "monotonic_end_ns": end_ns,
         "monotonic_ns": (begin_ns + end_ns) // 2,
         "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
-        "scope": "Read-only endpoint power profile and active-hold evidence.",
+        "scope": "Records the power profile and active power requests at each CPU sample.",
     }
 
 
 def audio_endpoint_snapshot(raw_dir: Path, endpoint: str) -> dict[str, Any]:
-    """Capture stable default-device/profile, graph-setting, and link identity."""
+    """Record default audio devices, PipeWire settings, and active links."""
     begin_ns = time.monotonic_ns()
     commands = {
         name: command_capture(f"audio-{endpoint}-{name}", argv, raw_dir, 5)
         for name, argv in (
             ("sink", ["wpctl", "inspect", "-a", "@DEFAULT_AUDIO_SINK@"]),
             ("source", ["wpctl", "inspect", "-a", "@DEFAULT_AUDIO_SOURCE@"]),
-            # -l alone prints only linked ports and their peers; -iol would
-            # also mix every inactive input/output port into "in use" identity.
+            # -l records active ports and their peers. -iol adds every input
+            # and output port, which changes the meaning of the result.
             ("links", ["pw-link", "-l"]),
             ("settings", ["pw-metadata", "-n", "settings"]),
         )
@@ -401,12 +400,12 @@ def audio_endpoint_snapshot(raw_dir: Path, endpoint: str) -> dict[str, Any]:
         "monotonic_end_ns": end_ns,
         "monotonic_ns": (begin_ns + end_ns) // 2,
         "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
-        "scope": "Read-only endpoint defaults/profile properties, graph settings, and named PipeWire links.",
+        "scope": "Records default devices, audio profile values, PipeWire settings, and active links.",
     }
 
 
 def audio_endpoint_value(value: dict[str, Any]) -> dict[str, Any]:
-    """Discard collection timing/raw-command paths from audio identity."""
+    """Return the audio fields used to compare runs."""
     return {
         "available": value.get("available"),
         "component_availability": value.get("component_availability"),
@@ -494,8 +493,8 @@ def parse_metadata(text: str) -> dict[str, Any]:
     for (subject_id, key), value in sorted(state.items()):
         subjects.setdefault(str(subject_id), {})[key] = value
     return {
-        # PipeWire's settings metadata uses subject 0. Keep this convenient
-        # legacy view while preserving every subject in the structured form.
+        # PipeWire settings use subject 0. Keep a short values map and the full
+        # subject and key maps.
         "values": subjects.get("0", {}),
         "subjects": subjects,
         "transitions": transitions,
@@ -1066,7 +1065,7 @@ def snapshots_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
         "elapsed_seconds": round(elapsed, 6),
         "elapsed_lower_bound_seconds": round(max(0, after_begin - before_end) / 1_000_000_000, 6),
         "elapsed_upper_bound_seconds": round(max(0, after_end - before_begin) / 1_000_000_000, 6),
-        "elapsed_scope": "Midpoint estimate and bounds from the two endpoint snapshot collection intervals.",
+        "elapsed_scope": "Elapsed time uses a midpoint estimate and bounds from 2 process samples.",
         "host_cpu_percent": host_cpu_delta(before.get("host_cpu", {}), after.get("host_cpu", {})),
         "processes": processes,
         "accounting": {
@@ -1087,9 +1086,8 @@ def snapshots_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
                            for key in thread_exited_keys],
             },
             "limitation": (
-                "Per-task CPU, context-switch, and schedstat deltas cover only identities present at both "
-                "endpoint snapshots. Tasks born and exited entirely between endpoints cannot be observed; "
-                "host CPU still covers the full endpoint interval."
+                "Per-task CPU, context switches, and Linux scheduler values cover tasks present in both "
+                "process samples. Host CPU covers the full period. The raw lists show started and ended tasks."
             ),
         },
     }
@@ -1156,8 +1154,8 @@ class TimedCommand:
                     offset = (observed_ns - self.start_ns) / 1_000_000_000
                     output.write(f"{offset:.6f}\t{line}")
                     output.flush()
-            # EOF is the earliest non-polling observation that this direct
-            # collector closed its output. Keep it separate from the later reap.
+            # EOF records the first observed output close. Keep that time
+            # separate from the later process wait.
             self.process.wait()
             self.exit_observed_ns = time.monotonic_ns()
 
@@ -1213,8 +1211,7 @@ class TimedCommand:
                 "output_line_count": self.output_line_count,
                 "reader_alive_after_join": bool(self.thread and self.thread.is_alive()),
                 "scope": (
-                    "Process supervision times are monotonic observations; first/last output bound emitted "
-                    "evidence and are not claims about unobserved samples."
+                    "Times use a steady clock. First and last output mark the observed data range."
                 ),
             },
         }
@@ -1350,9 +1347,9 @@ def crackle_status(instrumented: bool, err_delta: int, log_hits: int, manual: st
         "manual_observation": manual,
         "semantics": {
             "detected": "A PipeWire ERR counter increased or an xrun-like diagnostic was logged.",
-            "manual": "The operator heard crackle without a corroborating instrumented event.",
-            "no-instrumented-evidence": "Usable counters were clean; this does not prove inaudibility.",
-            "unknown": "No usable instrumented evidence was captured and no positive manual observation exists.",
+            "manual": "The listener heard crackle. The report contains zero matching tool events.",
+            "no-instrumented-evidence": "All usable tools completed and recorded zero matching events.",
+            "unknown": "The report needs more tool or listener evidence.",
         },
     }
 
@@ -1408,7 +1405,7 @@ def capture(args: argparse.Namespace) -> int:
     explicit = [int(value) for value in args.live_pid]
     log_paths = find_live_logs(prefix)
     log_paths.extend(Path(value).resolve() for value in args.log)
-    # Stable de-duplication keeps the raw filenames deterministic.
+    # Keep the first instance of each log path so file names stay stable.
     log_paths = list(dict.fromkeys(log_paths))
     baselines = log_baselines(log_paths)
     dump_json(raw / "log-baselines.json", baselines)
@@ -1454,8 +1451,8 @@ def capture(args: argparse.Namespace) -> int:
         if remaining <= 0:
             break
         time.sleep(min(remaining, 0.25))
-    # Signal every external collector at the shared deadline before the more
-    # expensive per-thread end snapshot. stop() below only reaps/escalates.
+    # Stop every external tool at the shared end time. The later stop call waits
+    # for each process to exit.
     for command in commands:
         command.terminate_at_deadline()
     after = proc_snapshot(prefix, wine_root, explicit)
@@ -1498,18 +1495,18 @@ def capture(args: argparse.Namespace) -> int:
         ):
             confounders.append({
                 "kind": f"{name}-collector-unusable",
-                "effect": "Collector did not emit data across at least 90% of the window with at most one second missing.",
+                "effect": "The tool produced data for less than the required measurement time.",
             })
     accounting = delta["accounting"]
     if accounting["confounded_by_task_churn"]:
         confounders.append({
             "kind": "task-churn",
-            "effect": "Per-process/thread CPU totals omit tasks without both endpoint snapshots.",
+            "effect": "Per-process and thread CPU totals cover tasks present in both process samples.",
         })
     if pw_top["identity_confounded"]:
         confounders.append({
             "kind": "pipewire-node-identity-churn",
-            "effect": "ERR and quantum histories are separated into generations; clean instrumentation is not claimed.",
+            "effect": "Error and buffer histories use separate PipeWire node generations. Review each generation.",
         })
     measurement = {
         "schema": SCHEMA,
@@ -1559,9 +1556,8 @@ def capture(args: argparse.Namespace) -> int:
                 )
             },
             "scope": (
-                "The requested deadline is shared. Endpoint CPU accounting includes the explicitly reported "
-                "snapshot skew; interrupt and softirq counters have their own endpoint intervals; each external "
-                "collector reports its own observed supervision/output coverage."
+                "All timed tools use one end time. CPU, interrupt, and soft interrupt fields include their "
+                "sample bounds. Each tool records its run time and data coverage."
             ),
         },
         "process": {"summary": process_groups(delta, prefix, wine_root), "details": delta},
@@ -1790,8 +1786,8 @@ def profile(args: argparse.Namespace) -> int:
             "audio_devices_raw": ["raw/proc-asound-cards.txt", "raw/aplay.stdout.txt", "raw/arecord.stdout.txt", "raw/lsusb.stdout.txt"],
             "power_profile": read_text(raw / "power-profile.stdout.txt").strip(),
             "power_profile_scope": (
-                "Ambient pre-launch snapshot; every measured set separately records power profile and holds "
-                "at both CPU-accounting endpoints."
+                "Records the power profile before Live starts. Each set records the profile and active power "
+                "requests at both CPU samples."
             ),
             "audio_kernel": kernel_audio,
         },
@@ -1808,12 +1804,12 @@ def profile(args: argparse.Namespace) -> int:
             ],
             "wpctl_status": wpctl_status,
             "capture_scope": {
-                "phase": "single-profile-snapshot; bench-suite invokes this before its first Live launch",
-                "profiles": "default sink/source and associated objects, with the complete graph retained by pw-dump",
-                "settings": "settings metadata snapshot; every set separately monitors settings changes",
+                "phase": "audio profile recorded before the first Live launch",
+                "profiles": "default input and output devices; pw-dump records the full graph",
+                "settings": "PipeWire settings recorded once; each set tracks changes throughout its run",
                 "limitation": (
-                    "Each set adds endpoint default/profile/link snapshots and continuous settings metadata; "
-                    "a profile or link change that restores between endpoints is not observable."
+                    "Each set records devices, profiles, and links at the start and end. A change can reverse "
+                    "between samples and appear equal at both samples."
                 ),
             },
             "availability": {
@@ -1843,13 +1839,13 @@ def profile(args: argparse.Namespace) -> int:
             "wine_version": read_text(raw / "wine-version.stdout.txt").strip(),
             "files": runtime_records,
             "identity_hash": manifest_hash(runtime_records, wine_root),
-            "identity_scope": "build information, exact Wine launcher binary, and PE/Unix PipeASIO halves",
+            "identity_scope": "hash of build details, the Wine launcher, and both PipeASIO files",
         },
         "prefix": {
             "path": str(prefix),
             "files": prefix_records,
             "identity_hash": manifest_hash(prefix_records, prefix),
-            "identity_scope": "managed-prefix ownership marker and Wine registry files; not mutable cache content",
+            "identity_scope": "hash of the managed prefix marker and Wine registry files",
         },
         "configuration": {
             "files": config_records,
@@ -1906,17 +1902,17 @@ def markdown_report(report: dict[str, Any]) -> str:
     run = report["run"]
     profile_value = report.get("profile", {})
     lines = [
-        "# Ableton Linux CPU/audio benchmark",
+        "# Ableton Linux CPU and audio benchmark",
         "",
-        f"- Tag: `{run.get('tag', 'unknown')}`",
-        f"- Status: `{run.get('status', 'unknown')}`",
-        f"- Window: {run.get('duration_seconds_per_set', 'unknown')} seconds per set",
-        f"- Harness identity SHA-256: `{run.get('harness', {}).get('identity_hash', 'unknown')}`",
+        f"- Tag: `{run.get('tag', 'pending')}`",
+        f"- Status: `{run.get('status', 'pending')}`",
+        f"- Measurement time: {run.get('duration_seconds_per_set', 'pending')} seconds per set",
+        f"- Benchmark files SHA-256: `{run.get('harness', {}).get('identity_hash', 'pending')}`",
         f"- Generated: {report['generated_at']}",
         "",
         "## Results",
         "",
-        "| Set | Mode | Workers | Host CPU | Live CPU/core | Wine CPU/core | IRQ/s | SoftIRQ/s | Power start/end | Graph rate/quantum start→end | Audio identity changed | CPU policy changed | Task churn | PipeWire ERR | DSP avg / peak | Quantum changes | Crackle |",
+        "| Set | Mode | Audio workers | Host CPU | Live CPU per core | Wine CPU per core | Hardware interrupts per second | Software interrupts per second | Power profile | Sample rate and buffer size | Audio settings | CPU policy | Process changes | PipeWire errors | DSP average and peak | Buffer changes | Crackle |",
         "|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---:|---:|---:|---|",
     ]
     for item in report["sets"]:
@@ -1934,32 +1930,36 @@ def markdown_report(report: dict[str, Any]) -> str:
         audio_before = nested(audio, "before", "graph_settings") or {}
         audio_after = nested(audio, "after", "graph_settings") or {}
         audio_changed = (
-            "NA" if "changed_within_window" not in audio
-            else ("yes" if audio["changed_within_window"] else "no")
+            "pending" if "changed_within_window" not in audio
+            else ("changed" if audio["changed_within_window"] else "same")
         )
         power_label = (
-            f"{power.get('before', {}).get('profile') or 'NA'} / "
-            f"{power.get('after', {}).get('profile') or 'NA'}"
+            f"{power.get('before', {}).get('profile') or 'pending'} → "
+            f"{power.get('after', {}).get('profile') or 'pending'}"
         )
-        process_churn = accounting.get("processes", {})
-        thread_churn = accounting.get("threads", {})
-        churn = (
-            f"P+{len(process_churn.get('born', []))}/-{len(process_churn.get('exited', []))}; "
-            f"T+{len(thread_churn.get('born', []))}/-{len(thread_churn.get('exited', []))}"
+        process_changes = accounting.get("processes", {})
+        thread_changes = accounting.get("threads", {})
+        change_label = (
+            f"processes started {len(process_changes.get('born', []))}, "
+            f"ended {len(process_changes.get('exited', []))}; "
+            f"threads started {len(thread_changes.get('born', []))}, "
+            f"ended {len(thread_changes.get('exited', []))}"
         )
         transitions = quantum_transition_count(item)
-        number = lambda value: "NA" if value is None else f"{value:.2f}"  # noqa: E731
+        number = lambda value: "pending" if value is None else f"{value:.2f}"  # noqa: E731
+        percent = lambda value: "pending" if value is None else f"{value:.2f}%"  # noqa: E731
+        transition_label = transitions if transitions is not None else "pending"
         lines.append(
-            f"| {item.get('set')} | {item.get('mode')} | {process.get('live', {}).get('audio_worker_count', 'NA')} | "
-            f"{number(host)}% | {number(live)}% | "
-            f"{number(wine)}% | {number(counters.get('interrupts', {}).get('total_rate_per_second'))} | "
+            f"| {item.get('set')} | {item.get('mode')} | {process.get('live', {}).get('audio_worker_count', 'pending')} | "
+            f"{percent(host)} | {percent(live)} | "
+            f"{percent(wine)} | {number(counters.get('interrupts', {}).get('total_rate_per_second'))} | "
             f"{number(counters.get('softirqs', {}).get('total_rate_per_second'))} | {power_label} | "
-            f"{audio_before.get('clock.rate', 'NA')}/{audio_before.get('clock.quantum', 'NA')} → "
-            f"{audio_after.get('clock.rate', 'NA')}/{audio_after.get('clock.quantum', 'NA')} | "
+            f"{audio_before.get('clock.rate', 'pending')}/{audio_before.get('clock.quantum', 'pending')} → "
+            f"{audio_after.get('clock.rate', 'pending')}/{audio_after.get('clock.quantum', 'pending')} | "
             f"{audio_changed} | "
-            f"{'yes' if endpoint.get('cpu_policy', {}).get('changed_within_window') else 'no'} | {churn} | "
-            f"{pw.get('err_delta', 'NA')} | {number(dsp.get('average_percent'))} / "
-            f"{number(dsp.get('peak_percent'))} | {transitions} | {item.get('crackle', {}).get('status', 'unknown')} |"
+            f"{'changed' if endpoint.get('cpu_policy', {}).get('changed_within_window') else 'same'} | {change_label} | "
+            f"{pw.get('err_delta', 'pending')} | {number(dsp.get('average_percent'))} / "
+            f"{number(dsp.get('peak_percent'))} | {transition_label} | {item.get('crackle', {}).get('status', 'unknown')} |"
         )
     runtime = profile_value.get("runtime", {})
     prefix = profile_value.get("prefix", {})
@@ -1973,40 +1973,40 @@ def markdown_report(report: dict[str, Any]) -> str:
     pipewire_availability = pipewire.get("availability", {})
     pipewire_unavailable = (
         [name for name, status in pipewire_availability.items() if not status.get("successful")]
-        if pipewire_availability else ["availability-not-recorded"]
+        if pipewire_availability else ["command results pending"]
     )
-    runtime_dist = "unknown"
+    runtime_dist = "pending"
     for line in runtime.get("build_info", "").splitlines():
         if line.startswith("dist-version:"):
             runtime_dist = line.split(":", 1)[1].strip()
             break
     lines.extend([
         "",
-        "## Reproduction identity",
+        "## Run details",
         "",
-        f"- System: `{profile_value.get('system', {}).get('uname', 'unknown')}`",
-        f"- CPU: `{cpu.get('Model name', 'unknown')}`; logical CPUs `{cpu.get('CPU(s)', 'unknown')}`, "
-        f"cores/socket `{cpu.get('Core(s) per socket', 'unknown')}`, sockets `{cpu.get('Socket(s)', 'unknown')}`",
-        f"- GPU: `{'; '.join(system.get('gpu_lines', [])) or 'unknown'}`",
-        f"- ALSA cards: `{' '.join(system.get('audio_devices', {}).get('alsa_cards', '').split()) or 'none reported'}`",
-        f"- Ambient pre-launch power profile: `{system.get('power_profile') or 'unknown'}`",
+        f"- System: `{profile_value.get('system', {}).get('uname', 'pending')}`",
+        f"- CPU: `{cpu.get('Model name', 'pending')}`; logical CPUs `{cpu.get('CPU(s)', 'pending')}`, "
+        f"cores per socket `{cpu.get('Core(s) per socket', 'pending')}`, sockets `{cpu.get('Socket(s)', 'pending')}`",
+        f"- GPU: `{'; '.join(system.get('gpu_lines', [])) or 'pending'}`",
+        f"- ALSA cards: `{' '.join(system.get('audio_devices', {}).get('alsa_cards', '').split()) or 'pending'}`",
+        f"- Power profile before Live starts: `{system.get('power_profile') or 'pending'}`",
         f"- snd_usb_audio parameters: `"
         f"{json.dumps(system.get('audio_kernel', {}).get('parameters', {}), sort_keys=True)}`",
-        f"- PipeWire: `{pipewire.get('versions', {}).get('pipewire') or 'unknown'}`; "
-        f"WirePlumber `{pipewire.get('versions', {}).get('wireplumber') or 'unknown'}`",
-        f"- Initial graph: rate `{settings.get('clock.rate', 'unknown')}`, quantum "
-        f"`{settings.get('clock.quantum', 'unknown')}`, forced quantum "
-        f"`{settings.get('clock.force-quantum', 'unknown')}`",
-        f"- Active audio profile evidence: `{'; '.join(pipewire.get('active_profile_lines', [])) or 'unavailable'}`",
-        f"- PipeWire profile capture scope: `{pipewire.get('capture_scope', {}).get('phase', 'unknown')}`",
-        f"- PipeWire snapshot command status: `{'complete' if not pipewire_unavailable else 'incomplete: ' + ', '.join(pipewire_unavailable)}`",
-        f"- Runtime: build `{runtime_dist}`, Wine `{runtime.get('wine_version', 'unknown')}` at `{runtime.get('root', 'unknown')}`",
-        f"- Runtime identity SHA-256: `{runtime.get('identity_hash', 'unknown')}`",
-        f"- Prefix: `{prefix.get('path', 'unknown')}`",
-        f"- Prefix identity SHA-256: `{prefix.get('identity_hash', 'unknown')}`",
-        f"- Configuration identity SHA-256: `{profile_value.get('configuration', {}).get('identity_hash', 'unknown')}`",
-        f"- Effective PipeASIO config: `{configuration.get('pipeasio_effective_config', {}).get('path') or 'unavailable'}` "
-        f"(via `{configuration.get('pipeasio_effective_config', {}).get('resolution', 'unknown')}`)",
+        f"- PipeWire: `{pipewire.get('versions', {}).get('pipewire') or 'pending'}`; "
+        f"WirePlumber `{pipewire.get('versions', {}).get('wireplumber') or 'pending'}`",
+        f"- PipeWire at start: sample rate `{settings.get('clock.rate', 'pending')}`, buffer size "
+        f"`{settings.get('clock.quantum', 'pending')}`, fixed buffer size "
+        f"`{settings.get('clock.force-quantum', 'pending')}`",
+        f"- Audio profile details: `{'; '.join(pipewire.get('active_profile_lines', [])) or 'pending'}`",
+        f"- Audio profile sample: `{pipewire.get('capture_scope', {}).get('phase', 'pending')}`",
+        f"- PipeWire checks: `{'complete' if not pipewire_unavailable else 'review: ' + ', '.join(pipewire_unavailable)}`",
+        f"- Runtime: build `{runtime_dist}`, Wine `{runtime.get('wine_version', 'pending')}` at `{runtime.get('root', 'pending')}`",
+        f"- Runtime files SHA-256: `{runtime.get('identity_hash', 'pending')}`",
+        f"- Wine prefix: `{prefix.get('path', 'pending')}`",
+        f"- Prefix files SHA-256: `{prefix.get('identity_hash', 'pending')}`",
+        f"- Settings files SHA-256: `{profile_value.get('configuration', {}).get('identity_hash', 'pending')}`",
+        f"- PipeASIO settings file: `{configuration.get('pipeasio_effective_config', {}).get('path') or 'pending'}` "
+        f"(source `{configuration.get('pipeasio_effective_config', {}).get('resolution', 'pending')}`)",
         "",
         "### Live options",
         "",
@@ -2014,40 +2014,40 @@ def markdown_report(report: dict[str, Any]) -> str:
     preferences = live_inventory_value.get("preferences", [])
     executables = live_inventory_value.get("executables", [])
     if not preferences and not executables:
-        lines.append("No Live executable or preferences directory was detected.")
+        lines.append("Live details await an installed executable or preferences folder.")
     for executable in executables:
         lines.append(
-            f"- `{Path(executable.get('path', 'unknown')).name}`: product version "
-            f"`{executable.get('product_version') or 'unavailable'}`, executable SHA-256 "
-            f"`{executable.get('sha256', 'absent')}`"
+            f"- `{Path(executable.get('path', 'pending')).name}`: product version "
+            f"`{executable.get('product_version') or 'pending'}`, executable SHA-256 "
+            f"`{executable.get('sha256', 'pending')}`"
         )
     for preference in preferences:
         workers = preference.get("max_audio_threads")
         lines.append(
             f"- Live {preference.get('version')}: MaxAudioThreads="
             f"{workers if workers is not None else 'Live default'}; Options.txt SHA-256 "
-            f"`{preference.get('options_hash', {}).get('sha256', 'absent')}`"
+            f"`{preference.get('options_hash', {}).get('sha256', 'pending')}`"
         )
-    lines.extend(["", "### Fixture plugins", ""])
+    lines.extend(["", "### VST3 plug-ins", ""])
     for plugin in fixture_plugins:
         versions = sorted(set(
             item.get("product_version") for item in plugin.get("files", []) if item.get("product_version")
         ))
         lines.append(
-            f"- {plugin.get('name')}: `{plugin.get('path') or 'missing'}`; identity SHA-256 "
-            f"`{plugin.get('identity_hash', 'absent')}`; embedded versions "
-            f"`{', '.join(versions) if versions else 'unavailable'}`"
+            f"- {plugin.get('name')}: `{plugin.get('path') or 'pending'}`; files SHA-256 "
+            f"`{plugin.get('identity_hash', 'pending')}`; product versions "
+            f"`{', '.join(versions) if versions else 'pending'}`"
         )
     lines.extend([
         "",
-        "## Crackle status semantics",
+        "## Crackle evidence",
         "",
-        "- `detected`: PipeWire ERR increased or an xrun-like diagnostic appeared.",
-        "- `manual`: the operator heard crackle without a corroborating counter event.",
-        "- `no-instrumented-evidence`: usable instrumentation was clean; this is not proof of inaudibility.",
-        "- `unknown`: instrumentation was unavailable and no positive manual observation exists.",
+        "- `detected`: a tool reported a PipeWire error or xrun",
+        "- `manual`: the listener heard crackle while the tools recorded zero matching events",
+        "- complete tool evidence means all usable tools recorded zero matching events",
+        "- pending evidence means the report needs more tool or listener evidence",
         "",
-        "Raw command output, endpoint task-lifecycle accounting, process/thread snapshots, schedstat deltas, context switches, collector timing, logs, OSC rows, and quantum events are retained beside this report.",
+        "Detailed JSON and source files contain process and thread counts, scheduler data, tool timing, logs, control messages, and buffer changes.",
         "",
     ])
     return "\n".join(lines)
@@ -2064,7 +2064,7 @@ def load_json_object(path: Path) -> dict[str, Any]:
 
 
 def load_completed_run(path: Path) -> dict[str, Any]:
-    """Load the canonical raw run evidence, not a possibly stale report.json."""
+    """Load run details and measurements from a finished run."""
     run_dir = path.resolve()
     run = load_json_object(run_dir / "run.json")
     if (run.get("schema"), run.get("kind")) != (SCHEMA, "benchmark-run"):
@@ -2157,33 +2157,33 @@ def identity_comparison(
 
 
 IDENTITY_SPECS = (
-    ("runtime_identity", "Runtime build/Wine/root", ("runtime",), False),
-    ("prefix_identity", "Wine prefix path/contents", ("prefix",), False),
-    ("live_install", "Live version/options/worker setting", ("live",), False),
-    ("vst_fixtures", "Dexed/K1v fixture binaries and versions", ("fixture_plugins",), False),
+    ("runtime_identity", "Runtime build, Wine version, and folder", ("runtime",), False),
+    ("prefix_identity", "Wine prefix folder and files", ("prefix",), False),
+    ("live_install", "Live version, options, and worker setting", ("live",), False),
+    ("vst_fixtures", "Dexed and K1v files and versions", ("fixture_plugins",), False),
     ("cpu_description", "CPU description", ("system", "cpu"), False),
-    ("cpu_topology", "CPU topology", ("system", "cpu_topology"), False),
-    ("cpu_policy_profile", "Ambient CPU sysfs policy", ("system", "cpu_sysfs"), False),
+    ("cpu_topology", "CPU core layout", ("system", "cpu_topology"), False),
+    ("cpu_policy_profile", "CPU policy before Live starts", ("system", "cpu_sysfs"), False),
     ("system_software", "Kernel", ("system", "uname"), False),
     ("os_release", "Operating system", ("system", "os_release"), False),
-    ("gpu", "GPU inventory", ("system", "gpu_lines"), False),
+    ("gpu", "GPU devices", ("system", "gpu_lines"), False),
     ("gpu_renderer", "GPU renderer", ("system", "gpu_renderer_lines"), False),
-    ("audio_devices", "ALSA/USB audio devices", ("system", "audio_devices"), False),
+    ("audio_devices", "ALSA and USB audio devices", ("system", "audio_devices"), False),
     ("audio_kernel", "snd_usb_audio parameters", ("system", "audio_kernel"), False),
-    ("audio_profile", "Active WirePlumber profiles/routes", ("pipewire", "active_profile_lines"), False),
-    ("audio_profile_scope", "PipeWire profile capture scope", ("pipewire", "capture_scope"), False),
-    ("audio_profile_availability", "PipeWire profile capture availability", ("pipewire", "availability"), False),
-    ("pipewire_versions", "PipeWire/WirePlumber versions", ("pipewire", "versions"), False),
+    ("audio_profile", "Active audio profiles and routes", ("pipewire", "active_profile_lines"), False),
+    ("audio_profile_scope", "Audio profile measurement details", ("pipewire", "capture_scope"), False),
+    ("audio_profile_availability", "Audio profile command results", ("pipewire", "availability"), False),
+    ("pipewire_versions", "PipeWire and WirePlumber versions", ("pipewire", "versions"), False),
     ("sample_rate", "PipeWire graph sample rate", ("pipewire", "settings", "values", "clock.rate"), False),
-    ("forced_sample_rate", "PipeWire forced sample rate", ("pipewire", "settings", "values", "clock.force-rate"), True),
-    ("quantum", "PipeWire graph quantum", ("pipewire", "settings", "values", "clock.quantum"), False),
-    ("minimum_quantum", "PipeWire minimum quantum", ("pipewire", "settings", "values", "clock.min-quantum"), True),
-    ("maximum_quantum", "PipeWire maximum quantum", ("pipewire", "settings", "values", "clock.max-quantum"), True),
-    ("forced_quantum", "PipeWire forced quantum", ("pipewire", "settings", "values", "clock.force-quantum"), True),
-    ("configuration", "Launcher/PipeASIO configuration identity", ("configuration", "identity_hash"), False),
-    ("pipeasio_config", "Effective PipeASIO config path/hash", ("configuration", "pipeasio_effective_config"), False),
-    ("benchmark_gates", "Wine/PipeASIO/launcher performance gates", ("configuration", "benchmark_gates"), True),
-    ("power_profile", "Ambient pre-launch power profile", ("system", "power_profile"), False),
+    ("forced_sample_rate", "PipeWire selected sample rate", ("pipewire", "settings", "values", "clock.force-rate"), True),
+    ("quantum", "PipeWire buffer size", ("pipewire", "settings", "values", "clock.quantum"), False),
+    ("minimum_quantum", "PipeWire minimum buffer size", ("pipewire", "settings", "values", "clock.min-quantum"), True),
+    ("maximum_quantum", "PipeWire maximum buffer size", ("pipewire", "settings", "values", "clock.max-quantum"), True),
+    ("forced_quantum", "PipeWire selected buffer size", ("pipewire", "settings", "values", "clock.force-quantum"), True),
+    ("configuration", "Launcher and PipeASIO settings hash", ("configuration", "identity_hash"), False),
+    ("pipeasio_config", "PipeASIO settings path and hash", ("configuration", "pipeasio_effective_config"), False),
+    ("benchmark_gates", "Wine, PipeASIO, and launcher CPU settings", ("configuration", "benchmark_gates"), True),
+    ("power_profile", "Power profile before Live starts", ("system", "power_profile"), False),
 )
 
 
@@ -2234,9 +2234,8 @@ def collector_command_usable(
         return False
     coverage = timing.get("supervision_interval_seconds")
     lines = timing.get("output_line_count")
-    # Collector startup is deliberately inside the common window. Permit at
-    # most one second (and never over 10%) of bounded spawn/reap skew, but never
-    # turn a short-lived process with a few early rows into full-window evidence.
+    # Tools start inside the common period. Accept up to one second and 10% for
+    # process start and end. Periodic tools also need data near both ends.
     duration = float(duration)
     minimum = max(0.0, duration - min(1.0, duration * 0.1))
     usable = (
@@ -2351,14 +2350,14 @@ def endpoint_identity_value(measurement: dict[str, Any], name: str, endpoint: st
 
 METRIC_SPECS = (
     ("host_cpu_percent", "Host CPU", "% total capacity", ("process", "details", "host_cpu_percent", "cpu")),
-    ("wine_prefix_cpu_percent", "Wine-prefix CPU (endpoint survivors)", "% one core", ("process", "summary", "wine_prefix", "cpu_percent_of_one_core")),
+    ("wine_prefix_cpu_percent", "Wine prefix CPU for tasks in both samples", "% one core", ("process", "summary", "wine_prefix", "cpu_percent_of_one_core")),
     ("live_cpu_percent", "Live CPU", "% one core", ("process", "summary", "live", "cpu_percent_of_one_core")),
-    ("pipewire_cpu_percent", "PipeWire/WirePlumber CPU", "% one core", ("process", "summary", "pipewire", "cpu_percent_of_one_core")),
-    ("pipewire_err", "PipeWire ERR increase", "events", ("pipewire", "pw_top", "err_delta")),
-    ("osc_average_percent", "OSC DSP average", "%", ("osc_dsp", "average_percent")),
-    ("osc_peak_percent", "OSC DSP peak", "%", ("osc_dsp", "peak_percent")),
-    ("audio_worker_count", "Observed AudioCalc workers", "threads", ("process", "summary", "live", "audio_worker_count")),
-    ("cpu_interval_seconds", "CPU endpoint interval", "seconds", ("process", "details", "elapsed_seconds")),
+    ("pipewire_cpu_percent", "PipeWire and WirePlumber CPU", "% one core", ("process", "summary", "pipewire", "cpu_percent_of_one_core")),
+    ("pipewire_err", "PipeWire error increase", "events", ("pipewire", "pw_top", "err_delta")),
+    ("osc_average_percent", "Reported DSP average", "%", ("osc_dsp", "average_percent")),
+    ("osc_peak_percent", "Reported DSP peak", "%", ("osc_dsp", "peak_percent")),
+    ("audio_worker_count", "AudioCalc worker count", "threads", ("process", "summary", "live", "audio_worker_count")),
+    ("cpu_interval_seconds", "Time between CPU samples", "seconds", ("process", "details", "elapsed_seconds")),
     ("interrupt_rate", "Hardware interrupts", "events/second", ("kernel_counters", "interrupts", "total_rate_per_second")),
     ("softirq_rate", "Software interrupts", "events/second", ("kernel_counters", "softirqs", "total_rate_per_second")),
 )
@@ -2368,8 +2367,8 @@ def set_metric_values(measurement: dict[str, Any]) -> dict[str, tuple[str, str, 
     values = {identifier: (label, unit, nested(measurement, *path)) for identifier, label, unit, path in METRIC_SPECS}
     for endpoint in ("before", "after"):
         for key, label, unit in (
-            ("clock.rate", "Graph rate", "frames/second"),
-            ("clock.quantum", "Graph quantum", "frames"),
+            ("clock.rate", "Sample rate", "frames per second"),
+            ("clock.quantum", "Buffer size", "frames"),
         ):
             raw_value = nested(
                 measurement, "endpoint_identity", "audio", endpoint, "graph_settings", key,
@@ -2379,38 +2378,38 @@ def set_metric_values(measurement: dict[str, Any]) -> dict[str, tuple[str, str, 
             except (TypeError, ValueError):
                 parsed_value = None
             values[f"graph_{key.removeprefix('clock.')}_{endpoint}"] = (
-                f"{label} at {endpoint} endpoint", unit, parsed_value,
+                f"{label} at {endpoint} sample", unit, parsed_value,
             )
-    values["quantum_transitions"] = ("Quantum transitions", "transitions", quantum_transition_count(measurement))
+    values["quantum_transitions"] = ("Buffer size changes", "changes", quantum_transition_count(measurement))
     for group, label in (("live", "Live"), ("wine_prefix", "Wine prefix"), ("pipewire", "PipeWire")):
         values[f"{group}_context_switches"] = (
             f"{label} context switches", "switches", nested(measurement, "process", "summary", group, "context_switches"),
         )
         for key, suffix, unit in (
-            ("runtime_ns", "schedstat runtime", "nanoseconds"),
-            ("run_delay_ns", "schedstat run delay", "nanoseconds"),
-            ("timeslices", "schedstat timeslices", "timeslices"),
+            ("runtime_ns", "CPU run time", "nanoseconds"),
+            ("run_delay_ns", "CPU wait time", "nanoseconds"),
+            ("timeslices", "CPU time slices", "time slices"),
         ):
             values[f"{group}_schedstat_{key}"] = (
                 f"{label} {suffix}", unit, nested(measurement, "process", "summary", group, "schedstat", key),
             )
     churn = task_churn_counts(measurement)
     for key, label in (
-        ("processes_born", "Endpoint processes born"),
-        ("processes_exited", "Endpoint processes exited"),
-        ("threads_born", "Endpoint threads born"),
-        ("threads_exited", "Endpoint threads exited"),
-        ("total", "Endpoint task churn total"),
+        ("processes_born", "Processes started between samples"),
+        ("processes_exited", "Processes ended between samples"),
+        ("threads_born", "Threads started between samples"),
+        ("threads_exited", "Threads ended between samples"),
+        ("total", "Process and thread changes"),
     ):
         values[f"task_churn_{key}"] = (label, "tasks", churn[key])
     for collector in ("pw-top", "pw-metadata", "osc"):
         timing = nested(measurement, "capture_commands", collector, "timing") or {}
         safe = collector.replace("-", "_")
         values[f"{safe}_coverage_seconds"] = (
-            f"{collector} supervised coverage", "seconds", timing.get("supervision_interval_seconds"),
+            f"{collector} run time", "seconds", timing.get("supervision_interval_seconds"),
         )
         values[f"{safe}_output_span_seconds"] = (
-            f"{collector} observed output span", "seconds", timing.get("output_span_seconds"),
+            f"{collector} data span", "seconds", timing.get("output_span_seconds"),
         )
         values[f"{safe}_output_lines"] = (
             f"{collector} output lines", "lines", timing.get("output_line_count"),
@@ -2426,7 +2425,7 @@ def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str
             f"duration mismatch: before={before_duration}, after={after_duration}; rerun with one common duration"
         )
     identities = [identity_comparison(
-        "harness", "Benchmark harness/collector identity",
+        "harness", "Benchmark tool files",
         nested(before["run"], "harness", "identity_hash"),
         nested(after["run"], "harness", "identity_hash"),
     ), *profile_identity_checks(before, after)]
@@ -2466,7 +2465,7 @@ def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str
         ):
             for endpoint in ("before", "after"):
                 metrics[f"{name}_{endpoint}"] = metric_comparison(
-                    f"{label} at {endpoint} endpoint", "category",
+                    f"{label} at {endpoint} sample", "category",
                     endpoint_identity_value(first, name, endpoint),
                     endpoint_identity_value(last, name, endpoint),
                     confounders, numeric=False,
@@ -2481,8 +2480,8 @@ def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str
         "kind": "benchmark-comparison",
         "generated_at": utc_now(),
         "interpretation": (
-            "Descriptive before/after observation only. One run per side does not establish variance, "
-            "statistical significance, causality, or absence of audible crackle."
+            "One before and one after run describe one pair. Repeat pairs to measure normal variation. "
+            "Use tool and listener reports for audio results."
         ),
         "structure": {"compatible": True, "canonical_set_order": list(CANONICAL_SETS),
                       "duration_seconds_per_set": before_duration},
@@ -2496,7 +2495,7 @@ def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str
 
 def markdown_value(value: Any) -> str:
     if value is None:
-        return "missing"
+        return "pending"
     if isinstance(value, float):
         return f"{value:.4f}"
     if isinstance(value, (str, int, bool)):
@@ -2523,25 +2522,25 @@ def comparison_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Ableton Linux benchmark comparison",
         "",
-        f"- Before: `{report['before'].get('tag') or 'unknown'}` at `{report['before']['directory']}`",
-        f"- After: `{report['after'].get('tag') or 'unknown'}` at `{report['after']['directory']}`",
-        f"- Canonical window: {report['structure']['duration_seconds_per_set']} seconds per set",
-        f"- Identity confounders: {len(report['identity_confounders'])}",
+        f"- Before: `{report['before'].get('tag') or 'pending'}` at `{report['before']['directory']}`",
+        f"- After: `{report['after'].get('tag') or 'pending'}` at `{report['after']['directory']}`",
+        f"- Measurement time: {report['structure']['duration_seconds_per_set']} seconds per set",
+        f"- Run detail differences: {len(report['identity_confounders'])}",
         "",
-        "> **Interpretation:** Descriptive before/after observation only. One run per side does not establish variance, statistical significance, causality, or absence of audible crackle.",
+        "> One pair describes one result. Repeat pairs to measure normal variation. Use tool and listener reports for audio results.",
         "",
-        "## Identity confounders",
+        "## Run detail differences",
         "",
     ]
     changed = [item for item in report["identity"] if item["confounder"]]
     if changed:
         for item in changed:
             lines.append(
-                f"- {item['label']}: **{item['status']}**; before `{markdown_value(item['before'])}`, "
+                f"- {item['label']}: {item['status']}; before `{markdown_value(item['before'])}`, "
                 f"after `{markdown_value(item['after'])}`"
             )
     else:
-        lines.append("None recorded.")
+        lines.append("All run details match.")
     summary_metrics = (
         "host_cpu_percent", "wine_prefix_cpu_percent", "live_cpu_percent", "pipewire_cpu_percent",
         "interrupt_rate", "softirq_rate", "pipewire_err", "osc_average_percent", "osc_peak_percent",
@@ -2549,14 +2548,14 @@ def comparison_markdown(report: dict[str, Any]) -> str:
     )
     lines.extend(["", "## Set summary", "", "| Set | " + " | ".join(
         report["sets"][0]["metrics"][name]["label"] for name in summary_metrics
-    ) + " | Confounders |", "|---|" + "---:|" * len(summary_metrics) + "---:|"])
+    ) + " | Review items |", "|---|" + "---:|" * len(summary_metrics) + "---:|"])
     for item in report["sets"]:
         lines.append(f"| {item['set']} | " + " | ".join(
             markdown_metric(item["metrics"][name]) for name in summary_metrics
         ) + f" | {len(item['confounders'])} |")
     lines.extend([
         "",
-        "All context-switch/schedstat, task-churn, collector-coverage, endpoint power/policy, IRQ/softirq label/per-CPU deltas, and explicit missing/zero-baseline states are retained in `comparison.json`.",
+        "`comparison.json` contains context switches, scheduler values, process changes, tool timing, power settings, CPU policy, interrupts, and zero starting values.",
         "",
     ])
     return "\n".join(lines)
@@ -2656,7 +2655,7 @@ def positive_duration(value: str) -> int:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
-    capture_parser = commands.add_parser("capture", help="capture one common measurement window")
+    capture_parser = commands.add_parser("capture", help="measure one set for the selected time")
     capture_parser.add_argument("--output", required=True)
     capture_parser.add_argument("--set-name", required=True)
     capture_parser.add_argument("--mode", choices=("idle-no-controller", "playback"), required=True)
@@ -2674,44 +2673,44 @@ def parser() -> argparse.ArgumentParser:
     )
     capture_parser.set_defaults(func=capture)
 
-    profile_parser = commands.add_parser("profile", help="capture the immutable run profile")
+    profile_parser = commands.add_parser("profile", help="record system and software details")
     profile_parser.add_argument("--output", required=True)
     profile_parser.add_argument("--prefix", required=True)
     profile_parser.add_argument("--wine-root", required=True)
     profile_parser.add_argument("--config-file", required=True)
     profile_parser.set_defaults(func=profile)
 
-    init_parser = commands.add_parser("init-run")
+    init_parser = commands.add_parser("init-run", help="create the run record")
     init_parser.add_argument("--output", required=True)
     init_parser.add_argument("--tag", required=True)
     init_parser.add_argument("--duration", type=positive_duration, default=30)
     init_parser.add_argument("--set", action="append", required=True)
     init_parser.set_defaults(func=init_run)
 
-    update_parser = commands.add_parser("update-run")
+    update_parser = commands.add_parser("update-run", help="record the final run status")
     update_parser.add_argument("--output", required=True)
     update_parser.add_argument("--status", choices=("complete", "failed", "interrupted"), required=True)
     update_parser.set_defaults(func=update_run)
 
-    render_parser = commands.add_parser("render")
+    render_parser = commands.add_parser("render", help="create the JSON and Markdown report")
     render_parser.add_argument("--run-dir", required=True)
     render_parser.set_defaults(func=render)
 
     compare_parser = commands.add_parser(
-        "compare", help="compare two completed canonical runs without claiming significance"
+        "compare", help="compare two completed runs"
     )
-    compare_parser.add_argument("--before", required=True, help="completed baseline run directory")
-    compare_parser.add_argument("--after", required=True, help="completed candidate run directory")
-    compare_parser.add_argument("--output", required=True, help="new comparison output directory")
+    compare_parser.add_argument("--before", required=True, help="before run folder")
+    compare_parser.add_argument("--after", required=True, help="after run folder")
+    compare_parser.add_argument("--output", required=True, help="new comparison folder")
     compare_parser.set_defaults(func=compare)
 
-    annotate_parser = commands.add_parser("annotate", help="add a post-run manual crackle observation")
+    annotate_parser = commands.add_parser("annotate", help="add a listener crackle report")
     annotate_parser.add_argument("--run-dir", required=True)
     annotate_parser.add_argument("--set-name", choices=CANONICAL_SETS, required=True)
     annotate_parser.add_argument("--manual-crackle", choices=("heard", "not-heard", "unknown"), required=True)
     annotate_parser.set_defaults(func=annotate)
 
-    udp_parser = commands.add_parser("check-udp")
+    udp_parser = commands.add_parser("check-udp", help="check the OSC report port")
     udp_parser.add_argument("--port", type=int, default=19002)
     udp_parser.set_defaults(func=udp_available)
     return root

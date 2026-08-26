@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run the canonical five-set benchmark in a fixed order.  Live lifecycle is
-# guarded by an exact runtime/prefix match and a per-launch environment token.
+# Measure the 5 standard Live sets in a fixed order. Each launch uses the
+# selected runtime and prefix. A unique value identifies every Live session.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,20 +25,21 @@ usage()
     cat <<'EOF'
 usage: scripts/bench-suite.sh [options]
 
-  --tag LABEL                 comparison/release label (default manual)
+  --tag LABEL                 report and comparison label (default manual)
   --output DIR                new report directory (default bench/reports/<UTC>-LABEL)
-  --duration SECONDS          every CPU/OSC/PipeWire window (default exactly 30)
-  --launch-timeout SECONDS    set-load readiness ceiling (default 180)
-  --settle SECONDS            quiet/stabilisation period outside the window (default 5)
-  --crackle SET=STATE         manual observation: heard, not-heard, or unknown
-  --launcher PATH             launcher to invoke (testing/installed override)
-  --skip-vst-check            permit a deliberately incomplete VST fixture
-  --dry-run                   run every preflight and print the immutable plan; launch nothing
+  --duration SECONDS          measurement time for every set (default 30)
+  --launch-timeout SECONDS    maximum wait for Live and the control device (default 180)
+  --settle SECONDS            stabilisation time before measurement (default 5)
+  --crackle SET=STATE         listener report: heard, not-heard, or unknown
+  --launcher PATH             Live launcher path
+  --skip-vst-check            accept a VST set prepared for plug-in tests
+  --dry-run                   check the run and print its plan; Live stays closed
 
-Order is always Benchmark_Zero, Empty, Inbuilts, Max4Live, VSTs. Zero is an
-idle/no-controller measurement; the remaining sets are rewound and played by
-their committed Max for Live OSC device. Generated output includes raw evidence,
-report.json, and report.md. The suite never invokes wineserver -k.
+The suite runs Zero, Empty, Inbuilts, Max4Live, and VSTs in that order. Zero
+measures Live while it is idle. The other sets use their control device for
+playback. The suite writes source data, report.json, and report.md. The command
+closes each started Live process by its exact process ID. Other Wine sessions
+continue.
 EOF
 }
 
@@ -175,7 +176,7 @@ preflight()
 preflight
 
 if [ "$dry_run" -eq 1 ]; then
-    printf 'benchmark dry-run: duration=%ss output=%s\n' "$duration" "$output"
+    printf 'benchmark plan: duration=%ss output=%s\n' "$duration" "$output"
     for index in "${!sets[@]}"; do
         set_name="${sets[index]}"
         mode=playback
@@ -278,8 +279,8 @@ stop_owned_session()
         [ -z "$remaining" ] && break
         sleep 0.2
     done
-    # A crashed/blocked Live must not strand the automated suite. KILL remains
-    # exact-pid and is repeated only after the run token is revalidated.
+    # Live can remain active after TERM. Check the run value again before KILL.
+    # Send KILL to the exact process ID.
     while IFS= read -r pid; do
         [ -n "$pid" ] || continue
         ableton_pid_has_env "$pid" "ABLETON_BENCH_RUN_ID=$active_token" || continue
@@ -338,7 +339,7 @@ for index in "${!sets[@]}"; do
     osc=on
     if [ "$set_name" = Benchmark_Zero ]; then mode=idle-no-controller; osc=off; fi
     active_token="$run_id:$set_name"
-    printf '== %d/5 %s: launch ==\n' "$((index + 1))" "$set_name"
+    printf '== %d/5 %s: start Live ==\n' "$((index + 1))" "$set_name"
     ABLETON_BENCH_RUN_ID="$active_token" setsid -- "$launcher" "$set_file" \
         > "$set_dir/raw/launcher.log" 2>&1 &
     launcher_pid=$!
@@ -357,7 +358,7 @@ for index in "${!sets[@]}"; do
         wait_log_quiet || fail "$set_name log did not settle within ${launch_timeout}s"
     fi
 
-    printf '== %d/5 %s: measure %ss ==\n' "$((index + 1))" "$set_name" "$duration"
+    printf '== %d/5 %s: measure for %ss ==\n' "$((index + 1))" "$set_name" "$duration"
     capture_args=(
         --duration "$duration"
         --output-dir "$set_dir"
@@ -373,8 +374,8 @@ for index in "${!sets[@]}"; do
     [ "$osc" = off ] || python3 "$here/bench-osc.py" send /abl/bench/stop || true
     stop_owned_session || fail "could not end only the runner-owned $set_name session"
 
-    # The launcher performs its own safe agent teardown. Give Max/helpers a
-    # bounded grace, then refuse to stack another set on an unknown client.
+    # The launcher closes its agents. Wait up to 30 seconds for Max and helper
+    # clients to leave the prefix before the next set.
     deadline=$((SECONDS + 30))
     while [ "$SECONDS" -lt "$deadline" ]; do
         holders="$(ableton_prefix_unknown_holders)"
@@ -387,4 +388,4 @@ done
 python3 "$here/bench-report.py" update-run --output "$output/run.json" --status complete
 python3 "$here/bench-report.py" render --run-dir "$output"
 finalized=1
-printf 'complete: %s\n' "$output/report.md"
+printf 'report: %s\n' "$output/report.md"

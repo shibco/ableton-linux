@@ -1,12 +1,12 @@
-// abl-bench-osc.js — bench harness bridge, runs inside the abl-bench-osc
-// Max for Live device. Build recipe and OSC protocol: bench/m4l/README.md.
+// Connects the benchmark suite to the abl-bench-osc Max for Live device.
+// The build steps and message list are in bench/m4l/README.md.
 //
-// Patcher wiring:
-//   [live.thisdevice] -> inlet     (init bang once the Live API is ready)
-//   [udpreceive 19001] -> inlet    (commands from the harness)
-//   outlet -> [udpsend 127.0.0.1 19002]   (telemetry to the harness)
+// Patcher connections:
+//   [live.thisdevice] -> inlet     (starts after the Live API becomes ready)
+//   [udpreceive 19001] -> inlet    (receives suite commands)
+//   outlet -> [udpsend 127.0.0.1 19002]   (sends reports to the suite)
 //
-// Written for the classic [js] object: ES5 only, no modern syntax.
+// The classic [js] object uses ES5 syntax.
 
 autowatch = 1;
 inlets = 1;
@@ -16,11 +16,11 @@ var song = null;
 var app = null;
 var playObs = null;
 var cpuTask = null;
-var cpuPeriod = 500;   // ms between /abl/bench/cpu reports; 0 = off
+var cpuPeriod = 500;   // ms between /abl/bench/cpu reports; 0 stops reports
 var cpuOk = false;
 
-// live.thisdevice bangs when the device may use the Live API. A plain
-// loadbang fires too early inside Live; do not add one.
+// live.thisdevice sends a bang when the Live API becomes ready. A loadbang can
+// run earlier, so use the current bang.
 function bang() { init(); }
 
 function init() {
@@ -30,10 +30,9 @@ function init() {
     playObs = new LiveAPI(onPlaying, "live_set");
     playObs.property = "is_playing";
 
-    // The CPU meter reached the Live Object Model in Live 11
-    // (Application.average_process_usage / peak_process_usage). Probe once;
-    // when absent, /abl/bench/cpu reports -1 -1 and the harness falls back
-    // to the manual DSP entry.
+    // Live 11 added average and peak CPU values to the Live Object Model.
+    // Read the average value at start. An empty value produces -1 -1 in the
+    // report, and the suite then uses the listener's DSP entry.
     var probe = app.get("average_process_usage");
     cpuOk = (probe != null && probe.length > 0 && probe[0] !== "");
     if (!cpuOk)
@@ -51,8 +50,8 @@ function onPlaying(args) {
 function sendCpu() {
     var avg = -1, peak = -1, v;
     if (app && !cpuOk) {
-        // Self-heal: an init that raced the Live API leaves the probe dead;
-        // retry with a fresh handle until the meter reads.
+        // Start-up can occur before the CPU value becomes ready. Request a new
+        // Live handle until the meter supplies a value.
         app = new LiveAPI("live_app");
         v = app.get("average_process_usage");
         cpuOk = (v != null && v.length > 0 && v[0] !== "");
@@ -63,8 +62,7 @@ function sendCpu() {
         v = app.get("peak_process_usage");
         if (v != null && v.length > 0) peak = v[0];
     }
-    // Values are forwarded exactly as the Live API reports them; the harness
-    // owns any scaling.
+    // Send the values in Live's original units. The suite applies any scale.
     out("/abl/bench/cpu", [avg, peak]);
 }
 
@@ -77,10 +75,8 @@ function applyCpuPeriod() {
     }
 }
 
-// Incoming OSC. The device wires [udpreceive] straight into this object,
-// so the OSC address arrives as the Max message selector and lands in
-// anything(). osc() is an alternate entry for a [prepend osc] wiring:
-// there the message arrives as "osc <address> <args...>".
+// [udpreceive] sends the OSC address to anything() as a Max message selector.
+// osc() accepts the alternate [prepend osc] form: "osc <address> <args...>".
 function anything() {
     dispatch(messagename, arrayfromargs(arguments));
 }

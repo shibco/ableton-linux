@@ -30,7 +30,7 @@ test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-bench-report.py
 	./scripts/test-bench-suite.sh
 
-test-bench:                    ## run deterministic benchmark parser/preflight tests
+test-bench:                    ## run benchmark report and run checks
 	./scripts/test-bench-report.py
 	./scripts/test-bench-suite.sh
 

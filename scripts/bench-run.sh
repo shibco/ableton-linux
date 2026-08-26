@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Capture one already-running benchmark set.  The suite runner normally calls
-# this; it remains useful alone when an operator has opened a set by hand.
+# Measure one Live set that is already open. The full suite normally calls the
+# command. You can also open a set and run the command by hand.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,18 +24,18 @@ usage()
     cat <<'EOF'
 usage: scripts/bench-run.sh --output-dir DIR [options]
 
-  --duration SECONDS       one window for CPU, OSC, pw-top, and metadata (default 30)
-  --set-name NAME          label recorded in measurement.json
+  --duration SECONDS       measurement time for CPU, Live, and PipeWire (default 30)
+  --set-name NAME          set name stored in measurement.json
   --mode MODE              playback or idle-no-controller
-  --run-id ID              owning suite identifier
-  --live-pid PID           explicit Live pid; repeatable
-  --log PATH               additional window-sliced log; repeatable
-  --osc on|off             off only for Benchmark_Zero
+  --run-id ID              suite run label
+  --live-pid PID           Live process ID; repeat for each process
+  --log PATH               extra log file; repeat for each file
+  --osc on|off             control messages; Benchmark_Zero uses off
   --manual-crackle STATE   heard, not-heard, not-provided, or unknown
-  --node-pattern REGEX     PipeWire node selector
+  --node-pattern REGEX     PipeWire node name pattern
 
-The output contains raw evidence plus measurement.json. This command never
-starts or terminates Wine and never changes PipeWire settings.
+The command writes source data and measurement.json. Open Live before you run
+it. Wine and PipeWire keep their current state.
 EOF
 }
 

@@ -537,7 +537,7 @@ ERR:          5
             self.assertEqual((metric["delta"], metric["percent_change"]), (-2.0, -20.0))
             self.assertFalse(metric["confounded"])
             self.assertIn("interrupts", result["sets"][1]["kernel_counters"]["before"])
-            self.assertIn("does not establish variance", (output / "comparison.md").read_text())
+            self.assertIn("Repeat pairs to measure normal variation", (output / "comparison.md").read_text())
 
     def test_compare_reports_identity_and_exact_gate_confounders(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -678,7 +678,7 @@ ERR:          5
             self.assertEqual(report.render(args), 0)
             rendered = json.loads((run_dir / "report.json").read_text())
             self.assertEqual([item["set"] for item in rendered["sets"]], order)
-            self.assertIn("Crackle status semantics", (run_dir / "report.md").read_text())
+            self.assertIn("Crackle evidence", (run_dir / "report.md").read_text())
             annotate_args = type("Args", (), {
                 "run_dir": str(run_dir), "set_name": "Benchmark_Zero", "manual_crackle": "heard",
             })()

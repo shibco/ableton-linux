@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Small OSC client for the abl-bench-m4l benchmark device.
+"""Send commands to the benchmark control device and print its reports.
 
 Usage:
   bench-osc.py send ADDRESS [ARG ...]
   bench-osc.py dump [--duration SECONDS]
   bench-osc.py probe [--timeout SECONDS]
 
-The device receives on UDP 19001 and reports on 19002.  Environment
-ABL_BENCH_OSC_SEND/ABL_BENCH_OSC_RECV override those ports.
+The device receives commands on UDP 19001 and sends reports on UDP 19002.
+ABL_BENCH_OSC_SEND and ABL_BENCH_OSC_RECV select other ports.
 """
 
 from __future__ import annotations
@@ -112,10 +112,10 @@ def dump(duration: float | None) -> int:
 
 
 def probe(timeout: float) -> int:
-    """Prove that this benchmark device owns the two UDP endpoints.
+    """Check that the benchmark device answers on the selected ports.
 
-    Ready is a one-shot report and can race the runner.  A nonce pong is an
-    active, unambiguous readiness proof, so retransmit ping until it arrives.
+    The ready report appears once and can arrive before the listener starts.
+    Send a random value until the matching reply arrives.
     """
     deadline = time.monotonic() + timeout
     nonce = secrets.token_hex(8)
@@ -156,13 +156,14 @@ def positive(value: str) -> float:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
-    send_parser = commands.add_parser("send")
-    send_parser.add_argument("address")
-    send_parser.add_argument("arguments", nargs="*")
-    dump_parser = commands.add_parser("dump")
-    dump_parser.add_argument("--duration", type=positive)
-    probe_parser = commands.add_parser("probe")
-    probe_parser.add_argument("--timeout", type=positive, default=120.0)
+    send_parser = commands.add_parser("send", help="send one control message")
+    send_parser.add_argument("address", help="OSC address to send")
+    send_parser.add_argument("arguments", nargs="*", help="values to send")
+    dump_parser = commands.add_parser("dump", help="print incoming reports")
+    dump_parser.add_argument("--duration", type=positive, help="time to read reports in seconds")
+    probe_parser = commands.add_parser("probe", help="wait for the device reply")
+    probe_parser.add_argument("--timeout", type=positive, default=120.0,
+                              help="maximum wait in seconds")
     return root
 
 
