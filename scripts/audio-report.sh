@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# scripts/audio-report.sh — one-shot snapshot of everything that decides audio
-# behaviour under this stack: PipeWire settings and forced quanta, default
-# devices, realtime threads, ntsync, the PipeASIO configuration, the tail of
-# the launcher live log, and a follower-resync check for two-device setups.
-# Read-only: the script reports and changes nothing. Paste the output into an
-# issue report; home paths are shortened to ~ before printing.
+# Collect one report for an audio issue. The report includes PipeWire, devices,
+# CPU layout, realtime threads, NTSync, PipeASIO and the Live launch log.
+# The script reads system state. Add its output to an issue report. Home paths
+# appear with ~ in the report.
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -16,6 +14,11 @@ done
 declare -F ableton_config_init >/dev/null 2>&1 || {
     echo "!! audio report cannot find its installation configuration" >&2; exit 1; }
 ableton_config_init
+for topology_lib in "$here/lib/live-options.sh" \
+                    "$ABLETON_DATA_HOME/lib/live-options.sh"; do
+    # shellcheck disable=SC1090
+    if [ -r "$topology_lib" ]; then . "$topology_lib"; break; fi
+done
 
 redact() { sed "s|$HOME|~|g"; }
 sec() { printf '\n== %s\n' "$*"; }
@@ -35,6 +38,13 @@ else
 fi
 [ -r "$WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" ] \
     && sed -n 's/^dist-version: /runtime: /p' "$WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt"
+
+sec "CPU layout evidence for Wine"
+if declare -F ableton_cpu_topology_report >/dev/null 2>&1; then
+    ableton_cpu_topology_report
+else
+    echo "CPU layout evidence: install desktop integration again to add it"
+fi
 
 sec "ntsync device availability"
 if ls -l /dev/ntsync 2>/dev/null; then
