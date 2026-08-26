@@ -18,7 +18,8 @@ the wheel coordinate fix separate. Patch 0100 combines 10 pointer patches.
 
 A separate performance series contains one reviewed patch under
 `patches/performance/`. Patch 0001 provides the NTSync alertable wait trial.
-The research note records the later test needs for 4 wider ideas. See
+The research note defines tests for 4 deferred performance proposals, numbered
+0002 to 0005. See
 `notes/MOONSHOT-CPU-WINE-BOUNDED-FASTPATHS.md`.
 
 ## Applying the series

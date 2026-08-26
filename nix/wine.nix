@@ -140,7 +140,7 @@ stdenv.mkDerivation rec {
         */performance/*) relative="performance/$relative" ;;
       esac
       echo "$series" | grep -qx "$relative" \
-        || { echo "!! $relative on disk but not in SERIES.sha256 — update the manifest" >&2; exit 1; }
+        || { echo "!! Run ./scripts/build-audit.sh --freeze to add $relative to SERIES.sha256" >&2; exit 1; }
     done
     # Applied the way scripts/container-build.sh applies them, with `git am
     # --3way`, because the two builders have to produce the same tree and

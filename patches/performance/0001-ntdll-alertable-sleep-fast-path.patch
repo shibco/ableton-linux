@@ -1,82 +1,36 @@
-From 7a5257aeff3eea67188e5928c574d94b56dd54e1 Mon Sep 17 00:00:00 2001
+From 543fd0675da0ee457e243f68e978e145a954681e Mon Sep 17 00:00:00 2001
 From: dist <build@localhost>
 Date: Wed, 5 Aug 2026 18:59:54 +0200
 Subject: [PATCH] ntdll: reroute alertable zero-handle sleeps through the
  ntsync alert event
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-A traced empty Live 12 Set produced ~3,650 wineserver context switches/sec.
-One verified contributor to that request traffic is that every alertable
-zero-handle sleep costs a full wineserver round trip. NtDelayExecution
-with alertable=TRUE unconditionally calls server_wait(NULL, 0,
-SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout) — the comment says
-"if alertable, we need to query the server" (dlls/ntdll/unix/sync.c,
-NtDelayExecution) — because the server-side user APC queue has to be
-checked before and during the sleep.
+Result
 
-The per-thread ntsync alert machinery makes that check unnecessary on
-the client side: the server creates thread->alert_sync as a manual-reset
-event (server/thread.c:570), signals it when the first user APC is
-queued (server/thread.c:1483-1488) and resets it when the server-side
-user APC queue empties (server/thread.c:1520-1521,1536-1537), and the
-client already caches its own fd for it through get_inproc_alert_fd()
-(dlls/ntdll/unix/sync.c:872-897). A count=0 wait with only an alert fd
-is legal — the NTSYNC_MAX_WAIT_COUNT check only bounds count above — and
-sleeps in-kernel until the alert event signals or the timeout expires.
+An empty Live 12 Set produced about 3,650 wineserver context switches each
+second. `NtDelayExecution` sent each alertable delay through wineserver.
 
-With WINE_APC_FASTPATH explicitly set to "1", "on", "true", or "yes"
-(case-insensitive), NtDelayExecution now performs the alertable sleep as
-an in-kernel NTSYNC_IOC_WAIT_ANY with count=0 and args.alert set to the
-thread's alert fd, via a small alertable_sleep_fastpath() helper that
-reuses linux_wait_objs() (sync.c:399-450). The path is off by default;
-an unset, empty, or unrecognised value leaves Wine's ordinary wait in
-place, and "0", "off", "false", or "no" remain explicit rollback
-values. Reusing linux_wait_objs() keeps the do/ioctl/while(EINTR) retry,
-so system APCs delivered through SIGUSR1 signal frames interrupt the
-wait exactly as they do for alertable handle waits today.
-linux_wait_objs() only learns to return STATUS_USER_APC to the caller
-for count=0 waits instead of draining internally; the count>0 path is
-byte-identical.
+Scope
 
-Semantics preserved, point by point:
+`WINE_APC_FASTPATH=1` selects the NTSync alert-event trial. Wine uses its
+regular wait by default. The trial keeps APC routing in wineserver. It preserves
+timeout results, the timeout yield and the remaining time after a partial
+relative wait.
 
-- Timeout expiry maps to STATUS_SUCCESS and still yields: today the
-  yield happens inside server_wait (server.c:813-816), so the fast path
-  calls NtYieldExecution() itself on ETIMEDOUT. The comment above the
-  fallback ("we never return STATUS_NO_YIELD_PERFORMED") stays true.
-- An alert wake does the same zero-timeout server_wait drain that the
-  alert branch of linux_wait_objs() does for handle waits
-  (sync.c:436-443), and STATUS_USER_APC propagates after dispatch.
-- If that drain finds no user APC (spurious wake — the APC was
-  cancelled between the kernel wake and the drain — the issue-109
-  livelock class), the fast path never loops client-side: it computes
-  the remaining timeout and falls back to a normal blocking server_wait,
-  which is today's exact behavior with less time left.
-- get_inproc_alert_fd() failure, a missing /dev/ntsync
-  (inproc_device_fd < 0), or any ntsync error falls back to today's
-  server_wait path. If an ioctl error arrives after a partial relative
-  wait, the fallback receives only the remaining duration; absolute and
-  infinite deadlines remain unchanged. With ntsync absent,
-  linux_wait_objs() is the STATUS_NOT_IMPLEMENTED stub, so the ordinary
-  path is taken before any wait.
-- The non-alertable path is untouched.
+Wine selects the trial after its NTSync device and alert event are ready. Other
+setup results and kernel wait errors use the regular route.
 
-Verification: rebased onto the current Wine series and linked in ntdll.so
-warning-free. The exact one-patch build passes all 45 alertable-delay/APC
-semantics checks with WINE_APC_FASTPATH=1 and with the variable unset or set
-to off. A host-side ioctl probe observes count=0 NTSYNC_IOC_WAIT_ANY calls
-carrying an alert fd only with the explicit opt-in, and zero such calls with
-the default-unset and explicit-off controls. Injecting EIO for only those
-alert-only waits exercises the ordinary server fallback and retains the same
-45/45 result.
+Verification
+
+The exact patched build passed all 45 checks with `WINE_APC_FASTPATH=1`, the
+default setting and `off`. The observer identified the NTSync request during
+the trial. Both regular settings used wineserver. An injected `EIO` result also
+passed all 45 checks through the regular route.
 ---
- dlls/ntdll/unix/sync.c | 102 ++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 101 insertions(+), 1 deletion(-)
+ dlls/ntdll/unix/sync.c | 96 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 95 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index fbf054e..8047a5f 100644
+index fbf054e..717df1f 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
 @@ -49,6 +49,7 @@
@@ -128,22 +82,16 @@ index fbf054e..8047a5f 100644
              ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &timeout );
              assert( ret == STATUS_USER_APC );
              return ret;
-@@ -2413,6 +2441,74 @@ NTSTATUS WINAPI NtYieldExecution(void)
+@@ -2413,6 +2441,68 @@ NTSTATUS WINAPI NtYieldExecution(void)
  }
  
  
 +/***********************************************************************
 + *           alertable_sleep_fastpath
 + *
-+ * Wait on the calling thread's NTSync alert event with object count 0.
-+ * The calling thread's alert event supplies the wake source.
-+ * NTSync accepts object count 0 when the alert file is present.
-+ * Use linux_wait_objs() to retain EINTR and system APC handling.
-+ * Return FALSE when device setup selects server_wait().
-+ * Return FALSE when alert setup selects server_wait().
-+ * After a kernel call, store the final status and return TRUE.
-+ * All remaining kernel results select the regular server route.
-+ * The count and alert fields keep handle waits on their existing route.
++ * Attempt the alertable delay through the calling thread's NTSync alert event.
++ * Return FALSE when setup selects Wine's regular route.
++ * After a kernel wait, store the final status and return TRUE.
 + */
 +static BOOL alertable_sleep_fastpath( const LARGE_INTEGER *timeout, unsigned int *result )
 +{
@@ -203,7 +151,7 @@ index fbf054e..8047a5f 100644
  /******************************************************************
   *		NtDelayExecution (NTDLL.@)
   */
-@@ -2420,9 +2516,13 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+@@ -2420,9 +2510,13 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
  {
      unsigned int status = STATUS_SUCCESS;
  
@@ -218,5 +166,3 @@ index fbf054e..8047a5f 100644
          /* Since server_wait will result in an unconditional implicit yield,
             we never return STATUS_NO_YIELD_PERFORMED */
          if ((status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout )) == STATUS_TIMEOUT)
--- 
-2.55.0

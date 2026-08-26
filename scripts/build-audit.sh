@@ -29,7 +29,7 @@ check_required_series_tails()
     [ "$wine_tail" = "$REQUIRED_WINE_TAIL" ] ||
         fail "Wine series must end at $REQUIRED_WINE_TAIL (found ${wine_tail:-none})"
     [ "$performance_tail" = "$REQUIRED_PERFORMANCE_TAIL" ] ||
-        fail "performance series must end at $REQUIRED_PERFORMANCE_TAIL (found ${performance_tail:-none})"
+        fail "Set the performance series tail to $REQUIRED_PERFORMANCE_TAIL (current ${performance_tail:-empty})"
     [ "$performance_members" = 'performance/0001-ntdll-alertable-sleep-fast-path.patch' ] ||
         fail "performance series must contain exactly the reviewed bounded 0001 set"
     [ "$pipeasio_tail" = "$REQUIRED_PIPEASIO_TAIL" ] ||
