@@ -10,7 +10,7 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch'
+readonly REQUIRED_WINE_TAIL='0107-win32u-restore-offscreen-client-content-on-expose.patch'
 readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0013-avoid-redundant-output-fallback-publish.patch'
 
 check_required_series_tails()
@@ -386,6 +386,7 @@ FINGERPRINTS='
 0105|ascii|lib/wine/x86_64-unix/winealsa.so|WINE MIDI topology
 0105|ascii|lib/wine/x86_64-windows/winmm.dll|Out of memory refreshing %s mappings
 0106|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
+0107|ascii|lib/wine/x86_64-unix/win32u.so|restoring %s after whole-client expose of %p
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
