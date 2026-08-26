@@ -29,8 +29,8 @@ current preference. `core_type` supplies a separate CPU class.
 
 `Cpus_allowed_list` in `/proc/self/status` supplies the effective CPU set. The
 report records the online set and Wine input files as separate values.
-Machine-readable states mark system-omitted fields and unexpected field
-content.
+`unavailable` means that file reads supplied zero usable values for a field.
+`invalid` marks a value outside its field format.
 
 Wine 11 reads the online CPU layout and `/sys/devices/cpu_core/cpus` for its
 Windows efficiency class. The report also records
@@ -44,9 +44,9 @@ physical cores and 32 simultaneous multithreading threads. Its available and
 online CPU sets both contained `0-31`. Each physical core had two siblings.
 
 Every reported `cpu_capacity` value was 1024. The `topology/core_type`,
-`cpu_core/cpus` and `cpu_atom/cpus` files produced the system-omitted state. The
-results describe a symmetric reported capacity. A complete core-class decision
-also needs a supplied class field.
+`cpu_core/cpus` and `cpu_atom/cpus` fields reported `unavailable`. Their file
+reads supplied zero usable values. The results describe a symmetric reported
+capacity. A complete core-class decision also needs a supplied class field.
 
 ACPI CPPC `highest_perf` and `amd_pstate_prefcore_ranking` ranged from 166 to
 236. Hardware preferred cores used `enabled`. The global `amd_pstate` mode used
@@ -59,12 +59,19 @@ development host.
 
 Tests on hybrid CPUs must show how Wine and PipeASIO number each processor.
 They must also show where each Live thread runs. A future rule must preserve the
-user CPU set, account for audio interrupts and update after CPU state changes.
-It must also give prompt CPU access to every audio dependency.
+user CPU set and update after CPU state changes.
+
+The protected audio threads are PipeWire's data-loop thread and every Live
+audio worker. PipeASIO runs its callback on the PipeWire data-loop thread.
+Record the processor that handles each audio device interrupt.
 
 ## Test gate for automatic CPU placement
 
 Follow the steps before a default placement rule enters release review.
+
+The class fields are `cpu_capacity`, `core_type`, `wine_performance_cpus`,
+`kernel_efficiency_cpus` and the Windows `EfficiencyClass` result. Partial
+evidence means that one or more class fields report `unavailable` or `invalid`.
 
 1. Test 2 Intel hybrid generations, one tiered non-Intel system and one symmetric simultaneous multithreading control.
 2. Map every available Linux processor to the Windows `EfficiencyClass` result.
@@ -74,8 +81,10 @@ Follow the steps before a default placement rule enters release review.
 6. Record audible gaps, PipeWire xruns and Live deadline use. Record process and thread CPU use.
 7. Record context switches, moves between processors, frequency, temperature and package power.
 8. Require dropout and xrun counts at or below the original result. Require deadline results that match or improve it.
-9. Require a repeated CPU or power benefit. Confirm prompt CPU access for every audio dependency.
-10. Test a control setting, original CPU set restoration and automatic original placement for partial evidence.
+9. Require a repeated CPU or power benefit.
+10. Use Linux automatic placement as the control setting.
+11. Confirm that each proposed placement run restores the original CPU set.
+12. Keep Linux automatic placement when the report contains partial evidence.
 
 Use the report for manual experiments. Keep Linux in control of CPU placement
 through the test gate.
