@@ -186,7 +186,7 @@ legacy_ntsync_owned()
         "ABLETON_BIN_HOME=$base/bin" \
         "ABLETON_WINE_ROOT=$base/fake-wine" \
         bash -c ". \"\$1\"; ableton_legacy_owned_path \"\$2\"" \
-        legacy-ntsync "$here/lib/manifest.sh" "$ownership_check"
+        legacy-ntsync "$base/data/ableton-wine/lib/manifest.sh" "$ownership_check"
 }
 cp -- "$here/check-ntsync.sh" "$ownership_check"
 legacy_ntsync_owned || fail "legacy ownership rejects the current NTSync diagnostic"

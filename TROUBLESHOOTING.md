@@ -185,7 +185,8 @@ When `/dev/ntsync` is unavailable, the check exits with status 3 before it runs
 the semantics probe. Install your normal system and kernel updates. Restart the
 computer and run the check again.
 
-Exit status 1 or 2 means that the NTSync proof failed.
+Exit status 1 reports a failed NTSync proof. Exit status 2 reports an invalid
+setting.
 
 If the command is missing, or the result still differs, update this project and
 include the complete output in a
