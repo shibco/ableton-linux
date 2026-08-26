@@ -579,6 +579,7 @@ rollback_log="$transaction/rollback.log"
 rollback_sink="$rollback_log"
 committed_cleanup_step=""
 link_transaction=0
+link_setup_failed=0
 live_unpack=""
 config_post_token=""
 
@@ -916,7 +917,18 @@ case "$command_name" in
         if [ "$desired_link" = off ]; then
             "$here/setup-link.sh" disable
         else
-            "$here/setup-link.sh" enable "--mode=$desired_link"
+            # Link setup asks for a sudo password when a firewall is active.
+            # Preserve the completed Live changes when the prompt expires or
+            # receives Ctrl-C. Report the stopped Link step. Show the command that
+            # resumes it. The stored Link choice makes later updates repeat the
+            # setup.
+            trap 'link_setup_failed=1' INT
+            "$here/setup-link.sh" enable "--mode=$desired_link" || link_setup_failed=1
+            trap 'exit 130' INT
+            if [ "$link_setup_failed" -eq 1 ]; then
+                echo "!! Link setup stopped; the $command_name continues" >&2
+                echo "   Run this command to complete Link setup: installer link enable --mode=$desired_link" >&2
+            fi
         fi ;;
 esac
 
@@ -1091,5 +1103,10 @@ echo "OK: $command_name${subcommand:+ $subcommand} completed"
 if [ "$command_name:$subcommand" = runtime:install ]; then
     printf '  runtime: %s\n' "$ABLETON_WINE_ROOT"
 else
-    printf '  runtime: %s\n  prefix: %s\n  Link: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINK_MODE"
+    printf '  runtime: %s\n  prefix: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX"
+    if [ "$link_setup_failed" -eq 1 ]; then
+        printf '  Link: setup stopped (run: installer link enable --mode=%s)\n' "$ABLETON_LINK_MODE"
+    else
+        printf '  Link: %s\n' "$ABLETON_LINK_MODE"
+    fi
 fi
