@@ -1733,6 +1733,9 @@ chmod +x "$base/fakebin/systemctl"
 printf '[Desktop Entry]\nType=Application\nName=Foreign Live\nExec=/usr/bin/true %%f\n' \
     > "$base/data/applications/ableton-live.desktop"
 cp "$base/data/applications/ableton-live.desktop" "$base/foreign-live.before"
+printf 'personal adjacent backup\n' > "$base/data/applications/ableton-live.desktop.bak"
+chmod 600 "$base/data/applications/ableton-live.desktop.bak"
+cp -a "$base/data/applications/ableton-live.desktop.bak" "$base/foreign-live-backup.before"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
     >"$base/out" 2>"$base/err" \
     || { sed -n '1,40p' "$base/err" >&2; fail "integration install failed with a foreign Live entry"; }
@@ -1742,16 +1745,22 @@ grep -Eq '^application/x-ableton-live-(set|clip|pack)=ableton-live\.desktop$' \
     "$base/config/mimeapps.list" \
     || fail "integration did not assign Live file types to its installed entry"
 prestate_id="$(printf '%s' "$base/data/applications/ableton-live.desktop" | sha256sum | awk '{print $1}')"
+backup_prestate_id="$(printf '%s' "$base/data/applications/ableton-live.desktop.bak" | sha256sum | awk '{print $1}')"
 cmp -s "$base/foreign-live.before" "$base/data/applications/ableton-live.desktop.bak" \
     || fail "integration did not create ableton-live.desktop.bak"
 cmp -s "$base/foreign-live.before" "$base/state/ableton-wine/install-prestate/$prestate_id" \
     || fail "integration did not back up the foreign Live desktop entry"
+cmp -s "$base/foreign-live-backup.before" "$base/state/ableton-wine/install-prestate/$backup_prestate_id" \
+    || fail "integration did not preserve the pre-existing adjacent backup"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
     --keep-prefix --yes >"$base/uninstall.out" 2>"$base/uninstall.err" \
     || { sed -n '1,40p' "$base/uninstall.err" >&2; fail "uninstall failed after replacing a foreign Live entry"; }
 cmp -s "$base/foreign-live.before" "$base/data/applications/ableton-live.desktop" \
     || fail "uninstall did not restore the foreign Live desktop entry"
-ok "integration backs up and replaces a foreign Live launcher"
+cmp -s "$base/foreign-live-backup.before" "$base/data/applications/ableton-live.desktop.bak" \
+    && [ "$(stat -c '%a' "$base/data/applications/ableton-live.desktop.bak")" = 600 ] \
+    || fail "uninstall did not restore the pre-existing adjacent backup"
+ok "integration restores a foreign launcher and its pre-existing adjacent backup"
 
 base="$(new_env identical-foreign-launcher)"
 identical_launcher="$base/home/.local/bin/ableton-live"
@@ -1772,10 +1781,9 @@ run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
     || fail "uninstall failed after replacing a byte-identical launcher"
 [ ! -e "$identical_launcher" ] && [ ! -L "$identical_launcher" ] \
     || fail "uninstall retained the legacy-shaped installed launcher"
-cmp -s "$here/ableton-live" "${identical_launcher}.bak" \
-    && [ "$(stat -c '%a' "${identical_launcher}.bak")" = 700 ] \
-    || fail "uninstall changed the adjacent launcher backup"
-ok "byte-identical pre-existing launchers receive adjacent backups"
+[ ! -e "${identical_launcher}.bak" ] && [ ! -L "${identical_launcher}.bak" ] \
+    || fail "uninstall retained an installer-created adjacent backup"
+ok "byte-identical pre-existing launchers receive managed adjacent backups"
 
 base="$(new_env launcher-directory-collision)"
 directory_launcher="$base/data/applications/ableton-live.desktop"
@@ -1791,6 +1799,22 @@ fi
 grep -qF "launcher path points to a directory: $directory_launcher" "$base/err" \
     || fail "launcher directory refusal did not report the actual cause"
 ok "launcher directory collisions fail with an explicit reason"
+
+base="$(new_env launcher-fifo-collision)"
+fifo_launcher="$base/home/.local/bin/ableton-live"
+mkdir -p "$(dirname "$fifo_launcher")"
+mkfifo "$fifo_launcher"
+if run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err"; then
+    fail "integration replaced a FIFO at a launcher path"
+fi
+[ -p "$fifo_launcher" ] \
+    || fail "launcher FIFO refusal changed the collision"
+[ ! -e "${fifo_launcher}.bak" ] && [ ! -L "${fifo_launcher}.bak" ] \
+    || fail "launcher FIFO refusal created an adjacent backup"
+grep -qF "launcher path is not a regular file or symlink: $fifo_launcher" "$base/err" \
+    || fail "launcher FIFO refusal did not report the actual path"
+ok "launcher special-file collisions fail with an explicit reason"
 
 # Session Link policy writes the unit for later but never runs it, so it must
 # not need a user manager that answers.  Only always-on policy does.

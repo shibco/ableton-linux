@@ -163,6 +163,9 @@ ableton_managed_path_allowed()
     case "$kind" in file|config|symlink) ;; *) return 1 ;; esac
     if ableton_launcher_path_allowed "$path"; then return 0; fi
     case "$path" in
+        *.bak) ableton_launcher_path_allowed "${path%.bak}" && return 0 ;;
+    esac
+    case "$path" in
         "$ABLETON_DATA_HOME/lib/config.sh"|"$ABLETON_DATA_HOME/lib/lifecycle.sh"|\
         "$ABLETON_DATA_HOME/lib/live-options.sh"|"$ABLETON_DATA_HOME/lib/manifest.sh"|\
         "$ABLETON_DATA_HOME/lib/pipeasio.sh"|\
@@ -1034,9 +1037,10 @@ ableton_install_symlink()
     ableton_record_owned "$target" symlink
 }
 
-# Save each displaced launcher object beside its path as <name>.bak. The
-# transaction tracks both paths and restores both objects after a later failure.
-# A first installation records the displaced object for uninstall.
+# Save the most recently displaced launcher object beside its path as
+# <name>.bak. The transaction tracks both paths and restores both objects after
+# a later failure. The backup is managed too, so uninstall removes one created
+# in an empty path or restores the object that previously occupied that path.
 ableton_backup_launcher()
 {
     local target="$1" desired="$2" desired_mode="${3:-}" backup="$1.bak" current
@@ -1047,6 +1051,10 @@ ableton_backup_launcher()
     [ -e "$target" ] || [ -L "$target" ] || return 0
     [ ! -d "$target" ] || [ -L "$target" ] || {
         ableton_config_error "launcher path points to a directory: $target"
+        return 1
+    }
+    [ -f "$target" ] || [ -L "$target" ] || {
+        ableton_config_error "launcher path is not a regular file or symlink: $target"
         return 1
     }
     current="$(ableton_object_token "$target")" || return 1
@@ -1060,9 +1068,15 @@ ableton_backup_launcher()
         ableton_config_error "launcher backup path points to a directory: $backup"
         return 1
     }
+    if [ -e "$backup" ] && [ ! -f "$backup" ] && [ ! -L "$backup" ]; then
+        ableton_config_error "launcher backup path is not a regular file or symlink: $backup"
+        return 1
+    fi
+    ableton_persist_file_prestate "$backup" "" replace-launcher || return 1
     ableton_txn_snapshot "$backup" || return 1
     ableton_txn_expect "$backup" "$current" || return 1
-    ableton_atomic_restore_object "$target" "$backup"
+    ableton_atomic_restore_object "$target" "$backup" || return 1
+    ableton_record_owned "$backup" "${current%%:*}"
 }
 
 ableton_launcher_claim_matches()

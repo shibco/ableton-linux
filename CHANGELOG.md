@@ -3,9 +3,16 @@
 ## Unreleased
 
 - Updates replace launchers when their saved checksums differ. The installer
-  saves each displaced file or symlink beside its launcher as `<name>.bak`.
-  This behaviour covers Live, Max, protocol handlers, and PipeASIO. Runtime-only
-  updates record replaced PipeASIO launchers for restoration during uninstall.
+  saves the most recently replaced file or symlink beside its launcher as
+  `<name>.bak`. This behaviour covers Live, Max, protocol handlers, and
+  PipeASIO.
+- Launcher-name collisions are now replaced instead of preserved, including
+  Wine's `wine-protocol-c74max.desktop`, and the project's associations are made
+  active. Uninstall restores the previous launcher and associations.
+- Adjacent backup paths are managed as part of the installation. Uninstall
+  removes a `.bak` created in an empty path, or restores a `.bak` that existed
+  before installation. Runtime-only updates record replaced PipeASIO launchers
+  and adjacent backup paths for the same uninstall handling.
 
 ## 2026.08.26.1
 
