@@ -92,6 +92,8 @@ printf '%s\n' "$config_help" | grep -q 'ABLETON_MAX_AUDIO_THREADS=auto|off|<numb
     || fail "launcher help omits the automatic audio thread policy"
 printf '%s\n' "$config_help" | grep -q 'physical CPU cores available to the launcher' \
     || fail "launcher help omits the automatic audio thread basis"
+printf '%s\n' "$config_help" | grep -q 'least half the count Live calculates' \
+    || fail "launcher help omits the automatic audio thread reliability floor"
 printf '%s\n' "$config_help" | grep -q 'remove an untouched launcher-managed choice' \
     || fail "launcher help omits the marker-aware audio thread opt-out"
 printf '%s\n' "$config_help" | grep -q 'Review the value after the prefix moves to another processor' \
@@ -275,15 +277,23 @@ callback_prefs="$base/prefix/drive_c/users/test/AppData/Roaming/Ableton/Live 12.
 : > "$base/wine.log"
 physical_cores="$(bash -c '. "$1"; ableton_available_physical_cores' _ "$here/lib/live-options.sh")" \
     || fail "The launcher cannot count the physical CPU cores available to the test."
+available_processors="$("$base/fakebin/nproc")" \
+    || fail "The fake processor probe is unavailable."
+auto_threads="$(bash -c '. "$1"; ableton_reliable_audio_threads "$2" "$3"' \
+    _ "$here/lib/live-options.sh" "$physical_cores" "$available_processors")" \
+    || fail "The launcher cannot calculate the reliable automatic audio thread count."
+live_threads="$(bash -c '. "$1"; ableton_live_calculated_audio_threads "$2"' \
+    _ "$here/lib/live-options.sh" "$available_processors")" \
+    || fail "The launcher cannot calculate Live's default audio thread count."
 run_isolated "$base" env -u ABLETON_MAX_AUDIO_THREADS USER=test ABLETON_POWER=off \
     ABLETON_RT=off ABLETON_THEME_MODE=preserve ABLETON_DPI_MODE=preserve \
     ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
     ABLETON_TOPBAR_MODE=preserve ABLETON_LAUNCH_TIMEOUT=5 \
     ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" \
     'ableton://invalid-ableton-linux-probe' >"$base/auto.out" 2>"$base/auto.err" || true
-if [ "$physical_cores" -lt 31 ]; then
-    grep -qx -- "-MaxAudioThreads=$physical_cores" "$callback_prefs/Options.txt" \
-        || fail "The default launcher policy does not use the available physical core count."
+if [ "$auto_threads" -lt "$live_threads" ]; then
+    grep -qx -- "-MaxAudioThreads=$auto_threads" "$callback_prefs/Options.txt" \
+        || fail "The default launcher policy does not use the reliability-hardened automatic count."
 else
     [ ! -e "$callback_prefs/Options.txt" ] \
         || fail "The default launcher policy adds a limit above Live's calculated count."
@@ -376,6 +386,6 @@ grep -q 'callback does not identify one Live 12 version' "$base/mixed.err" \
 [ ! -e "$callback_prefs/Options.txt" ] \
     && [ ! -e "$base/prefix/drive_c/users/test/AppData/Roaming/Ableton/Live 12.5.0/Preferences/Options.txt" ] \
     || fail "An ambiguous callback writes audio thread settings for an edition the registry may not launch."
-ok "Callback launches use the selected Wine prefix. They preserve the Ableton protocol handlers. The off policy preserves settings without a launcher marker. The default uses available physical cores. A requested count reaches shared-version settings. Mixed-version callbacks leave edition selection and settings unchanged."
+ok "Callback launches use the selected Wine prefix. They preserve the Ableton protocol handlers. The off policy preserves settings without a launcher marker. The default uses the reliability-hardened automatic count. A requested count reaches shared-version settings. Mixed-version callbacks leave edition selection and settings unchanged."
 
 printf 'PASS: %s desktop integration checks\n' "$pass"

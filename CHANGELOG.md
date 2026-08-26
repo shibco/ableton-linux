@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **The automatic Live audio-worker limit keeps more reliability headroom on
+  smaller SMT processors:**
+  - `auto` now keeps at least one worker per available physical core and at
+    least half of Live's calculated pool. It therefore never removes more than
+    half of Live's workers.
+  - The measured 16-worker result on a 16-core, 32-thread host remains 16 of
+    Live's calculated 31. Existing user and launcher choices remain untouched
+    unless `auto` is requested explicitly.
+  - Loaded Sets on real 4-to-8-core systems still need release validation at
+    32, 64 and 128 frames; arithmetic and configuration tests cannot replace
+    that audio test.
+
 ## 2026.08.26.1
 
 - **MIDI controllers and audio interfaces find their way back:**

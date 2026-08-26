@@ -56,6 +56,65 @@ if ableton_available_physical_cores "$topology" 20-21 >/dev/null 2>&1; then
 fi
 ok 'The topology reader counts available physical cores across processor packages.'
 
+smt_topology="$work/topology-smt32"
+no_smt_topology="$work/topology-no-smt32"
+for cpu in {0..31}; do
+    mkdir -p -- "$smt_topology/cpu$cpu/topology" "$no_smt_topology/cpu$cpu/topology"
+    printf '0\n' > "$smt_topology/cpu$cpu/topology/physical_package_id"
+    printf '%s\n' "$((cpu % 16))" > "$smt_topology/cpu$cpu/topology/core_id"
+    printf '%s\n' "$((cpu / 16))" > "$no_smt_topology/cpu$cpu/topology/physical_package_id"
+    printf '%s\n' "$((cpu % 16))" > "$no_smt_topology/cpu$cpu/topology/core_id"
+done
+[ "$(ableton_available_physical_cores "$smt_topology" 0-31)" -eq 16 ] \
+    && [ "$(ableton_available_physical_cores "$smt_topology" 0-3,16-19)" -eq 4 ] \
+    || fail 'The topology reader counts SMT siblings once and honours a sparse affinity subset.'
+[ "$(ableton_available_physical_cores "$no_smt_topology" 0-31)" -eq 32 ] \
+    && [ "$(ableton_available_physical_cores "$no_smt_topology" 0-7,16-23)" -eq 16 ] \
+    || fail 'The topology reader retains every no-SMT core and honours affinity across packages.'
+ok 'The topology reader covers 32 logical CPUs with SMT, no SMT, sparse affinity and two packages.'
+
+for logical in {1..32}; do
+    expected_live=$((2 * logical - 2))
+    [ "$expected_live" -ge 1 ] || expected_live=1
+    [ "$expected_live" -le 31 ] || expected_live=31
+    live_count="$(ableton_live_calculated_audio_threads "$logical")" \
+        || fail "Live's calculated worker count rejects $logical available logical processors."
+    [ "$live_count" -eq "$expected_live" ] \
+        || fail "Live's calculated worker count is $live_count for $logical processors, expected $expected_live."
+
+    no_smt_expected="$logical"
+    [ "$no_smt_expected" -le "$expected_live" ] || no_smt_expected="$expected_live"
+    no_smt_count="$(ableton_reliable_audio_threads "$logical" "$logical")" \
+        || fail "The no-SMT automatic policy rejects $logical processors."
+    [ "$no_smt_count" -eq "$no_smt_expected" ] \
+        || fail "The no-SMT automatic count is $no_smt_count for $logical processors, expected $no_smt_expected."
+
+    smt_physical=$(((logical + 1) / 2))
+    reliability_floor=$(((expected_live + 1) / 2))
+    smt_expected="$smt_physical"
+    [ "$smt_expected" -ge "$reliability_floor" ] || smt_expected="$reliability_floor"
+    [ "$smt_expected" -le "$expected_live" ] || smt_expected="$expected_live"
+    smt_count="$(ableton_reliable_audio_threads "$smt_physical" "$logical")" \
+        || fail "The SMT automatic policy rejects $logical logical and $smt_physical physical processors."
+    [ "$smt_count" -eq "$smt_expected" ] \
+        || fail "The SMT automatic count is $smt_count for $logical/$smt_physical processors, expected $smt_expected."
+    [ "$smt_count" -ge "$smt_physical" ] || [ "$smt_count" -eq "$expected_live" ] \
+        || fail 'The automatic count falls below the usable physical cores.'
+    [ "$((2 * smt_count))" -ge "$expected_live" ] \
+        || fail "The automatic count cuts more than half of Live's calculated workers."
+done
+[ "$(ableton_reliable_audio_threads 16 32)" -eq 16 ] \
+    || fail 'The reliability floor changes the measured 16-of-31 worker result.'
+[ "$(ableton_reliable_audio_threads 4 8)" -eq 7 ] \
+    && [ "$(ableton_reliable_audio_threads 8 16)" -eq 15 ] \
+    || fail 'The reliability floor does not protect smaller SMT systems.'
+for invalid in 0 64 nope; do
+    if ableton_reliable_audio_threads "$invalid" 32 >/dev/null 2>&1; then
+        fail "The automatic policy accepts invalid physical core count $invalid."
+    fi
+done
+ok 'The automatic formula covers every logical count from 1 to 32, preserves 16/31 and never cuts Live by more than half.'
+
 prefix="$work/new"
 prefs="$(make_prefs "$prefix")"
 ableton_seed_max_audio_threads "$prefix" 16 >/dev/null

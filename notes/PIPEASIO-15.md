@@ -82,16 +82,17 @@ engine once per PipeWire graph period. A 48 kHz rate with 64 frames produces
 750 calls each second. Smaller buffers make Live wake and wait for its workers
 more often.
 
-Ableton Linux limits Live 12 to the physical CPU cores available to the
-launcher by default when that value is below Live's calculated worker count.
-The tested value was 16. Wine reported 32 logical CPUs. Live had access to 32
-Linux CPUs. The worker count changed from 31 to 16. The
+Ableton Linux limits Live 12 to at least the physical CPU cores available to
+the launcher and at least half of Live's calculated worker count by default,
+when that value is still lower than Live's count. The tested value was 16. Wine
+reported 32 logical CPUs. Live had access to 32 Linux CPUs. The worker count
+changed from 31 to 16. The
 [CPU troubleshooting guide](../TROUBLESHOOTING.md#live-overloads-after-an-update)
 explains the automatic policy and its overrides.
 
 The limit reduces worker wake-ups. Plug-in-heavy Sets can benefit from more
-parallel workers, so compare the physical-core value with Live's calculated
-count when deadline overloads increase.
+parallel workers, so compare the automatic value with Live's calculated count
+when deadline overloads increase.
 
 Audio continuity depends on available processor time, an attached device, and
 a running PipeWire service. The CPU tests used PipeASIO 1.5 with Live 12.4.3.

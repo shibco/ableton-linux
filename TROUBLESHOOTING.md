@@ -488,10 +488,13 @@ it when you open an issue.
 
 ### Live overloads after an update
 
-Live 12 now uses at most one audio worker per physical CPU core by default.
-This lowers processor use on many computers. A demanding Set with several
-independent instrument and effect chains can perform better with Live's own
-worker count.
+Live 12 now uses a guarded automatic audio-worker limit by default. It keeps at
+least one worker per available physical CPU core and at least half of Live's
+calculated pool, whenever that still lowers Live's count. This preserves the
+measured 16-of-31 result on a 16-core, 32-thread computer without cutting the
+pool as aggressively on smaller SMT processors. A demanding Set with several
+independent instrument and effect chains can still perform better with Live's
+own worker count.
 
 Start with a 256-frame buffer in PipeASIO Settings. If the Set becomes stable,
 lower the buffer only when you need less monitoring latency.
@@ -514,6 +517,14 @@ If `off` performs better, use that command for the demanding Set.
 If `off` gives the same result, return to a normal launch and work through
 [audio crackling and distortion issues](#audio-crackling-and-distortion-issues).
 Existing worker settings and later edits always take priority over the default.
+
+The automatic count intentionally does not follow the saved PipeASIO buffer
+size. Live consumes the worker option at startup, while the active audio quantum
+can change after startup or be negotiated by another graph client. Connecting
+the two would apply stale information or require a settings watcher that
+competes with Live and PipeWire. Before this policy is treated as validated on
+smaller systems, it still needs loaded-Set comparisons on real 4-to-8-core
+hardware at 32, 64 and 128 frames.
 
 ### Live uses high CPU while idle
 

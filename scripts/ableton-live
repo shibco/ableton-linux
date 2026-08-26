@@ -31,9 +31,10 @@ ABLETON-LIVE VARIABLES:
         realtime rights exist
 
     ABLETON_MAX_AUDIO_THREADS=auto|off|<number>
-        Set the audio thread count in Live 12. The default, auto, uses
-        the physical CPU cores available to the launcher when that
-        value lowers the count that Live selects.
+        Set the audio thread count in Live 12. The default, auto, uses at
+        least the physical CPU cores available to the launcher and at
+        least half the count Live calculates, when that lowers Live's
+        count. This preserves more parallelism on smaller SMT systems.
         The launcher saves the number before Live starts.
         Existing Live settings and earlier launcher choices take
         priority over implicit auto.
@@ -306,10 +307,12 @@ case "$max_audio_threads_request" in
         [ "$max_audio_threads_replace_seeded" -eq 0 ] \
             || max_audio_threads_restore_at_default=1
         if declare -F ableton_available_physical_cores >/dev/null 2>&1 \
-           && max_audio_threads="$(ableton_available_physical_cores)"; then
+           && declare -F ableton_reliable_audio_threads >/dev/null 2>&1 \
+           && physical_audio_cores="$(ableton_available_physical_cores)" \
+           && max_audio_threads="$(ableton_reliable_audio_threads "$physical_audio_cores")"; then
             :
         else
-            echo "ableton-live: Physical CPU topology is unavailable; Live will select its audio thread count." >&2
+            echo "ableton-live: Available CPU topology is unavailable; Live will select its audio thread count." >&2
             max_audio_threads=off
             max_audio_threads_action=0
         fi ;;
