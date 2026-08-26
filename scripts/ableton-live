@@ -122,10 +122,10 @@ RUNTIME VARIABLES:
         offer Live's GPU renderer on Intel models its list refuses;
         the device name Live shows discloses the substitution
 
-    WINE_APC_FASTPATH=off
-        disable the default-on NTSync alertable-sleep path for one
-        launch; missing NTSync and kernel errors already fall back
-        to Wine's ordinary wineserver wait
+    WINE_APC_FASTPATH=1
+        opt in to the experimental NTSync alertable-sleep path for one
+        launch; unset is the default-off control, and 0, off, false,
+        or no explicitly roll back to Wine's ordinary wineserver wait
 
     The pointer variables below override the saved pointer setting
     for one launch; the launcher exports none of them, and registry

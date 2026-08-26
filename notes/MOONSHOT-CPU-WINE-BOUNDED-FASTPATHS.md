@@ -6,13 +6,15 @@ This branch carries exactly one reviewed performance patch:
 
 | Patch | Default | Bounded intervention |
 |---|---|---|
-| `performance/0001` | on; `WINE_APC_FASTPATH=off` rolls back | Replaces an alertable, zero-handle `NtDelayExecution` wineserver wait with the calling thread's existing NTSync alert event. |
+| `performance/0001` | off; `WINE_APC_FASTPATH=1` opts in | Replaces an alertable, zero-handle `NtDelayExecution` wineserver wait with the calling thread's existing NTSync alert event. |
 
 The build container and Nix derivation apply, count, stamp, and audit that same
 one-member performance series. A missing NTSync device or alert fd, or an
 NTSync error, returns to Wine's ordinary `server_wait` path. The environment
 gate is read once with `pthread_once`; this fixes the data race in the older
-experiment's unsynchronised first-call cache.
+experiment's unsynchronised first-call cache. Only `1`, `on`, `true`, and `yes`
+(case-insensitive) enable it. Unset, empty, unrecognised, and the explicit
+rollback values `0`, `off`, `false`, and `no` leave the ordinary path active.
 
 Linux v7.1.8's `drivers/misc/ntsync.c:866-900` count bound rejects values above
 `NTSYNC_MAX_WAIT_COUNT` but does not reject zero; when `alert` is present it
@@ -27,7 +29,7 @@ user-APC requests, so 0001 is not an explanation for that trace's idle
 wineserver traffic. Its plausible benefit is limited to playback or plug-in
 workloads that repeatedly enter alertable delays. A matched 30-second Set
 matrix remains the performance gate, and the host-suspend clock test below is a
-release blocker while the patch is default-on.
+release blocker before the path may be enabled by any release launch policy.
 
 ### Relative-timeout clock boundary
 
@@ -61,8 +63,8 @@ Windows than this Wine server path, but it does not prove that changing
 isolated suspend/resume matrix with the gate on and off: finite relative,
 absolute, and infinite delays; APC queued before suspend, during suspend, and
 immediately after resume; elapsed-time and APC-count assertions; and a bounded
-watchdog outside the Wine process. Until that passes, retain
-`WINE_APC_FASTPATH=off` in any release candidate.
+watchdog outside the Wine process. Until that passes, leave
+`WINE_APC_FASTPATH` unset (or explicitly off) in every release candidate.
 
 ## Deferred and rejected experiments
 
@@ -98,11 +100,13 @@ cases cover no-APC zero, relative finite, and absolute finite delays plus an
 infinite alertable delay woken by a user APC. The older FIFO, I/O completion,
 special-APC, access, handle-reuse, and suspend cases remain defense-in-depth
 around the ordinary APC drain; they are not evidence for the rejected APC
-queue experiment. Run the probe against the exact build with the default and
-with `WINE_APC_FASTPATH=off`.
+queue experiment. Run the probe against the exact build with
+`WINE_APC_FASTPATH=1`, with the variable unset, and with
+`WINE_APC_FASTPATH=off`.
 
-`tools/ntsync-alert-wait-probe.c` is a test-only `LD_PRELOAD` observer. Enabled
-runs must emit `MOONSHOT_NTSYNC_ALERT_WAIT`; rollback runs must emit none. With
+`tools/ntsync-alert-wait-probe.c` is a test-only `LD_PRELOAD` observer. Explicit
+opt-in runs must emit `MOONSHOT_NTSYNC_ALERT_WAIT`; default-unset and rollback
+runs must emit none. With
 `MOONSHOT_NTSYNC_ALERT_WAIT_FAULT=1`, it returns `EIO` only for count-zero
 `NTSYNC_IOC_WAIT_ANY` calls carrying an alert fd. The same 45-check `apcprobe`
 result then proves the immediate generic-error fallback without disturbing
@@ -135,9 +139,11 @@ release report must also show:
 - the same runtime, prefix snapshot, Set, quantum, sample rate, and launch
   policy on both sides.
 
-`WINE_APC_FASTPATH=off` is a rollback control, not a tuning knob. Probe success
-proves bounded semantics and, when paired with the ioctl observer, reachability;
-it does not by itself prove a Live CPU reduction. A generic ioctl error after
+`WINE_APC_FASTPATH=1` (or `on`, `true`, or `yes`) is an evaluation opt-in.
+Unset is the default-off control; `0`, `off`, `false`, and `no` are explicit
+rollback controls, not tuning values. Probe success proves bounded semantics
+and, when paired with the ioctl observer, reachability; it does not by itself
+prove a Live CPU reduction. A generic ioctl error after
 part of a finite relative wait uses the same remaining-time calculation as a
 spurious alert, so it cannot silently restart the full delay; the injector
 proves the immediate arm. Forced cancellation of the alert event between kernel
