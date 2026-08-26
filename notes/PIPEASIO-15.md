@@ -23,11 +23,10 @@ the sizes differ. It retries after five seconds and limits requests to three
 per minute. When the foreign request ends, it asks Live to return to the saved
 size.
 
-PipeASIO identifies each application's buffer request through its PipeWire node
-ID. Separate Live or PipeASIO sessions remain separate when they share a name.
-For a PipeASIO audio node, the driver requires its private marker and full audio
-details. PipeASIO reads PipeWire's global buffer request. PipeWire controls that
-global value.
+PipeASIO assigns each application's buffer request to that application.
+PipeASIO treats Live or PipeASIO sessions as separate when they share a name.
+PipeASIO also reads the buffer size that PipeWire applies to all applications.
+PipeWire controls that shared value.
 
 For diagnosis, `PIPEASIO_ALLOW_QUANTUM_MISMATCH=on` lets audio continue during
 a size difference. The playback speed can differ.
