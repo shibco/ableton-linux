@@ -53,7 +53,7 @@ Live's CPU value. Add a listening result when you assess audible crackle.
 
 ## Release checks
 
-The 2 patches apply after PipeASIO patch 0012. Run the unit, ABI, `no-Qt`,
+The 2 patches apply after PipeASIO patch 0012. Run the unit, ABI, minimal driver,
 ASan, UBSan, and TSan tests with the normal runtime build.
 
 Run PipeWire tests at 32, 64, 128, and 256 frames. Compare default and enabled
