@@ -21,7 +21,9 @@ bounded changes, not turn every hidden switch on:
 3. A/B the one-operation PipeASIO output-publication saving and the node-ID
    quantum ownership fix.
 4. Treat ALSA Pro Audio as a device-profile A/B, not a PipeASIO mode.
-5. Evaluate only the three bounded Wine fast paths after their semantic probes.
+5. Keep the kernel-backed Wine alertable-sleep fast path evaluation-only until
+   its suspend/resume clock-domain gate passes. The queue-mask and update-rect
+   ideas remain deferred.
 6. Keep automatic E-core placement, PipeASIO `SCHED_FIFO`, broad APC/hook
    caches, and continuous PipeWire-setting writers off.
 
@@ -36,23 +38,29 @@ current GitHub metadata. `Inference` means the smallest explanation consistent
 with those facts. `Decision` is the proposed policy and is not presented as an
 upstream guarantee.
 
-The external trees are clean, version-pinned local checkouts unless noted:
+The external PipeWire, WirePlumber, Linux, and Wine source trees are clean,
+version-pinned local checkouts. Implementation aliases below pin committed
+branch heads. `REPO` names the common tracked-code baseline, not the current
+HEAD or cleanliness of this consolidation worktree while the note is edited:
 
-- `REPO` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-research-consolidation`, commit `5493354`.
+- `REPO` = common baseline `/home/theo/Projects/Code/ableton-linux`, commit `54933547bef023d937e3b5cb23d438afab7905bc`.
 - `PW` = `/tmp/moonshot-pipewire-source-1.6.8`, official PipeWire tag `1.6.8`, commit `b741e0c74f5436f0c925f7741140db0efd32cf4e`.
 - `WP` = `/tmp/moonshot-wireplumber-source-0.5.15`, official WirePlumber tag `0.5.15`, commit `bc4fa8f5e84806f86530c97cb35283eecc3ec081`.
+- `LINUX` = `/tmp/moonshot-linux-source-7.1.8`, official stable Linux tag
+  `v7.1.8`, commit `25c76bea853d0db65b51fb4697a47cbfd9e35e76`.
 - `WINE` = `/tmp/rebuild-0105/wine-src`, the locally replayed Wine 11.13 package series, commit `5efbab2d2fda0ca498cb992c254d9d50a1910307`.
   Its packaged base and reproducible apply procedure are recorded at
   `REPO/patches/BASE.txt:1-24` and `REPO/scripts/container-build.sh:138-164`.
 - `PASIO` = `/home/theo/Projects/Code/ableton-linux-worktree/pipeasio-cpu/build-analysis/pipeasio-1.5.0`, PipeASIO 1.5.0 plus the audited package series through its local commit `8ed2f924a7019927db9f5771d33af2f7b1a3cc74`; current later package patches remain under `REPO/patches/pipeasio/`.
-- `WINE-CAND` = `/tmp/moonshot-wine-replay.v9QRic/src`, a clean proof replay over `WINE` with candidate commits `3ac8632`, `e9d769e`, and `6f797fd`. It is not the shipped runtime.
 - `WORKERS` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-live-workers`, commit `330dc246649e6c21be1274787e780a8a50eae422`.
-- `TOPOLOGY` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-hybrid-topology`, commit `c4ef087ec5e81e0a9dab0b46f2414c9cd8aa7a4c`.
-- `NTSYNC` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-ntsync-proof`, commit `04f131dc23b31c4a76ffdce3fad86e3931e197c4`.
+- `TOPOLOGY` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-hybrid-topology`, commit `2e64f24a25c59a1a078876875ba9145b7dd04fc0`.
+- `NTSYNC` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-ntsync-proof`, commit `5198efef29b08d0af7829f8a5fad52dae3bcfdac`.
 - `HOTPATH` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-pipeasio-hotpath`, commit `3c3ccf908f144c532cb49450128b453a34ca2a5a`.
-- `TELEMETRY` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-pipeasio-telemetry`, commit `11a68b0ae967dc18ef9767a279f4b1b20a913fd7`.
+- `TELEMETRY` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-pipeasio-telemetry`, commit `9f1b83f48a4e6fac010e5a8e482523a969332d73`.
 - `ARBITRATION` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-pipewire-arbitration`, commit `644b842fb52ff2fb60deea2c86c55cbc98ffc55c`.
-- `BENCH` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-bench-report`, commit `726c9d7a96ca6b64793a20e5445f7f3ff84491dc`.
+- `PRO-AUDIO` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-pipewire-pro-audio`, commit `ae9d708f53452dad34b05dcd24f9d46711c86034`.
+- `BENCH` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-bench-report`, commit `a38ab6ffb68a16fd3c046bf1be7dd54483caabe8`.
+- `WINE-FASTPATH` = `/home/theo/Projects/Code/ableton-linux-worktree/moonshot-cpu-optimiser-wine-bounded-fastpaths`, commit `63833a5a9b3b995be23646fd8d550f2a4af67a08`.
 
 GitHub PR state was queried from `shibco/ableton-linux` on 26 August 2026.
 Those facts are time-sensitive and are linked at the claim.
@@ -81,8 +89,16 @@ Those facts are time-sensitive and are linked at the claim.
 | `PIPEASIO_FOLLOW_DEVICE_CLOCK=on` | It is required for device-driven clocks such as Bluetooth, adds asynchronous scheduling and one period of latency (`PASIO/README.md:498-508`). | Device-specific recovery, not a general CPU optimisation. |
 | Global `clock.force-quantum` loop | Every metadata change recalculates the graph (`PW/src/pipewire/settings.c:131-192`). | Rejected. One owner and event observation are required; section 6 defines the rule. |
 | Debug/telemetry always on | Callback telemetry adds six clocks per measured callback (`TELEMETRY/notes/MOONSHOT-CPU-PIPEASIO-TELEMETRY.md:36-42`). | Off during before/after CPU claims. Enable for one attribution run only. |
-| `WINE_APC_FASTPATH` / `WINE_MSG_FASTPATH` | These switches do not exist in current `REPO`/`WINE`. The three-candidate proof replay defaults them on and accepts `0`/`off` as rollback (`WINE-CAND/dlls/ntdll/unix/sync.c:81-98`; `WINE-CAND/dlls/win32u/message.c:47-62`). | Do not add them to the launcher merely to expose them. If the bounded patches pass section 7, keep their own rollback controls and test each flag separately. |
+| `WINE_APC_FASTPATH` | This switch does not exist in current `REPO`/`WINE`. The isolated evaluation branch keeps the ordinary Wine path by default; only `1`/`on`/`true`/`yes` select the narrow NTSync alertable-sleep path (`WINE-FASTPATH/notes/MOONSHOT-CPU-WINE-BOUNDED-FASTPATHS.md:3-28`). | Leave unset in releases. Use an explicit opt-in for matched evaluation only, until the documented suspend/resume matrix passes. Do not add unrelated Wine caches or launcher tuning flags. |
+| `snd_usb_audio.lowlatency` | Linux 7.1.8 already defaults this module parameter to true (`LINUX/sound/usb/card.c:70-99`), and the current host reports `Y`. The playback path still excludes capture, free-wheeling, and implicit-feedback cases (`LINUX/sound/usb/pcm.c:647-663`). | Record it in the system profile. There is nothing new to switch on, and forcing other USB quirks globally is rejected. |
 | Old same-process APC and hook caches | The APC experiment adds a registry, generation/handle cache, client event, split client/server FIFO, and many fallback transitions (`/home/theo/Projects/Code/ableton-linux-worktree/pr-118-cpu-completion/patches/performance/0002-ntdll-same-process-user-apc-fast-path.patch:7-59`, `:127-140`). The hook experiment documents a self-unhook semantic delta without a server lifetime lease (`.../0003-win32u-cache-thread-hook-chains.patch:65-88`). | Rejected. Do not revive merely because targeted RPC counts fell. |
+
+The current host is an important exception to the recommended PipeASIO
+scheduling baseline: `/home/theo/.config/pipeasio/config.ini:10` contains
+`realtime = 1`. No user configuration was changed here. Treat every retained
+measurement made with that file as FIFO-confounded, and run explicit matched
+`PIPEASIO_REALTIME=off/on` legs (with the effective config hash recorded) before
+claiming a scheduling or CPU result.
 
 `Fact:` turning on every environment feature would combine contradictory
 scheduler and graph policies. `Decision:` each switch gets its own branch and
@@ -150,6 +166,21 @@ actions may be saved. Instead:
 Pro Audio becomes a recommended device-specific profile only when it gives a
 repeatable loaded-Set benefit with no continuity or route regression. It is not
 a project-wide default.
+
+The isolated `moonshot-cpu-optimiser-pipewire-pro-audio` branch implements this
+as a matched A/B harness, not configuration. It accepts one numeric PipeWire
+device ID, runs the identical command under the original and transient
+`pro-audio` profiles, uses `save:false`, refuses active Live/prefix processes,
+and refuses running target nodes or active target links before experimental Pro
+Audio selection and before the B command. It keeps per-leg artifacts and
+restores plus compares identity, routes, defaults, node fingerprints, settings,
+and WirePlumber state on success, failure, and caught signals. Restoration
+deliberately proceeds even when late guarded activity or an uncooperative child
+appears, then fails the pair; raw associated-link graphs are retained but link
+equality is not claimed (`PRO-AUDIO/notes/PIPEWIRE-PRO-AUDIO-AB.md:24-95`).
+Read-only discovery against the current internal ALSA device succeeded; the
+actual target USB interface was not connected, so no profile mutation or Live
+performance run was performed.
 
 ## 3. Live worker policy for low buffers
 
@@ -253,13 +284,40 @@ and the outstanding real-hardware gate are documented at
 |---|---|---|
 | Physical-core Live option, PR [#236](https://github.com/shibco/ableton-linux/pull/236) plus replacement fix [#249](https://github.com/shibco/ableton-linux/pull/249) | Merged to `main` on 22 August; default auto is present in `REPO`. | Strong one-host coordination evidence; replace with the guarded formula only after section 3's low-core gate. |
 | Hardened worker formula, `330dc24` | Separate `moonshot-cpu-optimiser-live-workers` branch. | Hermetic topology/formula/ownership coverage; real loaded low-core gate remains. |
-| NTSync proof, `04f131d` | Separate diagnostics branch. | Distinguishes compiled support, host device presence, and a live wineserver fd. `NTSYNC/notes/MOONSHOT-CPU-NTSYNC-PROOF.md:5-22`. |
-| Hybrid topology proof, `c4ef087` | Separate instrumentation branch. | Read-only allowed CPU/core/package/SMT/capacity/type/frequency evidence; no affinity policy. |
+| NTSync proof, `5198efe` | Separate diagnostics branch. | Distinguishes compiled support, host device presence, and a live wineserver fd. `NTSYNC/notes/MOONSHOT-CPU-NTSYNC-PROOF.md:5-22`. |
+| Hybrid topology proof, `2e64f24` | Separate instrumentation branch. | Read-only allowed CPU/core/package/SMT/capacity/type/frequency/CPPC/preferred-rank evidence; no affinity policy. |
 | PipeASIO output publication, `3c3ccf9` | Separate candidate patch 0013. | Removes one redundant acquire-release attempt per delivered output/cycle while preserving fallback; needs real A/B. |
-| PipeASIO phase telemetry, `11a68b0` | Separate off-by-default diagnostic. | Attributes wall vs callback CPU without blocking the callback; not itself a CPU result. |
+| PipeASIO phase telemetry, `9f1b83f` | Separate off-by-default diagnostic. | Attributes wall vs callback CPU without blocking the callback; not itself a CPU result. |
 | Quantum node ownership, `644b842` | Separate candidate patch 0013. | Uses bound node ID and complete signature to distinguish own/foreign forcers; reliability fix, not yet a measured CPU saving. |
-| Five-Set reporter, `726c9d7` | Separate completed benchmark branch. | Canonical five Sets, one 30-second duration across every collector, immutable hashes, crackle evidence, full host/runtime/prefix profile. |
-| Bounded Wine fast paths | Three clean proof commits in `WINE-CAND`; packaging branch still requires the gates in section 7. | Reduced specific wineserver request classes in an older trace; total Live CPU benefit remains unproved. |
+| Five-Set reporter, `a38ab6f` | Separate completed benchmark branch. | Canonical five Sets, one 30-second deadline, immutable Set/VST hashes, crackle evidence, full host/runtime/prefix profile, endpoint audio/IRQ/power/policy evidence, strict collector coverage, and a confound-aware pair comparator. |
+| PipeWire Pro Audio A/B, `ae9d708` | Separate exact-device experiment branch. | Transient matched profile legs, exact-device activity guards, and fail-loud restoration evidence; no target-interface result yet. |
+| Bounded Wine fast path, `63833a5` | One default-off, explicit-opt-in NTSync alertable-sleep candidate plus focused probes; queue-mask and update-rect caches were removed after adversarial review. | Awake-state kernel/APC/fallback behavior passed, but host-suspend clock parity and loaded Live CPU benefit remain unproved; the ordinary Wine path remains the default. |
+
+The final Wine head replayed all 94 package patches plus the candidate and
+compiled/linked the exact dual-architecture NTDLL probe runtime. Every principal
+APC leg passed 45/45: unset and explicit off produced zero observed alert-only
+NTSync waits; explicit opt-in reached the ioctl; and injected `EIO` retained
+45/45 through the ordinary Wine fallback. The `on`/`true`/`yes` aliases reached
+the path, while empty, unrecognised, `0`/`false`/`no` remained observer-silent.
+Series hashes, release policy, and 30 Nix packaging checks also passed. A broad
+host-only Wine build stopped at unrelated missing OpenCL headers, so this is an
+exact changed-target and probe-runtime validation, not a claim that the entire
+Wine tree built in that host environment.
+
+The hot-path, telemetry, and arbitration worktrees intentionally each start
+their independent PipeASIO candidate at patch number 0013. They are reviewable
+experiments, not a directly stackable series: any integration branch must
+rebase/renumber them, regenerate the series hash, and rerun the combined
+PipeASIO unit, ABI, no-Qt, sanitizer, and live-graph gates.
+
+The integration overlap is broader than patch numbering. Workers and topology
+both edit `scripts/lib/live-options.sh`; workers, NTSync, and Wine edit
+`scripts/ableton-live`; topology and NTSync edit `scripts/audio-report.sh`;
+several branches edit `Makefile`; and the PipeASIO/Wine package branches share
+`scripts/build-audit.sh` and `patches/SERIES.sha256`. These heads are isolated
+review units, not a cherry-pick order. A future integration branch must resolve
+the semantics, regenerate manifests, and rerun every affected gate rather than
+choosing conflict sides mechanically.
 
 PR [#118](https://github.com/shibco/ableton-linux/pull/118) is still `OPEN`; it
 was created on 2 August, last updated at `2026-08-08T22:09:10Z`, targets `main`,
@@ -294,7 +352,15 @@ The development host is a Ryzen AI MAX+ 395 with 16 physical cores, 32 SMT
 threads, allowed/online `0-31`, `cpu_capacity=1024` everywhere, and no exported
 `topology/core_type`, `/sys/devices/cpu_core/cpus`, or
 `/sys/devices/cpu_atom/cpus`. These observations and their read-only boundary
-are at `TOPOLOGY/notes/ABLETON-WINE-HYBRID-CPU-TOPOLOGY.md:8-44`.
+are at `TOPOLOGY/notes/ABLETON-WINE-HYBRID-CPU-TOPOLOGY.md:8-48`.
+
+The host does expose CPPC/`amd_pstate` preferred-core evidence: rankings span
+166 through 236, hardware prefcore is enabled, and the driver is active with
+`prefcore=enabled` (`TOPOLOGY/notes/ABLETON-WINE-HYBRID-CPU-TOPOLOGY.md:44-57`).
+That is not a capacity or P/E class. Linux documents the ranking as mutable at
+runtime (`LINUX/Documentation/admin-guide/pm/amd-pstate.rst:269-280`) and feeds
+it into scheduler ITMT priority, updating scheduler preference when firmware
+changes it (`LINUX/drivers/cpufreq/amd-pstate.c:904-945`).
 
 `Fact:` patched Wine 11.13 reads `/sys/devices/cpu_core/cpus` into its
 performance-core bitmap (`WINE/dlls/ntdll/unix/system.c:1103-1138`), combines it
@@ -303,10 +369,11 @@ with online CPU and SMT-sibling topology (`:1160-1229`), publishes a processor
 `SystemCpuSetInformation` (`:1785-1814`). On this homogeneous host those inputs
 do not identify a slow class.
 
-`Decision:` do not enable automatic E-core pinning here. Frequency is a mutable
-snapshot, not a class. Guessing from CPU number or maximum MHz could violate an
-external cpuset, collide with IRQ placement, starve a synchronous wineserver or
-plugin dependency, and become wrong after suspend/hotplug.
+`Decision:` do not enable automatic E-core pinning here. Frequency and
+preferred-core rank are mutable scheduler inputs, not classes. Guessing from
+CPU number or maximum MHz could violate an external cpuset, override Linux's
+dynamic preference, collide with IRQ placement, starve a synchronous
+wineserver or plugin dependency, and become wrong after suspend/hotplug.
 
 ### Safe future design
 
@@ -331,7 +398,7 @@ Any future policy must be instrumentation-first and fail open:
 
 The complete cross-hardware gate, including five 30-second windows and
 CPU/power/reliability metrics, is
-`TOPOLOGY/notes/ABLETON-WINE-HYBRID-CPU-TOPOLOGY.md:46-72`.
+`TOPOLOGY/notes/ABLETON-WINE-HYBRID-CPU-TOPOLOGY.md:68-94`.
 
 Wine's AVRT entry points currently return dummy success and do not create Linux
 MMCSS-like scheduling: `AvSetMmThreadCharacteristicsW` returns a fixed handle,
@@ -379,7 +446,7 @@ It observes global metadata but never adds a competing global writer
    timestamp arbitration. PipeASIO changes only its own bound node property.
 3. Do not add a launcher, report tool, WirePlumber rule, or timer that repeatedly
    “corrects” the quantum. The benchmark suite is read-only with respect to
-   profiles and metadata (`BENCH/bench/README.md:27-32`).
+   profiles and metadata (`BENCH/bench/README.md:37-42`).
 4. Monitor the entire measurement window. Any quantum/rate/profile transition
    is a confounder, even if the final value matches the start.
 5. Preserve user configuration. PipeASIO's `config.ini` is seeded only if
@@ -403,10 +470,8 @@ instances at 128/256 and a foreign JACK force are mandatory adversarial cases.
 | P0 | Reproducible report and NTSync/topology proof | Without exact runtime, prefix, quantum and wait-driver identity, before/after attribution is unsafe. | Implemented as diagnostics branches; merge before claiming wins. |
 | P1 | Skip redundant PipeASIO output fallback publication | A delivered callback already exchanges/queues each output; old backend cleanup repeated an empty acquire-release exchange. `HOTPATH/notes/FINDINGS-PIPEASIO-CPU-2026-08-20.md:128-147`. | Patch and deterministic delivered/undelivered tests exist. Measure whole workload; saving is one bounded operation per output/cycle. |
 | P1 | Bound-node quantum ownership | Prevents a same-name instance being mistaken for self and avoids false adopt/restore competition. | Patch/tests exist. Treat primarily as reliability; require two-instance live graph. |
-| P1 | Wine redundant queue-mask fast path | Current Wine already reads shared masks but still sends `set_queue_mask` when the state is not considered fresh (`WINE/dlls/win32u/message.c:3338-3385`). Candidate memo keeps the 3-second hung-queue heartbeat and verifies shared state (`WINE-CAND/dlls/win32u/message.c:2960-3024`, `:3429-3488`). | Candidate `e9d769e`; run Win32 message probes, Wine tests, and loaded CPU/request A/B. |
-| P1 | Wine known-clean `GetUpdateRect` | Current path builds/queries regions and rechecks flags (`WINE/dlls/win32u/dce.c:1927-1957`). Candidate uses same-thread shared `QS_PAINT` only for the known-empty result and falls back otherwise (`WINE-CAND/dlls/win32u/dce.c:1927-1986`). | Candidate `6f797fd`; require clean/pending/erase/internal-paint/cross-thread/stale-window probe and Wine tests. |
 | P1 | ALSA Pro Audio profile | Direct PCM mappings, different priorities/grouping/IRQ behavior; no alternate PipeASIO algorithm. | Configuration A/B only; section 2 gate. |
-| P2 | Wine alertable zero-handle NTSync wait | Current alertable `NtDelayExecution` always asks wineserver (`WINE/dlls/ntdll/unix/sync.c:2416-2431`), although NTSync handle waits already use the per-thread alert fd (`:899-924`). Candidate uses a zero-object NTSync wait and exact server fallback (`WINE-CAND/dlls/ntdll/unix/sync.c:2436-2512`). | Candidate `3ac8632`; older idle trace saw no APC traffic, so playback benefit is unproved. Require NTSync semantics/APC probe and fallback leg. |
+| P1 | Wine alertable zero-handle NTSync wait | Current alertable `NtDelayExecution` always asks wineserver (`WINE/dlls/ntdll/unix/sync.c:2416-2431`), although NTSync handle waits already use the per-thread alert fd (`:899-924`). Linux permits count zero when the alert event is the extra object (`LINUX/drivers/misc/ntsync.c:861-900`) and schedules the supplied absolute deadline on an interruptible hrtimer (`:828-855`). | Retained only for evaluation. Awake-state APC unset/opt-in/off/fault probes pass, but NTSync relative waits use `CLOCK_MONOTONIC` while this Wine server path derives them from `CLOCK_BOOTTIME`; require suspend/resume proof and a loaded suite. Older idle traces saw no APC traffic, so playback benefit is unproved. |
 | P2 | Selective AVRT/MMCSS mapping | Wine AVRT is stubbed, while launcher RR is process-wide. | Prototype after tracing Live task names and callbacks. Not part of the bounded fast-path set. |
 
 PipeASIO itself has no identified steady-state busy poll. Its process callback
@@ -430,6 +495,11 @@ more likely callback-rate-amplified Live/Wine worker coordination.
   heterogeneous class, and the 26 August host snapshot at
   `/proc/sys/kernel/sched_rt_runtime_us` is `950000`. First use
   schedstat/perf/ftrace attribution.
+- No Linux patch survived this review. NTSync already supports the zero-object
+  alert wait used by the Wine candidate; `amd_pstate` already updates scheduler
+  preferred-core priority; and `snd_usb_audio.lowlatency` already defaults on
+  and is `Y` on this host. These become recorded preconditions, not duplicate
+  policy writers.
 - Do not increase PipeWire ALSA IRQ frequency globally. WirePlumber explicitly
   documents the batch-device CPU/reliability trade; tune only the identified
   hardware under a profile A/B.
@@ -438,8 +508,24 @@ more likely callback-rate-amplified Live/Wine worker coordination.
   exists for that reason (`PASIO/src/audio.c:974-998`).
 - Do not make callback telemetry permanent. It is an attribution probe whose
   own cost must be measured with telemetry off/on.
-- Do not treat the three Wine candidates as a single indivisible “CPU patch.”
-  Each needs its own branch, rollback flag, semantic probe, and benchmark pair.
+- Do not ship the queue-mask cache from this pass. Its bounded same-thread probe
+  did not attribute a regression, but it changes a reentrant message path and
+  still lacks nested `SendMessage`, timeout, hung-heartbeat, and lost-wakeup
+  proof. That is insufficient evidence, not proof of a Wine bug.
+- Do not ship the known-clean `GetUpdateRect` cache from this pass. The initial
+  failure attribution was false because the probe used an invisible/validated
+  window, and later on/off failures were nondeterministic. It needs a valid
+  visible-window clean/pending/erase/internal-paint/cross-thread matrix first.
+- Do not treat speculative Wine request reductions as a stack. The retained
+  alertable-sleep path has one rollback flag and one semantic/benchmark pair;
+  the two Win32 caches were removed from the packaging branch.
+- Do not make the retained Wine path default-on. NTSync has monotonic and
+  realtime deadline modes but no boottime mode, so there is no small exact
+  conversion for the current Wine server's relative-wait behavior. Realtime
+  would add wall-clock adjustment races; falling back for every finite relative
+  wait removes the principal optimization. The evaluation note therefore makes
+  host suspend/resume a release blocker and requires the gate off meanwhile
+  (`WINE-FASTPATH/notes/MOONSHOT-CPU-WINE-BOUNDED-FASTPATHS.md:24-65`).
 
 ## Prioritized decision table
 
@@ -451,7 +537,7 @@ more likely callback-rate-amplified Live/Wine worker coordination.
 | 4 | `moonshot-cpu-optimiser-pipeasio-hotpath` | Skip only the already-delivered fallback attempt. | Bounded per-output/cycle saving. | Lost silence fallback or double ownership. | Unit/ABI/sanitizers plus real 32/64/128 A/B. |
 | 5 | `moonshot-cpu-optimiser-pipewire-arbitration` | Make bound node ID authoritative; no metadata writer. | Prevents reset churn and cross-instance fights. | Pre-bind classification race. | Two-instance/foreign-force/hotplug/restart tests. |
 | 6 | `moonshot-cpu-optimiser-pipewire-pro-audio` | A/B tool and report only; no persistent rule. | Possible device-specific graph/IRQ improvement. | Routes, channels, profile persistence, more IRQ CPU. | Restore proof and five paired runs per quantum. |
-| 7 | `moonshot-cpu-optimiser-wine-bounded-fastpaths` | Exactly alertable sleep, queue mask, known-clean update rect. | Removes bounded wineserver traffic. | Win32/APC/message semantic races. | PE probes, Wine tests, request trace, loaded suite; each flag separately. |
+| 7 | `moonshot-cpu-optimiser-wine-bounded-fastpaths` | Exactly one default-off, explicit-opt-in NTSync alertable-sleep path. | Removes one bounded wineserver wait class when Live uses it. | APC cancellation, timeout, suspend clock-domain, and fallback semantics. | PE/kernel probe, APC unset/opt-in/off/fault legs, exact replay, host suspend/resume matrix, and loaded suite; never change the default until all pass. |
 | 8 | future hybrid/AVRT branch | Instrument task/class mapping before policy. | Selective priority or background E-core use. | Priority inversion and hidden synchronous dependency. | Multi-generation heterogeneous hardware gate. |
 
 ## Adversarial failure modes
@@ -478,19 +564,48 @@ The completed suite runs `Benchmark_Zero`, `Empty`, `Inbuilts`, `Max4Live`, and
 (`BENCH/bench/README.md:10-21`). It profiles hardware, CPU topology, audio/GPU,
 PipeWire/WirePlumber, Wine runtime, prefix, Live version, PipeASIO/launcher
 config, worker count, per-process/thread CPU and scheduling, quantum events,
-ERR/xrun/log evidence, and manual crackle (`:34-61`). Its crackle labels avoid
-claiming that clean counters prove inaudibility (`:63-95`).
+ERR/xrun/log evidence, and manual crackle (`:37-89`). Its crackle labels avoid
+claiming that clean counters prove inaudibility (`:91-113`).
 
 The canonical CPU unit is percentage of one logical core:
 `100 * delta(utime_ticks + stime_ticks) / CLK_TCK / elapsed_seconds`. The
 collector keys processes and threads by PID plus start time, retains scheduling
 policy/RT priority/cpuset/context-switch/schedstat deltas, and separately derives
-host utilization (`BENCH/scripts/bench-report.py:292-344`, `:466-536`). The
+host utilization (`BENCH/scripts/bench-report.py:928-1070`). The
 primary comparison is the sum for the supervised Wine session, with Live,
 PipeWire/WirePlumber, host CPU, and individual threads reported separately so a
-change cannot claim CPU that it merely moved (`:739-766`). Live's OSC deadline
+change cannot claim CPU that it merely moved (`:1360-1400`). Live's OSC deadline
 average/peak and continuity evidence remain separate axes, not substitutes for
 Linux CPU.
+
+The hardened collector also brackets each Set with `/proc/interrupts` and
+`/proc/softirqs`, CPU policy governor/min/max/EPP, and the active power profile
+plus holds. It also brackets default sink/source profile and hardware
+properties, linked PipeWire ports, and graph rate/quantum. The immutable profile
+records CPPC/`amd_pstate` fields, the allowlisted Wine/PipeASIO/launcher gates,
+`snd_usb_audio` parameters, and hashes/versions for the Dexed and K1v fixtures.
+Missing or reset counters, incomplete periodic-collector coverage, unavailable
+power holds, policy/power/audio changes within a window, and endpoint task or
+PipeWire-node churn are explicit confounders rather than zeros.
+Profile and link topology are endpoint observations: a change that restores
+between endpoints can escape them. Settings metadata is monitored continuously,
+and this remaining limitation is retained in every report rather than described
+as full profile/link history (`BENCH/bench/README.md:66-77`).
+
+The benchmark branch does not yet embed the NTSync branch's live-wineserver-fd
+proof. Runtime build strings and host device presence are insufficient; attach
+the separate `NTSYNC/scripts/audio-report.sh` evidence for the exact running
+prefix, or treat the run as missing a required prerequisite. The reporting code
+passed hermetic tests and a real installed-prefix five-Set dry-run, but no
+supervised five-Set Live measurement was run in this session.
+
+Its `compare` command consumes two complete canonical run directories and emits
+full JSON plus compact Markdown. It requires the same canonical Set structure
+and duration, checks runtime/prefix/Live/hardware/audio/profile/config/rate/
+quantum/environment identity, and reports per-Set host, whole-prefix, Live,
+PipeWire, context-switch, schedstat, ERR, OSC, worker, IRQ/softirq, collector
+coverage, transition, churn, and crackle deltas. It is descriptive only: one
+pair does not establish variance, significance, causality, or inaudibility.
 
 For each candidate:
 
@@ -510,8 +625,9 @@ For each candidate:
    PipeASIO missed-cycle episode, Live overload frequency/duration, route loss,
    startup failure, or recovery regression. A CPU reduction cannot compensate.
 6. Run each candidate's focused semantic tests and explicit rollback leg. For
-   Wine, use APC/update probes; for PipeASIO, unit/ABI/no-Qt/sanitizer and live
-   graph tests; for topology, sparse/missing/hybrid fixtures.
+   Wine, use the APC probe, NTSync ioctl observer/fault leg, and host
+   suspend/resume matrix; for PipeASIO, unit/ABI/no-Qt/sanitizer and live graph
+   tests; for topology, sparse/missing/hybrid fixtures.
 
 ## Open questions
 
@@ -529,9 +645,11 @@ For each candidate:
 6. On Intel hybrid systems, do sysfs core lists, allowed cpusets, Wine
    `EfficiencyClass`, and Win32 CPU-set APIs agree after boot, suspend, and
    hotplug?
-7. Do the bounded Wine queue-mask and update-rect changes reduce whole-prefix
-   CPU in loaded Sets, not just targeted request counts? Does the alertable-sleep
-   path see meaningful playback traffic?
+7. Does the retained Wine alertable-sleep path see meaningful playback traffic
+   and reduce whole-prefix CPU in loaded Sets, and does its on/off suspend matrix
+   preserve the intended relative/absolute/infinite timeout and APC behavior?
+   The queue-mask and update-rect ideas must first earn the missing Win32
+   semantic proof before another CPU A/B.
 8. Is the redundant output-publication exchange measurable above noise with
    two outputs, and how does it scale with deliberately higher channel counts?
 9. Does current Live actually use NTSync in every benchmarked runtime/prefix,
