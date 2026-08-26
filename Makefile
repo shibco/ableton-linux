@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup refresh uninstall test test-glyph-path test-d2d-resize vendor-cache verify check pointer-safety-check clean distclean
+.PHONY: all build install setup refresh uninstall test test-bench test-glyph-path test-d2d-resize vendor-cache verify check pointer-safety-check clean distclean
 
 all: build
 
@@ -27,6 +27,12 @@ test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-nix-packaging.sh
 	./scripts/test-installer-lifecycle.sh
 	./scripts/test-pipeasio-installer.sh
+	./scripts/test-bench-report.py
+	./scripts/test-bench-suite.sh
+
+test-bench:                    ## run deterministic benchmark parser/preflight tests
+	./scripts/test-bench-report.py
+	./scripts/test-bench-suite.sh
 
 test-glyph-path:              ## assert a built runtime's dwrite glyph path (RUNTIME=<root>)
 	./scripts/test-dwrite-glyph-path.sh $(RUNTIME)

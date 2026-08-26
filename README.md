@@ -406,6 +406,7 @@ Start with:
 
 - [Build from source](BUILDING.md)
 - [Implementation notes](notes/)
+- [CPU/audio benchmark protocol](bench/README.md)
 
 Contributors must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
