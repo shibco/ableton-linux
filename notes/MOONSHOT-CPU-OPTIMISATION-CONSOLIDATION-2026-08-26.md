@@ -6,7 +6,7 @@ Date: 26 August 2026
 
 The strongest measured saving comes from the Live worker count. On one
 16-core, 32-thread computer, 16 workers reduced Live CPU use by 36.77% at 64
-frames. Voluntary context switches fell by 42.42%.
+frames. Voluntary thread switches fell by 42.42%.
 
 A later loaded test also favoured fewer workers at 32 and 64 frames. The result
 at 128 frames was mixed. Real 4-core, 6-core, and 8-core tests remain the release
@@ -143,13 +143,14 @@ Several launch settings already affect CPU use. Test each setting separately.
 | WINE_APC_FASTPATH=1 | selects the experimental kernel wait path | release runs use the ordinary Wine path |
 | snd_usb_audio.lowlatency | selects the Linux USB low-latency path | the current kernel reports the path as active |
 
-PipeASIO real-time scheduling raised xrun counts in an upstream 64-frame test.
+PipeASIO real-time scheduling raised missed audio deadline counts in an upstream
+64-frame test.
 The upstream result was about 39 times the ordinary count. Use the setting as a
 separate experiment on the review computer.
 
 ## PipeWire Pro Audio
 
-Pro Audio is an ALSA device profile. It can change routes, channels, active
+Pro Audio is a Linux audio device profile. It can change routes, channels, active
 devices, and hardware interrupt timing. It uses the same words as a Windows
 audio task class, while the 2 features serve separate purposes.
 
@@ -160,7 +161,7 @@ The profile tool follows the sequence below:
 
 1. Record the current device state.
 2. Run the benchmark with the current profile.
-3. Select Pro Audio for the same device with save:false.
+3. Select Pro Audio temporarily for the same device.
 4. Run the same benchmark again.
 5. Restore the original profile.
 6. Compare routes, channels, settings, and device identity.
@@ -168,7 +169,7 @@ The profile tool follows the sequence below:
 Run 5 matched pairs at 32, 64, and 128 frames. Apply the result to the tested
 device and configuration.
 
-The session completed device discovery for internal ALSA device 69. A connected
+The session completed device discovery for internal audio device 69. A connected
 target USB interface remains part of the full profile test.
 
 See notes/PIPEWIRE-PRO-AUDIO-AB.md in the Pro Audio branch for commands.
@@ -266,7 +267,7 @@ The final branch passed the following checks:
 
 - all 94 package patches plus the experiment applied in order
 - the changed Wine targets compiled and linked
-- each main APC test run passed 45 of 45 checks
+- each main Wine alert test run passed 45 of 45 checks
 - the observer stayed silent on the ordinary path
 - the experiment reached the NTSync wait
 - an injected NTSync error returned to the ordinary path and passed 45 checks
@@ -275,9 +276,9 @@ The final branch passed the following checks:
 The broad host build reached an OpenCL header requirement. The changed targets
 and the probe runtime completed their build.
 
-The experiment uses a monotonic clock. The current Wine server uses a clock that
-also counts time spent in system suspend. Run the full suspend and resume matrix
-before any release policy selects the experiment.
+The experiment clock pauses during system suspend. The current Wine server clock
+counts suspend time. Run the full suspend and resume matrix before any release
+policy selects the experiment.
 
 ## Branch integration
 
@@ -310,12 +311,12 @@ The report records:
 
 - processor, memory, kernel, and audio hardware
 - PipeWire and WirePlumber versions and settings
-- Wine runtime and Wine prefix identity
+- Wine runtime and Wine prefix, which stores Windows files and settings
 - Live version, worker count, and plug-in identity
 - total host, process, and thread CPU
-- context switches and processor movement
+- thread switches and processor movement
 - hardware interrupts and software interrupts
-- PipeWire buffer changes, errors, and xruns
+- PipeWire buffer changes, errors, and missed audio deadlines
 - Live deadline measurements from the benchmark controller
 - listener crackle reports
 - power profile and processor frequency policy
@@ -343,7 +344,7 @@ Use a pair when all the following conditions apply:
 - the PipeWire sample rate and buffer size stay constant
 - the running Wine server shows an active NTSync file descriptor
 - the listener reports continuous audio
-- PipeWire errors, xruns, and Live overloads stay at the comparison baseline
+- PipeWire errors, missed audio deadlines, and Live overloads stay at the comparison baseline
 - loaded Sets show a repeated CPU saving beyond normal run variation
 
 The session passed the report tests, asset checks, and plug-in check. It also
@@ -362,7 +363,7 @@ See bench/README.md in the benchmark branch for commands and report fields.
 | Pro Audio tool | 20 policy and recovery tests passed |
 | NTSync proof | 5 tests passed |
 | core layout report | 6 tests passed |
-| PipeASIO branches | patch order, focused tests, build forms, and sanitiser checks passed |
+| PipeASIO branches | patch order, focused tests, build forms, and memory and thread safety checks passed |
 | Wine experiment | exact replay, 45-case runs, release policy, and 30 package checks passed |
 
 ## Remaining tests
