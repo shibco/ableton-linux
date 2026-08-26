@@ -1,0 +1,324 @@
+From 9227f00c4137b74adfc3d98fa14b0a38bef7c528 Mon Sep 17 00:00:00 2001
+From: Codex Audit <audit@example.invalid>
+Date: Mon, 24 Aug 2026 02:00:00 +0200
+Subject: [PATCH 2/2] asio: keep telemetry reporting nonblocking
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Callback samples use a bounded ring, while periodic reports previously inherited blocking stderr behaviour.
+
+Open a separate nonblocking report descriptor for pipes and terminals. Share stderr’s file offset for regular files so ordinary logs preserve report order. Drop pipe reports on backpressure.
+
+Count fail-silent buffer-mismatch cycles as muted work in each telemetry interval. Also correct the documented buffer size and real-time environment option.
+
+Verification: the normal 64-bit driver build and all 11 non-integration tests pass. The standalone telemetry test passes 8,217 checks.
+---
+ README.md                    | 24 ++++++---
+ include/pipeasio_telemetry.h |  2 +
+ src/asio.c                   | 98 ++++++++++++++++++++++++++++--------
+ tests/unit/test_telemetry.c  | 41 +++++++++++++++
+ 4 files changed, 136 insertions(+), 29 deletions(-)
+
+diff --git a/README.md b/README.md
+index 1373bf3..baf97ee 100644
+--- a/README.md
++++ b/README.md
+@@ -508,10 +508,11 @@ one more buffer period but keeps a device-driven quantum from stalling the graph
+ Env: `PIPEASIO_FOLLOW_DEVICE_CLOCK` (`on`/`off`).
+ 
+ ### buffer_size
+-The preferred size returned by `GetBufferSize()`. Must be a power of two within
+-[32, 8192]. Out-of-range values fall back to 1024. The floor is 32 rather than 16
+-because hosts mishandle smaller ASIO buffers (Max/MSP crashes on them), and
+-RS_ASIO rounds every request up to a multiple of 32 regardless.
++PipeASIO reports `buffer_size` as the preferred buffer size. It accepts every
++whole value from 32 through 8192. Values outside this range use the current
++safe setting. The minimum is 32. Max/MSP crashes with smaller ASIO
++buffers. RS_ASIO rounds every request to a multiple of 32.
++
+ Env: `PIPEASIO_PREFERRED_BUFFERSIZE`.
+ 
+ A size the hardware does not support makes PipeWire reject the request or insert
+@@ -546,7 +547,11 @@ Useful as a diagnostic for the scheduling-related xruns in
+ [#4](https://github.com/M0n7y5/pipeasio/issues/4), not as a fix for them. It
+ takes effect the next time the host starts the driver.
+ 
+-Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
++Env: `PIPEASIO_REALTIME` accepts a strict boolean for one launch. Any
++supplied value takes priority. A value outside the boolean forms prints a
++warning and uses the file setting.
++`PIPEASIO_RT_PRIORITY` (`off`/`on`) provides compatibility for launches
++that omit `PIPEASIO_REALTIME`.
+ 
+ ### Callback timing diagnostic
+ 
+@@ -563,9 +568,12 @@ The audio callback stores samples in a fixed area with 8192 entries.
+ A full area drops the next sample, and audio continues. The lifecycle worker
+ reports once per second. It sorts at most 8192 samples. It writes the 50th,
+ 95th and 99th percentiles as p50, p95 and p99. It writes the largest value as
+-maximum, plus the dropped sample count, to stderr. Clock reads and fixed sample
+-writes add CPU work. Use telemetry during controlled measurement
+-runs.
++maximum, plus the dropped sample count, through a separate stderr output.
++The cycle record also counts silent mismatch cycles as `muted`.
++When that output is full, PipeASIO drops the current report.
++Stop and Destroy continue. Clock reads and fixed sample
++writes add CPU work. Use telemetry during
++controlled measurement runs.
+ 
+ PipeASIO supports this report for 64-bit hosts. For a 32-bit WoW64 host,
+ PipeASIO keeps telemetry off. PipeWire and Live callbacks use different
+diff --git a/include/pipeasio_telemetry.h b/include/pipeasio_telemetry.h
+index 7525921..69dadaf 100644
+--- a/include/pipeasio_telemetry.h
++++ b/include/pipeasio_telemetry.h
+@@ -14,9 +14,11 @@
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include <fcntl.h>
+ 
+ #define PIPEASIO_TELEMETRY_PHASES 3u
+ #define PIPEASIO_TELEMETRY_CAPACITY 8192u
++#define PIPEASIO_TELEMETRY_OUTPUT_FLAGS (O_WRONLY | O_NONBLOCK | O_CLOEXEC | O_APPEND)
+ 
+ enum pipeasio_telemetry_phase
+ {
+diff --git a/src/asio.c b/src/asio.c
+index fc38757..9aafb96 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -280,6 +280,8 @@ typedef struct IOChannel
+ typedef struct pipeasio_telemetry_state
+ {
+     pipeasio_telemetry_ring ring;
++    _Atomic uint64_t        muted_cycles;
++    int                     output_fd;
+ } pipeasio_telemetry_state;
+ 
+ typedef struct pipeasio_telemetry_cycle
+@@ -728,6 +730,41 @@ gate_leave_test_barrier(void)
+ #endif
+ 
+ #ifndef PIPEASIO_WOW64_PE
++/* A regular file shares stderr's offset so ordinary logs and telemetry remain
++ * ordered. Pipes and terminals use a separate nonblocking description. */
++static int
++telemetry_open_report_fd(void)
++{
++    struct stat st;
++    if (fstat(STDERR_FILENO, &st) != 0)
++        return -1;
++    if (S_ISFIFO(st.st_mode) || S_ISCHR(st.st_mode))
++        return open("/proc/self/fd/2", PIPEASIO_TELEMETRY_OUTPUT_FLAGS);
++    return dup(STDERR_FILENO);
++}
++
++/* A separate stderr output keeps the lifecycle worker responsive.
++ * A full output drops the current report. Stop and Destroy
++ * continue. */
++static void
++telemetry_log(pipeasio_telemetry_state *state, const char *format, ...)
++{
++    static const char prefix[] = "[pipeasio telemetry] ";
++    char              buffer[1024];
++    va_list           args;
++    int               length;
++    size_t            used = sizeof(prefix) - 1;
++
++    memcpy(buffer, prefix, used);
++    va_start(args, format);
++    length = vsnprintf(buffer + used, sizeof(buffer) - used, format, args);
++    va_end(args);
++    if (length <= 0)
++        return;
++    used += (size_t)length < sizeof(buffer) - used ? (size_t)length : sizeof(buffer) - used - 1;
++    (void)write(state->output_fd, buffer, used);
++}
++
+ /* Monotonic time records the full deadline. Thread CPU time records work on
+  * the callback thread. Wall time also includes sleep in Live. These clock
+  * reads occur while PIPEASIO_TELEMETRY is on. */
+@@ -823,25 +860,31 @@ telemetry_emit(IPipeASIOImpl *This)
+     size_t                    count;
+     uint64_t                  values[PIPEASIO_TELEMETRY_CAPACITY];
+     uint64_t                  dropped;
++    uint64_t                  muted;
+     size_t                    time_info = 0;
+     if (!state)
+         return;
+     count   = pipeasio_telemetry_ring_snapshot(&state->ring, &first);
+     dropped = atomic_exchange_explicit(&state->ring.dropped, 0, memory_order_relaxed);
++    muted   = atomic_exchange_explicit(&state->muted_cycles, 0, memory_order_relaxed);
+     if (!count)
+     {
+-        if (dropped)
+-            PIPEASIO_LOG("[pipeasio telemetry] ", "cycles=0 dropped=%llu\n",
+-                         (unsigned long long)dropped);
++        if (dropped || muted)
++            telemetry_log(state,
++                          "cycles=%llu time_info=0 legacy=0 muted=%llu dropped=%llu\n",
++                          (unsigned long long)muted, (unsigned long long)muted,
++                          (unsigned long long)dropped);
+         return;
+     }
+     for (size_t i = 0; i < count; ++i)
+         if (pipeasio_telemetry_ring_at(&state->ring, first + i)->flags
+             & PIPEASIO_TELEMETRY_TIME_INFO)
+             ++time_info;
+-    PIPEASIO_LOG("[pipeasio telemetry] ", "cycles=%llu time_info=%llu legacy=%llu dropped=%llu\n",
+-                 (unsigned long long)count, (unsigned long long)time_info,
+-                 (unsigned long long)(count - time_info), (unsigned long long)dropped);
++    telemetry_log(state,
++                  "cycles=%llu time_info=%llu legacy=%llu muted=%llu dropped=%llu\n",
++                  (unsigned long long)(count + muted), (unsigned long long)time_info,
++                  (unsigned long long)(count - time_info), (unsigned long long)muted,
++                  (unsigned long long)dropped);
+     for (unsigned clock_kind = 0; clock_kind < 2; ++clock_kind)
+         for (unsigned phase = 0; phase < PIPEASIO_TELEMETRY_PHASES; ++phase)
+         {
+@@ -852,13 +895,13 @@ telemetry_emit(IPipeASIOImpl *This)
+                 values[i] = clock_kind ? sample->cpu_ns[phase] : sample->wall_ns[phase];
+             }
+             qsort(values, count, sizeof(values[0]), telemetry_compare_u64);
+-            PIPEASIO_LOG("[pipeasio telemetry] ",
+-                         "%s_ns phase=%s p50=%llu p95=%llu p99=%llu max=%llu\n",
+-                         clock_kind ? "thread_cpu" : "monotonic_wall", phase_name[phase],
+-                         (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 50)],
+-                         (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 95)],
+-                         (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 99)],
+-                         (unsigned long long)values[count - 1]);
++            telemetry_log(
++                    state, "%s_ns phase=%s p50=%llu p95=%llu p99=%llu max=%llu\n",
++                    clock_kind ? "thread_cpu" : "monotonic_wall", phase_name[phase],
++                    (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 50)],
++                    (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 95)],
++                    (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 99)],
++                    (unsigned long long)values[count - 1]);
+         }
+     pipeasio_telemetry_ring_consume(&state->ring, first, count);
+ }
+@@ -1517,7 +1560,10 @@ destroy_driver_resources(IPipeASIOImpl *This)
+     pipeasio_telemetry_state *telemetry
+             = atomic_exchange_explicit(&This->telemetry, NULL, memory_order_acq_rel);
+     if (telemetry)
++    {
++        close(telemetry->output_fd);
+         HeapFree(GetProcessHeap(), 0, telemetry);
++    }
+ #endif
+ }
+ 
+@@ -3380,10 +3426,13 @@ process_callback(audio_nframes_t nframes, void *arg)
+                                       This->output_channel[i].active);
+         }
+ #ifndef PIPEASIO_WOW64_PE
+-    /* During a buffer mismatch, the graph owns and queues the silent block.
+-     * Telemetry resumes output timing when the callback owns the output. */
+-    if (admitted && !muted && telemetry)
+-        telemetry_cycle_finish(&cycle);
++    if (admitted && telemetry)
++    {
++        if (muted)
++            atomic_fetch_add_explicit(&telemetry->muted_cycles, 1, memory_order_relaxed);
++        else
++            telemetry_cycle_finish(&cycle);
++    }
+ #endif
+     if (admitted)
+         This->host_buffer_index = half ? 0 : 1;
+@@ -3594,21 +3643,28 @@ configure_driver(IPipeASIOImpl *This)
+             else
+             {
+                 pipeasio_telemetry_ring_init(&state->ring);
++                atomic_init(&state->muted_cycles, 0);
+                 if (!atomic_is_lock_free(&This->telemetry)
+                     || !atomic_is_lock_free(&state->ring.write_seq)
+                     || !atomic_is_lock_free(&state->ring.read_seq)
+-                    || !atomic_is_lock_free(&state->ring.dropped))
++                    || !atomic_is_lock_free(&state->ring.dropped)
++                    || !atomic_is_lock_free(&state->muted_cycles))
+                 {
+                     WARN("PIPEASIO_TELEMETRY requires lock-free pointer and 64-bit atomics; "
+                          "keeping off\n");
+                     HeapFree(GetProcessHeap(), 0, state);
+                 }
++                else if ((state->output_fd = telemetry_open_report_fd()) < 0)
++                {
++                    WARN("PIPEASIO_TELEMETRY could not open a nonblocking report descriptor; "
++                         "keeping off\n");
++                    HeapFree(GetProcessHeap(), 0, state);
++                }
+                 else
+                 {
+                     atomic_store_explicit(&This->telemetry, state, memory_order_release);
+-                    PIPEASIO_LOG("[pipeasio telemetry] ",
+-                                 "enabled for 64-bit host; capacity=%u, interval_ms=1000\n",
+-                                 PIPEASIO_TELEMETRY_CAPACITY);
++                    telemetry_log(state, "enabled for 64-bit host; capacity=%u, interval_ms=1000\n",
++                                  PIPEASIO_TELEMETRY_CAPACITY);
+                     /* Wake the lifecycle worker when telemetry starts.
+                      * Its next wait uses the one-second report interval. */
+                     SetEvent(This->work_event);
+diff --git a/tests/unit/test_telemetry.c b/tests/unit/test_telemetry.c
+index 0d70ef0..b7f4263 100644
+--- a/tests/unit/test_telemetry.c
++++ b/tests/unit/test_telemetry.c
+@@ -4,6 +4,10 @@
+ 
+ #include <pthread.h>
+ #include <sched.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
+ 
+ #define CONCURRENT_SAMPLES 100000u
+ 
+@@ -116,5 +120,42 @@ main(void)
+         EXPECT_EQ(test.consumed + dropped, CONCURRENT_SAMPLES);
+     }
+ 
++    TEST_GROUP("regular report descriptor shares the stderr file offset")
++    {
++        static const char original_text[] = "original-content\n";
++        static const char report_text[]   = "telemetry-report\n";
++        static const char ordinary_text[] = "ordinary-log\n";
++        char              path[]          = "/tmp/pipeasio-telemetry-XXXXXX";
++        char              contents[sizeof(original_text) + sizeof(report_text)
++                                   + sizeof(ordinary_text)] = { 0 };
++        int               original = mkstemp(path);
++        int               report   = -1;
++
++        EXPECT_TRUE(original >= 0);
++        if (original >= 0)
++        {
++            EXPECT_EQ(write(original, original_text, sizeof(original_text) - 1),
++                      (ssize_t)sizeof(original_text) - 1);
++            report = dup(original);
++            EXPECT_TRUE(report >= 0);
++            if (report >= 0)
++                EXPECT_EQ(write(report, report_text, sizeof(report_text) - 1),
++                          (ssize_t)sizeof(report_text) - 1);
++            EXPECT_EQ(write(original, ordinary_text, sizeof(ordinary_text) - 1),
++                      (ssize_t)sizeof(ordinary_text) - 1);
++            EXPECT_EQ(lseek(original, 0, SEEK_SET), 0);
++            EXPECT_EQ(read(original, contents, sizeof(contents) - 1),
++                      (ssize_t)(sizeof(original_text) + sizeof(report_text)
++                                + sizeof(ordinary_text) - 3));
++            EXPECT_TRUE(!strcmp(contents,
++                                "original-content\ntelemetry-report\nordinary-log\n"));
++        }
++        if (report >= 0)
++            close(report);
++        if (original >= 0)
++            close(original);
++        unlink(path);
++    }
++
+     return test_report();
+ }
+-- 
+2.55.0
+

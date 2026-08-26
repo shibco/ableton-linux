@@ -52,6 +52,7 @@ have already fixed your issue.
   - [Push 3 plays notes on its own](#push-3-plays-notes-on-its-own)
   - [Ableton Move support](#ableton-move-support)
 - [Ableton Link](#ableton-link)
+  - [Display the Link button](#display-the-link-button)
   - [Ableton Link does not find peers](#ableton-link-does-not-find-peers)
 - [Report a problem](#report-a-problem)
 
@@ -469,6 +470,14 @@ For all other issues with audio, run the audio report and attach it when you
 ```bash
 ~/.local/share/ableton-wine/audio-report.sh
 ```
+
+The CPU section records the processors available to the report. It also records
+the physical layout and Linux processor preferences. `unavailable` means that
+file reads supplied zero usable values for a field. `invalid` marks a value
+outside its field format. A preferred-core rank and an E-core class describe
+separate facts. Use a supplied class field to decide the core class. Linux
+controls CPU placement through the
+[automatic CPU placement test gate](notes/ABLETON-WINE-HYBRID-CPU-TOPOLOGY.md#test-gate-for-automatic-cpu-placement).
 
 ### Audio cuts out for a few seconds, or plays at the wrong speed
 
@@ -975,6 +984,18 @@ Ableton Move support is in development. The current controller support covers
 Push 1, Push 2, and Push 3 in controller mode.
 
 ## Ableton Link
+
+### Display the Link button
+
+Live displays the Link button when it uses an ASIO driver.
+
+1. Open Settings > Audio.
+2. Set Driver Type to ASIO.
+3. Set Audio Device to PipeASIO.
+4. Open Settings > Link, Tempo and MIDI.
+5. Enable Show Link Toggle.
+
+The Link button appears in the control bar.
 
 ### Ableton Link does not find peers
 
