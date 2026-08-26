@@ -35,7 +35,7 @@ usage: scripts/bench-run.sh --output-dir DIR [options]
   --node-pattern REGEX     PipeWire node name pattern
 
 The command writes source data and measurement.json. Open Live before you run
-it. Wine and PipeWire keep their current state.
+it. The command reads Wine and PipeWire state while Live remains open.
 EOF
 }
 

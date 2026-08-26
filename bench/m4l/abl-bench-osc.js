@@ -36,7 +36,7 @@ function init() {
     var probe = app.get("average_process_usage");
     cpuOk = (probe != null && probe.length > 0 && probe[0] !== "");
     if (!cpuOk)
-        post("abl-bench-osc: no average_process_usage on this Live build\n");
+        post("abl-bench-osc: CPU value pending for the current Live build\n");
 
     applyCpuPeriod();
     out("/abl/bench/ready", [cpuOk ? 1 : 0]);
@@ -109,7 +109,7 @@ function dispatch(addr, a) {
         applyCpuPeriod();
         break;
     default:
-        post("abl-bench-osc: unknown message " + addr + "\n");
+        post("abl-bench-osc: supported commands are in bench/m4l/README.md; received " + addr + "\n");
     }
 }
 

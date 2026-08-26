@@ -1,22 +1,22 @@
 # Benchmark control device
 
-Four benchmark sets use this Max for Live device. It controls playback and
-reports Live's CPU value to the benchmark suite.
+Four benchmark sets use the Max for Live control device. It controls playback
+and reports Live's CPU value to the benchmark suite.
 
 The device receives commands on UDP port 19001. It sends state and CPU reports
 on UDP port 19002.
 
-The folder contains these files:
+The folder contains 2 files:
 
-- `abl-bench-m4l.amxd`: add this device to one track in each controlled set
-- `abl-bench-osc.js`: keep this script beside the device
+- `abl-bench-m4l.amxd`: add the device to one track in each controlled set
+- `abl-bench-osc.js`: keep the script beside the device
 
 We verified all documented commands with Live 12.4.3 and runtime 2026.08.01.1
 on 1 August 2026.
 
-## Device recovery and changes
+## Control device recovery
 
-Use these steps after file loss or a patch change.
+The following steps restore the device after file loss or a patch change.
 
 1. Add a blank Max Audio Effect to a track in Live.
 2. Open its editor.
@@ -44,11 +44,11 @@ Use these steps after file loss or a patch change.
 ```
 
 After a rebuild or script edit, remove the device from the track. Then add it
-again. These actions restart its reports.
+again. Adding the device again restarts its reports.
 
 ## Commands and reports
 
-The suite sends these commands to UDP port 19001:
+The suite sends the following commands to UDP port 19001:
 
 | Address | Effect |
 |---|---|
@@ -59,7 +59,7 @@ The suite sends these commands to UDP port 19001:
 | `/abl/bench/poll` | one immediate `/abl/bench/cpu` report |
 | `/abl/bench/cpu-period MS` | report interval in ms; 0 stops reports; default 500 |
 
-The device sends these reports to UDP port 19002:
+The device sends the following reports to UDP port 19002:
 
 | Address | Meaning |
 |---|---|
@@ -74,7 +74,7 @@ the same unit in its `dsp_load_pct` column.
 After `ready 0`, the script requests a new CPU value with every report. The
 value `-1 -1` marks a pending CPU value.
 
-## Change check
+## Control message check
 
 1. Run `scripts/bench-osc.py dump` in one terminal.
 2. Load a set that contains the device.
@@ -83,11 +83,11 @@ value `-1 -1` marks a pending CPU value.
 5. Run `scripts/bench-osc.py send /abl/bench/play` and check for `playing 1`.
 6. Run `scripts/bench-osc.py send /abl/bench/stop` to stop playback.
 
-## Run effects
+## Control device cost
 
-The device starts the Max runtime when Live loads the set. Controlled sets
-therefore include `max_boot` in their start-up time. Before and after runs use
-the same device cost.
+The device starts the Max runtime when Live loads a controlled set. The suite
+waits for start-up and stabilisation before measurement. Before and after runs
+use the same device cost.
 
 `udpreceive` listens on all network interfaces. The installer opens port 20808
 for Link. A separate firewall rule controls external access to port 19001.

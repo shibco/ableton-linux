@@ -1,13 +1,13 @@
 # CPU and audio benchmark guide
 
-Use this suite to compare Live CPU use and audio performance before and after
+Use the suite to compare Live CPU use and audio performance before and after
 one change. Start a normal run with:
 
 ```bash
 scripts/bench-suite.sh --tag before/my-change
 ```
 
-The suite measures 5 sets for 30 seconds each. It uses this order:
+A standard run measures 5 sets for 30 seconds each. The run order is:
 
 1. Run `Benchmark_Zero` with Live idle and the control device closed.
 2. Run `Benchmark_Empty` with the control device active.
@@ -23,13 +23,15 @@ seconds.
 The suite uses one deadline for CPU figures, OSC messages, `pw-top`, and
 PipeWire settings. Set start-up and stabilisation happen before that period.
 
-CPU snapshots extend a few milliseconds around the requested period. The data
-collectors start one after another just after the period starts.
+CPU snapshots extend a few milliseconds around the requested period. The tools
+start one after another just after the period starts.
 
 The JSON records the CPU interval, collection bounds, process lifetime, and
-first and last output times. A usable collector runs for at least 29 seconds
-and produces data. Periodic OSC and `pw-top` data cover both the first and last
-second. An early exit or a silent final period gives limited crackle evidence.
+first and last output times. A usable tool covers at least 90% of the
+period and loses at most one second during start and stop. For the default
+period, its minimum run time is 29 seconds. OSC and `pw-top` data cover the
+first and last second of that period. An early exit or a silent final period
+gives limited crackle evidence.
 
 Check the planned run with:
 
@@ -39,25 +41,24 @@ scripts/bench-suite.sh --dry-run --tag before/my-change
 
 ## Session safety
 
-Let the suite start and close Live. Before it starts, the suite checks these
-conditions:
+Let the suite start and close Live. Before the run, the suite checks:
 
-- an idle Live session and selected Wine prefix
-- the OSC report port is available
-- each set file has the expected hash
-- the required VST3 files are present
+- the suite finds zero Live processes and zero processes in the selected Wine prefix
+- the suite can use the OSC report port
+- each set file matches its expected hash
+- the suite finds the required VST3 files
 
 Each launch receives a unique session token. The suite checks that token and
 the exact Live process before it sends a signal. Other Wine sessions remain
-outside that process selection. PipeWire settings and profiles retain their
-original values.
+outside that process selection. The suite observes PipeWire settings and
+profiles. It leaves their control to Live and PipeWire.
 
 ## Report contents
 
 The suite creates an ignored folder under `bench/reports/`. Use `--output` to
 choose another folder.
 
-The main files have these purposes:
+The main files are:
 
 | Path | Contents |
 |---|---|
@@ -75,11 +76,11 @@ It also records context switches, task changes, audio errors, Live CPU values,
 and observed `AudioCalc` workers.
 
 The report saves before and after values for interrupts, audio devices, links,
-sample rate, buffer size, power profile, and CPU policy. A changed endpoint
-marks a comparison limit. The report calls a difference that can explain a CPU
-change a `confounder`.
+sample rate, buffer size, power profile, and CPU policy. A difference between
+the start and end samples limits the comparison. The report lists a difference
+that can explain a CPU change as a review item.
 
-PipeWire settings remain under watch throughout the measurement. A profile or
+The suite records PipeWire settings throughout the measurement. A profile or
 link can change and return to its first value between snapshots. Treat that
 case as a measurement limit.
 
@@ -87,13 +88,14 @@ The prefix identity combines its ownership marker and Wine registry files into
 one SHA-256 value. The runtime identity covers build details, Wine, and both
 PipeASIO files.
 
-PipeASIO selects its configuration from these locations in order:
+PipeASIO checks the following locations in order:
 
 1. Use `$XDG_CONFIG_HOME/pipeasio/config.ini` when it exists.
 2. Use `$HOME/.config/pipeasio/config.ini` in other cases.
 
-The raw manifest records every source path, file size, and hash. It also records
-all Dexed and K1v file hashes and available product versions.
+`profile/raw/hash-manifest.json` records paths, sizes, and hashes for prefix,
+runtime, launcher, and PipeASIO settings files. `profile.json` records all
+Dexed and K1v file hashes and available product versions.
 
 ## Crackle evidence
 
@@ -105,7 +107,7 @@ scripts/bench-suite.sh --tag after/my-change \
   --crackle Max4Live=heard
 ```
 
-The report separates crackle evidence into these cases:
+The report uses 4 crackle results:
 
 - a tool detected a PipeWire error or an xrun report
 - the listener heard crackle while the tools recorded zero matching events
@@ -129,8 +131,8 @@ their original contents.
 
 ## Before and after comparison
 
-Use the same Live version, Wine prefix, audio device, profile, sample rate,
-buffer size, window state, and power conditions for each run.
+Keep the same Live version, Wine prefix, audio device, profile, sample rate,
+and buffer size for each run. Keep the window state and power conditions equal.
 
 ```bash
 scripts/bench-suite.sh --tag before/my-change
@@ -148,24 +150,26 @@ python3 scripts/bench-report.py compare \
 make bench-compare BEFORE=... AFTER=... OUTPUT=...
 ```
 
-The command accepts complete canonical runs with matching 30-second periods
-and endpoint timing evidence. It writes `comparison.json` and `comparison.md`.
+The command accepts completed runs with the fixed 5-set order, 30-second
+periods, and full sample timing. It writes `comparison.json` and
+`comparison.md`.
 
 The report lists changes in hardware, audio, PipeWire, Wine, Live, settings,
 plug-ins, power, and the `WINE_APC_FASTPATH` value. Review each listed change
 before you accept a CPU result.
 
-Each set includes before, after, difference, and percentage values. These values
+Each set includes before, after, difference, and percentage values. The values
 cover CPU use, scheduling, audio, task changes, collection time, and interrupts.
 The status field records each sampling limit and each zero starting value.
 
 One pair describes one result. Repeated pairs support a stronger conclusion.
 Review the JSON values for each component instead of one total value.
 
-Endpoint snapshots cover processes and threads present at either endpoint.
-Short-lived tasks between the endpoints remain outside those snapshots. Review
-task changes, node changes, buffer changes, audio errors, settings changes, and
-OSC coverage before you accept the result.
+The 2 process samples cover processes and threads present in either sample. A
+short-lived task can start and finish between them. Its CPU use appears in host
+CPU instead of the per-process values. Review task changes, node changes, buffer
+changes, audio errors, settings changes, and OSC coverage before you accept the
+result.
 
 ## Individual measurement tools
 
@@ -180,12 +184,12 @@ usage details through `--help`.
 Keep the committed `.als` files, audio samples, and control device at their
 recorded contents and hashes. Add a newly named set for revised contents.
 
-Live places generated files in `Backup/` folders. Git ignores these folders.
+Live places generated files in `Backup/` folders. Git ignores `Backup/` folders.
 Keep generated backups outside commits.
 
-Preflight checks every set against `bench/SHA256SUMS` before it creates a report
-folder. `Benchmark_VSTs` uses the Windows VST3 files from the
-[benchmark set guide](BenchmarkSets%20Project/README.md).
+Before a run, the suite checks every set against `bench/SHA256SUMS`. It creates
+the report folder after that check. `Benchmark_VSTs` uses the Windows VST3 files
+from the [benchmark set guide](BenchmarkSets%20Project/README.md).
 
 Run the test suite with:
 

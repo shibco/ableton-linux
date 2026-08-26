@@ -686,6 +686,20 @@ ERR:          5
             updated = json.loads(next((run_dir / "sets").glob("*-Benchmark_Zero/measurement.json")).read_text())
             self.assertEqual(updated["crackle"]["status"], "manual")
 
+    def test_renderer_marks_unavailable_endpoint_evidence_for_review(self):
+        measurement = benchmark_measurement("Benchmark_Zero")
+        measurement["endpoint_identity"]["audio"]["before"]["available"] = False
+        measurement["endpoint_identity"]["audio"]["after"]["available"] = False
+        measurement["endpoint_identity"]["cpu_policy"]["before"]["available"] = False
+        measurement["endpoint_identity"]["cpu_policy"]["after"]["available"] = False
+        rendered = report.markdown_report({
+            "run": {"tag": "fixture", "status": "complete", "duration_seconds_per_set": 30},
+            "profile": benchmark_profile(), "sets": [measurement], "generated_at": "fixture",
+        })
+        row = next(line for line in rendered.splitlines() if line.startswith("| Benchmark_Zero |"))
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        self.assertEqual(cells[10:12], ["review", "review"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

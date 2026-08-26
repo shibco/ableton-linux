@@ -139,7 +139,7 @@ def probe(timeout: float) -> int:
                 if address == "/abl/bench/pong" and arguments == [nonce]:
                     output(address, arguments)
                     return 0
-    print(f"no benchmark-device pong on UDP {RECV_PORT} within {timeout:g}s", file=sys.stderr)
+    print(f"benchmark device reply pending after {timeout:g}s on UDP {RECV_PORT}", file=sys.stderr)
     return 1
 
 

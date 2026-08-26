@@ -786,7 +786,7 @@ def host_cpu_snapshot() -> dict[str, list[int]]:
 
 
 def parse_kernel_counters(text: str) -> dict[str, Any]:
-    """Parse /proc/interrupts or /proc/softirqs without assuming label names."""
+    """Parse /proc/interrupts or /proc/softirqs with any label names."""
     lines = text.splitlines()
     if not lines:
         return {"available": False, "reason": "empty-or-unreadable", "cpus": [], "labels": {}, "skipped_rows": []}
@@ -1442,7 +1442,7 @@ def capture(args: argparse.Namespace) -> int:
         ))
     else:
         (raw / "osc.tsv").write_text("")
-        (raw / "osc.stderr.txt").write_text("OSC disabled for this set\n")
+        (raw / "osc.stderr.txt").write_text("OSC mode: controller-free measurement\n")
     for command in commands:
         command.start()
     deadline_ns = start_ns + int(args.duration * 1_000_000_000)
@@ -1929,9 +1929,26 @@ def markdown_report(report: dict[str, Any]) -> str:
         audio = endpoint.get("audio", {})
         audio_before = nested(audio, "before", "graph_settings") or {}
         audio_after = nested(audio, "after", "graph_settings") or {}
+        audio_available = bool(
+            nested(audio, "before", "available") and nested(audio, "after", "available")
+        )
         audio_changed = (
             "pending" if "changed_within_window" not in audio
-            else ("changed" if audio["changed_within_window"] else "same")
+            else (
+                "review" if not audio_available
+                else ("changed" if audio["changed_within_window"] else "same")
+            )
+        )
+        cpu_policy = endpoint.get("cpu_policy", {})
+        cpu_policy_available = bool(
+            nested(cpu_policy, "before", "available") and nested(cpu_policy, "after", "available")
+        )
+        cpu_policy_changed = (
+            "pending" if "changed_within_window" not in cpu_policy
+            else (
+                "review" if not cpu_policy_available
+                else ("changed" if cpu_policy["changed_within_window"] else "same")
+            )
         )
         power_label = (
             f"{power.get('before', {}).get('profile') or 'pending'} → "
@@ -1957,7 +1974,7 @@ def markdown_report(report: dict[str, Any]) -> str:
             f"{audio_before.get('clock.rate', 'pending')}/{audio_before.get('clock.quantum', 'pending')} → "
             f"{audio_after.get('clock.rate', 'pending')}/{audio_after.get('clock.quantum', 'pending')} | "
             f"{audio_changed} | "
-            f"{'changed' if endpoint.get('cpu_policy', {}).get('changed_within_window') else 'same'} | {change_label} | "
+            f"{cpu_policy_changed} | {change_label} | "
             f"{pw.get('err_delta', 'pending')} | {number(dsp.get('average_percent'))} / "
             f"{number(dsp.get('peak_percent'))} | {transition_label} | {item.get('crackle', {}).get('status', 'unknown')} |"
         )
@@ -2460,7 +2477,7 @@ def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str
             nested(last, "crackle", "status"), confounders, numeric=False,
         )
         for name, label in (
-            ("cpu_policy", "CPU policy"), ("power", "Power profile/holds"),
+            ("cpu_policy", "CPU policy"), ("power", "Power profile and active requests"),
             ("audio", "Audio defaults/profile/graph"),
         ):
             for endpoint in ("before", "after"):
