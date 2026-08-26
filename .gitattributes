@@ -1,3 +1,4 @@
+patches/performance/0001-ntdll-alertable-sleep-fast-path.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0072-winex11-registry-pointer-settings-and-middle-button-dra.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0073-win32u-server-keep-horizontal-wheel-coordinates-in-screen.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0074-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch whitespace=-blank-at-eof,-blank-at-eol

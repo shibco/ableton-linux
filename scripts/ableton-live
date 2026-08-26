@@ -126,6 +126,10 @@ RUNTIME VARIABLES:
         offer Live's GPU renderer on Intel models its list refuses;
         the device name Live shows discloses the substitution
 
+    WINE_APC_FASTPATH=1
+        run one NTSync alert-wait trial;
+        Wine's regular wait route remains the launch default
+
     The pointer variables below override the saved pointer setting
     for one launch; the launcher exports none of them, and registry
     values hold the persistent settings. Values ignore letter case;
