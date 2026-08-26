@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup refresh uninstall test test-bench bench-compare test-glyph-path test-d2d-resize vendor-cache verify check pointer-safety-check clean distclean
+.PHONY: all build install setup refresh uninstall test test-bench bench-compare test-glyph-path test-d2d-resize test-pipewire-pro-audio-ab vendor-cache verify check pointer-safety-check clean distclean
 
 all: build
 
@@ -25,6 +25,7 @@ test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-shortcut-hold.sh
 	./scripts/test-cpu-topology.sh
 	./scripts/test-live-options.sh
+	./scripts/test-pipewire-pro-audio-ab.sh
 	./scripts/test-desktop-integration.sh
 	./scripts/test-nix-packaging.sh
 	./scripts/test-installer-lifecycle.sh
@@ -45,6 +46,9 @@ test-glyph-path:              ## assert a built runtime's dwrite glyph path (RUN
 
 test-d2d-resize:              ## assert an hwnd render target survives Resize (RUNTIME=<root>)
 	./scripts/test-d2d-resize.sh $(RUNTIME)
+
+test-pipewire-pro-audio-ab:   ## test Pro Audio comparison and profile restoration
+	./scripts/test-pipewire-pro-audio-ab.sh
 
 vendor-cache:                 ## populate vendor/winetricks-cache for offline setup
 	./scripts/vendor-winetricks-cache.sh
