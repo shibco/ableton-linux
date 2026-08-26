@@ -3,9 +3,9 @@
 Use the tool to compare your current audio profile with PipeWire Pro Audio.
 Run the comparison for one audio device at a time.
 
-Pro Audio changes routing, channel count, and interrupt timing. Profile changes
-can raise or lower CPU use. Treat each result as specific to one device and one
-configuration.
+Pro Audio can change routing, channel count, and interrupt timing. Profile
+changes can raise or lower CPU use. Treat each result as specific to one device
+and one configuration.
 
 PipeWire uses the name `pro-audio` for a Linux audio device profile. Windows
 uses the same words for an audio task class. The 2 names describe separate
@@ -51,9 +51,9 @@ device identity first because PipeWire can assign a new device ID.
 The script keeps the saved WirePlumber profile choice throughout the
 comparison.
 
-PipeWire provides a short interval between the final state check and the
-profile change. The script records an extra state check immediately before that
-change. Review that record with the result.
+A short interval separates the final state check from the profile change. The
+script records an extra state check immediately before the change. Review that
+record with the result.
 
 ## Device discovery
 
