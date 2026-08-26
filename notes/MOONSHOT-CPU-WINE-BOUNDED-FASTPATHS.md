@@ -1,151 +1,151 @@
-# Bounded Wine CPU fast path
+# Wine CPU wait trial
 
-## Decision
+The release setting uses Wine's regular wait route. Set
+`WINE_APC_FASTPATH=1` for an isolated test of the NTSync route. Keep release
+launch rules at the regular setting through the test gate in this document.
 
-This branch carries exactly one reviewed performance patch:
+## Release decision
 
-| Patch | Default | Bounded intervention |
+The branch contains one reviewed performance patch:
+
+| Patch | Release setting | Test setting |
 |---|---|---|
-| `performance/0001` | off; `WINE_APC_FASTPATH=1` opts in | Replaces an alertable, zero-handle `NtDelayExecution` wineserver wait with the calling thread's existing NTSync alert event. |
+| `performance/0001` | regular Wine wait | `WINE_APC_FASTPATH=1` selects the NTSync wait |
 
-The build container and Nix derivation apply, count, stamp, and audit that same
-one-member performance series. A missing NTSync device or alert fd, or an
-NTSync error, returns to Wine's ordinary `server_wait` path. The environment
-gate is read once with `pthread_once`; this fixes the data race in the older
-experiment's unsynchronised first-call cache. Only `1`, `on`, `true`, and `yes`
-(case-insensitive) enable it. Unset, empty, unrecognised, and the explicit
-rollback values `0`, `off`, `false`, and `no` leave the ordinary path active.
+An alertable wait lets another thread wake it with an APC. An APC asks a thread
+to run a small task. The patch moves a zero-object alertable delay from
+wineserver to the calling thread's existing NTSync alert event.
 
-Linux v7.1.8's `drivers/misc/ntsync.c:866-900` count bound rejects values above
-`NTSYNC_MAX_WAIT_COUNT` but does not reject zero; when `alert` is present it
-appends that event as the sole queued object for a count-zero wait.
-`ntsync_schedule()` uses an absolute
-hrtimer and `TASK_INTERRUPTIBLE`, which matches Wine's existing absolute NTSync
-deadline conversion and EINTR retry.
+Both build routes use the same one-patch list. Their checks count and identify
+that patch. Wine reads the setting once per process. The read stays safe when
+several threads start together.
 
-This is an evaluation-only candidate, not a release candidate. It is not yet a
-measured Live CPU win. The 2026-08-05 Live 12.4.3 idle trace recorded no
-user-APC requests, so 0001 is not an explanation for that trace's idle
-wineserver traffic. Its plausible benefit is limited to playback or plug-in
-workloads that repeatedly enter alertable delays. A matched 30-second Set
-matrix remains the performance gate, and the host-suspend clock test below is a
-release blocker before the path may be enabled by any release launch policy.
+The values `1`, `on`, `true` and `yes` select the trial route. They accept any
+letter case. An unset, empty or unrecognised value selects the regular route.
+The values `0`, `off`, `false` and `no` also select the regular route.
 
-### Relative-timeout clock boundary
+Wine selects the trial after its device and alert checks succeed. Every other
+check or wait result uses the regular route. Linux 7.1.8 accepts a zero-object
+wait with an alert event (`drivers/misc/ntsync.c:866-900`). The kernel wait uses
+a fixed deadline and permits signal handling.
 
-The fast path does not preserve this Wine build's behavior across host system
-suspend. `linux_wait_objs()` converts a finite relative timeout into an
-absolute `CLOCK_MONOTONIC` NTSync deadline (`dlls/ntdll/unix/sync.c:425-445`).
-The existing `server_wait()` instead converts it with
-`NtQueryPerformanceCounter()` (`dlls/ntdll/unix/server.c:795-810`), whose Unix
-counter prefers `CLOCK_BOOTTIME` (`dlls/ntdll/unix/sync.c:114-130`). Monotonic
-time stops during suspend; boottime includes it. On 2026-08-26 this host had
-accumulated 17,302,527,783,051 ns more boottime than monotonic time, so this is a
-real clock boundary rather than a theoretical alias.
+The trial needs a measured result from loaded Live Sets. The Live 12.4.3 idle
+trace from 5 August 2026 recorded 0 user APC requests. Loaded playback and
+plug-in tests provide the relevant cases. Use matched 30-second runs for the
+CPU decision.
 
-NTSync v7.1.8 offers only monotonic deadlines or `NTSYNC_WAIT_REALTIME`
-(`Documentation/userspace-api/ntsync.rst:276-310`). There is no boottime flag.
-Converting a relative timeout to an absolute realtime deadline would count host
-suspend, but it would also make a relative wait jump with manual or NTP wall
-clock adjustments. That is not an exact replacement for Wine's boottime
-deadline and is rejected. Falling every finite relative delay back to the
-wineserver would preserve behavior but remove the path this experiment is meant
-to measure, so it is not presented as an optimisation.
+## Host suspend timing
 
-Microsoft documents that Windows 8 and newer exclude low-power-state time from
-the relative timeout of alertable
-[`WaitForSingleObjectEx`](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobjectex)
+The 2 routes measure suspended time differently. Wine's regular route uses
+`CLOCK_BOOTTIME`, which advances during host suspend
+(`dlls/ntdll/unix/server.c:795-810` and
+`dlls/ntdll/unix/sync.c:114-130`). The NTSync trial uses `CLOCK_MONOTONIC`,
+which pauses during host suspend (`dlls/ntdll/unix/sync.c:425-445`).
+
+The host measurement on 26 August 2026 found a 17,302,527,783,051 ns difference
+between those clocks. The difference confirms separate timing rules on this
+host.
+
+NTSync v7.1.8 provides monotonic and real-time deadlines
+(`Documentation/userspace-api/ntsync.rst:276-310`). Real-time deadlines respond
+to manual and network clock corrections. Each NTSync choice therefore differs
+from Wine's current boottime rule.
+
+Microsoft states that relative alertable waits pause during low-power states on
+Windows 8 and later. See the Microsoft guides for
+[single-object waits](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobjectex)
 and
-[`WaitForMultipleObjectsEx`](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjectsex)
-waits. That makes NTSync's monotonic behavior plausibly closer to current
-Windows than this Wine server path, but it does not prove that changing
-`NtDelayExecution` is safe for Live and its plug-ins. Before release, run an
-isolated suspend/resume matrix with the gate on and off: finite relative,
-absolute, and infinite delays; APC queued before suspend, during suspend, and
-immediately after resume; elapsed-time and APC-count assertions; and a bounded
-watchdog outside the Wine process. Until that passes, leave
-`WINE_APC_FASTPATH` unset (or explicitly off) in every release candidate.
+[multiple-object waits](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjectsex).
+That rule resembles the trial's monotonic timing. Live and plug-in tests decide
+release safety.
 
-## Deferred and rejected experiments
+Complete this suspend test before a release review:
 
-- The old `performance/0002` same-process APC queue remains excluded. APC FIFO,
-  special APCs, access rights, target exit, handle reuse, and transitions
-  between client and server routing make it materially broader than an
-  alert-only wait.
-- The old `performance/0003` hook snapshot remains excluded. A snapshot can
-  outlive self-unhook and cross-thread hook mutations; request-count reduction
-  does not establish hook-object lifetime safety.
-- The old `performance/0004` queue-mask memo is deferred, not proven broken.
-  Static review found no concrete data race or missing mask writer, and a paired
-  upstream `user32:msg` run found 185 failures with the gate on and 186 with it
-  off; the exact multiset difference was one off-only IME assertion. An earlier
-  206/186 pair was therefore test/environment variability, not attribution.
-  The patch still changes the reentrant `SendMessage` wait loop without a
-  deterministic nested-send, callback-reentrancy, 3-second heartbeat, or
-  no-lost-wakeup probe. That is insufficient evidence for a default-on change.
-- The old `performance/0005` known-clean `GetUpdateRect` shortcut is excluded,
-  but the earlier claim of proven Win32 corruption is withdrawn. Repetition
-  showed the companion `updateprobe` failing both with the shortcut enabled and
-  with `WINE_MSG_FASTPATH=off`. On failed runs `GetQueueStatus(QS_PAINT)` was
-  zero after `InvalidateRect`; wineserver deliberately ignores redraws for an
-  effectively invisible window. The current `ShowWindow`/`UpdateWindow`
-  top-level fixture does not deterministically establish visibility under the
-  X driver, so it neither convicts nor clears 0005.
-- No whole-process affinity or priority change is part of this branch.
+1. Run the regular route and the trial route from identical prefix snapshots.
+2. Test finite relative, finite absolute and infinite waits.
+3. Queue an APC before suspend, during suspend and immediately after resume.
+4. Record elapsed time and APC count for every case.
+5. Use a separate process with a fixed end time.
+6. Repeat each case after a cold start.
 
-## Probes and acceptance
+Keep every release candidate at an unset value or an explicit regular-route
+value through this test.
 
-`tools/apcprobe.c` is the retained CRT-free PE acceptance probe. Its focused
-cases cover no-APC zero, relative finite, and absolute finite delays plus an
-infinite alertable delay woken by a user APC. The older FIFO, I/O completion,
-special-APC, access, handle-reuse, and suspend cases remain defense-in-depth
-around the ordinary APC drain; they are not evidence for the rejected APC
-queue experiment. Run the probe against the exact build with
-`WINE_APC_FASTPATH=1`, with the variable unset, and with
+## Ideas reserved for future tests
+
+The earlier `performance/0002` idea changes how an APC reaches another thread in
+the same process. A future test must cover APC order, special APCs, access
+rights, target exit and handle reuse. It must also cover movement between
+client and server routes.
+
+The earlier `performance/0003` idea saves a list of Windows message hooks. A
+future test must cover self-removal and hook changes from another thread. It
+must also prove the life of each saved hook object.
+
+The earlier `performance/0004` idea saves a queue mask. Source review found
+consistent mask writers. A paired upstream `user32:msg` run produced 185
+flagged assertions with the idea enabled and 186 with its rollback setting. The
+one differing IME assertion appeared in the rollback run. An earlier pair
+produced 206 and 186 flagged assertions.
+
+A future `performance/0004` test must use a nested send, a callback and a
+3-second heartbeat. It must also prove every required wake. These tests cover
+the message wait while callbacks run.
+
+The earlier `performance/0005` idea uses a saved window-state result. Repeated
+`updateprobe` runs produced the same flagged result with the idea active and
+with `WINE_MSG_FASTPATH=off`. Affected runs reported zero paint queue state
+after window invalidation. The X driver treated the test window as effectively
+invisible. Use a stable visible-window test before another review.
+
+The branch keeps whole-process CPU placement and priority at their base
+settings.
+
+## Test programmes
+
+`tools/apcprobe.c` builds a small Windows test programme. Its 45 checks cover
+zero-delay, finite relative, finite absolute and infinite alertable waits. The
+infinite case wakes through a user APC.
+
+Additional checks cover APC order, input and output completion, special APCs,
+access, handle reuse and suspend. Run the exact Wine build with
+`WINE_APC_FASTPATH=1`, with `WINE_APC_FASTPATH` unset and with
 `WINE_APC_FASTPATH=off`.
 
-`tools/ntsync-alert-wait-probe.c` is a test-only `LD_PRELOAD` observer. Explicit
-opt-in runs must emit `MOONSHOT_NTSYNC_ALERT_WAIT`; default-unset and rollback
-runs must emit none. With
-`MOONSHOT_NTSYNC_ALERT_WAIT_FAULT=1`, it returns `EIO` only for count-zero
-`NTSYNC_IOC_WAIT_ANY` calls carrying an alert fd. The same 45-check `apcprobe`
-result then proves the immediate generic-error fallback without disturbing
-handle-bearing NTSync waits.
+`tools/ntsync-alert-wait-probe.c` provides an isolated observer. `LD_PRELOAD`
+loads the observer before Wine starts. A trial run records
+`MOONSHOT_NTSYNC_ALERT_WAIT`. The unset and explicit off runs record zero
+matching lines.
 
-Its validity is deliberately narrower than an arbitrary Wine process. The
-interposer must fetch and forward the variadic third `ioctl()` argument, while
-the Wine tree contains legitimate two-argument ioctl call sites (for example
-`dlls/wineoss.drv/ossmidi.c:293`). There is no portable interposer-side way to
-recover an argument the caller did not pass. Use the shim only with this exact
-x86-64 `apcprobe` process and its minimal test prefix; do not preload it into
-Live, plug-ins, or a general Wine session. A generally safe observer would need
-call-site instrumentation or a syscall tracer that predicates on both the
-request and copied `ntsync_wait_args`. This shim is never installed or launched
-by the product.
+Set `MOONSHOT_NTSYNC_ALERT_WAIT_FAULT=1` to return `EIO` for the trial wait. The
+same 45 checks must pass. This result proves the immediate return to Wine's
+regular wait.
 
-Case 11 also signals its ready event immediately before `SleepEx(INFINITE,
-TRUE)` and then relies on a 50 ms parent delay. It proves infinite-timeout and
-queued-APC behavior, but it does not deterministically prove that the kernel
-ioctl was already blocked before the APC was queued. The ioctl observer proves
-reachability, not that scheduling order. A release suspend probe needs an
-external syscall-entry handshake.
+Use the observer with the exact x86-64 `apcprobe` process and its small test
+prefix. The observer expects the 3-part kernel request used by this process.
+Other Wine paths can use a 2-part request. Use source tracing for a wider Wine
+test.
 
-The exact patched Wine target must compile with Wine's warning policy. A
-release report must also show:
+Case 11 signals readiness before its infinite wait and uses a 50 ms parent
+delay. The case proves the infinite wait and queued APC result. The observer
+proves that the trial route ran. Add an external signal after kernel wait entry
+to prove exact event order during the suspend test.
 
-- lower process-plus-wineserver CPU or request traffic on a loaded Set;
-- no regression in PipeWire ERR/xrun deltas;
-- identical `apcprobe` results with the fast path enabled and disabled;
-- the same runtime, prefix snapshot, Set, quantum, sample rate, and launch
-  policy on both sides.
+## Release checks
 
-`WINE_APC_FASTPATH=1` (or `on`, `true`, or `yes`) is an evaluation opt-in.
-Unset is the default-off control; `0`, `off`, `false`, and `no` are explicit
-rollback controls, not tuning values. Probe success proves bounded semantics
-and, when paired with the ioctl observer, reachability; it does not by itself
-prove a Live CPU reduction. A generic ioctl error after
-part of a finite relative wait uses the same remaining-time calculation as a
-spurious alert, so it cannot silently restart the full delay; the injector
-proves the immediate arm. Forced cancellation of the alert event between kernel
-wake and wineserver drain and a deliberately delayed ioctl failure remain
-fault-injection gaps; neither is claimed as tested here.
+Build the exact patched Wine target with Wine's warning rules. Record these
+results from matched loaded Sets:
+
+- combined Live and wineserver CPU use or request traffic falls
+- PipeWire `ERR` and xrun issue counts match or improve the regular route
+- all 45 `apcprobe` checks give the same result in each setting
+- runtime, prefix snapshot, Set, buffer size, sample rate and launch policy match
+- the host suspend test passes every case
+
+The opt-in result proves route selection and wait behaviour. The loaded Set
+result measures the CPU benefit.
+
+After a partial finite wait, the regular route uses the remaining time. The
+fault observer proves the immediate error case. Future fault tests must cover
+alert event cancellation between kernel wake and server processing. They must
+also cover a delayed kernel error.

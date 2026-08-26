@@ -16,10 +16,9 @@ are 0027, 0044, 0072, 0074, 0090 through 0095, 0097, and 0098; their reasons
 are declared in `SERIES_GAPS` in `scripts/build-audit.sh`. Patch 0073 keeps
 the wheel coordinate fix separate. Patch 0100 combines 10 pointer patches.
 
-A separately numbered, reviewed performance series contains only 0001 under
-`patches/performance/`. It provides the bounded NTSync alertable-sleep path.
-The broader experimental APC queue, hook snapshot, queue-mask memo, and
-known-clean `GetUpdateRect` shortcut are deliberately absent; see
+A separate performance series contains one reviewed patch under
+`patches/performance/`. Patch 0001 provides the NTSync alertable wait trial.
+The research note records the later test needs for 4 wider ideas. See
 `notes/MOONSHOT-CPU-WINE-BOUNDED-FASTPATHS.md`.
 
 ## Applying the series
@@ -27,8 +26,8 @@ known-clean `GetUpdateRect` shortcut are deliberately absent; see
 Run `./build.sh`. Inside the Podman image, `scripts/container-build.sh`
 unpacks `vendor/wine-base-5c23dd1c.tar.zst`, creates a Git repository, and
 applies `patches/[0-9][0-9][0-9][0-9]-*.patch` in lexical order with
-`git am --3way`, followed by the bounded `patches/performance/*.patch`
-series. The Nix build applies the same manifest order.
+`git am --3way`. It then applies `patches/performance/*.patch`. The Nix build
+uses the same file order.
 
 The build script adds a fixed identity and date to early plain-diff patches.
 Use `./build.sh` to reproduce this step.
