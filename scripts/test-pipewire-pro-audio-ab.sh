@@ -91,6 +91,15 @@ fake_dispatch()
                 }}
               },
               {
+                id: 200,
+                type: "PipeWire:Interface:Node",
+                info: {state: "running", props: {
+                  "media.class": "Stream/Output/Audio",
+                  "node.name": "Firefox",
+                  "application.name": "Firefox"
+                }}
+              },
+              {
                 id: 102,
                 type: "PipeWire:Interface:Link",
                 info: {
@@ -257,11 +266,11 @@ start_tool()
 {
     local mode="${1:-run}" output="$case_dir/output"
     local args=(--device 42 --wine-prefix "$case_dir/prefix" --output "$output")
-    if [ "$mode" = discover ]; then
-        args+=(--discover)
-    else
-        args+=(-- "$case_dir/bin/benchmark")
-    fi
+    case "$mode" in
+        discover) args+=(--discover) ;;
+        dry-run) args+=(--dry-run) ;;
+        *) args+=(-- "$case_dir/bin/benchmark") ;;
+    esac
     (
         exec env \
             PATH="$case_dir/bin:$PATH" \
@@ -322,11 +331,38 @@ assert_status "$case_dir/output" '.target_device_graph.immediately_before_switch
     'The exact target graph is clear at the last bounded pre-switch check.'
 assert_status "$case_dir/output" '.target_device_graph.after_pro_audio' 'clear' \
     'The target graph is clear after the Pro Audio command.'
+assert_status "$case_dir/output" '.order | join(" ")' 'baseline pro-audio' \
+    'The report records the baseline-first order.'
 if ! grep -q "$case_dir/output/A-original" "$case_dir/state/benchmark-dirs.log" \
     || ! grep -q "$case_dir/output/B-pro-audio" "$case_dir/state/benchmark-dirs.log"; then
     fail 'Each command receives its own explicit artifact directory.'
 fi
 ok 'Success runs a true matched A/B, uses save:false, separates artifacts, and proves restoration.'
+
+new_case pro-audio-first
+printf '9 pro-audio\n' > "$case_dir/state/current-profile"
+run_tool
+assert_eq "$TOOL_RC" 0 'A device already on Pro Audio can run a matched pair.'
+assert_eq "$(cat "$case_dir/state/current-profile")" '9 pro-audio' \
+    'A Pro-Audio-first pair restores the exact original Pro Audio profile.'
+assert_eq "$(tr '\n' ' ' < "$case_dir/state/benchmark.log")" 'pro-audio baseline ' \
+    'A Pro-Audio-first pair runs the saved baseline second.'
+[ -f "$case_dir/output/A-original/timing.json" ] \
+    && [ -f "$case_dir/output/B-baseline/timing.json" ] \
+    || fail 'The reverse-order pair retains separate A and B artifacts.'
+assert_status "$case_dir/output" '.order | join(" ")' 'pro-audio baseline' \
+    'The report records the Pro-Audio-first order.'
+assert_status "$case_dir/output" '.device.baseline_profile.name' 'analog-stereo-duplex' \
+    'The report names the saved regular profile used as the baseline.'
+assert_status "$case_dir/output" '.device.baseline_profile.source' 'wireplumber-saved' \
+    'The report identifies WirePlumber as the reverse-order baseline source.'
+assert_status "$case_dir/output" '.legs.A_original.profile' 'pro-audio' \
+    'The A leg identifies its Pro Audio profile.'
+assert_status "$case_dir/output" '.legs.B_baseline.profile' 'baseline' \
+    'The B leg identifies its regular baseline profile.'
+assert_status "$case_dir/output" '.restoration' 'verified' \
+    'The reverse-order pair proves restoration.'
+ok 'A saved regular profile enables a recorded Pro-Audio-first pair.'
 
 new_case baseline-failure
 printf 'baseline\n' > "$case_dir/state/benchmark-fail-leg"
@@ -413,6 +449,12 @@ assert_eq "$TOOL_RC" 73 'An active link connected to the exact device blocks the
 assert_eq "$(jq '.blockers.active_links | length' \
     "$case_dir/output/before/target-device-activity.json")" 1 \
     'The focused graph evidence retains the active target link.'
+assert_eq "$(jq -r '.blockers.active_links[0].peer.node_name' \
+    "$case_dir/output/before/target-device-activity.json")" 'Firefox' \
+    'The active-link blocker names the peer node.'
+assert_eq "$(jq -r '.blockers.active_links[0].peer.application_name' \
+    "$case_dir/output/before/target-device-activity.json")" 'Firefox' \
+    'The active-link blocker names the peer application.'
 ok 'An active target link is refused while the default paused passive link remains allowed.'
 
 new_case restoration-failure
@@ -498,6 +540,30 @@ assert_eq "$TOOL_RC" 0 'Read-only discovery succeeds on an eligible idle device.
     || fail 'Discovery neither runs the command nor changes a profile.'
 assert_status "$case_dir/output" '.result' 'discovery-ok' 'Discovery status is explicit.'
 ok 'Discovery captures evidence without executing or mutating anything.'
+
+new_case stale-lock
+lock_path="$case_dir/runtime/ableton-pw-pro-audio-${UID}-42.lock"
+mkdir -m 700 -- "$lock_path"
+run_tool
+assert_eq "$TOOL_RC" 73 'An existing per-device lock blocks the comparison.'
+assert_status "$case_dir/output" '.result' 'concurrent-run' \
+    'The lock refusal is classified exactly.'
+assert_status "$case_dir/output" '.lock_path' "$lock_path" \
+    'The report names the exact lock path.'
+grep -Fq "$lock_path" "$case_dir/run.stderr" \
+    || fail 'The lock refusal message must name the exact lock path.'
+[ ! -e "$case_dir/state/benchmark.log" ] && [ ! -e "$case_dir/state/pw-cli.log" ] \
+    || fail 'A lock refusal runs no benchmark and changes no profile.'
+ok 'A concurrent or stale lock reports its exact recovery path.'
+
+new_case dry-run-unsupported
+run_tool dry-run
+assert_eq "$TOOL_RC" 2 'The removed --dry-run alias is rejected as unsupported.'
+[ ! -e "$case_dir/output" ] \
+    || fail 'An unsupported --dry-run option must not create a report directory.'
+grep -Fq 'Received: --dry-run' "$case_dir/run.stderr" \
+    || fail 'The unsupported alias is identified in the usage error.'
+ok 'Discovery has one explicit, non-mutatingly-named CLI option.'
 
 new_case final-activity
 : > "$case_dir/state/activity-after-restore"

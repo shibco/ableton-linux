@@ -28,10 +28,14 @@ stores the Windows files and settings. The script then:
 2. Checks that Live and the selected Wine prefix are idle.
 3. Checks that the target audio device is idle.
 4. Runs your command with the current profile.
-5. Selects Pro Audio temporarily for the target device.
-6. Runs the same command with Pro Audio.
+5. Selects the other profile temporarily for the target device.
+6. Runs the same command with the other profile.
 7. Restores the original profile.
 8. Compares the final state with the recorded state.
+
+The normal order is the regular baseline followed by Pro Audio. If Pro Audio
+is already current, the script uses WirePlumber's saved, available regular
+profile as the second leg. `status.json` records the exact order.
 
 Your command must close every process that it starts before it exits. The
 script restores the profile after command errors and caught `HUP`, `INT`, or
@@ -47,6 +51,12 @@ channels, and device paths.
 The tool writes `recovery-command.txt` before the first profile change. Use that
 command after power loss, `SIGKILL`, or a PipeWire service restart. Confirm the
 device identity first because PipeWire can assign a new device ID.
+
+A stopped run can also leave the per-device lock at
+`$XDG_RUNTIME_DIR/ableton-pw-pro-audio-$UID-DEVICE_ID.lock`. The refusal message
+and `status.json` name the exact path. Confirm that no comparison for that
+device is running before removing that directory, then retry with a new output
+path because the refused run already created its report.
 
 The script keeps the saved WirePlumber profile choice throughout the
 comparison.
@@ -84,8 +94,9 @@ exists.
 
 ## Profile comparison
 
-Use an integration worktree that contains both scripts. Then run both profile
-tests with the benchmark suite:
+Use an integration worktree that combines this branch with
+`moonshot-cpu-optimiser-bench-report`, which provides `scripts/bench-suite.sh`.
+Then run both profile tests with the benchmark suite:
 
 ```bash
 scripts/pipewire-pro-audio-ab.sh \
@@ -100,7 +111,7 @@ scripts/pipewire-pro-audio-ab.sh \
 The wrapper provides 2 values to the command:
 
 - `ABLETON_PRO_AUDIO_LEG=baseline|pro-audio`
-- `ABLETON_PRO_AUDIO_LEG_DIR=.../A-original|.../B-pro-audio`
+- `ABLETON_PRO_AUDIO_LEG_DIR=.../A-original|.../B-pro-audio|.../B-baseline`
 
 The default settle time is 2 seconds for each profile. Set
 `PIPEWIRE_PRO_AUDIO_SETTLE_SECONDS` from 0 to 30 when the device needs more
@@ -136,9 +147,8 @@ Run at least 5 matched pairs for each profile. Repeat the pairs at 32, 64, and
 Apply a result to the tested device and configuration. Test each additional
 device separately.
 
-The session on 26 August 2026 completed state discovery for internal ALSA
-device 69. The target USB interface requires a connected hardware test before
-profile selection and Live measurement.
+A USB interface requires a connected hardware test before profile selection
+and Live measurement.
 
 ## Tool tests
 

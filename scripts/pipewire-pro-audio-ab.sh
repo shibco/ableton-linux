@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compare one audio device with its current profile and Pro Audio profile.
+# Compare one audio device with its regular and Pro Audio profiles.
 # Restore the current profile after the comparison.
 set -uo pipefail
 
@@ -19,16 +19,17 @@ Usage:
   scripts/pipewire-pro-audio-ab.sh --device ID --wine-prefix DIR --output DIR -- COMMAND [ARG...]
   scripts/pipewire-pro-audio-ab.sh --device ID --wine-prefix DIR --output DIR --discover
 
-The script runs COMMAND with the current profile and then with Pro Audio. It
-checks that Live and the Wine prefix are idle. It restores and checks the
-current profile after both runs, including when HUP, INT, or TERM interrupts the run.
+The script runs COMMAND with the current profile and then with the comparison
+profile. When the current profile is Pro Audio, the saved regular profile is
+the comparison profile. It checks that Live and the Wine prefix are idle. It
+restores and checks the current profile after both runs, including when HUP,
+INT, or TERM interrupts the run.
 
 Options:
   --device ID       Select a numeric PipeWire device ID.
   --wine-prefix DIR Use an existing Wine prefix. Close its Wine and Live processes first.
   --output DIR      Create the report files in a new directory.
   --discover        Record and check the device state.
-  --dry-run         Perform the same action as --discover.
   -h, --help        Show command help.
 
 The benchmark command must close every process it starts. Pro Audio can add
@@ -60,7 +61,7 @@ while [ "$#" -gt 0 ]; do
             output_dir="$2"
             shift 2
             ;;
-        --discover|--dry-run)
+        --discover)
             mode="discover"
             shift
             ;;
@@ -155,6 +156,7 @@ pre_pro_activity="not-checked"
 post_pro_activity="not-checked"
 post_restore_activity="not-checked"
 target_preflight_activity="not-checked"
+target_before_baseline_activity="not-checked"
 target_after_baseline_activity="not-checked"
 target_pre_switch_activity="not-checked"
 target_before_pro_activity="not-checked"
@@ -168,19 +170,49 @@ settings_restored="not-checked"
 identity_restored="not-checked"
 original_profile_index=""
 original_profile_name=""
+baseline_profile_index=""
+baseline_profile_name=""
+baseline_profile_source=""
 pro_profile_index=""
 pro_profile_available=""
+first_phase=""
+second_phase=""
+second_profile_index=""
+second_profile_name=""
+second_stage=""
 device_name=""
 profile_mutation_started=0
 preflight_complete=0
 benchmark_pid=""
 benchmark_phase=""
+benchmark_stage=""
 benchmark_start_ns=""
 lock_dir=""
 
 write_status()
 {
     local exit_code="$1" temporary="$output_dir/.status.json.tmp"
+    local first_state first_exit first_elapsed second_state second_exit second_elapsed second_leg_key
+    if [ "$first_phase" = pro-audio ]; then
+        first_state="$pro_state"
+        first_exit="$pro_exit"
+        first_elapsed="$pro_elapsed_ms"
+        second_state="$baseline_state"
+        second_exit="$baseline_exit"
+        second_elapsed="$baseline_elapsed_ms"
+    else
+        first_state="$baseline_state"
+        first_exit="$baseline_exit"
+        first_elapsed="$baseline_elapsed_ms"
+        second_state="$pro_state"
+        second_exit="$pro_exit"
+        second_elapsed="$pro_elapsed_ms"
+    fi
+    case "$second_phase" in
+        baseline) second_leg_key="B_baseline" ;;
+        pro-audio) second_leg_key="B_pro_audio" ;;
+        *) second_leg_key="B_comparison" ;;
+    esac
     jq -n \
         --arg result "$result" \
         --arg message "$message" \
@@ -191,8 +223,21 @@ write_status()
         --arg wine_prefix "$wine_prefix" \
         --arg original_index "$original_profile_index" \
         --arg original_name "$original_profile_name" \
+        --arg baseline_index "$baseline_profile_index" \
+        --arg baseline_name "$baseline_profile_name" \
+        --arg baseline_source "$baseline_profile_source" \
         --arg pro_index "$pro_profile_index" \
         --arg pro_available "$pro_profile_available" \
+        --arg first_phase "$first_phase" \
+        --arg second_phase "$second_phase" \
+        --arg first_state "$first_state" \
+        --arg first_exit "$first_exit" \
+        --arg first_elapsed "$first_elapsed" \
+        --arg second_state "$second_state" \
+        --arg second_exit "$second_exit" \
+        --arg second_elapsed "$second_elapsed" \
+        --arg second_leg_key "$second_leg_key" \
+        --arg second_stage "$second_stage" \
         --arg switch "$switch_state" \
         --arg restoration "$restoration_state" \
         --arg baseline_state "$baseline_state" \
@@ -208,6 +253,7 @@ write_status()
         --arg post_pro_activity "$post_pro_activity" \
         --arg post_restore_activity "$post_restore_activity" \
         --arg target_preflight_activity "$target_preflight_activity" \
+        --arg target_before_baseline_activity "$target_before_baseline_activity" \
         --arg target_after_baseline_activity "$target_after_baseline_activity" \
         --arg target_pre_switch_activity "$target_pre_switch_activity" \
         --arg target_before_pro_activity "$target_before_pro_activity" \
@@ -220,6 +266,7 @@ write_status()
         --arg settings_restored "$settings_restored" \
         --arg identity_restored "$identity_restored" \
         --arg exit_code "$exit_code" \
+        --arg lock_path "$lock_dir" \
         --arg artifacts "$output_dir" '
         def number_or_null: if . == "" then null else tonumber end;
         {
@@ -231,9 +278,16 @@ write_status()
           device: {
             id: ($device_id | tonumber), name: $device_name,
             original_profile: {index: ($original_index | number_or_null), name: $original_name},
+            baseline_profile: {
+              index: ($baseline_index | number_or_null),
+              name: $baseline_name,
+              source: $baseline_source
+            },
             pro_audio_profile: {index: ($pro_index | number_or_null), available: $pro_available}
           },
+          order: [$first_phase, $second_phase] | map(select(length > 0)),
           wine_prefix: $wine_prefix,
+          lock_path: $lock_path,
           switch: $switch,
           restoration: $restoration,
           activity: {
@@ -246,26 +300,30 @@ write_status()
           },
           target_device_graph: {
             preflight: $target_preflight_activity,
+            before_baseline: $target_before_baseline_activity,
             after_baseline: $target_after_baseline_activity,
             immediately_before_switch: $target_pre_switch_activity,
             before_pro_audio: $target_before_pro_activity,
             after_pro_audio: $target_after_pro_activity,
             after_restoration: $target_after_restore_activity
           },
-          legs: {
+          legs: ({
             A_original: {
-              state: $baseline_state,
-              exit_code: ($baseline_exit | number_or_null),
-              elapsed_ms: ($baseline_elapsed | number_or_null),
+              profile: $first_phase,
+              state: $first_state,
+              exit_code: ($first_exit | number_or_null),
+              elapsed_ms: ($first_elapsed | number_or_null),
               artifacts: ($artifacts + "/A-original")
-            },
-            B_pro_audio: {
-              state: $pro_state,
-              exit_code: ($pro_exit | number_or_null),
-              elapsed_ms: ($pro_elapsed | number_or_null),
-              artifacts: ($artifacts + "/B-pro-audio")
             }
-          },
+          } + {
+            ($second_leg_key): {
+              profile: $second_phase,
+              state: $second_state,
+              exit_code: ($second_exit | number_or_null),
+              elapsed_ms: ($second_elapsed | number_or_null),
+              artifacts: (if $second_stage == "" then null else $second_stage end)
+            }
+          }),
           restored_evidence: {
             defaults: $defaults_restored,
             wireplumber_profile_state: $profile_state_restored,
@@ -348,8 +406,17 @@ write_associated_graph_evidence()
           )
         )]
     ' "$stage/graph.json" > "$stage/associated-links.json" || return 1
-    jq -S -n --slurpfile nodes "$stage/associated-nodes.json" \
-        --slurpfile links "$stage/associated-links.json" '{
+    jq -S -n --slurpfile graph "$stage/graph.json" \
+        --slurpfile nodes "$stage/associated-nodes.json" \
+        --slurpfile links "$stage/associated-links.json" '
+    def input_node_id: .info["input-node-id"] // .info.props["link.input.node"];
+    def output_node_id: .info["output-node-id"] // .info.props["link.output.node"];
+    ($nodes[0] | map(.id)) as $target_ids
+    | ($graph[0]
+        | map(select(.type == "PipeWire:Interface:Node"))
+        | map({key: (.id | tostring), value: .})
+        | from_entries) as $all_nodes
+    | {
       nodes: [$nodes[0][] | {
         id, state: .info.state,
         name: .info.props["node.name"],
@@ -365,12 +432,30 @@ write_associated_graph_evidence()
         running_nodes: [$nodes[0][] | select(.info.state == "running") | {
           id, state: .info.state, name: .info.props["node.name"]
         }],
-        active_links: [$links[0][] | select(.info.state == "active") | {
-          id, state: .info.state,
-          input_node_id: (.info["input-node-id"] // .info.props["link.input.node"]),
-          output_node_id: (.info["output-node-id"] // .info.props["link.output.node"]),
-          passive: (.info.props["link.passive"] // false)
-        }]
+        active_links: [$links[0][]
+          | select(.info.state == "active")
+          | . as $link
+          | (input_node_id) as $input_id
+          | (output_node_id) as $output_id
+          | (if (($target_ids | index($input_id)) != null
+                    and ($target_ids | index($output_id)) == null) then $output_id
+             elif (($target_ids | index($output_id)) != null
+                    and ($target_ids | index($input_id)) == null) then $input_id
+             else null end) as $peer_id
+          | {
+            id, state: .info.state,
+            input_node_id: $input_id,
+            output_node_id: $output_id,
+            passive: (.info.props["link.passive"] // false),
+            peer: (if $peer_id == null then null
+              else ($all_nodes[($peer_id | tostring)] // null) as $peer
+              | {
+                  id: $peer_id,
+                  node_name: ($peer.info.props["node.name"] // null),
+                  application_name: ($peer.info.props["application.name"] // null)
+                }
+              end)
+          }]
       }
     }' > "$stage/target-device-activity.json" || return 1
 }
@@ -443,6 +528,17 @@ profile_name()
     jq -er '.info.params.Profile
       | select(type == "array" and length == 1)
       | .[0].name | select(type == "string" and length > 0)' "$1"
+}
+
+stored_profile_name()
+{
+    jq -Rrs --arg key "$device_name" '
+      [split("\n")[]
+        | capture("^id:[0-9]+ key:\u0027(?<key>[^\u0027]*)\u0027 value:\u0027(?<value>[^\u0027]*)\u0027 type:\u0027Spa:String\u0027$")?
+        | select(.key == $key)
+        | .value]
+      | if length == 1 then .[0] else empty end
+    ' "$1"
 }
 
 validate_alsa_device()
@@ -525,6 +621,46 @@ set_profile_transient()
     # Use save=false here to preserve the saved WirePlumber profile choice.
     probe "$output_dir/events/${label}.pw-cli.stdout" \
         pw-cli set-param "$device_id" Profile "{\"index\":$index,\"save\":false}"
+}
+
+record_phase_result()
+{
+    local phase="$1" state="$2" exit_code="$3"
+    if [ "$phase" = baseline ]; then
+        baseline_state="$state"
+        baseline_exit="$exit_code"
+    else
+        pro_state="$state"
+        pro_exit="$exit_code"
+    fi
+}
+
+record_phase_activity()
+{
+    local phase="$1" point="$2" state="$3"
+    if [ "$phase" = baseline ]; then
+        if [ "$point" = before ]; then pre_baseline_activity="$state"; else post_baseline_activity="$state"; fi
+    else
+        if [ "$point" = before ]; then pre_pro_activity="$state"; else post_pro_activity="$state"; fi
+    fi
+}
+
+record_phase_target_activity()
+{
+    local phase="$1" point="$2" state="$3"
+    if [ "$phase" = baseline ]; then
+        if [ "$point" = before ]; then
+            target_before_baseline_activity="$state"
+        else
+            target_after_baseline_activity="$state"
+        fi
+    else
+        if [ "$point" = before ]; then
+            target_before_pro_activity="$state"
+        else
+            target_after_pro_activity="$state"
+        fi
+    fi
 }
 
 scan_activity()
@@ -610,7 +746,7 @@ now_ns()
 
 write_timing()
 {
-    local stage="$1" start="$2" finish="$3" exit_code="$4" signal_name="${5:-}"
+    local phase="$1" stage="$2" start="$3" finish="$4" exit_code="$5" signal_name="${6:-}"
     local elapsed_ms=$(( (finish - start) / 1000000 ))
     jq -n --arg start "$start" --arg finish "$finish" --arg elapsed "$elapsed_ms" \
         --arg exit "$exit_code" --arg signal "$signal_name" '{
@@ -621,7 +757,7 @@ write_timing()
           signal: (if $signal == "" then null else $signal end)
         }' > "$stage/timing.json"
     printf '%s\n' "$exit_code" > "$stage/exit-code"
-    if [ "$stage" = "$output_dir/A-original" ]; then
+    if [ "$phase" = baseline ]; then
         baseline_elapsed_ms="$elapsed_ms"
     else
         pro_elapsed_ms="$elapsed_ms"
@@ -633,6 +769,7 @@ run_benchmark_leg()
     local phase="$1" stage="$2" finish rc
     [ -d "$stage" ] || mkdir -- "$stage" || return "$EX_SOFTWARE"
     benchmark_phase="$phase"
+    benchmark_stage="$stage"
     benchmark_start_ns="$(now_ns)"
     ABLETON_PRO_AUDIO_LEG="$phase" \
     ABLETON_PRO_AUDIO_LEG_DIR="$stage" \
@@ -642,8 +779,9 @@ run_benchmark_leg()
     rc=$?
     benchmark_pid=""
     finish="$(now_ns)"
-    write_timing "$stage" "$benchmark_start_ns" "$finish" "$rc"
+    write_timing "$phase" "$stage" "$benchmark_start_ns" "$finish" "$rc"
     benchmark_phase=""
+    benchmark_stage=""
     benchmark_start_ns=""
     return "$rc"
 }
@@ -738,7 +876,7 @@ wait_for_signalled_benchmark()
 # shellcheck disable=SC2329 # The signal handler calls this function.
 handle_signal()
 {
-    local signal_name="$1" signal_code="$2" finish child_stopped=1 stage
+    local signal_name="$1" signal_code="$2" finish child_stopped=1 stage="$benchmark_stage"
     trap - HUP INT TERM
     result="signal-${signal_name,,}"
     message="Received $signal_name; restoring the exact original profile."
@@ -750,15 +888,13 @@ handle_signal()
         fi
         finish="$(now_ns)"
         if [ "$benchmark_phase" = baseline ]; then
-            stage="$output_dir/A-original"
             if [ "$child_stopped" -eq 1 ]; then baseline_state="signalled"; else baseline_state="signal-child-active"; fi
             baseline_exit="$signal_code"
-            write_timing "$stage" "$benchmark_start_ns" "$finish" "$signal_code" "$signal_name"
+            write_timing baseline "$stage" "$benchmark_start_ns" "$finish" "$signal_code" "$signal_name"
         elif [ "$benchmark_phase" = pro-audio ]; then
-            stage="$output_dir/B-pro-audio"
             if [ "$child_stopped" -eq 1 ]; then pro_state="signalled"; else pro_state="signal-child-active"; fi
             pro_exit="$signal_code"
-            write_timing "$stage" "$benchmark_start_ns" "$finish" "$signal_code" "$signal_name"
+            write_timing pro-audio "$stage" "$benchmark_start_ns" "$finish" "$signal_code" "$signal_name"
         fi
         if [ "$child_stopped" -eq 0 ]; then printf '%s\n' "$benchmark_pid" > "$stage/signal-child-active.pid"; fi
         benchmark_pid=""
@@ -835,7 +971,7 @@ runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
 lock_dir="$runtime_dir/ableton-pw-pro-audio-${UID}-${device_id}.lock"
 if ! mkdir -m 700 -- "$lock_dir"; then
     result="concurrent-run"
-    message="Device $device_id already has an active Pro Audio comparison."
+    message="Device $device_id already has an active Pro Audio comparison or a stale lock: $lock_dir"
     write_status "$EX_ACTIVITY" || true
     printf '!! %s\n' "$message" >&2
     exit "$EX_ACTIVITY"
@@ -881,8 +1017,50 @@ pro_profile_available="$(jq -r '.info.params.EnumProfile[] | select(.name == "pr
     || fail "$EX_DATAERR" invalid-current-profile 'Select one listed current profile.'
 [ "$pro_profile_available" != no ] \
     || fail "$EX_DATAERR" pro-audio-unavailable 'PipeWire must mark the Pro Audio profile as available.'
-[ "$original_profile_index" != "$pro_profile_index" ] \
-    || fail "$EX_DATAERR" already-pro-audio 'Select the regular device profile for the first run.'
+
+if [ "$original_profile_name" = pro-audio ]; then
+    baseline_profile_name="$(stored_profile_name \
+        "$output_dir/before/default-profiles.canonical.txt" 2>/dev/null || true)"
+    [ -n "$baseline_profile_name" ] \
+        && [ "$baseline_profile_name" != off ] \
+        && [ "$baseline_profile_name" != pro-audio ] \
+        || fail "$EX_DATAERR" baseline-profile-missing \
+            'Pro Audio is current. Save one available regular profile before running this comparison.'
+    baseline_count="$(jq --arg name "$baseline_profile_name" \
+        '[.info.params.EnumProfile[]? | select(.name == $name)] | length' \
+        "$output_dir/before/device.json")"
+    [ "$baseline_count" -eq 1 ] \
+        || fail "$EX_DATAERR" baseline-profile-ambiguous \
+            'The saved regular profile must identify one profile on this device.'
+    baseline_profile_index="$(jq -er --arg name "$baseline_profile_name" '
+        .info.params.EnumProfile[] | select(.name == $name)
+        | .index
+        | select(type == "number" and floor == . and . >= 0 and . <= 2147483647)
+      ' "$output_dir/before/device.json" 2>/dev/null || true)"
+    baseline_profile_available="$(jq -r --arg name "$baseline_profile_name" '
+        .info.params.EnumProfile[] | select(.name == $name) | (.available // "unknown")
+      ' "$output_dir/before/device.json")"
+    [ -n "$baseline_profile_index" ] \
+        || fail "$EX_DATAERR" baseline-profile-invalid \
+            'The saved regular profile needs a numeric index.'
+    [ "$baseline_profile_available" != no ] \
+        || fail "$EX_DATAERR" baseline-profile-unavailable \
+            'PipeWire must mark the saved regular profile as available.'
+    baseline_profile_source="wireplumber-saved"
+    first_phase="pro-audio"
+    second_phase="baseline"
+    second_profile_index="$baseline_profile_index"
+    second_profile_name="$baseline_profile_name"
+else
+    baseline_profile_index="$original_profile_index"
+    baseline_profile_name="$original_profile_name"
+    baseline_profile_source="current"
+    first_phase="baseline"
+    second_phase="pro-audio"
+    second_profile_index="$pro_profile_index"
+    second_profile_name="pro-audio"
+fi
+second_stage="$output_dir/B-$second_phase"
 
 preflight_complete=1
 target_preflight_activity="$(target_graph_activity_state \
@@ -899,7 +1077,7 @@ fi
 
 if [ "$mode" = discover ]; then
     result="discovery-ok"
-    message="Discovery recorded the device and one available Pro Audio profile. The profile stayed at its baseline."
+    message="Discovery recorded both eligible profiles and their run order. No profile changed."
     exit 0
 fi
 
@@ -913,61 +1091,79 @@ fi
 mkdir -- "$output_dir/A-original" \
     || fail "$EX_SOFTWARE" artifact-failed 'Create the original-profile report directory.'
 sleep "$settle_seconds"
-if ! verify_profile "$original_profile_index" "$original_profile_name" settle-baseline; then
-    fail "$EX_DATAERR" baseline-settle-profile-changed 'The target identity or original profile changed during the baseline settle interval.'
+if ! verify_profile "$original_profile_index" "$original_profile_name" "settle-$first_phase"; then
+    fail "$EX_DATAERR" "$first_phase-settle-profile-changed" \
+        'The target identity or original profile changed during the first settle interval.'
 fi
 if scan_activity "$output_dir/A-original/activity-before.tsv"; then
-    pre_baseline_activity="clear"
+    record_phase_activity "$first_phase" before clear
 else
-    pre_baseline_activity="detected"
-    fail "$EX_ACTIVITY" baseline-settle-activity 'Close Live and each Wine process before the first run.'
+    record_phase_activity "$first_phase" before detected
+    fail "$EX_ACTIVITY" "$first_phase-settle-activity" 'Close Live and each Wine process before the first run.'
 fi
 if ! snapshot "$output_dir/A-original/before-state"; then
-    fail "$EX_DATAERR" baseline-before-snapshot-failed 'The state record ended early before the first command.'
+    fail "$EX_DATAERR" "$first_phase-before-snapshot-failed" \
+        'The state record ended early before the first command.'
 fi
+target_before_first_activity="$(target_graph_activity_state \
+    "$output_dir/A-original/before-state/target-device-activity.json")" \
+    || fail "$EX_DATAERR" "$first_phase-target-evidence-invalid" \
+        'The target device activity record needs a recognised state before the first run.'
+record_phase_target_activity "$first_phase" before "$target_before_first_activity"
+[ "$target_before_first_activity" = clear ] \
+    || fail "$EX_ACTIVITY" "$first_phase-target-active-before-run" \
+        'Close each target device client before the first command.'
 if ! identity_matches_original "$output_dir/A-original/before-state/device.json" \
-        "$output_dir/events/baseline-before.device-identity.json" \
+        "$output_dir/events/$first_phase-before.device-identity.json" \
     || [ "$(profile_index "$output_dir/A-original/before-state/device.json" 2>/dev/null || true)" != "$original_profile_index" ] \
     || [ "$(profile_name "$output_dir/A-original/before-state/device.json" 2>/dev/null || true)" != "$original_profile_name" ] \
     || ! stage_matches_before "$output_dir/A-original/before-state"; then
-    fail "$EX_DATAERR" baseline-settle-state-changed 'Restore the recorded device, profile, routes, defaults, and settings before the first run.'
+    fail "$EX_DATAERR" "$first_phase-settle-state-changed" \
+        'Restore the recorded device, profile, routes, defaults, and settings before the first run.'
 fi
 
-if run_benchmark_leg baseline "$output_dir/A-original"; then
-    baseline_exit=0
-    baseline_state="passed"
+if run_benchmark_leg "$first_phase" "$output_dir/A-original"; then
+    leg_exit=0
+    record_phase_result "$first_phase" passed 0
 else
-    baseline_exit=$?
-    baseline_state="failed"
-    result="baseline-benchmark-failed"
-    message="The first command ended with status $baseline_exit. The profile stayed at its baseline."
-    exit "$baseline_exit"
+    leg_exit=$?
+    record_phase_result "$first_phase" failed "$leg_exit"
+    result="$first_phase-benchmark-failed"
+    message="The first command ended with status $leg_exit. The original profile stayed selected."
+    exit "$leg_exit"
 fi
 
 if scan_activity "$output_dir/A-original/activity-after.tsv"; then
-    post_baseline_activity="clear"
+    record_phase_activity "$first_phase" after clear
 else
-    post_baseline_activity="detected"
-    fail "$EX_ACTIVITY" baseline-left-activity 'Close each process started by the first command. The profile stayed at its baseline.'
+    record_phase_activity "$first_phase" after detected
+    fail "$EX_ACTIVITY" "$first_phase-left-activity" \
+        'Close each process started by the first command. The original profile stayed selected.'
 fi
 if ! snapshot "$output_dir/A-original/after-state"; then
-    fail "$EX_DATAERR" baseline-snapshot-failed 'The state record ended early after the first command.'
+    fail "$EX_DATAERR" "$first_phase-snapshot-failed" \
+        'The state record ended early after the first command.'
 fi
 if ! identity_matches_original "$output_dir/A-original/after-state/device.json" \
         "$output_dir/events/pre-switch.device-identity.json" \
     || [ "$(profile_index "$output_dir/A-original/after-state/device.json" 2>/dev/null || true)" != "$original_profile_index" ] \
     || [ "$(profile_name "$output_dir/A-original/after-state/device.json" 2>/dev/null || true)" != "$original_profile_name" ] \
     || ! stage_matches_before "$output_dir/A-original/after-state"; then
-    fail "$EX_DATAERR" baseline-state-changed 'Return the device, profile, routes, defaults, and settings to the recorded baseline.'
+    fail "$EX_DATAERR" "$first_phase-state-changed" \
+        'Return the device, profile, routes, defaults, and settings to the recorded starting state.'
 fi
-target_after_baseline_activity="$(target_graph_activity_state \
+target_after_first_activity="$(target_graph_activity_state \
     "$output_dir/A-original/after-state/target-device-activity.json")" \
-    || fail "$EX_DATAERR" baseline-target-evidence-invalid 'The target device activity record needs a recognised state after the first run.'
-[ "$target_after_baseline_activity" = clear ] \
-    || fail "$EX_ACTIVITY" baseline-target-active 'Close each target device client started by the first command.'
+    || fail "$EX_DATAERR" "$first_phase-target-evidence-invalid" \
+        'The target device activity record needs a recognised state after the first run.'
+record_phase_target_activity "$first_phase" after "$target_after_first_activity"
+[ "$target_after_first_activity" = clear ] \
+    || fail "$EX_ACTIVITY" "$first_phase-target-active" \
+        'Close each target device client started by the first command.'
 if ! scan_activity "$output_dir/A-original/activity-pre-switch.tsv"; then
-    post_baseline_activity="detected"
-    fail "$EX_ACTIVITY" baseline-pre-switch-activity 'Close Live and each Wine process before profile selection.'
+    record_phase_activity "$first_phase" after detected
+    fail "$EX_ACTIVITY" "$first_phase-pre-switch-activity" \
+        'Close Live and each Wine process before profile selection.'
 fi
 if ! capture_target_graph_activity "$output_dir/events/immediately-before-switch"; then
     fail "$EX_DATAERR" pre-switch-target-evidence-failed 'The device state record ended early before profile selection.'
@@ -979,74 +1175,87 @@ target_pre_switch_activity="$(target_graph_activity_state \
     || fail "$EX_ACTIVITY" pre-switch-target-active 'Close each target device client before profile selection.'
 
 profile_mutation_started=1
-if ! set_profile_transient "$pro_profile_index" switch-pro-audio; then
+if ! set_profile_transient "$second_profile_index" "switch-$second_phase"; then
     switch_state="failed"
-    fail "$EX_SWITCH" profile-switch-failed 'The Pro Audio selection command ended with an error.'
+    fail "$EX_SWITCH" profile-switch-failed 'The comparison-profile selection command ended with an error.'
 fi
-if ! verify_profile "$pro_profile_index" pro-audio switch-pro-audio; then
+if ! verify_profile "$second_profile_index" "$second_profile_name" "switch-$second_phase"; then
     switch_state="unverified"
     fail "$EX_SWITCH" profile-switch-unverified 'The profile check found a different profile after selection.'
 fi
 switch_state="verified"
 
-mkdir -- "$output_dir/B-pro-audio" \
-    || fail "$EX_SOFTWARE" artifact-failed 'Create the Pro Audio report directory.'
+mkdir -- "$second_stage" \
+    || fail "$EX_SOFTWARE" artifact-failed 'Create the comparison-profile report directory.'
 sleep "$settle_seconds"
-if ! verify_profile "$pro_profile_index" pro-audio settle-pro-audio; then
-    fail "$EX_SWITCH" pro-audio-settle-profile-changed 'Restore the recorded device identity and Pro Audio profile before the second run.'
+if ! verify_profile "$second_profile_index" "$second_profile_name" "settle-$second_phase"; then
+    fail "$EX_SWITCH" "$second_phase-settle-profile-changed" \
+        'Restore the recorded device identity and selected comparison profile before the second run.'
 fi
-if scan_activity "$output_dir/B-pro-audio/activity-before.tsv"; then
-    pre_pro_activity="clear"
+if scan_activity "$second_stage/activity-before.tsv"; then
+    record_phase_activity "$second_phase" before clear
 else
-    pre_pro_activity="detected"
-    fail "$EX_ACTIVITY" pro-audio-settle-activity 'Close Live and each Wine process before the second run.'
+    record_phase_activity "$second_phase" before detected
+    fail "$EX_ACTIVITY" "$second_phase-settle-activity" \
+        'Close Live and each Wine process before the second run.'
 fi
-if ! snapshot "$output_dir/B-pro-audio/before-state"; then
-    fail "$EX_SWITCH" pro-audio-snapshot-failed 'The device state record ended early before the second run.'
+if ! snapshot "$second_stage/before-state"; then
+    fail "$EX_SWITCH" "$second_phase-snapshot-failed" \
+        'The device state record ended early before the second run.'
 fi
-target_before_pro_activity="$(target_graph_activity_state \
-    "$output_dir/B-pro-audio/before-state/target-device-activity.json")" \
-    || fail "$EX_SWITCH" pro-audio-target-evidence-invalid 'The Pro Audio device activity record needs a recognised state.'
-[ "$target_before_pro_activity" = clear ] \
-    || fail "$EX_ACTIVITY" pro-audio-target-active-before-run 'Close each target device client before the second command.'
-if ! identity_matches_original "$output_dir/B-pro-audio/before-state/device.json" \
-        "$output_dir/events/pro-audio-before.device-identity.json" \
-    || [ "$(profile_index "$output_dir/B-pro-audio/before-state/device.json" 2>/dev/null || true)" != "$pro_profile_index" ] \
-    || [ "$(profile_name "$output_dir/B-pro-audio/before-state/device.json" 2>/dev/null || true)" != pro-audio ]; then
-    fail "$EX_SWITCH" pro-audio-state-changed 'The profile check found a different profile before the second command.'
+target_before_second_activity="$(target_graph_activity_state \
+    "$second_stage/before-state/target-device-activity.json")" \
+    || fail "$EX_SWITCH" "$second_phase-target-evidence-invalid" \
+        'The comparison-profile device activity record needs a recognised state.'
+record_phase_target_activity "$second_phase" before "$target_before_second_activity"
+[ "$target_before_second_activity" = clear ] \
+    || fail "$EX_ACTIVITY" "$second_phase-target-active-before-run" \
+        'Close each target device client before the second command.'
+if ! identity_matches_original "$second_stage/before-state/device.json" \
+        "$output_dir/events/$second_phase-before.device-identity.json" \
+    || [ "$(profile_index "$second_stage/before-state/device.json" 2>/dev/null || true)" != "$second_profile_index" ] \
+    || [ "$(profile_name "$second_stage/before-state/device.json" 2>/dev/null || true)" != "$second_profile_name" ]; then
+    fail "$EX_SWITCH" "$second_phase-state-changed" \
+        'The profile check found a different profile before the second command.'
 fi
 
-if run_benchmark_leg pro-audio "$output_dir/B-pro-audio"; then
-    pro_exit=0
-    pro_state="passed"
+if run_benchmark_leg "$second_phase" "$second_stage"; then
+    leg_exit=0
+    record_phase_result "$second_phase" passed 0
 else
-    pro_exit=$?
-    pro_state="failed"
+    leg_exit=$?
+    record_phase_result "$second_phase" failed "$leg_exit"
 fi
 
-if scan_activity "$output_dir/B-pro-audio/activity-after.tsv"; then
-    post_pro_activity="clear"
+if scan_activity "$second_stage/activity-after.tsv"; then
+    record_phase_activity "$second_phase" after clear
 else
-    post_pro_activity="detected"
+    record_phase_activity "$second_phase" after detected
 fi
 
-if [ "$pro_state" = failed ]; then
-    result="pro-audio-benchmark-failed"
-    message="The second command ended with status $pro_exit. Profile restoration starts now."
-    exit "$pro_exit"
+if [ "$leg_exit" -ne 0 ]; then
+    result="$second_phase-benchmark-failed"
+    message="The second command ended with status $leg_exit. Profile restoration starts now."
+    exit "$leg_exit"
 fi
-if ! snapshot "$output_dir/B-pro-audio/after-state"; then
-    fail "$EX_DATAERR" pro-audio-after-snapshot-failed 'The device state record ended early after the second run.'
+if ! snapshot "$second_stage/after-state"; then
+    fail "$EX_DATAERR" "$second_phase-after-snapshot-failed" \
+        'The device state record ended early after the second run.'
 fi
-target_after_pro_activity="$(target_graph_activity_state \
-    "$output_dir/B-pro-audio/after-state/target-device-activity.json")" \
-    || fail "$EX_DATAERR" pro-audio-target-evidence-invalid 'The target device activity record needs a recognised state after the second run.'
-if [ "$post_pro_activity" = detected ]; then
-    fail "$EX_ACTIVITY" pro-audio-left-activity 'Close each process started by the second command. Profile restoration starts now.'
+target_after_second_activity="$(target_graph_activity_state \
+    "$second_stage/after-state/target-device-activity.json")" \
+    || fail "$EX_DATAERR" "$second_phase-target-evidence-invalid" \
+        'The target device activity record needs a recognised state after the second run.'
+record_phase_target_activity "$second_phase" after "$target_after_second_activity"
+if { [ "$second_phase" = baseline ] && [ "$post_baseline_activity" = detected ]; } \
+    || { [ "$second_phase" = pro-audio ] && [ "$post_pro_activity" = detected ]; }; then
+    fail "$EX_ACTIVITY" "$second_phase-left-activity" \
+        'Close each process started by the second command. Profile restoration starts now.'
 fi
-[ "$target_after_pro_activity" = clear ] \
-    || fail "$EX_ACTIVITY" pro-audio-target-active 'Close each target device client started by the second command. Profile restoration starts now.'
+[ "$target_after_second_activity" = clear ] \
+    || fail "$EX_ACTIVITY" "$second_phase-target-active" \
+        'Close each target device client started by the second command. Profile restoration starts now.'
 
 result="ab-complete"
-message="Both profile runs completed. The original profile and state match the baseline."
+message="Both profile runs completed. The original profile and state match the recorded start."
 exit 0
