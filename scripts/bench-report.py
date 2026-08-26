@@ -9,6 +9,7 @@ also manages the Wine session.
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import json
@@ -17,14 +18,21 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Iterable
+import uuid
 
 
 SCHEMA = "ableton-linux-benchmark/v1"
+CSV_SCHEMA = "ableton-linux-cpu-benchmark-csv/v1"
+RESOURCE_SAMPLE_INTERVAL_SECONDS = 1
+MACHINE_ID_FILENAME = "cpu-benchmark-machine-id-v1"
+MACHINE_ID_RE = re.compile(r"[0-9a-f]{32}")
 DEFAULT_NODE_RE = r"Ableton|Live|[Pp]ipe[Aa][Ss][Ii][Oo]"
 CANONICAL_SETS = (
     "Benchmark_Zero", "Benchmark_Empty", "Benchmark_Inbuilts", "Benchmark_Max4Live", "Benchmark_VSTs",
@@ -70,6 +78,103 @@ XRUN_RE = re.compile(
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def filename_timestamp(value: str) -> str:
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"UTC run timestamp must use an ISO-8601 value: {value!r}") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"run timestamp must include a UTC offset: {value!r}")
+    return parsed.astimezone(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def benchmark_machine_id_path(environment: dict[str, str] | None = None) -> Path:
+    values = os.environ if environment is None else environment
+    config_home = values.get("ABLETON_CONFIG_HOME")
+    if not config_home:
+        xdg_home, home = values.get("XDG_CONFIG_HOME"), values.get("HOME")
+        if xdg_home:
+            config_home = str(Path(xdg_home) / "ableton-wine")
+        elif home:
+            config_home = str(Path(home) / ".config/ableton-wine")
+    if not config_home:
+        raise ValueError("set HOME, XDG_CONFIG_HOME, or ABLETON_CONFIG_HOME to store the benchmark report source ID")
+    return Path(config_home) / MACHINE_ID_FILENAME
+
+
+def read_benchmark_machine_id(path: Path) -> str:
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError(f"benchmark report source ID must be a regular file: {path}")
+        if details.st_uid != os.geteuid():
+            raise ValueError(f"benchmark report source ID must belong to the current user: {path}")
+        if stat.S_IMODE(details.st_mode) != 0o600:
+            raise ValueError(f"benchmark report source ID must use mode 0600: {path}")
+        with os.fdopen(descriptor) as source:
+            descriptor = -1
+            value = source.read(65).strip()
+    except OSError as error:
+        raise ValueError(f"check access to benchmark report source ID file {path}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not MACHINE_ID_RE.fullmatch(value):
+        raise ValueError(f"benchmark report source ID must contain 32 lowercase hexadecimal characters: {path}")
+    return value
+
+
+def load_benchmark_machine_id(
+    environment: dict[str, str] | None = None,
+    *,
+    path: Path | None = None,
+    token: str | None = None,
+) -> str:
+    target = path or benchmark_machine_id_path(environment)
+    if target.exists() or target.is_symlink():
+        return read_benchmark_machine_id(target)
+    candidate = token or uuid.uuid4().hex
+    if not MACHINE_ID_RE.fullmatch(candidate):
+        raise ValueError("generated benchmark report source ID must contain 32 lowercase hexadecimal characters")
+    descriptor = -1
+    temporary: Path | None = None
+    try:
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{MACHINE_ID_FILENAME}.", dir=target.parent,
+        )
+        temporary = Path(temporary_name)
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as output:
+            descriptor = -1
+            output.write(candidate + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            pass
+    except OSError as error:
+        raise ValueError(f"check access to benchmark report source ID location {target}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    return read_benchmark_machine_id(target)
+
+
+def cpu_benchmark_csv_filename(machine_id: str, created_at: str) -> str:
+    if not MACHINE_ID_RE.fullmatch(machine_id):
+        raise ValueError("run benchmark report source ID must contain 32 lowercase hexadecimal characters")
+    return f"{machine_id}-{filename_timestamp(created_at)}_cpu-benchmark.csv"
 
 
 def dump_json(path: Path, value: Any) -> None:
@@ -772,9 +877,9 @@ def relevant_pids(prefix: Path, wine_root: Path, explicit: Iterable[int]) -> lis
     return sorted(values)
 
 
-def host_cpu_snapshot() -> dict[str, list[int]]:
+def host_cpu_snapshot(root: Path = Path("/proc")) -> dict[str, list[int]]:
     values: dict[str, list[int]] = {}
-    for line in read_text(Path("/proc/stat")).splitlines():
+    for line in read_text(root / "stat").splitlines():
         fields = line.split()
         if not fields or not re.fullmatch(r"cpu\d*", fields[0]):
             continue
@@ -783,6 +888,220 @@ def host_cpu_snapshot() -> dict[str, list[int]]:
         except ValueError:
             continue
     return values
+
+
+def parse_meminfo(text: str) -> dict[str, int]:
+    wanted = {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        fields = line.replace(":", " ", 1).split()
+        if len(fields) < 2 or fields[0] not in wanted:
+            continue
+        try:
+            value = int(fields[1])
+        except ValueError:
+            continue
+        if len(fields) >= 3 and fields[2].lower() == "kb":
+            value *= 1024
+        values[fields[0]] = value
+    return values
+
+
+def parse_loadavg(text: str) -> dict[str, Any]:
+    fields = text.split()
+    if len(fields) < 4 or "/" not in fields[3]:
+        return {}
+    runnable, tasks = fields[3].split("/", 1)
+    try:
+        return {
+            "load_1m": float(fields[0]),
+            "load_5m": float(fields[1]),
+            "load_15m": float(fields[2]),
+            "runnable_tasks": int(runnable),
+            "total_tasks": int(tasks),
+        }
+    except ValueError:
+        return {}
+
+
+def parse_pressure(text: str) -> dict[str, dict[str, float | int]]:
+    values: dict[str, dict[str, float | int]] = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 2 or fields[0] not in {"some", "full"}:
+            continue
+        row: dict[str, float | int] = {}
+        for field in fields[1:]:
+            if "=" not in field:
+                continue
+            key, raw_value = field.split("=", 1)
+            try:
+                row[key] = int(raw_value) if key == "total" else float(raw_value)
+            except ValueError:
+                continue
+        if "total" in row:
+            values[fields[0]] = row
+    return values
+
+
+def filesystem_capacity(path: Path) -> dict[str, int]:
+    try:
+        details = os.statvfs(path)
+    except OSError:
+        return {}
+    return {
+        "total_bytes": details.f_blocks * details.f_frsize,
+        "available_bytes": details.f_bavail * details.f_frsize,
+    }
+
+
+def system_resource_snapshot(proc_root: Path = Path("/proc")) -> dict[str, Any]:
+    begin_ns = time.monotonic_ns()
+    cpu = host_cpu_snapshot(proc_root)
+    memory = parse_meminfo(read_text(proc_root / "meminfo"))
+    load = parse_loadavg(read_text(proc_root / "loadavg"))
+    pressure = {
+        name: parse_pressure(read_text(proc_root / "pressure" / name))
+        for name in ("cpu", "memory", "io")
+    }
+    end_ns = time.monotonic_ns()
+    return {
+        "captured_at": utc_now(),
+        "monotonic_begin_ns": begin_ns,
+        "monotonic_end_ns": end_ns,
+        "monotonic_ns": (begin_ns + end_ns) // 2,
+        "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
+        "cpu": cpu,
+        "memory": memory,
+        "load": load,
+        "pressure": pressure,
+    }
+
+
+def aggregate_cpu_interval(before: list[int] | None, after: list[int] | None) -> dict[str, float | None]:
+    fields = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
+    if before is None or after is None or len(before) < 4 or len(after) < 4:
+        return {name: None for name in ("busy_percent", "idle_percent", "iowait_percent", "steal_percent")}
+    length = min(len(fields), len(before), len(after))
+    if any(after[index] < before[index] for index in range(length)):
+        return {name: None for name in ("busy_percent", "idle_percent", "iowait_percent", "steal_percent")}
+    deltas = dict(zip(fields[:length], (after[index] - before[index] for index in range(length))))
+    total = sum(deltas.values())
+    if total <= 0:
+        return {name: None for name in ("busy_percent", "idle_percent", "iowait_percent", "steal_percent")}
+    percent = lambda value: round(value / total * 100, 6)  # noqa: E731
+    idle, iowait = deltas.get("idle", 0), deltas.get("iowait", 0)
+    return {
+        "busy_percent": percent(total - idle - iowait),
+        "idle_percent": percent(idle),
+        "iowait_percent": percent(iowait),
+        "steal_percent": percent(deltas.get("steal", 0)),
+    }
+
+
+def pressure_interval(
+    before: dict[str, dict[str, float | int]],
+    after: dict[str, dict[str, float | int]],
+    elapsed: float,
+) -> dict[str, float | None]:
+    values: dict[str, float | None] = {}
+    for kind in ("some", "full"):
+        first = before.get(kind, {}).get("total")
+        last = after.get(kind, {}).get("total")
+        delta = counter_delta(
+            first if isinstance(first, int) else None,
+            last if isinstance(last, int) else None,
+        )
+        values[f"{kind}_percent"] = round(delta / 1_000_000 / elapsed * 100, 6) if delta is not None else None
+    return values
+
+
+def system_resource_interval(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    *,
+    start_ns: int,
+    scheduled_ns: int,
+    index: int,
+) -> dict[str, Any]:
+    elapsed = max(0.000001, (after["monotonic_ns"] - before["monotonic_ns"]) / 1_000_000_000)
+    memory = after.get("memory", {})
+    load = after.get("load", {})
+    pressure = {
+        name: pressure_interval(
+            before.get("pressure", {}).get(name, {}),
+            after.get("pressure", {}).get(name, {}),
+            elapsed,
+        )
+        for name in ("cpu", "memory", "io")
+    }
+    availability = {
+        "cpu": bool(before.get("cpu", {}).get("cpu") and after.get("cpu", {}).get("cpu")),
+        "memory": all(key in memory for key in ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")),
+        "load": all(key in load for key in ("load_1m", "load_5m", "load_15m", "runnable_tasks", "total_tasks")),
+        **{
+            f"pressure_{name}": bool(
+                before.get("pressure", {}).get(name) and after.get("pressure", {}).get(name)
+            )
+            for name in ("cpu", "memory", "io")
+        },
+    }
+    cpu = aggregate_cpu_interval(before.get("cpu", {}).get("cpu"), after.get("cpu", {}).get("cpu"))
+    if cpu["busy_percent"] is None:
+        availability["cpu"] = False
+    observed_ns = after["monotonic_ns"]
+    return {
+        "index": index,
+        "captured_at": after["captured_at"],
+        "scheduled_elapsed_seconds": round((scheduled_ns - start_ns) / 1_000_000_000, 6),
+        "elapsed_seconds": round((observed_ns - start_ns) / 1_000_000_000, 6),
+        "schedule_lateness_seconds": round(max(0, observed_ns - scheduled_ns) / 1_000_000_000, 6),
+        "interval_seconds": round(elapsed, 6),
+        "collection_seconds": after["collection_seconds"],
+        "availability": availability,
+        "cpu": cpu,
+        "memory": {
+            "total_bytes": memory.get("MemTotal"),
+            "available_bytes": memory.get("MemAvailable"),
+            "swap_total_bytes": memory.get("SwapTotal"),
+            "swap_free_bytes": memory.get("SwapFree"),
+        },
+        "load": load,
+        "pressure": pressure,
+    }
+
+
+def advance_resource_deadline(scheduled_ns: int, observed_end_ns: int, interval_ns: int) -> int:
+    while scheduled_ns <= observed_end_ns:
+        scheduled_ns += interval_ns
+    return scheduled_ns
+
+
+def system_resource_report(samples: list[dict[str, Any]], duration: int) -> dict[str, Any]:
+    unavailable = sorted({
+        name for sample in samples for name, available in sample.get("availability", {}).items() if not available
+    })
+    expected = duration // RESOURCE_SAMPLE_INTERVAL_SECONDS
+    missed = max(0, expected - len(samples))
+    last_scheduled = samples[-1]["scheduled_elapsed_seconds"] if samples else None
+    return {
+        "collector": "in-process-procfs-v1",
+        "requested_interval_seconds": RESOURCE_SAMPLE_INTERVAL_SECONDS,
+        "expected_sample_count": expected,
+        "sample_count": len(samples),
+        "missed_sample_count": missed,
+        "coverage_complete": missed == 0 and last_scheduled == duration,
+        "first_sample_elapsed_seconds": samples[0]["elapsed_seconds"] if samples else None,
+        "last_sample_elapsed_seconds": samples[-1]["elapsed_seconds"] if samples else None,
+        "last_sample_scheduled_seconds": last_scheduled,
+        "maximum_schedule_lateness_seconds": max(
+            (sample["schedule_lateness_seconds"] for sample in samples), default=None,
+        ),
+        "total_collection_seconds": round(sum(sample["collection_seconds"] for sample in samples), 6),
+        "unavailable_components": unavailable,
+        "samples": samples,
+        "scope": "Resource samples provide system context. Set CPU totals remain the benchmark result.",
+    }
 
 
 def parse_kernel_counters(text: str) -> dict[str, Any]:
@@ -1423,8 +1742,12 @@ def capture(args: argparse.Namespace) -> int:
     dump_json(raw / "proc-before.json", before)
     for name, snapshot in kernel_before.items():
         (raw / f"proc-{name}-before.txt").write_text(snapshot.pop("raw"))
+    resource_previous = system_resource_snapshot()
     started_at = utc_now()
     start_ns = time.monotonic_ns()
+    resource_samples: list[dict[str, Any]] = []
+    resource_interval_ns = RESOURCE_SAMPLE_INTERVAL_SECONDS * 1_000_000_000
+    next_resource_ns = start_ns + resource_interval_ns
     pw_top_argv = ["pw-top", "-b"]
     metadata_argv = ["pw-metadata", "-m", "-n", "settings"]
     if shutil.which("stdbuf"):
@@ -1447,20 +1770,49 @@ def capture(args: argparse.Namespace) -> int:
         command.start()
     deadline_ns = start_ns + int(args.duration * 1_000_000_000)
     while True:
-        remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
+        now_ns = time.monotonic_ns()
+        remaining = (deadline_ns - now_ns) / 1_000_000_000
         if remaining <= 0:
             break
-        time.sleep(min(remaining, 0.25))
+        until_sample = max(0, (next_resource_ns - now_ns) / 1_000_000_000)
+        time.sleep(min(remaining, until_sample, 0.25))
+        observed_ns = time.monotonic_ns()
+        if observed_ns >= deadline_ns:
+            break
+        if observed_ns >= next_resource_ns and next_resource_ns < deadline_ns:
+            scheduled_ns = next_resource_ns
+            resource_current = system_resource_snapshot()
+            resource_samples.append(system_resource_interval(
+                resource_previous,
+                resource_current,
+                start_ns=start_ns,
+                scheduled_ns=scheduled_ns,
+                index=len(resource_samples) + 1,
+            ))
+            resource_previous = resource_current
+            next_resource_ns = advance_resource_deadline(
+                next_resource_ns, resource_current["monotonic_end_ns"], resource_interval_ns,
+            )
     # Stop every external tool at the shared end time. The later stop call waits
     # for each process to exit.
     for command in commands:
         command.terminate_at_deadline()
     after = proc_snapshot(prefix, wine_root, explicit)
     kernel_after = kernel_counter_snapshot()
+    resource_current = system_resource_snapshot()
+    resource_samples.append(system_resource_interval(
+        resource_previous,
+        resource_current,
+        start_ns=start_ns,
+        scheduled_ns=deadline_ns,
+        index=len(resource_samples) + 1,
+    ))
+    resources = system_resource_report(resource_samples, args.duration)
     audio_after = audio_endpoint_snapshot(raw, "after")
     policy_after = cpu_policy_snapshot()
     power_after = power_endpoint_snapshot(raw, "after")
     ended_at = utc_now()
+    dump_json(raw / "system-resources.json", resources)
     command_results = {command.name: command.stop() for command in commands}
     if args.osc == "off":
         command_results["osc"] = {"available": False, "reason": "set-has-no-controller"}
@@ -1561,6 +1913,7 @@ def capture(args: argparse.Namespace) -> int:
             ),
         },
         "process": {"summary": process_groups(delta, prefix, wine_root), "details": delta},
+        "system_resources": resources,
         "kernel_counters": kernel_deltas,
         "endpoint_identity": {
             "cpu_policy": {
@@ -1605,6 +1958,7 @@ def capture(args: argparse.Namespace) -> int:
             "power_after": "raw/power-after.json",
             "audio_before": "raw/audio-before.json",
             "audio_after": "raw/audio-after.json",
+            "system_resources": "raw/system-resources.json",
             "pw_top": "raw/pw-top.tsv",
             "pw_metadata": "raw/pw-metadata.tsv",
             "osc": "raw/osc.tsv",
@@ -1696,6 +2050,18 @@ def live_inventory(prefix: Path) -> dict[str, Any]:
 
 
 def profile(args: argparse.Namespace) -> int:
+    try:
+        run_file = getattr(args, "run_file", None)
+        if run_file:
+            run_value = load_json_object(Path(run_file))
+            machine_id = nested(run_value, "machine", "id")
+            if not isinstance(machine_id, str) or not MACHINE_ID_RE.fullmatch(machine_id):
+                raise ValueError("run file benchmark report source ID must contain 32 lowercase hexadecimal characters")
+        else:
+            machine_id = load_benchmark_machine_id()
+    except (ValueError, OSError) as error:
+        print(f"system profile: {error}", file=sys.stderr)
+        return 2
     output = Path(args.output).resolve()
     raw = output / "raw"
     raw.mkdir(parents=True, exist_ok=True)
@@ -1725,6 +2091,7 @@ def profile(args: argparse.Namespace) -> int:
     static_files = {
         "os-release": Path("/etc/os-release"),
         "proc-cpuinfo": Path("/proc/cpuinfo"),
+        "proc-meminfo": Path("/proc/meminfo"),
         "proc-cmdline": Path("/proc/cmdline"),
         "proc-asound-cards": Path("/proc/asound/cards"),
         "runtime-build-info": wine_root / "ABLETON-WINE-BUILD-INFO.txt",
@@ -1767,6 +2134,11 @@ def profile(args: argparse.Namespace) -> int:
         "kind": "system-profile",
         "capture_started_at": capture_started_at,
         "captured_at": utc_now(),
+        "machine": {
+            "id": machine_id,
+            "scope": "stable report source ID for this user",
+            "source": "persistent-random-v1",
+        },
         "system": {
             "uname": read_text(raw / "uname.stdout.txt").strip(),
             "os_release": parse_os_release(read_text(raw / "os-release.txt")),
@@ -1775,6 +2147,9 @@ def profile(args: argparse.Namespace) -> int:
             "cpu_sysfs": cpu_sysfs_inventory(),
             "cpu_topology_raw": "raw/lscpu-topology.stdout.txt",
             "cpu_description_raw": "raw/lscpu-json.stdout.txt",
+            "memory": parse_meminfo(read_text(raw / "proc-meminfo.txt")),
+            "memory_raw": "raw/proc-meminfo.txt",
+            "report_filesystem": filesystem_capacity(output),
             "gpu_lines": selected_lines(lspci_text, r"VGA|3D|Display"),
             "gpu_renderer_lines": selected_lines(glxinfo_text, r"renderer|vendor|version"),
             "gpu_raw": ["raw/lspci.stdout.txt", "raw/glxinfo.stdout.txt", "raw/vulkaninfo.stdout.txt"],
@@ -1864,6 +2239,13 @@ def profile(args: argparse.Namespace) -> int:
 
 
 def init_run(args: argparse.Namespace) -> int:
+    try:
+        machine_id = load_benchmark_machine_id()
+    except (ValueError, OSError) as error:
+        print(f"benchmark run: {error}", file=sys.stderr)
+        return 2
+    created_at = utc_now()
+    csv_filename = cpu_benchmark_csv_filename(machine_id, created_at)
     script_dir = Path(__file__).resolve().parent
     repository = script_dir.parent
     harness_records = [sha256_file(path) for path in (
@@ -1874,7 +2256,7 @@ def init_run(args: argparse.Namespace) -> int:
     value = {
         "schema": SCHEMA,
         "kind": "benchmark-run",
-        "created_at": utc_now(),
+        "created_at": created_at,
         "tag": args.tag,
         "duration_seconds_per_set": args.duration,
         "set_order": args.set,
@@ -1882,6 +2264,16 @@ def init_run(args: argparse.Namespace) -> int:
         "harness": {
             "files": harness_records,
             "identity_hash": manifest_hash(harness_records, repository),
+        },
+        "machine": {
+            "id": machine_id,
+            "scope": "stable report source ID for this user",
+            "source": "persistent-random-v1",
+        },
+        "csv": {
+            "schema": CSV_SCHEMA,
+            "filename": csv_filename,
+            "timestamp": filename_timestamp(created_at),
         },
         "status": "running",
     }
@@ -1909,12 +2301,19 @@ def markdown_report(report: dict[str, Any]) -> str:
         f"- Measurement time: {run.get('duration_seconds_per_set', 'pending')} seconds per set",
         f"- Benchmark files SHA-256: `{run.get('harness', {}).get('identity_hash', 'pending')}`",
         f"- Generated: {report['generated_at']}",
+    ]
+    if report.get("csv"):
+        lines.extend([
+            f"- Report source ID: `{report['csv'].get('machine_id', 'pending')}`",
+            f"- CSV file: `{report['csv'].get('filename', 'pending')}`",
+        ])
+    lines.extend([
         "",
         "## Results",
         "",
         "| Set | Mode | Audio workers | Host CPU | Live CPU per core | Wine CPU per core | Hardware interrupts per second | Software interrupts per second | Power profile | Sample rate and buffer size | Audio settings | CPU policy | Process changes | PipeWire errors | DSP average and peak | Buffer changes | Crackle |",
         "|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---:|---:|---:|---|",
-    ]
+    ])
     for item in report["sets"]:
         process = item.get("process", {}).get("summary", {})
         host = item.get("process", {}).get("details", {}).get("host_cpu_percent", {}).get("cpu")
@@ -2099,6 +2498,9 @@ def load_completed_run(path: Path) -> dict[str, Any]:
     profile_value = load_json_object(profile_path)
     if (profile_value.get("schema"), profile_value.get("kind")) != (SCHEMA, "system-profile"):
         raise ValueError(f"{profile_path}: incompatible profile schema/kind")
+    csv_contract = benchmark_csv_contract(run)
+    if csv_contract and nested(profile_value, "machine", "id") != csv_contract[0]:
+        raise ValueError(f"{profile_path}: report source ID must match run.json")
     sets = []
     for name in CANONICAL_SETS:
         matches = sorted((run_dir / "sets").glob(f"*-{name}/measurement.json"))
@@ -2174,6 +2576,7 @@ def identity_comparison(
 
 
 IDENTITY_SPECS = (
+    ("benchmark_machine", "Report source ID", ("machine", "id"), True),
     ("runtime_identity", "Runtime build, Wine version, and folder", ("runtime",), False),
     ("prefix_identity", "Wine prefix folder and files", ("prefix",), False),
     ("live_install", "Live version, options, and worker setting", ("live",), False),
@@ -2181,6 +2584,8 @@ IDENTITY_SPECS = (
     ("cpu_description", "CPU description", ("system", "cpu"), False),
     ("cpu_topology", "CPU core layout", ("system", "cpu_topology"), False),
     ("cpu_policy_profile", "CPU policy before Live starts", ("system", "cpu_sysfs"), False),
+    ("memory_total", "Installed memory", ("system", "memory", "MemTotal"), True),
+    ("swap_total", "Configured swap", ("system", "memory", "SwapTotal"), True),
     ("system_software", "Kernel", ("system", "uname"), False),
     ("os_release", "Operating system", ("system", "os_release"), False),
     ("gpu", "GPU devices", ("system", "gpu_lines"), False),
@@ -2578,6 +2983,228 @@ def comparison_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+CPU_BENCHMARK_CSV_FIELDS = (
+    "csv_schema", "machine_id", "machine_id_scope", "run_created_at_utc",
+    "report_generated_at_utc", "run_status", "tag", "duration_seconds_per_set",
+    "row_kind", "set", "mode", "set_started_at_utc", "set_ended_at_utc",
+    "resource_expected_sample_count", "resource_sample_count", "resource_missed_sample_count",
+    "resource_coverage_complete", "resource_maximum_lateness_seconds",
+    "resource_sample_index", "resource_sample_timestamp_utc",
+    "resource_sample_scheduled_seconds", "resource_sample_elapsed_seconds",
+    "resource_sample_lateness_seconds", "resource_sample_interval_seconds",
+    "resource_collection_seconds", "resource_sample_complete", "resource_unavailable",
+    "host_cpu_busy_percent", "host_cpu_idle_percent", "host_cpu_iowait_percent",
+    "host_cpu_steal_percent", "load_1m", "load_5m", "load_15m", "runnable_tasks",
+    "total_tasks", "memory_total_bytes", "memory_available_bytes", "swap_total_bytes",
+    "swap_free_bytes", "filesystem_total_bytes", "filesystem_available_bytes",
+    "cpu_pressure_some_percent", "cpu_pressure_full_percent",
+    "memory_pressure_some_percent", "memory_pressure_full_percent",
+    "io_pressure_some_percent", "io_pressure_full_percent",
+    "window_host_cpu_percent", "live_cpu_percent_of_one_core",
+    "wine_cpu_percent_of_one_core", "pipewire_cpu_percent_of_one_core",
+    "audio_worker_count", "hardware_interrupts_per_second",
+    "software_interrupts_per_second", "pipewire_error_delta", "dsp_average_percent",
+    "dsp_peak_percent", "sample_rate_hz", "buffer_frames", "crackle_status",
+    "machine_profile_sha256", "operating_system", "kernel", "cpu_model", "logical_cpus",
+    "gpu", "audio_card_count", "power_profile_before_live", "pipewire_version",
+    "wireplumber_version", "wine_version", "runtime_identity_sha256",
+    "prefix_identity_sha256", "configuration_identity_sha256", "live_version",
+    "live_executable_sha256",
+)
+
+
+def spreadsheet_cell(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if stripped.startswith(("=", "+", "-", "@")) or value.startswith(("\t", "\r", "\n")):
+        return "'" + value
+    return value
+
+
+def benchmark_csv_contract(run: dict[str, Any]) -> tuple[str, str] | None:
+    machine_id = nested(run, "machine", "id")
+    csv_value = run.get("csv")
+    if machine_id is None and csv_value is None:
+        return None
+    if not isinstance(csv_value, dict):
+        raise ValueError("run CSV details must be an object")
+    if csv_value.get("schema") != CSV_SCHEMA:
+        raise ValueError(f"run CSV schema must be {CSV_SCHEMA}")
+    created_at = run.get("created_at")
+    if not isinstance(machine_id, str) or not isinstance(created_at, str):
+        raise ValueError("run must provide a 32-character report source ID and creation time")
+    expected = cpu_benchmark_csv_filename(machine_id, created_at)
+    filename = csv_value.get("filename")
+    if filename != expected or Path(expected).name != expected:
+        raise ValueError("run CSV filename must match its report source ID and creation time")
+    if csv_value.get("timestamp") != filename_timestamp(created_at):
+        raise ValueError("run CSV timestamp must match its creation time")
+    return machine_id, filename
+
+
+def csv_profile_values(profile_value: dict[str, Any], profile_sha256: str | None) -> dict[str, Any]:
+    system = profile_value.get("system", {})
+    uname_fields = str(system.get("uname", "")).split()
+    os_release = system.get("os_release", {})
+    cpu = system.get("cpu", {})
+    audio = system.get("audio_devices", {})
+    alsa_cards = str(audio.get("alsa_cards", ""))
+    filesystem = system.get("report_filesystem", {})
+    runtime = profile_value.get("runtime", {})
+    prefix = profile_value.get("prefix", {})
+    configuration = profile_value.get("configuration", {})
+    pipewire = profile_value.get("pipewire", {})
+    executables = profile_value.get("live", {}).get("executables", [])
+    return {
+        "machine_profile_sha256": profile_sha256,
+        "operating_system": os_release.get("PRETTY_NAME") or os_release.get("NAME") or os_release.get("ID"),
+        "kernel": uname_fields[2] if len(uname_fields) >= 3 else None,
+        "cpu_model": cpu.get("Model name"),
+        "logical_cpus": cpu.get("CPU(s)"),
+        "memory_total_bytes": nested(system, "memory", "MemTotal"),
+        "filesystem_total_bytes": filesystem.get("total_bytes"),
+        "filesystem_available_bytes": filesystem.get("available_bytes"),
+        "gpu": "; ".join(system.get("gpu_lines", [])),
+        "audio_card_count": sum(bool(re.match(r"^\s*\d+\s+\[", line)) for line in alsa_cards.splitlines()),
+        "power_profile_before_live": system.get("power_profile"),
+        "pipewire_version": nested(pipewire, "versions", "pipewire"),
+        "wireplumber_version": nested(pipewire, "versions", "wireplumber"),
+        "wine_version": runtime.get("wine_version"),
+        "runtime_identity_sha256": runtime.get("identity_hash"),
+        "prefix_identity_sha256": prefix.get("identity_hash"),
+        "configuration_identity_sha256": configuration.get("identity_hash"),
+        "live_version": ";".join(sorted({
+            str(item["product_version"]) for item in executables if item.get("product_version")
+        })),
+        "live_executable_sha256": ";".join(sorted({
+            str(item["sha256"]) for item in executables if item.get("sha256")
+        })),
+    }
+
+
+def csv_set_values(measurement: dict[str, Any]) -> dict[str, Any]:
+    summary = nested(measurement, "process", "summary") or {}
+    details = nested(measurement, "process", "details") or {}
+    counters = measurement.get("kernel_counters", {})
+    pw_top = nested(measurement, "pipewire", "pw_top") or {}
+    dsp = measurement.get("osc_dsp", {})
+    live = measurement.get("live", {})
+    audio_settings = nested(measurement, "endpoint_identity", "audio", "before", "graph_settings") or {}
+    resources = measurement.get("system_resources", {})
+    return {
+        "set": measurement.get("set"),
+        "mode": measurement.get("mode"),
+        "set_started_at_utc": measurement.get("started_at"),
+        "set_ended_at_utc": measurement.get("ended_at"),
+        "resource_expected_sample_count": resources.get("expected_sample_count"),
+        "resource_sample_count": resources.get("sample_count"),
+        "resource_missed_sample_count": resources.get("missed_sample_count"),
+        "resource_coverage_complete": resources.get("coverage_complete"),
+        "resource_maximum_lateness_seconds": resources.get("maximum_schedule_lateness_seconds"),
+        "window_host_cpu_percent": nested(details, "host_cpu_percent", "cpu"),
+        "live_cpu_percent_of_one_core": nested(summary, "live", "cpu_percent_of_one_core"),
+        "wine_cpu_percent_of_one_core": nested(summary, "wine_prefix", "cpu_percent_of_one_core"),
+        "pipewire_cpu_percent_of_one_core": nested(summary, "pipewire", "cpu_percent_of_one_core"),
+        "audio_worker_count": nested(summary, "live", "audio_worker_count"),
+        "hardware_interrupts_per_second": nested(counters, "interrupts", "total_rate_per_second"),
+        "software_interrupts_per_second": nested(counters, "softirqs", "total_rate_per_second"),
+        "pipewire_error_delta": pw_top.get("err_delta"),
+        "dsp_average_percent": dsp.get("average_percent"),
+        "dsp_peak_percent": dsp.get("peak_percent"),
+        "sample_rate_hz": live.get("sample_rate") or audio_settings.get("clock.rate"),
+        "buffer_frames": live.get("output_buffer_frames") or audio_settings.get("clock.quantum"),
+        "crackle_status": nested(measurement, "crackle", "status"),
+    }
+
+
+def csv_resource_values(sample: dict[str, Any] | None) -> dict[str, Any]:
+    if sample is None:
+        return {"row_kind": "set-summary"}
+    availability = sample.get("availability", {})
+    unavailable = sorted(name for name, available in availability.items() if not available)
+    return {
+        "row_kind": "resource-sample",
+        "resource_sample_index": sample.get("index"),
+        "resource_sample_timestamp_utc": sample.get("captured_at"),
+        "resource_sample_scheduled_seconds": sample.get("scheduled_elapsed_seconds"),
+        "resource_sample_elapsed_seconds": sample.get("elapsed_seconds"),
+        "resource_sample_lateness_seconds": sample.get("schedule_lateness_seconds"),
+        "resource_sample_interval_seconds": sample.get("interval_seconds"),
+        "resource_collection_seconds": sample.get("collection_seconds"),
+        "resource_sample_complete": bool(availability) and all(availability.values()),
+        "resource_unavailable": ";".join(unavailable),
+        "host_cpu_busy_percent": nested(sample, "cpu", "busy_percent"),
+        "host_cpu_idle_percent": nested(sample, "cpu", "idle_percent"),
+        "host_cpu_iowait_percent": nested(sample, "cpu", "iowait_percent"),
+        "host_cpu_steal_percent": nested(sample, "cpu", "steal_percent"),
+        "load_1m": nested(sample, "load", "load_1m"),
+        "load_5m": nested(sample, "load", "load_5m"),
+        "load_15m": nested(sample, "load", "load_15m"),
+        "runnable_tasks": nested(sample, "load", "runnable_tasks"),
+        "total_tasks": nested(sample, "load", "total_tasks"),
+        "memory_total_bytes": nested(sample, "memory", "total_bytes"),
+        "memory_available_bytes": nested(sample, "memory", "available_bytes"),
+        "swap_total_bytes": nested(sample, "memory", "swap_total_bytes"),
+        "swap_free_bytes": nested(sample, "memory", "swap_free_bytes"),
+        **{
+            f"{name}_pressure_{kind}_percent": nested(sample, "pressure", name, f"{kind}_percent")
+            for name in ("cpu", "memory", "io") for kind in ("some", "full")
+        },
+    }
+
+
+def benchmark_csv_rows(report: dict[str, Any], profile_sha256: str | None) -> list[dict[str, Any]]:
+    run = report["run"]
+    profile_value = report.get("profile", {})
+    common = {
+        "csv_schema": CSV_SCHEMA,
+        "machine_id": nested(run, "machine", "id"),
+        "machine_id_scope": nested(run, "machine", "scope"),
+        "run_created_at_utc": run.get("created_at"),
+        "report_generated_at_utc": report.get("generated_at"),
+        "run_status": run.get("status"),
+        "tag": run.get("tag"),
+        "duration_seconds_per_set": run.get("duration_seconds_per_set"),
+        **csv_profile_values(profile_value, profile_sha256),
+    }
+    rows = []
+    for measurement in report.get("sets", []):
+        set_values = csv_set_values(measurement)
+        samples = nested(measurement, "system_resources", "samples")
+        sample_values = samples if isinstance(samples, list) and samples else [None]
+        for sample in sample_values:
+            rows.append({**common, **set_values, **csv_resource_values(sample)})
+    if not rows:
+        rows.append({**common, "row_kind": "profile"})
+    return rows
+
+
+def write_benchmark_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    descriptor = -1
+    temporary: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as output:
+            descriptor = -1
+            writer = csv.DictWriter(output, fieldnames=CPU_BENCHMARK_CSV_FIELDS, extrasaction="raise", lineterminator="\n")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({name: spreadsheet_cell(row.get(name)) for name in CPU_BENCHMARK_CSV_FIELDS})
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def compare(args: argparse.Namespace) -> int:
     try:
         before = load_completed_run(Path(args.before))
@@ -2599,30 +3226,51 @@ def compare(args: argparse.Namespace) -> int:
 
 
 def render(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir).resolve()
-    run_path = run_dir / "run.json"
-    if not run_path.is_file():
-        print(f"missing {run_path}", file=sys.stderr)
+    try:
+        run_dir = Path(args.run_dir).resolve()
+        run_path = run_dir / "run.json"
+        if not run_path.is_file():
+            raise ValueError(f"report needs {run_path}")
+        run = load_json_object(run_path)
+        csv_contract = benchmark_csv_contract(run)
+        profile_path = run_dir / "profile/profile.json"
+        profile_value = load_json_object(profile_path) if profile_path.is_file() else {}
+        if csv_contract and profile_path.is_file() and nested(profile_value, "machine", "id") != csv_contract[0]:
+            raise ValueError("run and profile must use the same benchmark report source ID")
+        sets = []
+        for name in run.get("set_order", []):
+            matches = list((run_dir / "sets").glob(f"*-{name}/measurement.json"))
+            if matches:
+                sets.append(load_json_object(matches[0]))
+        profile_sha256 = sha256_file(profile_path).get("sha256") if profile_path.is_file() else None
+        report = {
+            "schema": SCHEMA,
+            "kind": "benchmark-report",
+            "generated_at": utc_now(),
+            "run": run,
+            "profile": profile_value,
+            "profile_file": {"path": "profile/profile.json", "sha256": profile_sha256},
+            "sets": sets,
+        }
+        if csv_contract:
+            machine_id, filename = csv_contract
+            rows = benchmark_csv_rows(report, profile_sha256)
+            report["csv"] = {
+                "schema": CSV_SCHEMA,
+                "filename": filename,
+                "machine_id": machine_id,
+                "row_count": len(rows),
+                "resource_sample_count": sum(row.get("row_kind") == "resource-sample" for row in rows),
+            }
+            csv_path = run_dir / filename
+            write_benchmark_csv(csv_path, rows)
+            report["csv"]["sha256"] = sha256_file(csv_path).get("sha256")
+        dump_json(run_dir / "report.json", report)
+        (run_dir / "report.md").write_text(markdown_report(report))
+        return 0
+    except (ValueError, OSError, json.JSONDecodeError) as error:
+        print(f"report: {error}", file=sys.stderr)
         return 2
-    run = json.loads(run_path.read_text())
-    profile_path = run_dir / "profile/profile.json"
-    profile_value = json.loads(profile_path.read_text()) if profile_path.is_file() else {}
-    sets = []
-    for name in run.get("set_order", []):
-        matches = list((run_dir / "sets").glob(f"*-{name}/measurement.json"))
-        if matches:
-            sets.append(json.loads(matches[0].read_text()))
-    report = {
-        "schema": SCHEMA,
-        "kind": "benchmark-report",
-        "generated_at": utc_now(),
-        "run": run,
-        "profile": profile_value,
-        "sets": sets,
-    }
-    dump_json(run_dir / "report.json", report)
-    (run_dir / "report.md").write_text(markdown_report(report))
-    return 0
 
 
 def annotate(args: argparse.Namespace) -> int:
@@ -2695,6 +3343,7 @@ def parser() -> argparse.ArgumentParser:
     profile_parser.add_argument("--prefix", required=True)
     profile_parser.add_argument("--wine-root", required=True)
     profile_parser.add_argument("--config-file", required=True)
+    profile_parser.add_argument("--run-file", help="reuse the report source ID from this run record")
     profile_parser.set_defaults(func=profile)
 
     init_parser = commands.add_parser("init-run", help="create the run record")

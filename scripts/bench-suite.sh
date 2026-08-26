@@ -38,8 +38,9 @@ usage: scripts/bench-suite.sh [options]
 The suite runs Zero, Empty, Inbuilts, Max4Live, and VSTs in that order. Zero
 measures Live while it is idle. The other sets use their control device for
 playback. The suite writes source data, report.json, and report.md. The command
-closes each started Live process by its exact process ID. Other Wine sessions
-continue.
+also writes one <machine-id>-<YYYYMMDDTHHMMSSffffffZ>_cpu-benchmark.csv file
+with system resource readings. The command closes each started Live process by
+its exact process ID. Other Wine sessions continue.
 EOF
 }
 
@@ -196,7 +197,8 @@ python3 "$here/bench-report.py" profile \
     --output "$output/profile" \
     --prefix "$ABLETON_WINEPREFIX" \
     --wine-root "$ABLETON_WINE_ROOT" \
-    --config-file "$ABLETON_CONFIG_FILE"
+    --config-file "$ABLETON_CONFIG_FILE" \
+    --run-file "$output/run.json"
 
 active_token=""
 launcher_pid=""
@@ -387,5 +389,13 @@ done
 
 python3 "$here/bench-report.py" update-run --output "$output/run.json" --status complete
 python3 "$here/bench-report.py" render --run-dir "$output"
+csv_path=""
+for candidate in "$output"/*_cpu-benchmark.csv; do
+    [ -f "$candidate" ] || continue
+    [ -z "$csv_path" ] || fail "the report contains more than one CPU benchmark CSV"
+    csv_path="$candidate"
+done
+[ -n "$csv_path" ] || fail "the report CSV is missing"
 finalized=1
 printf 'report: %s\n' "$output/report.md"
+printf 'csv: %s\n' "$csv_path"

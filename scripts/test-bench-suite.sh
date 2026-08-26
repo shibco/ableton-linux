@@ -64,6 +64,7 @@ dry_output="$base/dry-report"
     > "$base/default.out" 2> "$base/default.err" \
     || fail "valid dry-run preflight failed: $(cat "$base/default.err")"
 [ ! -e "$dry_output" ] || fail "dry-run created its report directory"
+[ ! -e "$config/cpu-benchmark-machine-id-v1" ] || fail "dry-run created a report source ID"
 [ "$(awk -F '\t' '$1 ~ /^[1-5]$/ && $4 == "30s" {count++} END {print count+0}' "$base/default.out")" -eq 5 ] \
     || fail "the default 30-second duration did not reach all five sets"
 [ "$(awk -F '\t' '$1 ~ /^[1-5]$/ {print $2}' "$base/default.out" | paste -sd, -)" \

@@ -33,6 +33,10 @@ period, its minimum run time is 29 seconds. OSC and `pw-top` data cover the
 first and last second of that period. An early exit or a silent final period
 gives limited crackle evidence.
 
+The reporter also schedules a reading of the available system resources each
+second. Each completed reading records its planned time, actual time, delay,
+and collection time.
+
 Check the planned run with:
 
 ```bash
@@ -64,7 +68,8 @@ The main files are:
 |---|---|
 | `report.json` | full machine-readable results |
 | `report.md` | short results table and run identity |
-| `run.json` | tag, set order, duration, status, and runner hash |
+| `<machine-id>-<YYYYMMDDTHHMMSSffffffZ>_cpu-benchmark.csv` | resource readings, set results, and a machine summary |
+| `run.json` | tag, set order, duration, report source ID, CSV filename, status, and runner hash |
 | `suite.log` | start-up, set changes, and session close events |
 | `profile/profile.json` | system, hardware, audio, Wine, PipeASIO, prefix, and Live details |
 | `profile/raw/` | original output from each system check |
@@ -74,6 +79,41 @@ The main files are:
 Each set records CPU use for the host, Live, Wine, PipeWire, and their threads.
 It also records context switches, task changes, audio errors, Live CPU values,
 and observed `AudioCalc` workers.
+
+## CSV resource report
+
+Each completed resource reading has its own CSV row. That row includes the set
+result, machine summary, and expected, recorded, and missed reading counts. A
+set with no completed reading has a set summary row. A run with no completed
+set has a profile row. You can filter one file by row type, set, or reading
+time.
+
+The resource fields cover:
+
+- host CPU busy, idle, storage-wait, and virtual-machine-wait percentages
+- system load and active task counts
+- available memory and swap
+- time tasks wait for CPU, memory, or storage
+
+The machine summary records the available report storage before Live starts.
+
+The first run creates a random report source ID in
+`$ABLETON_CONFIG_HOME/cpu-benchmark-machine-id-v1`. Each CSV includes it in the
+`machine_id` field, and later runs reuse it. The private file uses mode `0600`.
+
+The report source ID links reports that share this private file. It does not
+identify the hardware. The machine summary describes the hardware. The
+`<machine-id>` part of the filename is this report source ID:
+
+```text
+<machine-id>-<YYYYMMDDTHHMMSSffffffZ>_cpu-benchmark.csv
+```
+
+The timestamp records the original run creation time in UTC. A listener update
+rewrites the same CSV file.
+
+Copying the private ID file makes another setup use the same report source ID.
+Removing the file makes the next run create a new report source ID.
 
 The report saves before and after values for interrupts, audio devices, links,
 sample rate, buffer size, power profile, and CPU policy. A difference between

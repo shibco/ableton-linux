@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import importlib.util
+import csv
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -26,14 +30,23 @@ def load(name: str, filename: str):
 
 report = load("bench_report", "bench-report.py")
 osc = load("bench_osc", "bench-osc.py")
+FIXTURE_MACHINE_ID = "0123456789abcdef0123456789abcdef"
+FIXTURE_CREATED_AT = "2026-08-26T12:34:56.123456Z"
 
 
 def benchmark_profile(gates=None):
     return {
         "schema": report.SCHEMA, "kind": "system-profile",
+        "machine": {
+            "id": FIXTURE_MACHINE_ID,
+            "scope": "stable per-user benchmark ID",
+            "source": "persistent-random-v1",
+        },
         "system": {
             "uname": "Linux fixture 1", "os_release": {"ID": "fixture"},
             "cpu": {"Architecture": "x86_64", "CPU(s)": "8", "Model name": "Fixture CPU"},
+            "memory": {"MemTotal": 16 * 1024**3},
+            "report_filesystem": {"total_bytes": 100 * 1024**3, "available_bytes": 60 * 1024**3},
             "cpu_topology": [{"CPU": "0", "CORE": "0", "MHZ": "1234"}],
             "cpu_sysfs": {"cpus": [{"cpu": 0, "cpufreq.scaling_governor": "performance"}]},
             "gpu_lines": ["Fixture GPU"], "gpu_renderer_lines": ["Fixture renderer"],
@@ -62,6 +75,33 @@ def benchmark_profile(gates=None):
             {"name": "Dexed.vst3", "path": "/prefix/Dexed.vst3", "exists": True, "identity_hash": "dexed-a"},
             {"name": "K1v_x64.vst3", "path": "/prefix/K1v_x64.vst3", "exists": True, "identity_hash": "k1v-a"},
         ],
+    }
+
+
+def benchmark_resource_sample(index=1):
+    return {
+        "index": index,
+        "captured_at": "2026-08-26T12:35:01Z",
+        "scheduled_elapsed_seconds": float(index),
+        "elapsed_seconds": float(index) + 0.001,
+        "schedule_lateness_seconds": 0.001,
+        "interval_seconds": 1.0,
+        "collection_seconds": 0.0005,
+        "availability": {
+            "cpu": True, "memory": True, "load": True,
+            "pressure_cpu": True, "pressure_memory": True, "pressure_io": True,
+        },
+        "cpu": {"busy_percent": 25.0, "idle_percent": 70.0, "iowait_percent": 5.0, "steal_percent": 0.0},
+        "memory": {
+            "total_bytes": 16 * 1024**3, "available_bytes": 12 * 1024**3,
+            "swap_total_bytes": 4 * 1024**3, "swap_free_bytes": 3 * 1024**3,
+        },
+        "load": {"load_1m": 1.0, "load_5m": 0.8, "load_15m": 0.6, "runnable_tasks": 2, "total_tasks": 200},
+        "pressure": {
+            "cpu": {"some_percent": 2.0, "full_percent": 0.0},
+            "memory": {"some_percent": 0.1, "full_percent": 0.0},
+            "io": {"some_percent": 0.2, "full_percent": 0.1},
+        },
     }
 
 
@@ -141,6 +181,12 @@ def benchmark_measurement(name, live_cpu=10.0, missing=False, zero=False):
             for collector in ("pw-top", "pw-metadata", "osc")
         },
         "live": {"version": "12.4.3", "build": "fixture", "sample_rate": 48000, "output_buffer_frames": 64},
+        "system_resources": {
+            "collector": "in-process-procfs-v1", "requested_interval_seconds": 1,
+            "expected_sample_count": 30, "sample_count": 1, "missed_sample_count": 29,
+            "coverage_complete": False, "maximum_schedule_lateness_seconds": 0.001,
+            "samples": [benchmark_resource_sample()],
+        },
         "crackle": {"status": "no-instrumented-evidence"}, "confounders": [],
     }
     if missing:
@@ -154,7 +200,15 @@ def write_benchmark_run(root, *, status="complete", duration=30, profile=None, l
     (root / "run.json").write_text(json.dumps({
         "schema": report.SCHEMA, "kind": "benchmark-run", "harness": {"identity_hash": "harness-a"},
         "status": status, "tag": root.name, "duration_seconds_per_set": duration,
-        "set_order": list(report.CANONICAL_SETS),
+        "set_order": list(report.CANONICAL_SETS), "created_at": FIXTURE_CREATED_AT,
+        "machine": {
+            "id": FIXTURE_MACHINE_ID, "scope": "stable per-user benchmark ID", "source": "persistent-random-v1",
+        },
+        "csv": {
+            "schema": report.CSV_SCHEMA,
+            "filename": report.cpu_benchmark_csv_filename(FIXTURE_MACHINE_ID, FIXTURE_CREATED_AT),
+            "timestamp": report.filename_timestamp(FIXTURE_CREATED_AT),
+        },
     }))
     (root / "profile/profile.json").write_text(json.dumps(profile or benchmark_profile()))
     for index, name in enumerate(report.CANONICAL_SETS, 1):
@@ -343,6 +397,129 @@ class ParserTests(unittest.TestCase):
             home = report.effective_pipeasio_config({"HOME": str(root / "home")})
             self.assertEqual(home["path"], str(root / "home/.config/pipeasio/config.ini"))
             self.assertEqual(report.effective_pipeasio_config({})["path"], None)
+
+    def test_benchmark_machine_id_is_private_stable_and_filename_safe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "config/cpu-benchmark-machine-id-v1"
+            first = report.load_benchmark_machine_id(path=path, token=FIXTURE_MACHINE_ID)
+            second = report.load_benchmark_machine_id(path=path, token="f" * 32)
+            self.assertEqual(first, FIXTURE_MACHINE_ID)
+            self.assertEqual(second, FIXTURE_MACHINE_ID)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(
+                report.cpu_benchmark_csv_filename(first, FIXTURE_CREATED_AT),
+                f"{FIXTURE_MACHINE_ID}-20260826T123456123456Z_cpu-benchmark.csv",
+            )
+            self.assertNotEqual(
+                report.cpu_benchmark_csv_filename(first, "2026-08-26T12:34:56.123457Z"),
+                report.cpu_benchmark_csv_filename(first, FIXTURE_CREATED_AT),
+            )
+            with self.assertRaisesRegex(ValueError, "must contain 32 lowercase hexadecimal characters"):
+                report.cpu_benchmark_csv_filename("../machine", FIXTURE_CREATED_AT)
+            self.assertFalse(any(item.name.startswith(".cpu-benchmark-machine-id-v1.") for item in path.parent.iterdir()))
+
+    def test_benchmark_machine_id_refuses_malformed_or_indirect_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            invalid = root / "invalid"
+            invalid.write_text("machine/name\n")
+            invalid.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "must contain 32 lowercase hexadecimal characters"):
+                report.load_benchmark_machine_id(path=invalid)
+            permissive = root / "permissive"
+            permissive.write_text(FIXTURE_MACHINE_ID + "\n")
+            permissive.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "mode 0600"):
+                report.load_benchmark_machine_id(path=permissive)
+            link = root / "link"
+            link.symlink_to(permissive)
+            with self.assertRaisesRegex(ValueError, "check access|regular file"):
+                report.load_benchmark_machine_id(path=link)
+
+    def test_benchmark_machine_id_creation_failure_is_a_clean_refusal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parent = root / "config-as-file"
+            parent.write_text("fixture")
+            with self.assertRaisesRegex(ValueError, "check access.*report source ID location"):
+                report.load_benchmark_machine_id(path=parent / report.MACHINE_ID_FILENAME)
+            args = type("Args", (), {
+                "output": str(root / "run.json"), "tag": "fixture", "duration": 30,
+                "set": list(report.CANONICAL_SETS),
+            })()
+            with mock.patch.dict(os.environ, {"ABLETON_CONFIG_HOME": str(parent)}, clear=False), \
+                 mock.patch("builtins.print"):
+                self.assertEqual(report.init_run(args), 2)
+            self.assertFalse((root / "run.json").exists())
+
+    def test_init_run_stores_one_machine_timestamp_and_csv_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config"
+            report.load_benchmark_machine_id(path=config / report.MACHINE_ID_FILENAME, token=FIXTURE_MACHINE_ID)
+            args = type("Args", (), {
+                "output": str(root / "run.json"), "tag": "fixture", "duration": 30,
+                "set": list(report.CANONICAL_SETS),
+            })()
+            with mock.patch.dict(os.environ, {"ABLETON_CONFIG_HOME": str(config)}, clear=False), \
+                 mock.patch.object(report, "utc_now", return_value=FIXTURE_CREATED_AT):
+                self.assertEqual(report.init_run(args), 0)
+            run = json.loads((root / "run.json").read_text())
+            self.assertEqual(run["machine"]["id"], FIXTURE_MACHINE_ID)
+            self.assertEqual(
+                run["csv"]["filename"],
+                f"{FIXTURE_MACHINE_ID}-20260826T123456123456Z_cpu-benchmark.csv",
+            )
+
+    def test_resource_parsers_and_interval_report_available_capacity(self):
+        memory = report.parse_meminfo(
+            "MemTotal: 1000 kB\nMemAvailable: 750 kB\nSwapTotal: 200 kB\nSwapFree: 150 kB\n"
+        )
+        self.assertEqual(memory["MemAvailable"], 750 * 1024)
+        self.assertEqual(report.parse_loadavg("1.25 0.75 0.50 3/200 1234")["runnable_tasks"], 3)
+        pressure = report.parse_pressure("some avg10=1.00 avg60=0.5 avg300=0.1 total=100000\n")
+        self.assertEqual(pressure["some"]["total"], 100000)
+        before = {
+            "captured_at": "before", "monotonic_ns": 1_000_000_000, "collection_seconds": 0.001,
+            "cpu": {"cpu": [100, 0, 50, 1000, 10, 5, 5, 0]},
+            "memory": memory, "load": report.parse_loadavg("1 1 1 2/100 1"),
+            "pressure": {name: {"some": {"total": 1000}, "full": {"total": 500}} for name in ("cpu", "memory", "io")},
+        }
+        after = {
+            **before, "captured_at": "after", "monotonic_ns": 2_000_000_000,
+            "cpu": {"cpu": [120, 0, 60, 1060, 15, 7, 8, 0]},
+            "pressure": {name: {"some": {"total": 11000}, "full": {"total": 5500}} for name in ("cpu", "memory", "io")},
+        }
+        sample = report.system_resource_interval(
+            before, after, start_ns=1_000_000_000, scheduled_ns=2_000_000_000, index=1,
+        )
+        self.assertEqual(sample["cpu"]["busy_percent"], 35.0)
+        self.assertEqual(sample["cpu"]["idle_percent"], 60.0)
+        self.assertEqual(sample["pressure"]["cpu"]["some_percent"], 1.0)
+        self.assertTrue(all(sample["availability"].values()))
+        incomplete = report.system_resource_report([sample], 30)
+        self.assertEqual(incomplete["missed_sample_count"], 29)
+        self.assertFalse(incomplete["coverage_complete"])
+        self.assertTrue(report.system_resource_report([sample], 1)["coverage_complete"])
+        complete_samples = [{**sample, "scheduled_elapsed_seconds": float(index)} for index in range(1, 8)]
+        complete = report.system_resource_report(complete_samples, 7)
+        self.assertEqual((complete["expected_sample_count"], complete["sample_count"]), (7, 7))
+        self.assertTrue(complete["coverage_complete"])
+        self.assertEqual(report.advance_resource_deadline(1_000, 2_200, 1_000), 3_000)
+
+    def test_resource_snapshot_keeps_missing_proc_fields_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            proc = root / "proc"
+            (proc / "pressure").mkdir(parents=True)
+            (proc / "stat").write_text("cpu 10 0 2 20 0 0 0 0 0 0\n")
+            (proc / "meminfo").write_text("MemTotal: 100 kB\n")
+            (proc / "loadavg").write_text("")
+            snapshot = report.system_resource_snapshot(proc)
+            self.assertEqual(snapshot["memory"], {"MemTotal": 100 * 1024})
+            self.assertEqual(snapshot["load"], {})
+            self.assertEqual(snapshot["pressure"], {"cpu": {}, "memory": {}, "io": {}})
 
     def test_kernel_counter_parser_and_delta_preserve_labels_and_cpus(self):
         before_text = """\
@@ -558,6 +735,25 @@ ERR:          5
             self.assertEqual(statuses["harness"], "different")
             self.assertTrue(result["sets"][0]["metrics"]["host_cpu_percent"]["confounded"])
 
+    def test_compare_treats_different_benchmark_machine_ids_as_a_confounder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            before, after = root / "before", root / "after"
+            write_benchmark_run(before)
+            write_benchmark_run(after)
+            different_id = "fedcba9876543210fedcba9876543210"
+            profile_value = json.loads((after / "profile/profile.json").read_text())
+            profile_value["machine"]["id"] = different_id
+            (after / "profile/profile.json").write_text(json.dumps(profile_value))
+            run = json.loads((after / "run.json").read_text())
+            run["machine"]["id"] = different_id
+            run["csv"]["filename"] = report.cpu_benchmark_csv_filename(different_id, run["created_at"])
+            (after / "run.json").write_text(json.dumps(run))
+            result = report.comparison_report(report.load_completed_run(before), report.load_completed_run(after))
+            identity = next(item for item in result["identity"] if item["id"] == "benchmark_machine")
+            self.assertEqual(identity["status"], "different")
+            self.assertTrue(result["sets"][0]["metrics"]["host_cpu_percent"]["confounded"])
+
     def test_compare_uses_normalized_harness_hash_not_worktree_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -679,12 +875,115 @@ ERR:          5
             rendered = json.loads((run_dir / "report.json").read_text())
             self.assertEqual([item["set"] for item in rendered["sets"]], order)
             self.assertIn("Crackle evidence", (run_dir / "report.md").read_text())
+            self.assertEqual(list(run_dir.glob("*_cpu-benchmark.csv")), [])
             annotate_args = type("Args", (), {
                 "run_dir": str(run_dir), "set_name": "Benchmark_Zero", "manual_crackle": "heard",
             })()
             self.assertEqual(report.annotate(annotate_args), 0)
             updated = json.loads(next((run_dir / "sets").glob("*-Benchmark_Zero/measurement.json")).read_text())
             self.assertEqual(updated["crackle"]["status"], "manual")
+
+    def test_renderer_writes_one_stable_timestamped_csv_with_resources_and_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary) / "run"
+            write_benchmark_run(run_dir)
+            run = json.loads((run_dir / "run.json").read_text())
+            run["tag"] = "=SUM(1,1)"
+            (run_dir / "run.json").write_text(json.dumps(run))
+            args = type("Args", (), {"run_dir": str(run_dir)})()
+            with mock.patch.object(report, "utc_now", return_value="2026-08-26T13:00:00Z"):
+                self.assertEqual(report.render(args), 0)
+            expected = run_dir / report.cpu_benchmark_csv_filename(FIXTURE_MACHINE_ID, FIXTURE_CREATED_AT)
+            self.assertTrue(expected.is_file())
+            with expected.open(newline="") as source:
+                rows = list(csv.DictReader(source))
+            self.assertEqual(len(rows), len(report.CANONICAL_SETS))
+            self.assertEqual(rows[0]["machine_id"], FIXTURE_MACHINE_ID)
+            self.assertEqual(rows[0]["tag"], "'=SUM(1,1)")
+            self.assertEqual(rows[0]["row_kind"], "resource-sample")
+            self.assertEqual(rows[0]["resource_expected_sample_count"], "30")
+            self.assertEqual(rows[0]["resource_missed_sample_count"], "29")
+            self.assertEqual(rows[0]["resource_coverage_complete"], "False")
+            self.assertEqual(rows[0]["memory_available_bytes"], str(12 * 1024**3))
+            self.assertEqual(rows[0]["filesystem_available_bytes"], str(60 * 1024**3))
+            self.assertEqual(rows[0]["cpu_model"], "Fixture CPU")
+            self.assertNotIn("audio_devices", rows[0])
+            self.assertEqual(rows[0]["crackle_status"], "no-instrumented-evidence")
+            rendered = json.loads((run_dir / "report.json").read_text())
+            self.assertEqual(rendered["csv"]["row_count"], len(report.CANONICAL_SETS))
+            self.assertEqual(rendered["csv"]["resource_sample_count"], len(report.CANONICAL_SETS))
+            with mock.patch.object(report, "utc_now", return_value="2026-08-26T14:00:00Z"):
+                self.assertEqual(report.render(args), 0)
+            self.assertEqual(list(run_dir.glob("*_cpu-benchmark.csv")), [expected])
+
+    def test_csv_writer_uses_unique_temporary_files_for_symlinks_and_concurrent_renders(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / f"{FIXTURE_MACHINE_ID}-20260826T123456123456Z_cpu-benchmark.csv"
+            victim = root / "victim"
+            victim.write_text("keep\n")
+            predictable = root / f".{path.name}.tmp"
+            predictable.symlink_to(victim)
+            rows = [{"csv_schema": report.CSV_SCHEMA, "machine_id": FIXTURE_MACHINE_ID, "row_kind": "profile"}]
+            errors = []
+
+            def write():
+                try:
+                    report.write_benchmark_csv(path, rows)
+                except Exception as error:  # pragma: no cover - failure detail belongs in the assertion
+                    errors.append(error)
+
+            threads = [threading.Thread(target=write) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(victim.read_text(), "keep\n")
+            self.assertFalse(path.is_symlink())
+            with path.open(newline="") as source:
+                written = list(csv.DictReader(source))
+            self.assertEqual(len(written), 1)
+            self.assertEqual(written[0]["machine_id"], FIXTURE_MACHINE_ID)
+
+    def test_renderer_writes_profile_row_for_a_failed_run_without_set_samples(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary) / "run"
+            write_benchmark_run(run_dir, status="failed")
+            for measurement in (run_dir / "sets").glob("*/measurement.json"):
+                measurement.unlink()
+            args = type("Args", (), {"run_dir": str(run_dir)})()
+            self.assertEqual(report.render(args), 0)
+            path = next(run_dir.glob("*_cpu-benchmark.csv"))
+            with path.open(newline="") as source:
+                rows = list(csv.DictReader(source))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["row_kind"], "profile")
+            self.assertEqual(rows[0]["run_status"], "failed")
+            self.assertEqual(rows[0]["memory_total_bytes"], str(16 * 1024**3))
+
+    def test_renderer_refuses_a_changed_csv_name_or_machine_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            changed_name = root / "changed-name"
+            write_benchmark_run(changed_name)
+            run = json.loads((changed_name / "run.json").read_text())
+            run["csv"]["filename"] = "../outside.csv"
+            (changed_name / "run.json").write_text(json.dumps(run))
+            args = type("Args", (), {"run_dir": str(changed_name)})()
+            with mock.patch("builtins.print"):
+                self.assertEqual(report.render(args), 2)
+            self.assertFalse((root / "outside.csv").exists())
+
+            changed_machine = root / "changed-machine"
+            write_benchmark_run(changed_machine)
+            profile_value = json.loads((changed_machine / "profile/profile.json").read_text())
+            profile_value["machine"]["id"] = "f" * 32
+            (changed_machine / "profile/profile.json").write_text(json.dumps(profile_value))
+            args = type("Args", (), {"run_dir": str(changed_machine)})()
+            with mock.patch("builtins.print"):
+                self.assertEqual(report.render(args), 2)
+            self.assertEqual(list(changed_machine.glob("*_cpu-benchmark.csv")), [])
 
     def test_renderer_marks_unavailable_endpoint_evidence_for_review(self):
         measurement = benchmark_measurement("Benchmark_Zero")
@@ -696,7 +995,10 @@ ERR:          5
             "run": {"tag": "fixture", "status": "complete", "duration_seconds_per_set": 30},
             "profile": benchmark_profile(), "sets": [measurement], "generated_at": "fixture",
         })
+        header = next(line for line in rendered.splitlines() if line.startswith("| Set | Mode |"))
+        separator = rendered.splitlines()[rendered.splitlines().index(header) + 1]
         row = next(line for line in rendered.splitlines() if line.startswith("| Benchmark_Zero |"))
+        self.assertEqual((header.count("|"), separator.count("|"), row.count("|")), (18, 18, 18))
         cells = [cell.strip() for cell in row.strip("|").split("|")]
         self.assertEqual(cells[10:12], ["review", "review"])
 
