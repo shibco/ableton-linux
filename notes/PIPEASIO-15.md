@@ -23,12 +23,11 @@ the sizes differ. It retries after five seconds and limits requests to three
 per minute. When the foreign request ends, it asks Live to return to the saved
 size.
 
-PipeASIO tracks each application's forced quantum by its PipeWire node ID.
-After its own filter binds, equal node names do not merge two Live or PipeASIO
-instances. Media-class-less PipeASIO filters are recognised only when their
-private marker and complete Audio/Duplex/DSP property tuple agree. PipeASIO
-observes PipeWire's global forced quantum but does not write a competing global
-metadata value.
+PipeASIO identifies each application's buffer request through its PipeWire node
+ID. Separate Live or PipeASIO sessions remain separate when they share a name.
+For a PipeASIO audio node, the driver requires its private marker and full audio
+details. PipeASIO reads PipeWire's global buffer request. PipeWire controls that
+global value.
 
 For diagnosis, `PIPEASIO_ALLOW_QUANTUM_MISMATCH=on` lets audio continue during
 a size difference. The playback speed can differ.
