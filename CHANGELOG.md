@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- installs and updates now finish after interrupted Link setup (#258):
+  - an active firewall makes Link setup ask for your password. The installer
+    now finishes after the prompt expires or you press Ctrl-C. It reports the
+    stopped Link setup. It gives you the command to resume setup. The previous
+    behaviour removed a new Live installation or restored the previous runtime
+  - Live offers Link when you use an ASIO driver. The README shows how to select
+    PipeASIO. The troubleshooting guide shows how to display the Link button
+  - thanks ΦNYX from Discord for the report
+
 ## 2026.08.26.1
 
 - **MIDI controllers and audio interfaces find their way back:**
