@@ -859,7 +859,9 @@ ableton_legacy_owned_path()
         "$ABLETON_DATA_HOME/detect-scale.sh") grep -qF 'Sourceable display-scale detection' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/detect-theme.sh") grep -qF 'Sourceable theme detection helpers' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/shortcut-hold.sh") grep -qF 'GNOME shortcut hold' "$path" 2>/dev/null ;;
-        "$ABLETON_DATA_HOME/check-ntsync.sh") grep -qF 'NT sync semantics hold' "$path" 2>/dev/null ;;
+        "$ABLETON_DATA_HOME/check-ntsync.sh")
+            grep -qF 'NT sync semantics hold' "$path" 2>/dev/null \
+                || grep -qF 'ABLETON_REQUIRE_NTSYNC' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/setsyscolors.exe"|"$ABLETON_DATA_HOME/learnheal.exe"|\
         "$ABLETON_DATA_HOME/ntsyncprobe.exe") return 1 ;;
         "$ABLETON_BIN_HOME/ableton-live") grep -qF 'Ableton Live launcher for the patched Wine stack' "$path" 2>/dev/null ;;
