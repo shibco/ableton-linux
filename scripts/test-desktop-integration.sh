@@ -158,7 +158,7 @@ for diagnostic_tool in pw-metadata pw-dump pw-top journalctl; do
 done
 run_isolated "$base" bash "$base/data/ableton-wine/audio-report.sh" \
     >"$base/audio-report.out" 2>"$base/audio-report.err"
-grep -q '^== CPU topology and Wine visibility$' "$base/audio-report.out" \
+grep -q '^== CPU layout evidence for Wine$' "$base/audio-report.out" \
     || fail "installed audio report omits the CPU topology section"
 grep -q '^cpu_topology_format=2$' "$base/audio-report.out" \
     || fail "installed audio report cannot run its CPU topology probe"

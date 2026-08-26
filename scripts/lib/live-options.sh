@@ -142,9 +142,9 @@ ableton_cpu_report_list()
     printf '%s\n' "$value"
 }
 
-# Print a read-only snapshot of the CPU topology that can affect Live and Wine.
-# Optional roots make every input fixture-testable; production callers use the
-# kernel's sysfs tree and this process's effective affinity from /proc.
+# Report CPU facts that help compare Live and Wine runs.
+# Tests can supply alternate input roots. Normal runs read Linux system files
+# and the processor set available to the report.
 ableton_cpu_topology_report()
 (
     local cpu_root="${1:-/sys/devices/system/cpu}"
@@ -293,8 +293,9 @@ ableton_cpu_topology_report()
     printf 'amd_pstate_prefcore=%s\n' "$amd_pstate_prefcore"
     printf 'amd_pstate_dynamic_epp=%s\n' "$amd_pstate_dynamic_epp"
     printf 'topology_fields_complete=%s\n' "$([ "$topology_complete" -eq 1 ] && printf yes || printf no)"
-    # Wine 11.x reads online CPU topology and /sys/devices/cpu_core/cpus.
-    # These raw inputs are useful evidence, but are not a Win32 API assertion.
+    # Wine 11 reads the online CPU list and /sys/devices/cpu_core/cpus.
+    # The report includes both inputs. A launched Windows probe is a separate
+    # test.
     printf 'wine_topology_online_cpus=%s\n' "$online"
     printf 'wine_efficiency_class_source=%s\n' "$wine_class_source"
     printf 'wine_performance_cpus=%s\n' "$wine_performance_cpus"
