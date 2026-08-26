@@ -1,96 +1,104 @@
-# CPU and audio benchmark suite
+# CPU and audio benchmark guide
 
-This directory contains the immutable Live workloads and the reporting protocol
-for CPU/PipeASIO work. The normal command is:
+Use this suite to compare Live CPU use and audio performance before and after
+one change. Start a normal run with:
 
 ```bash
 scripts/bench-suite.sh --tag before/my-change
 ```
 
-The suite performs five 30-second measurements, in this fixed order:
+The suite measures 5 sets for 30 seconds each. It uses this order:
 
-1. `Benchmark_Zero` — Live alone, idle, with no Max for Live controller.
-2. `Benchmark_Empty` — the controller only, playing.
-3. `Benchmark_Inbuilts` — stock devices, playing.
-4. `Benchmark_Max4Live` — stock and Max for Live devices, playing.
-5. `Benchmark_VSTs` — Dexed and Nils' K1v, playing.
+1. Run `Benchmark_Zero` with Live idle and the control device closed.
+2. Run `Benchmark_Empty` with only the control device.
+3. Run `Benchmark_Inbuilts` with Live instruments and effects.
+4. Run `Benchmark_Max4Live` with Live and Max for Live devices.
+5. Run `Benchmark_VSTs` with Dexed and Nils' K1v.
 
-The single `--duration` value (default exactly 30 seconds) is passed to every
-set and establishes one shared deadline for `/proc` CPU accounting, the OSC
-listener, `pw-top`, and the PipeWire metadata monitor. Startup, set readiness,
-and the short stabilisation period are outside that requested window. Endpoint
-CPU snapshots necessarily bracket it by a few milliseconds, while collectors
-start sequentially just after its start; the JSON records a CPU interval
-midpoint estimate plus collection bounds and each collector's observed spawn,
-deadline, reap, and first/last output coverage instead of presenting those as
-exactly 30 seconds. A collector is usable only when its observed process
-lifetime covers at least 29 seconds of a 30-second request and it emitted data;
-periodic `pw-top`/OSC evidence must also emit within the first and last second.
-An early exit or silent tail is retained but cannot support a clean-audio
-claim. A quick
-preflight that launches nothing is:
+## Measurement period
+
+One `--duration` value applies to every set. Its default value is exactly 30
+seconds.
+
+The suite uses one deadline for CPU figures, OSC messages, `pw-top`, and
+PipeWire settings. Set start-up and stabilisation happen before that period.
+
+CPU snapshots extend a few milliseconds around the requested period. The data
+collectors start one after another just after the period starts.
+
+The JSON records the CPU interval, collection bounds, process lifetime, and
+first and last output times. A usable collector runs for at least 29 seconds
+and produces data. Periodic OSC and `pw-top` data cover both the first and last
+second. An early exit or a silent final period gives limited crackle evidence.
+
+Check the planned run with:
 
 ```bash
 scripts/bench-suite.sh --dry-run --tag before/my-change
 ```
 
-Do not run Live yourself. The suite refuses any existing Live session, an
-already-active configured Wine prefix, an occupied OSC report port, missing set
-assets, or missing VST fixtures. It gives each launch a unique environment token
-and revalidates that token before signalling an exact Live PID. It never runs
-`wineserver -k`, never matches a global image name for teardown, and never
-changes PipeWire metadata or profiles.
+## Session safety
 
-## Output
+Let the suite start and close Live. Before it starts, the suite checks these
+conditions:
 
-By default a new ignored directory is created under `bench/reports/`. Use
-`--output` to put it elsewhere. It contains:
+- an idle Live session and selected Wine prefix
+- the OSC report port is available
+- each set file has the expected hash
+- the required VST3 files are present
 
-- `report.json`: complete machine-readable run/profile/set results.
-- `report.md`: a compact comparison table and reproduction identity.
-- `run.json`: tag, canonical order, common duration, status, and runner hash.
-- `suite.log`: the complete post-preflight orchestrator and teardown narrative.
-- `profile/profile.json`: system, CPU topology, GPU/audio inventory, a clearly
-  scoped pre-launch PipeWire/WirePlumber snapshot with command availability,
-  runtime/Wine identity, prefix identity, the effective XDG/HOME PipeASIO and
-  launcher configuration hashes, installed Live versions, `Options.txt`, and
-  `MaxAudioThreads` worker setting.
-- `profile/raw/`: unmodified command output including `lscpu`, PCI/USB/ALSA,
-  `wpctl`, `pw-metadata`, `pw-dump`, Wine/runtime build information, and the hash
-  manifest.
-- `sets/NN-SET/measurement.json`: CPU/context-switch/schedstat deltas per
-  endpoint-surviving process and thread, explicit born/exited endpoint task
-  inventories and a churn confound label, host CPU, actual collector coverage,
-  PipeWire ERR delta, node generations and quantum transitions, OSC DSP average
-  and peak, observed `AudioCalc` worker count, Live's runtime-visible
-  performance/efficiency-core counts, log evidence, and crackle classification.
-- Every set also retains endpoint `/proc/interrupts` and `/proc/softirqs`
-  snapshots with label/per-CPU deltas and actual rates, plus read-only endpoint
-  power-profile/hold and cpufreq-policy governor/min/max/EPP identity. The
-  suite profile's power state is explicitly only the ambient pre-launch value.
-- Every set brackets the CPU window with default sink/source profile and device
-  properties, named PipeWire links (including PipeASIO-to-hardware links), and
-  settings-metadata rate/quantum snapshots. Endpoint differences are
-  confounders. A profile or link that changes and restores entirely between the
-  two endpoints remains a documented limitation; settings metadata is also
-  monitored continuously during the window.
-- `sets/NN-SET/raw/`: before/after `/proc` snapshots, `pw-top`, PipeWire
-  metadata events, OSC rows, launcher diagnostics, Live log slices, and matched
-  xrun lines, plus raw endpoint `wpctl`, `pw-link`, and settings output.
+Each launch receives a unique session token. The suite checks that token and
+the exact Live process before it sends a signal. Other Wine sessions remain
+outside that process selection. PipeWire settings and profiles retain their
+original values.
 
-The prefix identity is a documented composite SHA-256 over its ownership marker
-and Wine registry files; it is not a costly hash of mutable cache content. The
-runtime identity similarly covers build information, Wine, and both PipeASIO
-halves. The effective PipeASIO config path follows the driver's real resolution:
-`$XDG_CONFIG_HOME/pipeasio/config.ini`, then
-`$HOME/.config/pipeasio/config.ini`. Every constituent path, size, and digest
-remains in the raw manifest.
-Dexed and K1v are also inventoried as a file or bundle: every regular file is
-hashed and embedded PE product versions are recorded when present.
+## Report contents
 
-## Crackle observations
+The suite creates an ignored folder under `bench/reports/`. Use `--output` to
+choose another folder.
 
-Counters cannot prove what was audible. Add an observation for any set:
+The main files have these purposes:
+
+| Path | Contents |
+|---|---|
+| `report.json` | full machine-readable results |
+| `report.md` | short results table and run identity |
+| `run.json` | tag, set order, duration, status, and runner hash |
+| `suite.log` | start-up, set changes, and session close events |
+| `profile/profile.json` | system, hardware, audio, Wine, PipeASIO, prefix, and Live details |
+| `profile/raw/` | original output from each system check |
+| `sets/NN-SET/measurement.json` | CPU, thread, audio, worker, power, and crackle results for one set |
+| `sets/NN-SET/raw/` | original snapshots, messages, logs, and audio error lines |
+
+Each set records CPU use for the host, Live, Wine, PipeWire, and their threads.
+It also records context switches, task changes, audio errors, Live CPU values,
+and observed `AudioCalc` workers.
+
+The report saves before and after values for interrupts, audio devices, links,
+sample rate, buffer size, power profile, and CPU policy. A changed endpoint
+marks a comparison limit. The report calls a difference that can explain a CPU
+change a `confounder`.
+
+PipeWire settings remain under watch throughout the measurement. A profile or
+link can change and return to its first value between snapshots. Treat that
+case as a measurement limit.
+
+The prefix identity combines its ownership marker and Wine registry files into
+one SHA-256 value. The runtime identity covers build details, Wine, and both
+PipeASIO files.
+
+PipeASIO selects its configuration from these locations in order:
+
+1. Use `$XDG_CONFIG_HOME/pipeasio/config.ini` when it exists.
+2. Use `$HOME/.config/pipeasio/config.ini` in other cases.
+
+The raw manifest records every source path, file size, and hash. It also records
+all Dexed and K1v file hashes and available product versions.
+
+## Crackle evidence
+
+Audio counters detect some problems. Listening detects other problems. Add a
+listening result with:
 
 ```bash
 scripts/bench-suite.sh --tag after/my-change \
@@ -98,23 +106,17 @@ scripts/bench-suite.sh --tag after/my-change \
   --crackle Max4Live=heard
 ```
 
-The report uses four deliberately narrow values:
+The report uses these values:
 
-- `detected`: a matching PipeWire ERR counter increased or an xrun-like
-  PipeASIO/Live diagnostic appeared.
-- `manual`: the operator heard crackle without a corroborating instrumented
-  event.
-- `no-instrumented-evidence`: usable instrumentation was clean. This does not
-  claim that no crackle was audible.
-- `unknown`: usable instrumentation was unavailable and there was no positive
-  manual observation.
+- `detected`: PipeWire reported more errors, or a Live or PipeASIO log reported an xrun
+- `manual`: the listener heard crackle and the tools recorded zero matching events
+- `no-instrumented-evidence`: all usable tools completed and reported zero matching events
+- `unknown`: the run needs more tool or listener evidence
 
-Manual `not-heard` is recorded separately and never turns missing
-instrumentation into a clean result.
+`not-heard` records only the listener's experience during that run. Use the
+full report to judge system stability.
 
-Because an observation is often known only after listening, it can be added
-without rerunning Live; this rewrites only the derived measurement/report JSON
-and Markdown, never the raw evidence:
+Add a listening result after a run with:
 
 ```bash
 python3 scripts/bench-report.py annotate \
@@ -123,65 +125,71 @@ python3 scripts/bench-report.py annotate \
   --manual-crackle heard
 ```
 
-## Comparing a change
+The command updates the derived JSON and Markdown files. The raw files retain
+their original contents.
 
-Run the same installed Live version, prefix, audio device/profile, sample rate,
-quantum, window state, and power conditions for both sides:
+## Before and after comparison
+
+Use the same Live version, Wine prefix, audio device, profile, sample rate,
+buffer size, window state, and power conditions for each run.
 
 ```bash
 scripts/bench-suite.sh --tag before/my-change
-# install or enable exactly one change, then relaunch through the suite
+# Enable one change, then let the suite start Live.
 scripts/bench-suite.sh --tag after/my-change
 ```
 
-Create the automated pair report after both runs complete:
+Create the comparison after both runs finish:
 
 ```bash
 python3 scripts/bench-report.py compare \
   --before bench/reports/BEFORE --after bench/reports/AFTER \
   --output bench/reports/BEFORE-vs-AFTER
-# equivalent: make bench-compare BEFORE=... AFTER=... OUTPUT=...
+# Equivalent command:
+make bench-compare BEFORE=... AFTER=... OUTPUT=...
 ```
 
-This refuses incomplete runs, non-canonical sets, nonmatching or non-30-second
-durations, and measurements without endpoint-backed monotonic 30-second window
-evidence, then writes `comparison.json` plus `comparison.md`.
-It reports identity differences
-as confounders rather than hiding them, including hardware/audio/PipeWire,
-runtime/prefix/Live/config hashes, effective PipeASIO path, graph rate/quantum,
-endpoint default profile/device/link identity, Dexed/K1v hashes and versions,
-performance-affecting launcher variables, and the exact `WINE_APC_FASTPATH`
-gate. Missing power-profile hold evidence is a confounder. Each set carries
-numeric before/after/delta/percent fields for CPU,
-scheduler/context-switch, PipeWire/OSC, task-churn, collector-coverage, and
-IRQ/softirq values. Missing values and zero baselines have explicit undefined
-statuses. One pair is descriptive evidence and never a significance claim.
+The command accepts complete canonical runs with matching 30-second periods
+and endpoint timing evidence. It writes `comparison.json` and `comparison.md`.
 
-Compare the JSON values rather than drawing a conclusion from one total. The
-report separates host utilisation, endpoint-surviving Wine/Live tasks,
-PipeWire, and individual threads. Host CPU covers the full endpoint interval,
-but a process or thread born and exited entirely between the two snapshots is
-not observable without intrusive polling. Treat endpoint task churn, PipeWire
-node-identity churn, a quantum or metadata transition, an ERR increase, a
-changed profile/config hash, or a missing OSC sample as a confounder that must
-be explained before accepting a CPU result.
+The report lists changes in hardware, audio, PipeWire, Wine, Live, settings,
+plug-ins, power, and the `WINE_APC_FASTPATH` value. Review each listed change
+before you accept a CPU result.
 
-`scripts/bench-run.sh` is the lower-level single-window collector used by the
-suite. It can measure a set an operator already opened, but it does not start or
-stop Wine. `scripts/bench-osc.py` is the small OSC sender/listener/probe used by
-both layers. Their `--help` output documents the supported arguments.
+Each set includes before, after, difference, and percentage values. These values
+cover CPU use, scheduling, audio, task changes, collection time, and interrupts.
+The status field records `undefined` when sampling yields zero records or the
+starting value equals zero.
 
-## Workload assets
+One pair describes one result. Repeated pairs support a stronger conclusion.
+Review the JSON values for each component instead of one total value.
 
-The committed `.als`, audio samples, and Max for Live controller are canonical
-fixtures. Never edit a workload in place: add a newly named set when the content
-must change. Live's generated `Backup/` directories are ignored and must not be
-imported. Preflight verifies these inputs against `bench/SHA256SUMS` before it
-creates a report directory. `Benchmark_VSTs` requires the Windows VST3 builds
-of Dexed and Nils' K1v described in
-[the project readme](BenchmarkSets%20Project/README.md).
+Endpoint snapshots cover processes and threads present at either endpoint.
+Short-lived tasks between the endpoints remain outside those snapshots. Review
+task changes, node changes, buffer changes, audio errors, settings changes, and
+OSC coverage before you accept the result.
 
-The deterministic test gate needs neither Live nor PipeWire:
+## Individual measurement tools
+
+`scripts/bench-run.sh` measures one set that you already opened. The full suite
+manages the Live session and set order.
+
+`scripts/bench-osc.py` sends and receives control messages. Each command provides
+usage details through `--help`.
+
+## Set files
+
+Keep the committed `.als` files, audio samples, and control device unchanged.
+Add a newly named set when you change its contents.
+
+Live places generated files in `Backup/` folders. Git ignores these folders.
+Keep generated backups outside commits.
+
+Preflight checks every set against `bench/SHA256SUMS` before it creates a report
+folder. `Benchmark_VSTs` uses the Windows VST3 files from the
+[benchmark set guide](BenchmarkSets%20Project/README.md).
+
+Run the test suite with:
 
 ```bash
 make test-bench

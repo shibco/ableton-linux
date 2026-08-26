@@ -1,49 +1,54 @@
-# BenchmarkSets
+# Benchmark sets
 
-The Live sets for benchmarking Ableton Live on this runtime. The
-measurement protocol, tools, and report schema are in
-[bench/README.md](../README.md). A first run, from the repository root
-with Live closed:
+Use these Live sets to compare CPU use and audio performance. The
+[benchmark guide](../README.md) explains the full process.
+
+Run these commands from the repository root. Start with Live closed.
 
 ```bash
 scripts/bench-suite.sh --dry-run --tag baseline
 scripts/bench-suite.sh --tag baseline
 ```
 
-| Set | Contents | Measures |
+Run the sets in the table order:
+
+| Set | Contents | Purpose |
 |---|---|---|
-| `Benchmark_Zero.als` | nothing at all, not even the control device | Live on its own, with the Max runtime never booting |
-| `Benchmark_Empty.als` | nothing but the control device | startup, audio open, and set load with no content |
-| `Benchmark_Inbuilts.als` | stock instruments and effects | Live's own engine, with no outside code |
-| `Benchmark_Max4Live.als` | stock devices plus Max for Live devices | the Max runtime on top of the stock engine |
-| `Benchmark_VSTs.als` | one Dexed and three Nils' K1v instances | third-party VST3 hosting on top of everything above |
+| `Benchmark_Zero.als` | the Live idle state | measures the base Live process |
+| `Benchmark_Empty.als` | the control device | measures set loading and audio start-up |
+| `Benchmark_Inbuilts.als` | Live instruments and effects | measures Live devices |
+| `Benchmark_Max4Live.als` | Live devices and Max for Live devices | measures the added Max runtime |
+| `Benchmark_VSTs.als` | one Dexed and 3 Nils' K1v instances | measures Windows VST3 plug-ins |
 
-Benchmark in table order. Each set adds one layer to the set before it,
-so the first set that misbehaves names the layer that broke: Live
-itself, the Max runtime, or VST3 hosting.
+Each set adds one part to the previous set. The first set with a problem
+helps you find the affected part.
 
-Every set except `Benchmark_Zero.als` carries the `abl-bench-m4l`
-control device on a track, which lets the bench tools drive the
-transport and read Live's CPU meter with no operator input. Confirm it
-from this folder before a run:
+Every set after `Benchmark_Zero.als` includes the `abl-bench-m4l` control
+device. The device controls playback and reports Live's CPU value.
+
+Check each set before a run:
 
 ```bash
 for f in *.als; do echo "$f: $(zcat "$f" | grep -c abl-bench)"; done
 ```
 
-A count of 0 means the device is missing from that set; add it back from
-[bench/m4l](../m4l/README.md) and save the set. `Benchmark_Zero.als` is
-the exception and must stay at 0: it exists to measure Live with no Max
-for Live device loaded, so the runtime never boots. The automated suite
-therefore records Zero as an idle/no-controller window with DSP values
-unavailable; it never pretends to have started transport or received OSC.
-Everything else in the folder is the same set as `Benchmark_Empty.als`.
+`Benchmark_Zero.als` reports `0`. Each other set reports a value of `1` or
+more. Add the device from the [control device guide](../m4l/README.md) when a
+controlled set reports `0`.
 
-Before benchmarking the VSTs set, install these two synths and rescan
-or restart Live. Both installation methods are described in
-[Instruments and Effects](../../README.md#instruments-and-effects):
+`Benchmark_Zero.als` provides an idle measurement. The control device stays
+closed. The report uses `unavailable` for its DSP fields. The other files in
+this folder belong to `Benchmark_Empty.als`.
 
-- Dexed (https://asb2m10.github.io/dexed/): the Windows-installer
-  method; it installs `Dexed.vst3`.
-- Nils' K1v (https://www.nilsschneider.de/wp/nils-k1v/): the VST3-file
-  method; copy `K1v_x64.vst3` from its download.
+## VST3 plug-ins
+
+Install both plug-ins before you run `Benchmark_VSTs.als`. Then restart Live
+or scan the plug-in folder again.
+
+Use these Windows VST3 files:
+
+- [Dexed](https://asb2m10.github.io/dexed/), installed as `Dexed.vst3`
+- [Nils' K1v](https://www.nilsschneider.de/wp/nils-k1v/), copied as `K1v_x64.vst3`
+
+The main [instrument and effect guide](../../README.md#instruments-and-effects)
+explains both installation methods.
