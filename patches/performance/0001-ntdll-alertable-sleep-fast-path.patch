@@ -1,0 +1,166 @@
+From 18c33d4ab6794f477673ead6dc7caf0b33c2ddc6 Mon Sep 17 00:00:00 2001
+From: dist <build@localhost>
+Date: Wed, 5 Aug 2026 18:59:54 +0200
+Subject: [PATCH] ntdll: reroute alertable zero-handle sleeps through the
+ ntsync alert event
+
+Result
+
+An empty Live 12 Set produced about 3,650 wineserver context switches each second. NtDelayExecution sent each alertable delay through wineserver.
+
+Scope
+
+WINE_APC_FASTPATH=1 selects the NTSync alert-event trial. Wine uses its regular wait by default. The trial keeps APC routing in wineserver. It preserves timeout results, the timeout yield and the remaining time after a partial relative wait.
+
+Wine selects the trial after its NTSync device and alert event are ready. Other setup results and kernel wait errors use the regular route. Partial waits measure elapsed time with CLOCK_MONOTONIC, matching the NTSync deadline clock across host suspend.
+
+Verification
+
+The exact patched build passed all 45 checks with WINE_APC_FASTPATH=1, the default setting and off. The observer identified the NTSync request during the trial. Both regular settings used wineserver. An injected EIO result also passed all 45 checks through the regular route.
+---
+ dlls/ntdll/unix/sync.c | 99 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 98 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index fbf054e..b3aee8e 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -49,6 +49,7 @@
+ # include <sys/resource.h>
+ #endif
+ #include <string.h>
++#include <strings.h>
+ #include <stdarg.h>
+ #include <stdint.h>
+ #include <stdio.h>
+@@ -77,6 +78,32 @@ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ HANDLE keyed_event = 0;
+ int inproc_device_fd = -1;
+ 
++
++/***********************************************************************
++ *           apc_fastpath_enabled
++ *
++ * The regular wineserver wait is the default. WINE_APC_FASTPATH values "1",
++ * "on", "true", and "yes" select the NTSync alert wait. Letter case has
++ * equal meaning.
++ */
++static int apc_fastpath;
++
++static void init_apc_fastpath(void)
++{
++    const char *env = getenv( "WINE_APC_FASTPATH" );
++
++    apc_fastpath = env && (!strcasecmp( env, "1" ) || !strcasecmp( env, "on" ) ||
++                            !strcasecmp( env, "true" ) || !strcasecmp( env, "yes" ));
++}
++
++static int apc_fastpath_enabled(void)
++{
++    static pthread_once_t once = PTHREAD_ONCE_INIT;
++
++    pthread_once( &once, init_apc_fastpath );
++    return apc_fastpath;
++}
++
+ static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
+ {
+     if (!timeout) return "(infinite)";
+@@ -437,6 +464,7 @@ static NTSTATUS linux_wait_objs( int device, DWORD count, const int *objs, WAIT_
+         {
+             static const LARGE_INTEGER timeout;
+ 
++            if (!count) return STATUS_USER_APC;  /* alert-event wait: caller drains the queue */
+             ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &timeout );
+             assert( ret == STATUS_USER_APC );
+             return ret;
+@@ -2413,6 +2441,71 @@ NTSTATUS WINAPI NtYieldExecution(void)
+ }
+ 
+ 
++/***********************************************************************
++ *           alertable_sleep_fastpath
++ *
++ * Attempt the alertable delay through the calling thread's NTSync alert event.
++ * Return FALSE when setup selects Wine's regular route.
++ * After a kernel wait, store the final status and return TRUE.
++ */
++static BOOL alertable_sleep_fastpath( const LARGE_INTEGER *timeout, unsigned int *result )
++{
++    static const LARGE_INTEGER zero_timeout;
++    LARGE_INTEGER remaining;
++    struct timespec start, now;
++    const LARGE_INTEGER *fallback_timeout = timeout;
++    NTSTATUS status;
++    BOOL relative_timeout;
++    int alert_fd;
++
++    if (inproc_device_fd < 0) return FALSE;
++    if ((alert_fd = get_inproc_alert_fd()) < 0) return FALSE;
++
++    relative_timeout = timeout && timeout->QuadPart < 0 && timeout->QuadPart != TIMEOUT_INFINITE;
++    if (relative_timeout) clock_gettime( CLOCK_MONOTONIC, &start );
++
++    status = linux_wait_objs( inproc_device_fd, 0, NULL, WaitAny, alert_fd, timeout );
++    if (status == STATUS_TIMEOUT)
++    {
++        /* Wine's server wait yields after a timeout
++           (dlls/ntdll/unix/server.c:813-816). Apply the same yield to the
++           NTSync route. */
++        NtYieldExecution();
++        *result = STATUS_SUCCESS;
++        return TRUE;
++    }
++    if (status != STATUS_USER_APC) goto server_fallback;  /* use the regular route */
++
++    /* The alert event signalled. Drain the server APC queue with the same
++       operation used after an alertable handle wait. */
++    status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero_timeout );
++    if (status != STATUS_TIMEOUT)
++    {
++        *result = status;  /* an APC was dispatched */
++        return TRUE;
++    }
++
++    /* The APC left the queue between kernel wake and server drain.
++       Continue through the server.
++       Use the remaining timeout. */
++server_fallback:
++    if (relative_timeout)
++    {
++        clock_gettime( CLOCK_MONOTONIC, &now );
++        remaining.QuadPart = timeout->QuadPart
++                             + (now.tv_sec - start.tv_sec) * (LONGLONG)TICKSPERSEC
++                             + (now.tv_nsec - start.tv_nsec) / 100;
++        if (remaining.QuadPart > 0) remaining.QuadPart = 0;  /* expired: zero-timeout poll */
++        fallback_timeout = &remaining;
++    }
++    if ((status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE,
++                               fallback_timeout )) == STATUS_TIMEOUT)
++        status = STATUS_SUCCESS;
++    *result = status;
++    return TRUE;
++}
++
++
+ /******************************************************************
+  *		NtDelayExecution (NTDLL.@)
+  */
+@@ -2420,9 +2513,13 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+ {
+     unsigned int status = STATUS_SUCCESS;
+ 
+-    /* if alertable, we need to query the server */
++    /* Alertable waits check the server APC queue. WINE_APC_FASTPATH uses the
++       kernel alert event for the wait. */
+     if (alertable)
+     {
++        if (apc_fastpath_enabled() && alertable_sleep_fastpath( timeout, &status ))
++            return status;
++
+         /* Since server_wait will result in an unconditional implicit yield,
+            we never return STATUS_NO_YIELD_PERFORMED */
+         if ((status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout )) == STATUS_TIMEOUT)
+-- 
+2.55.0
+

@@ -53,7 +53,7 @@
       check-ntsync = {
         type = "app";
         program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/check-ntsync.sh";
-        meta.description = "Verify this runtime uses /dev/ntsync and that NT sync semantics hold (needs a prefix no wineserver is serving)";
+        meta.description = "Verify runtime NTSync use and sync semantics; exits 3 without probing when /dev/ntsync is absent (needs an idle test prefix)";
       };
       setup-prefix = {
         type = "app";

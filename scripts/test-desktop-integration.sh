@@ -90,30 +90,47 @@ base="$(new_env config-help)"
 config_help="$(run_isolated "$base" bash "$here/ableton-live" --config)"
 printf '%s\n' "$config_help" | grep -q 'ABLETON_MAX_AUDIO_THREADS=auto|off|<number>' \
     || fail "launcher help omits the automatic audio thread policy"
-printf '%s\n' "$config_help" | grep -q 'physical CPU cores available to the launcher' \
-    || fail "launcher help omits the automatic audio thread basis"
-printf '%s\n' "$config_help" | grep -q 'remove an untouched launcher-managed choice' \
-    || fail "launcher help omits the marker-aware audio thread opt-out"
-printf '%s\n' "$config_help" | grep -q 'Review the value after the prefix moves to another processor' \
-    || fail "launcher help omits the processor-change warning"
+printf '%s\n' "$config_help" | grep -q 'greater of the physical core count' \
+    || fail "launcher help needs the automatic audio thread basis"
+printf '%s\n' "$config_help" | grep -q "half of Live's own count" \
+    || fail "launcher help needs the automatic audio thread floor"
+printf '%s\n' "$config_help" | grep -q "remove the launcher's saved count" \
+    || fail "launcher help needs the saved audio thread removal"
+printf '%s\n' "$config_help" | grep -q 'Check auto after you move the prefix to another computer' \
+    || fail "launcher help needs the computer-change reminder"
 printf '%s\n' "$config_help" | grep -q 'ABLETON_SHORTCUTS=take|preserve' \
     || fail "launcher help omits the GNOME shortcut policy"
 printf '%s\n' "$config_help" | grep -q 'preserve leaves the desktop shortcuts unchanged' \
     || fail "launcher help omits the shortcut opt-out"
 ok "launcher help reports the default-on worker and GNOME shortcut policies"
 
-base="$(new_env missing-live-options-helper)"
-mkdir -p -- "$base/launcher/lib"
-cp -- "$here/ableton-live" "$base/launcher/ableton-live"
-cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$base/launcher/lib/"
-: > "$base/launcher/lib/live-options.sh"
-if run_isolated "$base" bash "$base/launcher/ableton-live" \
-    >"$base/out" 2>"$base/err"; then
-    fail "launcher accepts an incomplete live-options.sh helper"
-fi
-grep -q 'live-options.sh helper is missing or incomplete' "$base/err" \
-    || fail "launcher does not name its incomplete audio settings helper"
-ok "launcher names and refuses an incomplete live-options.sh helper"
+for missing_live_options_function in ableton_live_calculated_audio_threads \
+                                     ableton_reliable_audio_threads; do
+    base="$(new_env "incomplete-live-options-$missing_live_options_function")"
+    mkdir -p -- "$base/launcher/lib"
+    cp -- "$here/ableton-live" "$base/launcher/ableton-live"
+    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$base/launcher/lib/"
+    cat > "$base/launcher/lib/live-options.sh" <<'EOF'
+ableton_available_physical_cores() { printf '4\n'; }
+ableton_live_product_version() { return 1; }
+ableton_seed_max_audio_threads() { return 0; }
+EOF
+    if [ "$missing_live_options_function" != ableton_live_calculated_audio_threads ]; then
+        printf '%s\n' 'ableton_live_calculated_audio_threads() { printf '\''7\n'\''; }' \
+            >> "$base/launcher/lib/live-options.sh"
+    fi
+    if [ "$missing_live_options_function" != ableton_reliable_audio_threads ]; then
+        printf '%s\n' 'ableton_reliable_audio_threads() { printf '\''4\n'\''; }' \
+            >> "$base/launcher/lib/live-options.sh"
+    fi
+    if run_isolated "$base" bash "$base/launcher/ableton-live" \
+        >"$base/out" 2>"$base/err"; then
+        fail "launcher accepts live-options.sh without $missing_live_options_function"
+    fi
+    grep -q 'live-options.sh helper is missing or incomplete' "$base/err" \
+        || fail "launcher does not name its incomplete audio settings helper"
+done
+ok "launcher requires every audio thread calculation helper"
 
 base="$(new_env unique-handlers)"
 install_fake_desktop_tools "$base"
@@ -158,21 +175,51 @@ for diagnostic_tool in pw-metadata pw-dump pw-top journalctl; do
 done
 run_isolated "$base" bash "$base/data/ableton-wine/audio-report.sh" \
     >"$base/audio-report.out" 2>"$base/audio-report.err"
+grep -q '^== CPU layout evidence for Wine$' "$base/audio-report.out" \
+    || fail "installed audio report omits the CPU topology section"
+grep -q '^cpu_topology_format=2$' "$base/audio-report.out" \
+    || fail "installed audio report cannot run its CPU topology probe"
+grep -q '^wine_win32_efficiency_class_probe=not_run_read_only$' "$base/audio-report.out" \
+    || fail "installed audio report overstates Wine efficiency-class evidence"
 grep -qF "close Live, then run $installed_ntsync_check for the dynamic proof" \
     "$base/audio-report.out" \
     || fail "installed audio report does not name the installed NTSync diagnostic"
 mkdir -p -- "$base/fake-wine/bin"
-printf '#!/bin/sh\nexit 0\n' > "$base/fake-wine/bin/wine"
-chmod +x "$base/fake-wine/bin/wine"
+for runtime_tool in wine wineserver; do
+    printf '#!/bin/sh\nexit 0\n' > "$base/fake-wine/bin/$runtime_tool"
+    chmod +x "$base/fake-wine/bin/$runtime_tool"
+done
 if run_isolated "$base" env ABLETON_WINE_ROOT="$base/fake-wine" \
     bash "$installed_ntsync_check" >"$base/ntsync.out" 2>"$base/ntsync.err"; then
     fail "NTSync diagnostic accepts a runtime without NTSync"
 fi
-! grep -q 'semantics probe not found' "$base/ntsync.err" \
+! grep -q 'Provide the NTSync probe at' "$base/ntsync.err" \
     || fail "installed NTSync diagnostic cannot find its packaged sibling probe"
-grep -q 'FAIL: ntsync not compiled in' "$base/ntsync.err" \
+grep -q 'FAIL: rebuild Wine with linux/ntsync.h' "$base/ntsync.err" \
     || fail "installed NTSync diagnostic does not reach its runtime check"
 ok "installer uses unique callback handlers and retires only its legacy entry"
+
+ownership_data="$base/ownership-data"
+ownership_check="$ownership_data/check-ntsync.sh"
+mkdir -p -- "$ownership_data"
+legacy_ntsync_owned()
+{
+    run_isolated "$base" env \
+        "ABLETON_DATA_HOME=$ownership_data" \
+        "ABLETON_BIN_HOME=$base/bin" \
+        "ABLETON_WINE_ROOT=$base/fake-wine" \
+        bash -c ". \"\$1\"; ableton_legacy_owned_path \"\$2\"" \
+        legacy-ntsync "$base/data/ableton-wine/lib/manifest.sh" "$ownership_check"
+}
+cp -- "$here/check-ntsync.sh" "$ownership_check"
+legacy_ntsync_owned || fail "legacy ownership rejects the current NTSync diagnostic"
+printf '# NT sync semantics hold\n' > "$ownership_check"
+legacy_ntsync_owned || fail "legacy ownership rejects the pre-rewrite NTSync diagnostic"
+printf '# foreign NTSync diagnostic\n' > "$ownership_check"
+if legacy_ntsync_owned; then
+    fail "legacy ownership accepts a foreign NTSync diagnostic"
+fi
+ok "legacy ownership recognises both project NTSync diagnostic generations"
 
 base="$(new_env registration-failure)"
 install_fake_desktop_tools "$base"
@@ -240,6 +287,35 @@ link_mode=off
 linkd=$base/data/ableton-wine/ableton-linkd
 EOF
 : > "$base/wine.log"
+mkdir -p -- "$base/nix/libexec/lib" "$base/runtime/share/ableton-wine/scripts"
+cp -- "$here/ableton-live" "$base/nix/libexec/ableton-live"
+cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
+    "$base/nix/libexec/lib/"
+cat > "$base/runtime/share/ableton-wine/scripts/audio-report.sh" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$base/runtime/share/ableton-wine/scripts/audio-report.sh"
+cat > "$base/fakebin/nproc" <<'EOF'
+#!/bin/sh
+printf 'unavailable\n'
+EOF
+run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=auto ABLETON_POWER=off \
+    ABLETON_RT=off ABLETON_THEME_MODE=preserve ABLETON_DPI_MODE=preserve \
+    ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
+    ABLETON_TOPBAR_MODE=preserve ABLETON_LAUNCH_TIMEOUT=5 \
+    ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$base/nix/libexec/ableton-live" \
+    'ableton://invalid-ableton-linux-probe' >"$base/nix.out" 2>"$base/nix.err" || true
+grep -qF "Run $base/runtime/share/ableton-wine/scripts/audio-report.sh to review the CPU details" \
+    "$base/nix.err" || fail "The Nix launcher fallback does not name its packaged audio report."
+cat > "$base/fakebin/nproc" <<'EOF'
+#!/bin/sh
+[ "$#" -eq 0 ] || exit 2
+printf '32\n'
+EOF
+ok "automatic worker fallback names the packaged Nix audio report"
+
+: > "$base/wine.log"
 if run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=64 \
     ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" \
     'ableton://invalid-ableton-linux-probe' >"$base/invalid.out" 2>"$base/invalid.err"; then
@@ -275,15 +351,23 @@ callback_prefs="$base/prefix/drive_c/users/test/AppData/Roaming/Ableton/Live 12.
 : > "$base/wine.log"
 physical_cores="$(bash -c '. "$1"; ableton_available_physical_cores' _ "$here/lib/live-options.sh")" \
     || fail "The launcher cannot count the physical CPU cores available to the test."
+available_processors="$("$base/fakebin/nproc")" \
+    || fail "The fake processor probe is unavailable."
+auto_threads="$(bash -c '. "$1"; ableton_reliable_audio_threads "$2" "$3"' \
+    _ "$here/lib/live-options.sh" "$physical_cores" "$available_processors")" \
+    || fail "The launcher cannot calculate the reliable automatic audio thread count."
+live_threads="$(bash -c '. "$1"; ableton_live_calculated_audio_threads "$2"' \
+    _ "$here/lib/live-options.sh" "$available_processors")" \
+    || fail "The launcher cannot calculate Live's default audio thread count."
 run_isolated "$base" env -u ABLETON_MAX_AUDIO_THREADS USER=test ABLETON_POWER=off \
     ABLETON_RT=off ABLETON_THEME_MODE=preserve ABLETON_DPI_MODE=preserve \
     ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
     ABLETON_TOPBAR_MODE=preserve ABLETON_LAUNCH_TIMEOUT=5 \
     ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" \
     'ableton://invalid-ableton-linux-probe' >"$base/auto.out" 2>"$base/auto.err" || true
-if [ "$physical_cores" -lt 31 ]; then
-    grep -qx -- "-MaxAudioThreads=$physical_cores" "$callback_prefs/Options.txt" \
-        || fail "The default launcher policy does not use the available physical core count."
+if [ "$auto_threads" -lt "$live_threads" ]; then
+    grep -qx -- "-MaxAudioThreads=$auto_threads" "$callback_prefs/Options.txt" \
+        || fail "The default launcher policy does not use the reliability-hardened automatic count."
 else
     [ ! -e "$callback_prefs/Options.txt" ] \
         || fail "The default launcher policy adds a limit above Live's calculated count."
@@ -376,6 +460,6 @@ grep -q 'callback does not identify one Live 12 version' "$base/mixed.err" \
 [ ! -e "$callback_prefs/Options.txt" ] \
     && [ ! -e "$base/prefix/drive_c/users/test/AppData/Roaming/Ableton/Live 12.5.0/Preferences/Options.txt" ] \
     || fail "An ambiguous callback writes audio thread settings for an edition the registry may not launch."
-ok "Callback launches use the selected Wine prefix. They preserve the Ableton protocol handlers. The off policy preserves settings without a launcher marker. The default uses available physical cores. A requested count reaches shared-version settings. Mixed-version callbacks leave edition selection and settings unchanged."
+ok "Callback launches use the selected Wine prefix. They preserve the Ableton protocol handlers. The off policy preserves settings without a launcher marker. The default uses the reliability-hardened automatic count. A requested count reaches shared-version settings. Mixed-version callbacks leave edition selection and settings unchanged."
 
 printf 'PASS: %s desktop integration checks\n' "$pass"

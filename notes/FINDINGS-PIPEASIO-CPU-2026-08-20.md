@@ -125,6 +125,28 @@ block sizes produced one Live call per graph period. Lower Live limits reduced
 process CPU and voluntary context switches. This supports a Live worker-count
 policy. It does not identify a costly native PipeASIO loop.
 
+### Repeated output work
+
+On 26 August 2026, the review found one repeated output action after each
+successful audio block. The skipped action is one acquire load followed by one
+acquire-release exchange on an empty output slot. A standalone `-O2`
+microbenchmark measured 5.48 ns per action over 200 million iterations.
+`audio_on_process` runs once per PipeWire graph cycle, not per ASIO buffer. At
+48 kHz with a 64-frame graph quantum, PipeASIO ran the action 750 times each
+second per output. At the default 1024-frame quantum and two outputs, that is
+about 94 actions, or 0.5 microseconds of measured work, each second.
+
+[PipeASIO patch 0013](../patches/pipeasio/0013-avoid-redundant-output-fallback-publish.patch)
+skips the fallback output publication after Live returns audio. When no process
+callback is installed, Stop or teardown rejects the callback, or the graph
+quantum differs from the host buffer size, PipeASIO instead sends one silent
+block at the current PipeWire buffer size.
+
+The unit test covers `pipeasio_pw_finish_output` with delivered and fallback
+inputs. The integration-labelled headless `tests/asio_loopback` analyzer covers
+the output-ownership decision; it is not part of the non-integration CTest gate.
+Measure a complete Live workload before you estimate the change in CPU use.
+
 The launcher requests real-time priority 10 when the host grants real-time
 rights. PipeASIO requests standard scheduling for its audio callback by default.
 
@@ -147,17 +169,37 @@ uses that setting.
 ## Package option
 
 The launcher accepts `auto`, `off`, or a value from one to 63. The default,
-`auto`, counts unique physical cores among the CPUs available to the launcher.
-It applies that value before a cold Live 12 start when it is below Live's
-calculated count. `off` removes an untouched launcher-managed value and
-restores Live's calculated count. Existing settings and user edits remain.
-An explicit number requests that limit.
+`auto`, counts the physical cores and logical processors available to the
+launcher. It chooses the greater of the physical core count and half of Live's
+own worker count, up to Live's own count. Before Live 12 starts, it applies a
+value below Live's own count. The measured 16-core, 32-thread computer therefore
+uses 16 of Live's 31 workers. The setting keeps at least half of Live's workers
+on processors with fewer cores. `off` removes a value that the launcher set and
+lets Live choose. Existing settings and user edits take priority. A number from
+one to 63 requests a limit. The launcher uses the limit when it is below Live's
+calculated count. At or above that count, Live uses its calculated count.
 
 Existing worker settings, earlier launcher choices, and later file contents
 take priority over implicit `auto`. An explicit `auto` recalculates an untouched
 launcher-managed value. A fresh user profile receives the value before Live
 starts. If Live transfers an older profile after the first launch, the next
 cold launch can apply the policy when the profile has no existing choice.
+
+Live reads the worker setting when it starts. PipeWire can change the buffer
+size later. The launcher chooses from the physical core count and Live's own
+count. Live uses that worker count for the whole session.
+
+Start with the automatic value. Use audio tests before release. Compare 3 values
+on a computer with simultaneous multithreading (SMT) and up to 15 physical
+cores:
+
+- the physical core count
+- the automatic value
+- Live's own value
+
+Use a busy Set with independent audio chains. Test 32, 64 and 128 frames. Record
+Live's deadline load, audible dropouts and Linux process CPU. Record voluntary
+context switches. Record PipeWire xruns, which count missed audio periods.
 
 The selected executable supplies the Live version. A Live 11 executable
 preserves each Live 12 profile. The prefix registry selects the Live edition for
@@ -221,10 +263,12 @@ The retained run directories start from the worktree root:
 
 Future release decisions require these tests:
 
-- compare the physical-core value with Live's calculated value on a host with
-  4 to 8 physical cores and 24 to 32 independent audio chains.
+- compare the physical-core value, automatic value and Live's calculated value
+  on an SMT computer with up to 15 physical cores.
+- use 24 to 32 independent audio chains in each Set.
 - compare standard and real-time scheduling for both Live and PipeASIO.
-- measure the same Set at 64, 128, and 256 frames.
+- measure the same Set at 32, 64 and 128 frames. Keep 256 frames as the CPU
+  reference with higher latency.
 - close Live and run `scripts/check-ntsync.sh` to prove which wait driver the
   tested runtime uses.
 - record monotonic wall time and callback-thread CPU time for PipeASIO callback

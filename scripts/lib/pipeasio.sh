@@ -261,35 +261,13 @@ ableton_pipeasio_desktop_exec_arg()
         -e 's/%/%%/g'
 }
 
-ableton_pipeasio_manifest_match()
-{
-    local path="$1" manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
-    local _kind expected actual matches
-    [ -r "$manifest" ] || return 1
-    matches="$(awk -F '\t' -v p="$path" '$2==p && ($1=="file" || $1=="config" || $1=="symlink") { n++ } END { print n+0 }' "$manifest")"
-    [ "$matches" -eq 1 ] || return 1
-    IFS=$'\t' read -r _kind expected < <(awk -F '\t' -v p="$path" \
-        '$2==p && ($1=="file" || $1=="config" || $1=="symlink") { print $1 "\t" $3 }' "$manifest")
-    actual="$(ableton_manifest_digest "$path" 2>/dev/null || true)"
-    [ -n "$actual" ] && [ "$actual" = "$expected" ]
-}
-
-ableton_pipeasio_manifest_claimed()
-{
-    local path="$1" manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
-    [ -r "$manifest" ] || return 1
-    [ "$(awk -F '\t' -v p="$path" \
-        '$2==p && ($1=="file" || $1=="config" || $1=="symlink") { n++ } END { print n+0 }' \
-        "$manifest")" -eq 1 ]
-}
-
-ableton_pipeasio_panel_may_replace()
+ableton_pipeasio_icon_may_replace()
 {
     local path="$1"
     if [ ! -e "$path" ] && [ ! -L "$path" ]; then return 0; fi
-    if ableton_pipeasio_manifest_match "$path" || ableton_legacy_owned_path "$path"; then return 0; fi
+    if ableton_manifest_path_matches "$path" || ableton_legacy_owned_path "$path"; then return 0; fi
     ableton_record_deowned "$path"
-    printf '   kept your existing %s\n' "$path"
+    printf '   preserved your existing %s\n' "$path"
     return 1
 }
 
@@ -297,16 +275,16 @@ ableton_pipeasio_remove_panel_path()
 {
     local path="$1"
     if [ ! -e "$path" ] && [ ! -L "$path" ]; then
-        if ableton_pipeasio_manifest_claimed "$path"; then
+        if ableton_manifest_path_claimed "$path"; then
             ableton_remove_managed_file "$path"
         else
             ableton_record_deowned "$path"
         fi
-    elif ableton_pipeasio_manifest_match "$path" || ableton_legacy_owned_path "$path"; then
+    elif ableton_manifest_path_matches "$path" || ableton_legacy_owned_path "$path"; then
         ableton_remove_managed_file "$path"
     else
         ableton_record_deowned "$path"
-        printf '   kept your existing %s\n' "$path"
+        printf '   preserved your existing %s\n' "$path"
     fi
 }
 
@@ -437,15 +415,15 @@ ableton_pipeasio_sync_panel()
     fi
 
     if [ "$policy" = reconcile ] && [ ! -e "$command" ] && [ ! -L "$command" ] \
-       && ! ableton_pipeasio_manifest_claimed "$command"; then
+       && ! ableton_manifest_path_claimed "$command"; then
         ableton_record_deowned "$command"
-    elif ableton_pipeasio_panel_may_replace "$command"; then
-        ableton_install_symlink "$runtime/bin/pipeasio-settings" "$command"
+    else
+        ableton_install_launcher_symlink "$runtime/bin/pipeasio-settings" "$command"
     fi
     if [ "$policy" = reconcile ] && [ ! -e "$desktop" ] && [ ! -L "$desktop" ] \
-       && ! ableton_pipeasio_manifest_claimed "$desktop"; then
+       && ! ableton_manifest_path_claimed "$desktop"; then
         ableton_record_deowned "$desktop"
-    elif ableton_pipeasio_panel_may_replace "$desktop"; then
+    else
         tmp="$(mktemp "${TMPDIR:-/tmp}/pipeasio-settings.desktop.XXXXXX")"
         while IFS= read -r line || [ -n "$line" ]; do
             if [ "$line" = 'Exec=pipeasio-settings' ]; then
@@ -456,13 +434,13 @@ ableton_pipeasio_sync_panel()
             fi
         done < "$source_desktop" > "$tmp"
         printf '%s\n' 'X-Ableton-Wine-Managed=true' >> "$tmp"
-        ableton_install_file 644 "$tmp" "$desktop"
+        ableton_install_launcher_file 644 "$tmp" "$desktop"
         rm -f -- "$tmp"
     fi
     if [ "$policy" = reconcile ] && [ ! -e "$icon" ] && [ ! -L "$icon" ] \
-       && ! ableton_pipeasio_manifest_claimed "$icon"; then
+       && ! ableton_manifest_path_claimed "$icon"; then
         ableton_record_deowned "$icon"
-    elif ableton_pipeasio_panel_may_replace "$icon"; then
+    elif ableton_pipeasio_icon_may_replace "$icon"; then
         ableton_install_file 644 "$source_icon" "$icon"
     fi
     [ "$policy" != install ] || ableton_pipeasio_qt_advice "$runtime/bin/pipeasio-settings"

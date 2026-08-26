@@ -23,6 +23,13 @@ the sizes differ. It retries after five seconds and limits requests to three
 per minute. When the foreign request ends, it asks Live to return to the saved
 size.
 
+After PipeWire binds the current filter, PipeASIO uses that filter's node ID to
+distinguish its own buffer request from requests made by other PipeASIO
+filters. Before the ID is available, a matching node name is provisional; once
+the bound ID is known, same-name filters are treated as separate sessions.
+PipeASIO also reads the buffer size that PipeWire applies to all applications.
+PipeWire controls that shared value.
+
 For diagnosis, `PIPEASIO_ALLOW_QUANTUM_MISMATCH=on` lets audio continue during
 a size difference. The playback speed can differ.
 
@@ -82,16 +89,17 @@ engine once per PipeWire graph period. A 48 kHz rate with 64 frames produces
 750 calls each second. Smaller buffers make Live wake and wait for its workers
 more often.
 
-Ableton Linux limits Live 12 to the physical CPU cores available to the
-launcher by default when that value is below Live's calculated worker count.
-The tested value was 16. Wine reported 32 logical CPUs. Live had access to 32
-Linux CPUs. The worker count changed from 31 to 16. The
+Ableton Linux chooses the Live 12 worker count from 2 values. It uses the
+greater of the physical core count and half of Live's own worker count, up to
+Live's own count. It applies that value when it is lower than Live's count. The
+tested value was 16. Wine reported 32 logical CPUs. Live used 32 Linux CPUs. The
+worker count changed from 31 to 16. The
 [CPU troubleshooting guide](../TROUBLESHOOTING.md#live-overloads-after-an-update)
 explains the automatic policy and its overrides.
 
 The limit reduces worker wake-ups. Plug-in-heavy Sets can benefit from more
-parallel workers, so compare the physical-core value with Live's calculated
-count when deadline overloads increase.
+workers. Compare the automatic value with Live's own count when overloads
+increase.
 
 Audio continuity depends on available processor time, an attached device, and
 a running PipeWire service. The CPU tests used PipeASIO 1.5 with Live 12.4.3.

@@ -10,21 +10,28 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
-readonly REQUIRED_WINE_TAIL='0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch'
-readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0012-recover-selected-routes-after-hotplug.patch'
+readonly REQUIRED_WINE_TAIL='0107-win32u-restore-offscreen-client-content-on-expose.patch'
+readonly REQUIRED_PERFORMANCE_TAIL='performance/0001-ntdll-alertable-sleep-fast-path.patch'
+readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0016-classify-pipeasio-forcers-by-bound-node-id.patch'
 
 check_required_series_tails()
 {
-    local manifest="${1:?series manifest required}" body wine_tail pipeasio_tail
+    local manifest="${1:?series manifest required}" body wine_tail performance_members performance_tail pipeasio_tail
     [ -r "$manifest" ] || fail "series manifest is missing or unreadable: $manifest"
     # Read once. Callers may pass a process substitution, and a second open of
     # that FIFO returns EOF - which reported the PipeASIO tail as absent while
     # every patch was present.
     body="$(cat -- "$manifest")"
-    wine_tail="$(printf '%s\n' "$body" | awk '$2 !~ /^pipeasio\// { print $2 }' | sort | tail -1)"
+    wine_tail="$(printf '%s\n' "$body" | awk '$2 !~ /^(pipeasio|performance)\// { print $2 }' | sort | tail -1)"
+    performance_members="$(printf '%s\n' "$body" | awk '$2 ~ /^performance\// { print $2 }' | sort)"
+    performance_tail="$(printf '%s\n' "$performance_members" | tail -1)"
     pipeasio_tail="$(printf '%s\n' "$body" | awk '$2 ~ /^pipeasio\// { print $2 }' | sort | tail -1)"
     [ "$wine_tail" = "$REQUIRED_WINE_TAIL" ] ||
         fail "Wine series must end at $REQUIRED_WINE_TAIL (found ${wine_tail:-none})"
+    [ "$performance_tail" = "$REQUIRED_PERFORMANCE_TAIL" ] ||
+        fail "Set the performance series tail to $REQUIRED_PERFORMANCE_TAIL (current ${performance_tail:-empty})"
+    [ "$performance_members" = "$REQUIRED_PERFORMANCE_TAIL" ] ||
+        fail "performance series must contain exactly the reviewed bounded 0001 set"
     [ "$pipeasio_tail" = "$REQUIRED_PIPEASIO_TAIL" ] ||
         fail "PipeASIO series must end at $REQUIRED_PIPEASIO_TAIL (found ${pipeasio_tail:-none})"
 }
@@ -32,7 +39,7 @@ check_required_series_tails()
 if [ "${1:-}" = --check-series-policy ]; then
     [ "$#" -eq 2 ] || fail "usage: $0 --check-series-policy MANIFEST"
     check_required_series_tails "$2"
-    say "OK: required Wine and PipeASIO series tails are present."
+    say "OK: required Wine, bounded-performance, and PipeASIO series members are present."
     exit 0
 fi
 
@@ -47,7 +54,7 @@ fi
 
 # --- --freeze: (re)generate the frozen series manifest ------------------------
 if [ "${1:-}" = --freeze ]; then
-    new="$(cd "$root/patches" && sha256sum [0-9][0-9][0-9][0-9]-*.patch pipeasio/*.patch)"
+    new="$(cd "$root/patches" && sha256sum [0-9][0-9][0-9][0-9]-*.patch performance/*.patch pipeasio/*.patch)"
     check_required_series_tails <(printf '%s\n' "$new")
     if [ -f "$SERIES" ]; then
         say "== freeze diff (old -> new) =="
@@ -149,7 +156,7 @@ done < "$SERIES"
 # Every .patch on disk, not just the numbered ones the series globs match: a file
 # the series glob skips is applied by nothing and audited by nothing, so it has
 # to surface here rather than pass as absent.
-extras="$(cd "$root/patches" && printf '%s\n' *.patch pipeasio/*.patch \
+extras="$(cd "$root/patches" && printf '%s\n' *.patch performance/*.patch pipeasio/*.patch \
     | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
 # Retired numbers stay retired (renumbering would break cross-references in patch
@@ -163,7 +170,7 @@ for consolidated_gap in 0072 0074 0090 0091 0092 0093 0094 0095 0097 0098; do
 done
 unset consolidated_gap
 seq_expect=1
-for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
+for f in $(awk '{print $2}' "$SERIES" | grep -v -e '^pipeasio/' -e '^performance/' | sort); do
     num="${f%%-*}"
     if [ -n "${SERIES_GAPS[$num]:-}" ]; then
         bad "series numbering" "$num is a declared gap but patch is present ($f)"
@@ -200,9 +207,10 @@ for f in $(awk '{print $2}' "$SERIES" | grep '^pipeasio/' | sort); do
     [ "$num" = "$want" ] || bad "pipeasio numbering" "expected $want, found $num"
     asio_expect=$((asio_expect+1))
 done
-n_wine="$(awk '{print $2}' "$SERIES" | grep -vc '^pipeasio/' || true)"
+n_wine="$(awk '{print $2}' "$SERIES" | grep -vc -e '^pipeasio/' -e '^performance/' || true)"
+n_perf="$(awk '{print $2}' "$SERIES" | grep -c '^performance/' || true)"
 n_asio="$(awk '{print $2}' "$SERIES" | grep -c '^pipeasio/' || true)"
-say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_asio pipeasio patches (0001..$(printf '%04d' "$((asio_expect-1))"))"
+say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_perf bounded performance patches + $n_asio pipeasio patches (0001..$(printf '%04d' "$((asio_expect-1))"))"
 
 # --- [2/4] artifact provenance stamp ------------------------------------------
 say "== [2/4] artifact provenance (patch stack stamped at build time) =="
@@ -386,6 +394,8 @@ FINGERPRINTS='
 0105|ascii|lib/wine/x86_64-unix/winealsa.so|WINE MIDI topology
 0105|ascii|lib/wine/x86_64-windows/winmm.dll|Out of memory refreshing %s mappings
 0106|ascii|lib/wine/x86_64-windows/libusb-1.0.dll|Operation not supported or unimplemented on this platform
+0107|ascii|lib/wine/x86_64-unix/win32u.so|restoring %s after whole-client expose of %p
+performance/0001|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_APC_FASTPATH
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
 pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
@@ -397,6 +407,9 @@ pipeasio/0009|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-honest-realtim
 pipeasio/0010|wide|bin/pipeasio-settings|pick a preset or type any value
 pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
 pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotplug
+pipeasio/0014|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|enabled for 64-bit host; capacity=%u, interval_ms=1000
+pipeasio/0015|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|PIPEASIO_TELEMETRY could not open a nonblocking report descriptor
+pipeasio/0016|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-node-arbitration
 '
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,
@@ -464,6 +477,7 @@ STAMP_ONLY='
 0102|logic-only (natural modes use outlines; GDI-compatible and aliased modes keep strikes; adds no string literal)
 0103|logic-only (natural rendering quantised to 16 horizontal phases, glyph cache budget scaled with the phase count; adds no string literal)
 0104|logic-only (resize derives target bitmap options from the DXGI surface and preserves its pixel format; adds no string literal)
+pipeasio/0013|logic-only (successful callbacks already finalize output slots; no distinctive string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \

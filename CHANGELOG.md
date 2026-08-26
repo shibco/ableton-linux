@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+- Updates replace launchers when their saved checksums differ. The installer
+  saves the most recently replaced file or symlink beside its launcher as
+  `<name>.bak`. This behaviour covers Live, Max, protocol handlers, and
+  PipeASIO.
+- Launcher-name collisions are now replaced instead of preserved, including
+  Wine's `wine-protocol-c74max.desktop`, and the project's associations are made
+  active. Uninstall restores the previous launcher and associations.
+- Adjacent backup paths are managed as part of the installation. Uninstall
+  removes a `.bak` created in an empty path, or restores a `.bak` that existed
+  before installation. Runtime-only updates record replaced PipeASIO launchers
+  and adjacent backup paths for the same uninstall handling.
+
+Live keeps more audio workers on processors with fewer cores. Audio workers
+divide Set processing among CPU cores. The `auto` setting uses the physical core
+count and half of Live's own worker count. It selects the larger value, up to
+Live's own count.
+
+On the measured 16-core, 32-thread computer, `auto` selects 16 of Live's 31
+workers. An existing user or launcher setting takes priority. Select `auto` to
+calculate the value again.
+
+- audio reports now show the CPU layout that Linux gives Live:
+  - the report records the available CPU set, physical layout and Linux
+    processor preferences
+
+- **Live's dialogs keep their content when the desktop shows them (#263):**
+  - Dialogs such as Separate Stems could open black until you clicked a
+    control. Wine now restores retained dialog content after the desktop
+    exposes the whole client area.
+  - The hardened implementation compiles on both sides of the Wine X11
+    boundary; GNOME, KDE Plasma and NVIDIA runtime confirmation is pending.
+  - Thanks @Sandai64 for the report.
+
+- installs and updates now finish after interrupted Link setup (#258):
+  - an active firewall makes Link setup ask for your password. The installer
+    now finishes after the prompt expires or you press Ctrl-C. It reports the
+    stopped Link setup. It gives you the command to resume setup. The previous
+    behaviour removed a new Live installation or restored the previous runtime
+  - Live offers Link when you use an ASIO driver. The README shows how to select
+    PipeASIO. The troubleshooting guide shows how to display the Link button
+  - thanks ΦNYX from Discord for the report
+
 ## 2026.08.26.1
 
 - **MIDI controllers and audio interfaces find their way back:**
