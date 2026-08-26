@@ -1,0 +1,165 @@
+Subject: win32u: restore offscreen client content on whole-client expose
+
+Issue #263: Live's Separate Stems dialog opens with a black client area under
+KDE Plasma. The content appears once the user clicks a control. Issue #262
+reports black Max for Live menu windows on Sway; that path is not covered
+here.
+
+The launcher keeps every "Ableton Live Window Class" top-level on the
+offscreen client surface path (patch 0062). Direct3D renders each window into
+a composite-redirected client window, and X11DRV_client_surface_present()
+copies that window's retained content onto the toplevel X11 window on every
+present.
+
+Live presents the first frame of a dialog right after ShowWindow. The window
+manager has not mapped the window yet, so the X server discards the copy.
+When the window manager maps the window, the X server sends Expose, and
+Wine's expose path flushes the window surface. That surface never held the
+Direct3D frame, so for a dialog without child windows the flush paints its
+blank content over any copy that did land. Nothing asks the application to
+present again, and Live does not present again until the next input event.
+The redirected client window still holds the frame throughout.
+
+After a whole-client expose, restore each offscreen client surface through a
+driver callback that is explicitly allowed on the window owner thread. Do
+not reuse the render-thread present callback. Refresh the surface geometry
+before checking whether it has retained pixels, so a resize cannot copy the
+undefined contents of a replacement pixmap. Ignore partial exposes: restoring
+a full retained frame for a small damaged rectangle would add unnecessary
+full-window blits and could overwrite newer drawing outside that rectangle.
+
+A D3D11 probe forced onto the offscreen path, run on GNOME 48 (Mutter,
+Xwayland), showed this: an owned captioned window presented right after
+ShowWindow, or before it, captured black after the map and now captures its
+frame. Live's Separate Stems dialog renders on the patched runtime, and its
+composite pixmap holds the rendered dialog. The main window and the Max for
+Live device view are unchanged. KDE Plasma and Sway are not verified.
+
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -382,8 +382,14 @@ static RECT get_client_surface_rects( HWND toplevel, HWND hwnd, RECT *monitor_re
+
+ static void client_surface_update_locked( struct client_surface *surface )
+ {
++    RECT old_rect = surface->virtual_rect;
++
+     surface->toplevel = NtUserGetAncestor( surface->hwnd, GA_ROOT );
+     surface->virtual_rect = get_client_surface_rects( surface->toplevel, surface->hwnd, &surface->monitor_rect );
++    /* a resized client window gets a new pixmap with undefined content */
++    if (old_rect.right - old_rect.left != surface->virtual_rect.right - surface->virtual_rect.left ||
++        old_rect.bottom - old_rect.top != surface->virtual_rect.bottom - surface->virtual_rect.top)
++        InterlockedExchange( &surface->presented, 0 );
+
+     TRACE( "updating %s, toplevel %p, virtual_rect %s, monitor_rect %s\n", debugstr_client_surface( surface ), surface->toplevel,
+            wine_dbgstr_rect( &surface->virtual_rect ), wine_dbgstr_rect( &surface->monitor_rect ) );
+@@ -462,6 +468,7 @@ void client_surface_present( struct client_surface *surface )
+         if (surface->offscreen) hdc = NtUserGetDCEx( hwnd, 0, DCX_CACHE | DCX_USESTYLE );
+         surface->funcs->present( surface, hdc );
+         if (hdc) NtUserReleaseDC( hwnd, hdc );
++        InterlockedExchange( &surface->presented, surface->offscreen ? 1 : 0 );
+     }
+     pthread_mutex_unlock( &surfaces_lock );
+ }
+@@ -2505,11 +2512,45 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
+     return ret;
+ }
+
++/***********************************************************************
++ *           restore_offscreen_client_surfaces
++ *
++ * Restore the retained offscreen client surfaces of a toplevel window after
++ * a whole-client expose.  Refresh each surface's geometry first, so a resize
++ * clears the presented flag before undefined replacement pixmap contents can
++ * be copied.  Use the owner-thread restore callback rather than the render-
++ * thread present callback.
++ */
++static void restore_offscreen_client_surfaces( HWND toplevel )
++{
++    struct client_surface *surface;
++
++    pthread_mutex_lock( &surfaces_lock );
++
++    LIST_FOR_EACH_ENTRY( surface, &client_surfaces, struct client_surface, entry )
++    {
++        HDC hdc;
++
++        if (!surface->funcs->restore) continue;
++        if (NtUserGetAncestor( surface->hwnd, GA_ROOT ) != toplevel) continue;
++        client_surface_update_locked( surface );
++        if (!surface->offscreen || !surface->presented) continue;
++
++        TRACE( "restoring %s after whole-client expose of %p\n", debugstr_client_surface( surface ), toplevel );
++        hdc = NtUserGetDCEx( surface->hwnd, 0, DCX_CACHE | DCX_USESTYLE );
++        surface->funcs->restore( surface, hdc );
++        if (hdc) NtUserReleaseDC( surface->hwnd, hdc );
++    }
++
++    pthread_mutex_unlock( &surfaces_lock );
++}
++
+ static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect )
+ {
+     struct window_surface *surface;
+     struct window_rects rects;
+     RECT exposed_rect;
++    BOOL restore_client_surfaces;
+     WND *win;
+
+     if (!(win = get_win_ptr( hwnd )) || win == WND_DESKTOP || win == WND_OTHER_PROCESS) return FALSE;
+@@ -2523,11 +2564,16 @@ static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect )
+         get_win_monitor_dpi( hwnd, &raw_dpi );
+         exposed_rect = map_dpi_rect( *rect, raw_dpi, get_dpi_for_window( hwnd ) );
+     }
++    restore_client_surfaces = !rect ||
++        (exposed_rect.left <= 0 && exposed_rect.top <= 0 &&
++         exposed_rect.right >= rects.client.right - rects.client.left &&
++         exposed_rect.bottom >= rects.client.bottom - rects.client.top);
+
+     if (!surface || surface == &dummy_surface)
+     {
+         NtUserRedrawWindow( hwnd, rect ? &exposed_rect : NULL, NULL, flags );
+         if (surface) window_surface_release( surface );
++        if (restore_client_surfaces) restore_offscreen_client_surfaces( hwnd );
+         return TRUE;
+     }
+
+@@ -2542,6 +2588,7 @@ static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect )
+     window_surface_unlock( surface );
+     window_surface_flush( surface );
+     window_surface_release( surface );
++    if (restore_client_surfaces) restore_offscreen_client_surfaces( hwnd );
+     return TRUE;
+ }
+
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -500,6 +500,7 @@ static const struct client_surface_funcs x11drv_client_surface_funcs =
+     .detach = x11drv_client_surface_detach,
+     .update = x11drv_client_surface_update,
+     .present = X11DRV_client_surface_present,
++    .restore = X11DRV_client_surface_present,
+ };
+
+ static int visual_class_alloc( int class )
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -256,6 +256,8 @@ struct client_surface_funcs
+     void (*update)( struct client_surface *surface );
+     /* present the client surface if necessary, hdc != NULL when offscreen, called from render thread */
+     void (*present)( struct client_surface *surface, HDC hdc );
++    /* restore retained offscreen content after expose, called from window owner thread */
++    void (*restore)( struct client_surface *surface, HDC hdc );
+ };
+
+ struct client_surface
+@@ -267,6 +269,7 @@ struct client_surface
+     LONG                               updated;        /* has been moved / resized / reparented */
+     HWND                               toplevel;       /* toplevel window of the surface */
+     LONG                               offscreen;      /* client window is offscreen */
++    LONG                               presented;      /* has been presented offscreen at its current size */
+     RECT                               virtual_rect;   /* virtual size and position in the toplevel ancestor */
+     RECT                               monitor_rect;   /* raw physical size and position in the toplevel ancestor */
+ };
