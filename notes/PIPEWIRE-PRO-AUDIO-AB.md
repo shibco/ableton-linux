@@ -7,8 +7,9 @@ Pro Audio changes routing, channel count, and interrupt timing. Profile changes
 can raise or lower CPU use. Treat each result as specific to one device and one
 configuration.
 
-PipeWire uses the name `pro-audio` for an ALSA card profile. Windows uses the
-same words for an audio task class. The 2 names describe separate features.
+PipeWire uses the name `pro-audio` for a Linux audio device profile. Windows
+uses the same words for an audio task class. The 2 names describe separate
+features.
 
 The source basis is:
 
@@ -20,13 +21,14 @@ The source basis is:
 
 ## Tool actions
 
-The script takes a PipeWire device ID and an existing Wine prefix. It then:
+The script takes a PipeWire device ID and an existing Wine prefix. A Wine prefix
+stores the Windows files and settings. The script then:
 
 1. Records the device, routes, links, settings, defaults, and current profile.
 2. Checks that Live and the selected Wine prefix are idle.
-3. Checks that the target device has quiet nodes and links.
+3. Checks that the target audio device is idle.
 4. Runs your command with the current profile.
-5. Selects Pro Audio for the target device with `save:false`.
+5. Selects Pro Audio temporarily for the target device.
 6. Runs the same command with Pro Audio.
 7. Restores the original profile.
 8. Compares the final state with the recorded state.
@@ -38,16 +40,16 @@ script restores the profile after command errors and caught `HUP`, `INT`, or
 The tool records each stage in a separate directory. It also records command
 output, run time, exit status, and profile changes.
 
-The state check compares stable device details. PipeWire can assign new object
-IDs during a profile change, so the check compares names, routes, channels, and
-device paths.
+The state check compares stable device details. PipeWire can assign new internal
+IDs during a profile change. The check therefore compares names, routes,
+channels, and device paths.
 
 The tool writes `recovery-command.txt` before the first profile change. Use that
 command after power loss, `SIGKILL`, or a PipeWire service restart. Confirm the
 device identity first because PipeWire can assign a new device ID.
 
-The script uses `save:false` for profile selection and restoration. The setting
-keeps the comparison separate from the saved WirePlumber profile choice.
+The script keeps the saved WirePlumber profile choice throughout the
+comparison.
 
 PipeWire provides a short interval between the final state check and the
 profile change. The script records an extra state check immediately before that
@@ -120,9 +122,9 @@ Review the following conditions:
 - the same sample rate and buffer size
 - the same Live, Wine, prefix, plug-ins, and benchmark Sets
 - stable power and temperature conditions
-- equal collector coverage
+- each measurement tool covers the full run
 - continuous audio reported by the listener
-- stable PipeWire error and xrun counts
+- stable PipeWire error and missed audio deadline counts
 - successful restoration of the original profile
 
 Compare total host, Wine prefix, PipeWire, and interrupt CPU. A Live process
