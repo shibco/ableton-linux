@@ -1,0 +1,729 @@
+From 7425fdcefdc8379aef3877d7f73913a8edb228b0 Mon Sep 17 00:00:00 2001
+From: Telemetry Prototype <prototype@localhost>
+Date: Mon, 24 Aug 2026 01:24:35 +0200
+Subject: [PATCH] asio: add opt-in callback phase telemetry
+
+Live's deadline meter and Linux process CPU cannot identify where a callback
+period is spent. Add an environment-only diagnostic that records both
+monotonic wall time and callback-thread CPU time around the pre-host,
+host-callback, and post-host phases.
+
+PIPEASIO_TELEMETRY=on is deliberately off by default because the clock reads
+add measurement overhead. The audio callback performs no allocation, logging,
+formatting, signalling, locks, or blocking synchronization: it publishes fixed
+samples to a bounded lock-free SPSC ring, dropping rather than waiting when
+full. The existing lifecycle worker sorts and emits p50/p95/p99/max aggregates
+once per second. WoW64 rejects the option because its PipeWire and host
+callbacks run on different threads.
+
+Verification: the normal driver build and all 12 non-integration tests pass.
+The new ring/percentile/concurrency test passes ASan, UBSan, and TSan. The
+WoW64 ABI test passes; a full 32-bit build was unavailable because the cross
+compiler is not installed. A live probe was unavailable because this test
+environment has no PipeWire daemon.
+
+---
+ README.md                    |  24 +++
+ include/pipeasio_telemetry.h | 106 +++++++++++++
+ src/asio.c                   | 282 ++++++++++++++++++++++++++++++++++-
+ tests/asio_probe/run.sh      |   3 +-
+ tests/asio_probe/run32.sh    |   3 +-
+ tests/unit/CMakeLists.txt    |   4 +
+ tests/unit/test_telemetry.c  | 120 +++++++++++++++
+ 7 files changed, 535 insertions(+), 7 deletions(-)
+ create mode 100644 include/pipeasio_telemetry.h
+ create mode 100644 tests/unit/test_telemetry.c
+
+diff --git a/README.md b/README.md
+index c20c4df..471990a 100644
+--- a/README.md
++++ b/README.md
+@@ -548,6 +548,30 @@ takes effect the next time the host starts the driver.
+ 
+ Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
+ 
++### callback telemetry (diagnostic)
++
++`PIPEASIO_TELEMETRY=on` enables callback-phase timing for a 64-bit host. It is
++off by default and is intentionally an environment-only diagnostic, not a saved
++driver setting. Each accepted, matched-quantum cycle measures monotonic wall
++time and `CLOCK_THREAD_CPUTIME_ID` for three phases:
++
++1. PipeASIO callback entry to the call into the ASIO host.
++2. Time inside the host's `swapBuffersWithTimeInfo` (or legacy `bufferSwitch`).
++3. Return from the host to the point where all output buffers have been queued.
++
++The audio callback does no formatting, logging, allocation, signalling, or
++blocking synchronization. It writes completed samples into a fixed 8192-entry
++lock-free SPSC ring. A full ring drops the new sample instead of waiting. The
++existing lifecycle worker drains it once per second, sorts at most 8192 values,
++and writes p50/p95/p99/maximum aggregates plus the drop count to stderr. The
++clock reads and fixed sample writes still add measurement overhead, so leave the
++feature off outside a controlled diagnostic run.
++
++The experimental 32-bit WoW64 path rejects this option: its PipeWire callback
++and PE host callback execute on different threads, making one set of
++`CLOCK_THREAD_CPUTIME_ID` phase deltas invalid without a larger bridge-ABI
++change.
++
+ ## Performance
+ 
+ A few knobs affect xrun-free, low-latency operation:
+diff --git a/include/pipeasio_telemetry.h b/include/pipeasio_telemetry.h
+new file mode 100644
+index 0000000..20ce9f1
+--- /dev/null
++++ b/include/pipeasio_telemetry.h
+@@ -0,0 +1,106 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#pragma once
++
++/*
++ * Bounded single-producer/single-consumer storage for callback telemetry.
++ *
++ * The producer is PipeWire's one data-loop callback.  It performs only plain
++ * stores plus lock-free C11 atomic loads/stores.  The lifecycle worker is the
++ * sole consumer and owns sorting and output.  A full ring drops the new sample
++ * instead of delaying the audio callback.
++ */
++
++#include <stdatomic.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define PIPEASIO_TELEMETRY_PHASES 3u
++#define PIPEASIO_TELEMETRY_CAPACITY 8192u
++
++enum pipeasio_telemetry_phase
++{
++    PIPEASIO_TELEMETRY_PRE_LIVE,
++    PIPEASIO_TELEMETRY_LIVE,
++    PIPEASIO_TELEMETRY_POST_LIVE
++};
++
++#define PIPEASIO_TELEMETRY_TIME_INFO 0x1u
++
++typedef struct pipeasio_telemetry_sample
++{
++    uint64_t wall_ns[PIPEASIO_TELEMETRY_PHASES];
++    uint64_t cpu_ns[PIPEASIO_TELEMETRY_PHASES];
++    uint32_t flags;
++} pipeasio_telemetry_sample;
++
++typedef struct pipeasio_telemetry_ring
++{
++    _Atomic uint64_t          write_seq;
++    _Atomic uint64_t          read_seq;
++    _Atomic uint64_t          dropped;
++    pipeasio_telemetry_sample slots[PIPEASIO_TELEMETRY_CAPACITY];
++} pipeasio_telemetry_ring;
++
++static inline void
++pipeasio_telemetry_ring_init(pipeasio_telemetry_ring *ring)
++{
++    atomic_init(&ring->write_seq, 0);
++    atomic_init(&ring->read_seq, 0);
++    atomic_init(&ring->dropped, 0);
++}
++
++/* Audio-thread producer. Never waits and never overwrites unread data. */
++static inline bool
++pipeasio_telemetry_ring_publish(pipeasio_telemetry_ring         *ring,
++                                const pipeasio_telemetry_sample *sample)
++{
++    uint64_t write = atomic_load_explicit(&ring->write_seq, memory_order_relaxed);
++    uint64_t read  = atomic_load_explicit(&ring->read_seq, memory_order_acquire);
++    if (write - read >= PIPEASIO_TELEMETRY_CAPACITY)
++    {
++        atomic_fetch_add_explicit(&ring->dropped, 1, memory_order_relaxed);
++        return false;
++    }
++    ring->slots[write % PIPEASIO_TELEMETRY_CAPACITY] = *sample;
++    atomic_store_explicit(&ring->write_seq, write + 1, memory_order_release);
++    return true;
++}
++
++/* Worker-side snapshot. The producer cannot reuse these slots until consume. */
++static inline size_t
++pipeasio_telemetry_ring_snapshot(const pipeasio_telemetry_ring *ring, uint64_t *first)
++{
++    uint64_t read  = atomic_load_explicit(&ring->read_seq, memory_order_relaxed);
++    uint64_t write = atomic_load_explicit(&ring->write_seq, memory_order_acquire);
++    uint64_t count = write - read;
++    if (count > PIPEASIO_TELEMETRY_CAPACITY)
++        count = PIPEASIO_TELEMETRY_CAPACITY;
++    if (first)
++        *first = read;
++    return (size_t)count;
++}
++
++static inline const pipeasio_telemetry_sample *
++pipeasio_telemetry_ring_at(const pipeasio_telemetry_ring *ring, uint64_t sequence)
++{
++    return &ring->slots[sequence % PIPEASIO_TELEMETRY_CAPACITY];
++}
++
++static inline void
++pipeasio_telemetry_ring_consume(pipeasio_telemetry_ring *ring, uint64_t first, size_t count)
++{
++    atomic_store_explicit(&ring->read_seq, first + count, memory_order_release);
++}
++
++/* Nearest-rank percentile index for a sorted, non-empty sample array. */
++static inline size_t
++pipeasio_telemetry_percentile_index(size_t count, unsigned percentile)
++{
++    if (!count)
++        return 0;
++    if (percentile > 100)
++        percentile = 100;
++    size_t rank = (count * (size_t)percentile + 99u) / 100u;
++    return rank ? rank - 1u : 0u;
++}
+diff --git a/src/asio.c b/src/asio.c
+index 7612767..ebc2c79 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -71,6 +71,9 @@
+ #include "pipeasio_rate_state.h"
+ #include "pipeasio_rt.h"
+ #include "pipeasio_admission_gate.h"
++#ifndef PIPEASIO_WOW64_PE
++#include "pipeasio_telemetry.h"
++#endif
+ #ifdef PIPEASIO_WOW64_PE
+ #include "pipeasio_wow64_pe.h"
+ #endif
+@@ -273,6 +276,27 @@ typedef struct IOChannel
+     bool            active;
+ } IOChannel;
+ 
++#ifndef PIPEASIO_WOW64_PE
++typedef struct pipeasio_telemetry_state
++{
++    pipeasio_telemetry_ring ring;
++} pipeasio_telemetry_state;
++
++typedef struct pipeasio_telemetry_cycle
++{
++    pipeasio_telemetry_state *state;
++    struct timespec           entry_wall;
++    struct timespec           entry_cpu;
++    struct timespec           pre_wall;
++    struct timespec           pre_cpu;
++    struct timespec           post_wall;
++    struct timespec           post_cpu;
++    bool                      valid;
++    bool                      live_returned;
++    uint32_t                  flags;
++} pipeasio_telemetry_cycle;
++#endif
++
+ typedef struct IPipeASIOImpl
+ {
+     /* COM and lifetime state */
+@@ -287,9 +311,15 @@ typedef struct IPipeASIOImpl
+     HANDLE                  worker;
+     DWORD                   worker_tid;
+     HMODULE                 module_pin;
+-    _Atomic uint32_t        gate_owner_seq;
+-    _Atomic uint32_t        lifecycle_waiters;
+-    _Atomic uint32_t        stop_generation;
++#ifndef PIPEASIO_WOW64_PE
++    _Atomic(pipeasio_telemetry_state *) telemetry;
++    /* Data-loop-only pointer to the stack sample currently spanning the host
++     * callback. It is never read by the reporting worker. */
++    pipeasio_telemetry_cycle *telemetry_cycle;
++#endif
++    _Atomic uint32_t gate_owner_seq;
++    _Atomic uint32_t lifecycle_waiters;
++    _Atomic uint32_t stop_generation;
+ 
+     /* The app's main window handle on windows, 0 on OS/X */
+     HWND sys_ref;
+@@ -697,6 +727,143 @@ gate_leave_test_barrier(void)
+ }
+ #endif
+ 
++#ifndef PIPEASIO_WOW64_PE
++/* CLOCK_MONOTONIC measures deadline time; CLOCK_THREAD_CPUTIME_ID separates
++ * work done by this callback thread from time it spends asleep in Live.  The
++ * calls are made only when PIPEASIO_TELEMETRY is enabled. */
++static bool
++telemetry_now(struct timespec *wall, struct timespec *cpu)
++{
++    return clock_gettime(CLOCK_MONOTONIC, wall) == 0
++           && clock_gettime(CLOCK_THREAD_CPUTIME_ID, cpu) == 0;
++}
++
++static uint64_t
++telemetry_delta_ns(const struct timespec *start, const struct timespec *end)
++{
++    if (end->tv_sec < start->tv_sec
++        || (end->tv_sec == start->tv_sec && end->tv_nsec < start->tv_nsec))
++        return 0;
++    return (uint64_t)(end->tv_sec - start->tv_sec) * 1000000000ull
++           + (uint64_t)(end->tv_nsec - start->tv_nsec);
++}
++
++static void
++telemetry_cycle_begin(pipeasio_telemetry_state *state, pipeasio_telemetry_cycle *cycle)
++{
++    memset(cycle, 0, sizeof(*cycle));
++    if (!state)
++        return;
++    cycle->state = state;
++    cycle->valid = telemetry_now(&cycle->entry_wall, &cycle->entry_cpu);
++}
++
++static void
++telemetry_cycle_before_live(pipeasio_telemetry_cycle *cycle, bool time_info)
++{
++    if (!cycle || !cycle->valid)
++        return;
++    cycle->valid = telemetry_now(&cycle->pre_wall, &cycle->pre_cpu);
++    if (time_info)
++        cycle->flags |= PIPEASIO_TELEMETRY_TIME_INFO;
++}
++
++static void
++telemetry_cycle_after_live(pipeasio_telemetry_cycle *cycle)
++{
++    if (!cycle || !cycle->valid)
++        return;
++    cycle->valid         = telemetry_now(&cycle->post_wall, &cycle->post_cpu);
++    cycle->live_returned = cycle->valid;
++}
++
++/* Audio-thread finalization: fixed stack arithmetic plus one nonblocking SPSC
++ * publication. No allocation, lock, signal, formatting, or I/O is reachable. */
++static void
++telemetry_cycle_finish(pipeasio_telemetry_cycle *cycle)
++{
++    struct timespec           output_wall;
++    struct timespec           output_cpu;
++    pipeasio_telemetry_sample sample = { 0 };
++    if (!cycle || !cycle->state || !cycle->valid || !cycle->live_returned
++        || !telemetry_now(&output_wall, &output_cpu))
++        return;
++    sample.wall_ns[PIPEASIO_TELEMETRY_PRE_LIVE]
++            = telemetry_delta_ns(&cycle->entry_wall, &cycle->pre_wall);
++    sample.cpu_ns[PIPEASIO_TELEMETRY_PRE_LIVE]
++            = telemetry_delta_ns(&cycle->entry_cpu, &cycle->pre_cpu);
++    sample.wall_ns[PIPEASIO_TELEMETRY_LIVE]
++            = telemetry_delta_ns(&cycle->pre_wall, &cycle->post_wall);
++    sample.cpu_ns[PIPEASIO_TELEMETRY_LIVE] = telemetry_delta_ns(&cycle->pre_cpu, &cycle->post_cpu);
++    sample.wall_ns[PIPEASIO_TELEMETRY_POST_LIVE]
++            = telemetry_delta_ns(&cycle->post_wall, &output_wall);
++    sample.cpu_ns[PIPEASIO_TELEMETRY_POST_LIVE] = telemetry_delta_ns(&cycle->post_cpu, &output_cpu);
++    sample.flags                                = cycle->flags;
++    pipeasio_telemetry_ring_publish(&cycle->state->ring, &sample);
++}
++
++static int
++telemetry_compare_u64(const void *left, const void *right)
++{
++    uint64_t a = *(const uint64_t *)left;
++    uint64_t b = *(const uint64_t *)right;
++    return (a > b) - (a < b);
++}
++
++/* Lifecycle-worker consumer. It deliberately leaves read_seq unchanged until
++ * all six aggregates are emitted, so the producer drops instead of ever
++ * overwriting data being sorted. */
++static void
++telemetry_emit(IPipeASIOImpl *This)
++{
++    static const char *const phase_name[PIPEASIO_TELEMETRY_PHASES]
++            = { "entry_to_live", "live_callback", "live_to_outputs" };
++    pipeasio_telemetry_state *state = atomic_load_explicit(&This->telemetry, memory_order_acquire);
++    uint64_t                  first;
++    size_t                    count;
++    uint64_t                  values[PIPEASIO_TELEMETRY_CAPACITY];
++    uint64_t                  dropped;
++    size_t                    time_info = 0;
++    if (!state)
++        return;
++    count   = pipeasio_telemetry_ring_snapshot(&state->ring, &first);
++    dropped = atomic_exchange_explicit(&state->ring.dropped, 0, memory_order_relaxed);
++    if (!count)
++    {
++        if (dropped)
++            PIPEASIO_LOG("[pipeasio telemetry] ", "cycles=0 dropped=%llu\n",
++                         (unsigned long long)dropped);
++        return;
++    }
++    for (size_t i = 0; i < count; ++i)
++        if (pipeasio_telemetry_ring_at(&state->ring, first + i)->flags
++            & PIPEASIO_TELEMETRY_TIME_INFO)
++            ++time_info;
++    PIPEASIO_LOG("[pipeasio telemetry] ", "cycles=%llu time_info=%llu legacy=%llu dropped=%llu\n",
++                 (unsigned long long)count, (unsigned long long)time_info,
++                 (unsigned long long)(count - time_info), (unsigned long long)dropped);
++    for (unsigned clock_kind = 0; clock_kind < 2; ++clock_kind)
++        for (unsigned phase = 0; phase < PIPEASIO_TELEMETRY_PHASES; ++phase)
++        {
++            for (size_t i = 0; i < count; ++i)
++            {
++                const pipeasio_telemetry_sample *sample
++                        = pipeasio_telemetry_ring_at(&state->ring, first + i);
++                values[i] = clock_kind ? sample->cpu_ns[phase] : sample->wall_ns[phase];
++            }
++            qsort(values, count, sizeof(values[0]), telemetry_compare_u64);
++            PIPEASIO_LOG("[pipeasio telemetry] ",
++                         "%s_ns phase=%s p50=%llu p95=%llu p99=%llu max=%llu\n",
++                         clock_kind ? "thread_cpu" : "monotonic_wall", phase_name[phase],
++                         (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 50)],
++                         (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 95)],
++                         (unsigned long long)values[pipeasio_telemetry_percentile_index(count, 99)],
++                         (unsigned long long)values[count - 1]);
++        }
++    pipeasio_telemetry_ring_consume(&state->ring, first, count);
++}
++#endif
++
+ bool
+ pipeasio_host_call_begin(void *owner, pipeasio_host_call_kind kind, pipeasio_host_call_token *token)
+ {
+@@ -804,11 +971,27 @@ pipeasio_host_call_process(pipeasio_host_call_token *token, int32_t buffer_index
+         This->host_time.sampleRate
+                 = (double)atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+         This->host_time.flags = 0x7;
++#ifndef PIPEASIO_WOW64_PE
++        if (This->telemetry_cycle)
++            telemetry_cycle_before_live(This->telemetry_cycle, true);
++#endif
+         cb->swapBuffersWithTimeInfo(&This->host_time, buffer_index, 1);
++#ifndef PIPEASIO_WOW64_PE
++        if (This->telemetry_cycle)
++            telemetry_cycle_after_live(This->telemetry_cycle);
++#endif
+     }
+     else
+     {
++#ifndef PIPEASIO_WOW64_PE
++        if (This->telemetry_cycle)
++            telemetry_cycle_before_live(This->telemetry_cycle, false);
++#endif
+         cb->swapBuffers(buffer_index, 1);
++#ifndef PIPEASIO_WOW64_PE
++        if (This->telemetry_cycle)
++            telemetry_cycle_after_live(This->telemetry_cycle);
++#endif
+     }
+     atomic_store_explicit(&This->host_num_samples, samples + add_samples, memory_order_relaxed);
+ }
+@@ -1329,6 +1512,13 @@ destroy_driver_resources(IPipeASIOImpl *This)
+         This->input_channel  = NULL;
+         This->output_channel = NULL;
+     }
++#ifndef PIPEASIO_WOW64_PE
++    telemetry_emit(This);
++    pipeasio_telemetry_state *telemetry
++            = atomic_exchange_explicit(&This->telemetry, NULL, memory_order_acq_rel);
++    if (telemetry)
++        HeapFree(GetProcessHeap(), 0, telemetry);
++#endif
+ }
+ 
+ static DWORD WINAPI
+@@ -1338,7 +1528,20 @@ lifecycle_worker(void *arg)
+ 
+     for (;;)
+     {
++#ifndef PIPEASIO_WOW64_PE
++        DWORD wait_result = WaitForSingleObject(
++                This->work_event,
++                atomic_load_explicit(&This->telemetry, memory_order_acquire) ? 1000 : INFINITE);
++        if (wait_result == WAIT_TIMEOUT)
++        {
++            telemetry_emit(This);
++            continue;
++        }
++        if (wait_result != WAIT_OBJECT_0)
++            continue;
++#else
+         WaitForSingleObject(This->work_event, INFINITE);
++#endif
+         bool completed = false;
+         if (atomic_load_explicit(&This->host_driver_state, memory_order_acquire) == Stopping)
+             while (!drain_gate(This, &This->host_gate, This->host_idle, 0))
+@@ -3105,7 +3308,14 @@ OutputReady(LPPIPEASIO iface)
+ static inline int
+ process_callback(audio_nframes_t nframes, void *arg)
+ {
+-    IPipeASIOImpl           *This = (IPipeASIOImpl *)arg;
++    IPipeASIOImpl *This = (IPipeASIOImpl *)arg;
++#ifndef PIPEASIO_WOW64_PE
++    pipeasio_telemetry_cycle  cycle;
++    pipeasio_telemetry_state *telemetry
++            = atomic_load_explicit(&This->telemetry, memory_order_acquire);
++    if (telemetry)
++        telemetry_cycle_begin(telemetry, &cycle);
++#endif
+     pipeasio_host_call_token token;
+     bool admitted = pipeasio_host_call_begin(This, PIPEASIO_HOST_PROCESS, &token);
+     int  half     = 0;
+@@ -3148,8 +3358,13 @@ process_callback(audio_nframes_t nframes, void *arg)
+             else
+                 memset(destination, 0, sizeof(*destination) * nframes);
+         }
+-
++#ifndef PIPEASIO_WOW64_PE
++        This->telemetry_cycle = telemetry && cycle.valid ? &cycle : NULL;
++#endif
+         pipeasio_host_call_process(&token, half, nframes, audio_get_time_nsec(This->audio_client));
++#ifndef PIPEASIO_WOW64_PE
++        This->telemetry_cycle = NULL;
++#endif
+     }
+ 
+     /* In fail-silent mismatch mode the backend owns the graph buffer and
+@@ -3164,6 +3379,12 @@ process_callback(audio_nframes_t nframes, void *arg)
+             audio_port_publish_output(This->output_channel[i].port, source, nframes, admitted,
+                                       This->output_channel[i].active);
+         }
++#ifndef PIPEASIO_WOW64_PE
++    /* In mismatch mode the graph, not this callback, queues the silence, so
++     * there is no honest return-to-output boundary to publish. */
++    if (admitted && !muted && telemetry)
++        telemetry_cycle_finish(&cycle);
++#endif
+     if (admitted)
+         This->host_buffer_index = half ? 0 : 1;
+     pipeasio_host_call_end(&token);
+@@ -3352,6 +3573,54 @@ configure_driver(IPipeASIOImpl *This)
+     if (read_environment("PIPEASIO_CLIENT_NAME", name_environment, sizeof(name_environment)))
+         lstrcpynA(This->client_name, name_environment, sizeof(This->client_name));
+ 
++    if (read_environment("PIPEASIO_TELEMETRY", environment_variable, sizeof(environment_variable)))
++    {
++        int enabled = pipeasio_env_bool(environment_variable);
++#ifdef PIPEASIO_WOW64_PE
++        if (enabled == 1)
++            WARN("PIPEASIO_TELEMETRY is unavailable for 32-bit WoW64 hosts: "
++                 "the PipeWire callback and Live callback use different threads, so "
++                 "CLOCK_THREAD_CPUTIME_ID deltas would be invalid\n");
++        else if (enabled < 0)
++            WARN("PIPEASIO_TELEMETRY \"%s\" is not a recognised boolean; keeping off\n",
++                 environment_variable);
++#else
++        if (enabled == 1 && !atomic_load_explicit(&This->telemetry, memory_order_acquire))
++        {
++            pipeasio_telemetry_state *state = HeapAlloc(GetProcessHeap(), 0, sizeof(*state));
++            if (!state)
++                WARN("PIPEASIO_TELEMETRY requested but its bounded ring could not be allocated; "
++                     "keeping telemetry off\n");
++            else
++            {
++                pipeasio_telemetry_ring_init(&state->ring);
++                if (!atomic_is_lock_free(&This->telemetry)
++                    || !atomic_is_lock_free(&state->ring.write_seq)
++                    || !atomic_is_lock_free(&state->ring.read_seq)
++                    || !atomic_is_lock_free(&state->ring.dropped))
++                {
++                    WARN("PIPEASIO_TELEMETRY requires lock-free pointer and 64-bit atomics; "
++                         "keeping off\n");
++                    HeapFree(GetProcessHeap(), 0, state);
++                }
++                else
++                {
++                    atomic_store_explicit(&This->telemetry, state, memory_order_release);
++                    PIPEASIO_LOG("[pipeasio telemetry] ",
++                                 "enabled for 64-bit host; capacity=%u, interval_ms=1000\n",
++                                 PIPEASIO_TELEMETRY_CAPACITY);
++                    /* The lifecycle worker may be in its non-telemetry infinite
++                     * wait. Wake it once so subsequent waits use the report tick. */
++                    SetEvent(This->work_event);
++                }
++            }
++        }
++        else if (enabled < 0)
++            WARN("PIPEASIO_TELEMETRY \"%s\" is not a recognised boolean; keeping off\n",
++                 environment_variable);
++#endif
++    }
++
+     return;
+ }
+ 
+@@ -3390,6 +3659,9 @@ PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
+     atomic_init(&pobj->lifecycle_waiters, 0);
+     atomic_init(&pobj->stop_generation, 0);
+     atomic_init(&pobj->gate_owner_seq, 1);
++#ifndef PIPEASIO_WOW64_PE
++    atomic_init(&pobj->telemetry, NULL);
++#endif
+     InitializeSRWLock(&pobj->lifecycle_lock);
+     pobj->host_version = 92;
+     pipeasio_gate_init(&pobj->method_gate, true);
+diff --git a/tests/asio_probe/run.sh b/tests/asio_probe/run.sh
+index 1770c17..3627e2c 100755
+--- a/tests/asio_probe/run.sh
++++ b/tests/asio_probe/run.sh
+@@ -109,7 +109,8 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
+                 PIPEASIO_OUTPUT_DEVICE PIPEASIO_INPUT_DEVICE \
+                 PIPEASIO_CLIENT_NAME PIPEASIO_RT_PRIORITY \
+                 PIPEASIO_CONNECT_TO_HARDWARE \
+-                PIPEASIO_ALLOW_QUANTUM_MISMATCH PIPEASIO_REALTIME; do
++                PIPEASIO_ALLOW_QUANTUM_MISMATCH PIPEASIO_REALTIME \
++                PIPEASIO_TELEMETRY; do
+     case " ${PROBE_ENV_KEEP:-} " in
+         *" $_cfg_var "*) ;;
+         *) unset "$_cfg_var" ;;
+diff --git a/tests/asio_probe/run32.sh b/tests/asio_probe/run32.sh
+index 8320ba0..d917fa6 100755
+--- a/tests/asio_probe/run32.sh
++++ b/tests/asio_probe/run32.sh
+@@ -94,7 +94,8 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
+                 PIPEASIO_OUTPUT_DEVICE PIPEASIO_INPUT_DEVICE \
+                 PIPEASIO_CLIENT_NAME PIPEASIO_RT_PRIORITY \
+                 PIPEASIO_CONNECT_TO_HARDWARE \
+-                PIPEASIO_ALLOW_QUANTUM_MISMATCH PIPEASIO_REALTIME; do
++                PIPEASIO_ALLOW_QUANTUM_MISMATCH PIPEASIO_REALTIME \
++                PIPEASIO_TELEMETRY; do
+     case " ${PROBE_ENV_KEEP:-} " in
+         *" $_cfg_var "*) ;;
+         *) unset "$_cfg_var" ;;
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 07cc360..04a2bfd 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -38,3 +38,7 @@ pipeasio_add_unit_test(test_handle_table test_handle_table.c
+     ${CMAKE_SOURCE_DIR}/src/wow64/handle_table.c)
+ target_link_libraries(test_handle_table PRIVATE Threads::Threads)
+ set_tests_properties(test_handle_table PROPERTIES TIMEOUT 10)
++
++pipeasio_add_unit_test(test_telemetry test_telemetry.c)
++target_link_libraries(test_telemetry PRIVATE Threads::Threads)
++set_tests_properties(test_telemetry PROPERTIES TIMEOUT 10)
+diff --git a/tests/unit/test_telemetry.c b/tests/unit/test_telemetry.c
+new file mode 100644
+index 0000000..0d70ef0
+--- /dev/null
++++ b/tests/unit/test_telemetry.c
+@@ -0,0 +1,120 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#include "pipeasio_telemetry.h"
++#include "test_helpers.h"
++
++#include <pthread.h>
++#include <sched.h>
++
++#define CONCURRENT_SAMPLES 100000u
++
++typedef struct concurrent_test
++{
++    pipeasio_telemetry_ring ring;
++    atomic_bool             done;
++    uint64_t                consumed;
++    bool                    ordered;
++} concurrent_test;
++
++static pipeasio_telemetry_sample
++sample_with_value(uint64_t value)
++{
++    pipeasio_telemetry_sample sample = { 0 };
++    sample.wall_ns[0]                = value;
++    return sample;
++}
++
++static void *
++producer(void *arg)
++{
++    concurrent_test *test = arg;
++    for (uint64_t i = 1; i <= CONCURRENT_SAMPLES; ++i)
++    {
++        pipeasio_telemetry_sample sample = sample_with_value(i);
++        pipeasio_telemetry_ring_publish(&test->ring, &sample);
++    }
++    atomic_store_explicit(&test->done, true, memory_order_release);
++    return NULL;
++}
++
++static void *
++consumer(void *arg)
++{
++    concurrent_test *test = arg;
++    uint64_t         last = 0;
++    test->ordered         = true;
++    for (;;)
++    {
++        uint64_t first;
++        size_t   count = pipeasio_telemetry_ring_snapshot(&test->ring, &first);
++        for (size_t i = 0; i < count; ++i)
++        {
++            uint64_t value = pipeasio_telemetry_ring_at(&test->ring, first + i)->wall_ns[0];
++            if (value <= last)
++                test->ordered = false;
++            last = value;
++        }
++        if (count)
++        {
++            test->consumed += count;
++            pipeasio_telemetry_ring_consume(&test->ring, first, count);
++        }
++        else if (atomic_load_explicit(&test->done, memory_order_acquire))
++            break;
++        else
++            sched_yield();
++    }
++    return NULL;
++}
++
++int
++main(void)
++{
++    TEST_GROUP("nearest-rank percentile indices")
++    {
++        EXPECT_EQ(pipeasio_telemetry_percentile_index(1, 50), 0);
++        EXPECT_EQ(pipeasio_telemetry_percentile_index(100, 50), 49);
++        EXPECT_EQ(pipeasio_telemetry_percentile_index(100, 95), 94);
++        EXPECT_EQ(pipeasio_telemetry_percentile_index(100, 99), 98);
++        EXPECT_EQ(pipeasio_telemetry_percentile_index(3, 100), 2);
++    }
++
++    TEST_GROUP("bounded FIFO and drop accounting")
++    {
++        pipeasio_telemetry_ring ring;
++        pipeasio_telemetry_ring_init(&ring);
++        for (uint64_t i = 0; i < PIPEASIO_TELEMETRY_CAPACITY; ++i)
++        {
++            pipeasio_telemetry_sample sample = sample_with_value(i + 1);
++            EXPECT_TRUE(pipeasio_telemetry_ring_publish(&ring, &sample));
++        }
++        pipeasio_telemetry_sample extra = sample_with_value(UINT64_MAX);
++        EXPECT_TRUE(!pipeasio_telemetry_ring_publish(&ring, &extra));
++        EXPECT_EQ(atomic_load_explicit(&ring.dropped, memory_order_relaxed), 1);
++        uint64_t first;
++        size_t   count = pipeasio_telemetry_ring_snapshot(&ring, &first);
++        EXPECT_EQ(count, PIPEASIO_TELEMETRY_CAPACITY);
++        EXPECT_EQ(pipeasio_telemetry_ring_at(&ring, first)->wall_ns[0], 1);
++        EXPECT_EQ(pipeasio_telemetry_ring_at(&ring, first + count - 1)->wall_ns[0],
++                  PIPEASIO_TELEMETRY_CAPACITY);
++        pipeasio_telemetry_ring_consume(&ring, first, count);
++        EXPECT_EQ(pipeasio_telemetry_ring_snapshot(&ring, NULL), 0);
++    }
++
++    TEST_GROUP("concurrent SPSC publication")
++    {
++        concurrent_test test = { 0 };
++        pthread_t       producer_thread;
++        pthread_t       consumer_thread;
++        pipeasio_telemetry_ring_init(&test.ring);
++        atomic_init(&test.done, false);
++        EXPECT_EQ(pthread_create(&consumer_thread, NULL, consumer, &test), 0);
++        EXPECT_EQ(pthread_create(&producer_thread, NULL, producer, &test), 0);
++        EXPECT_EQ(pthread_join(producer_thread, NULL), 0);
++        EXPECT_EQ(pthread_join(consumer_thread, NULL), 0);
++        uint64_t dropped = atomic_load_explicit(&test.ring.dropped, memory_order_relaxed);
++        EXPECT_TRUE(test.ordered);
++        EXPECT_EQ(test.consumed + dropped, CONCURRENT_SAMPLES);
++    }
++
++    return test_report();
++}
+-- 
+2.55.0
+
