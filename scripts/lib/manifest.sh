@@ -139,10 +139,29 @@ ableton_txn_authorize_pr182_custom_link()
     fi
 }
 
+ableton_launcher_path_allowed()
+{
+    local path="$1" data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
+    case "$path" in
+        "$ABLETON_BIN_HOME/ableton-live"|"$ABLETON_BIN_HOME/max9"|\
+        "$ABLETON_BIN_HOME/pipeasio-settings"|\
+        "$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID"|\
+        "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID"|\
+        "$data_root/applications/ableton-live.desktop"|\
+        "$data_root/applications/$ABLETON_PROTOCOL_DESKTOP_ID"|\
+        "$data_root/applications/$ABLETON_AUZ_DESKTOP_ID"|\
+        "$data_root/applications/max9.desktop"|\
+        "$data_root/applications/wine-protocol-c74max.desktop"|\
+        "$data_root/applications/pipeasio-settings.desktop") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 ableton_managed_path_allowed()
 {
     local kind="$1" path="$2" data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
     case "$kind" in file|config|symlink) ;; *) return 1 ;; esac
+    if ableton_launcher_path_allowed "$path"; then return 0; fi
     case "$path" in
         "$ABLETON_DATA_HOME/lib/config.sh"|"$ABLETON_DATA_HOME/lib/lifecycle.sh"|\
         "$ABLETON_DATA_HOME/lib/live-options.sh"|"$ABLETON_DATA_HOME/lib/manifest.sh"|\
@@ -152,22 +171,13 @@ ableton_managed_path_allowed()
         "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/check-ntsync.sh"|\
         "$ABLETON_DATA_HOME/ntsyncprobe.exe"|"$ABLETON_DATA_HOME/rollback.sh"|\
         "$ABLETON_DATA_HOME/pipewire-version-probe"|"$ABLETON_DATA_HOME/setsyscolors.exe"|\
-        "$ABLETON_DATA_HOME/learnheal.exe"|"$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID"|\
-        "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID"|\
+        "$ABLETON_DATA_HOME/learnheal.exe"|\
         "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop"|\
         "$ABLETON_DATA_HOME/wine-extension-auz.desktop"|"$ABLETON_DATA_HOME/ableton-linkctl"|\
         "$ABLETON_DATA_HOME/setup-link.sh"|"$ABLETON_DATA_HOME/ableton-linkd.service"|\
         "$ABLETON_DATA_HOME/VERSION"|"$ABLETON_DATA_HOME/ableton-linkd"|\
-        "$ABLETON_BIN_HOME/ableton-live"|"$ABLETON_BIN_HOME/max9"|\
-        "$ABLETON_BIN_HOME/pipeasio-settings"|\
-        "$data_root/applications/ableton-live.desktop"|\
-        "$data_root/applications/$ABLETON_PROTOCOL_DESKTOP_ID"|\
-        "$data_root/applications/$ABLETON_AUZ_DESKTOP_ID"|\
         "$data_root/applications/wine-protocol-ableton.desktop"|\
         "$data_root/applications/wine-extension-auz.desktop"|\
-        "$data_root/applications/max9.desktop"|\
-        "$data_root/applications/wine-protocol-c74max.desktop"|\
-        "$data_root/applications/pipeasio-settings.desktop"|\
         "$data_root/icons/hicolor/scalable/apps/live-beta.svg"|\
         "$data_root/icons/hicolor/scalable/apps/live-intro.svg"|\
         "$data_root/icons/hicolor/scalable/apps/live-lite.svg"|\
@@ -207,13 +217,18 @@ ableton_txn_target_allowed()
     local status="$1" path="$2" backup="$3"
     local config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
     local data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
-    local runtime_parent runtime_base candidate relative root parent_real root_real desktop_dir=""
+    local runtime_parent runtime_base candidate relative root parent_real root_real desktop_dir="" launcher
 
     if ableton_managed_path_allowed file "$path" \
        || ableton_managed_path_allowed config "$path" \
        || ableton_managed_path_allowed symlink "$path"; then
         return 0
     fi
+    case "$path" in
+        *.bak)
+            launcher="${path%.bak}"
+            ableton_launcher_path_allowed "$launcher" && return 0 ;;
+    esac
     case "$path" in
         "$ABLETON_CONFIG_FILE"|\
         "$config_root/mimeapps.list"|\
@@ -560,6 +575,36 @@ ableton_manifest_digest()
     fi
 }
 
+ableton_manifest_object_record()
+{
+    local path="$1" manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
+    [ -f "$manifest" ] && [ ! -L "$manifest" ] && [ -r "$manifest" ] || return 1
+    awk -F '\t' -v p="$path" '
+        $2==p && ($1=="file" || $1=="config" || $1=="symlink") {
+            matches++
+            record=$1 "\t" $3
+        }
+        END {
+            if (matches == 1) print record
+            else exit 1
+        }
+    ' "$manifest"
+}
+
+ableton_manifest_path_claimed()
+{
+    ableton_manifest_object_record "$1" >/dev/null
+}
+
+ableton_manifest_path_matches()
+{
+    local path="$1" record _kind expected actual
+    record="$(ableton_manifest_object_record "$path")" || return 1
+    IFS=$'\t' read -r _kind expected <<< "$record"
+    actual="$(ableton_manifest_digest "$path" 2>/dev/null || true)"
+    [ -n "$actual" ] && [ "$actual" = "$expected" ]
+}
+
 ableton_object_token()
 {
     local path="$1" digest
@@ -868,13 +913,13 @@ ableton_legacy_owned_path()
 
 ableton_persist_file_prestate()
 {
-    local target="$1" source="${2:-}" update_instruction="${3:-preserve-local}"
-    local manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
-    local index="$ABLETON_STATE_HOME/install-prestate.tsv" prestate_dir id backup expected current index_tmp
-    case "$update_instruction" in
-        preserve-local|refresh-stale-record) ;;
+    local target="$1" source="${2:-}" prestate_policy="${3:-preserve-local}"
+    local index="$ABLETON_STATE_HOME/install-prestate.tsv" prestate_dir id backup
+    local record _kind expected current index_tmp
+    case "$prestate_policy" in
+        preserve-local|replace-launcher) ;;
         *)
-            ableton_config_error "The installer received an unknown managed file update instruction: $update_instruction"
+            ableton_config_error "The installer received an unknown pre-install backup policy: $prestate_policy"
             return 1 ;;
     esac
     if [ -d "$target" ] && [ ! -L "$target" ]; then
@@ -889,22 +934,22 @@ ableton_persist_file_prestate()
     fi
     ableton_validate_install_state_journals || return 1
     [ -e "$target" ] || [ -L "$target" ] || return 0
-    [ -z "$source" ] || [ -L "$target" ] || ! cmp -s -- "$source" "$target" || return 0
-    if [ -r "$manifest" ]; then
-        expected="$(awk -F '\t' -v p="$target" \
-            '($1=="file" || $1=="config" || $1=="symlink") && $2==p { print $3; exit }' "$manifest")"
-        if [ -n "$expected" ]; then
-            current="$(ableton_manifest_digest "$target" 2>/dev/null || true)"
-            [ "$current" = "$expected" ] && return 0
-            # A symlink selects a user path. The refresh instruction applies to
-            # regular project files.
-            if [ "$update_instruction" = refresh-stale-record ] && [ ! -L "$target" ]; then
-                echo "The installer refreshed a project file because its saved checksum differed: $target"
-                return 0
-            fi
-            ableton_config_error "The installer kept the managed path because its saved checksum differs: $target"
-            return 1
+    # Matching managed files use the existing fast path. Launcher checks continue
+    # so the installer backs up a matching unclaimed object before claiming it.
+    if [ "$prestate_policy" != replace-launcher ] \
+       && [ -n "$source" ] && [ ! -L "$target" ] && cmp -s -- "$source" "$target"; then
+        return 0
+    fi
+    if record="$(ableton_manifest_object_record "$target")"; then
+        IFS=$'\t' read -r _kind expected <<< "$record"
+        current="$(ableton_manifest_digest "$target" 2>/dev/null || true)"
+        [ "$current" = "$expected" ] && return 0
+        if [ "$prestate_policy" = replace-launcher ]; then
+            echo "The installer replaced a launcher because its saved checksum differed: $target"
+            return 0
         fi
+        ableton_config_error "The installer kept the managed path because its saved checksum differs: $target"
+        return 1
     fi
     if [ -r "$index" ] && awk -F '\t' -v p="$target" '$2==p { found=1 } END { exit !found }' "$index"; then
         return 0
@@ -944,12 +989,12 @@ ableton_persist_file_prestate()
 ableton_install_file()
 {
     local mode="$1" source="$2" target="$3" kind="${4:-file}"
-    local update_instruction="${5:-preserve-local}" post tmp parent
+    local prestate_policy="${5:-preserve-local}" post tmp parent
     [ ! -d "$target" ] || [ -L "$target" ] || {
         ableton_config_error "refusing to replace directory with a file: $target"
         return 1
     }
-    ableton_persist_file_prestate "$target" "$source" "$update_instruction" || return 1
+    ableton_persist_file_prestate "$target" "$source" "$prestate_policy" || return 1
     ableton_txn_snapshot "$target"
     post="$(ableton_regular_source_token "$source")" || return 1
     ableton_txn_expect "$target" "$post" || return 1
@@ -967,12 +1012,12 @@ ableton_install_file()
 
 ableton_install_symlink()
 {
-    local link_text="$1" target="$2" post tmp parent
+    local link_text="$1" target="$2" prestate_policy="${3:-preserve-local}" post tmp parent
     [ ! -d "$target" ] || [ -L "$target" ] || {
         ableton_config_error "refusing to replace directory with a symlink: $target"
         return 1
     }
-    ableton_persist_file_prestate "$target"
+    ableton_persist_file_prestate "$target" "" "$prestate_policy" || return 1
     ableton_txn_snapshot "$target"
     post="$(ableton_symlink_text_token "$link_text")" || return 1
     ableton_txn_expect "$target" "$post" || return 1
@@ -987,6 +1032,67 @@ ableton_install_symlink()
         return 1
     fi
     ableton_record_owned "$target" symlink
+}
+
+# Save each displaced launcher object beside its path as <name>.bak. The
+# transaction tracks both paths and restores both objects after a later failure.
+# A first installation records the displaced object for uninstall.
+ableton_backup_launcher()
+{
+    local target="$1" desired="$2" desired_mode="${3:-}" backup="$1.bak" current
+    ableton_launcher_path_allowed "$target" || {
+        ableton_config_error "launcher path falls outside the managed launcher set: $target"
+        return 1
+    }
+    [ -e "$target" ] || [ -L "$target" ] || return 0
+    [ ! -d "$target" ] || [ -L "$target" ] || {
+        ableton_config_error "launcher path points to a directory: $target"
+        return 1
+    }
+    current="$(ableton_object_token "$target")" || return 1
+    if [ "$current" = "$desired" ] \
+       && ableton_launcher_claim_matches "$target" "$current" \
+       && { [ -z "$desired_mode" ] \
+            || { [ ! -L "$target" ] && [ "$(stat -c '%a' -- "$target")" = "$desired_mode" ]; }; }; then
+        return 0
+    fi
+    [ ! -d "$backup" ] || [ -L "$backup" ] || {
+        ableton_config_error "launcher backup path points to a directory: $backup"
+        return 1
+    }
+    ableton_txn_snapshot "$backup" || return 1
+    ableton_txn_expect "$backup" "$current" || return 1
+    ableton_atomic_restore_object "$target" "$backup"
+}
+
+ableton_launcher_claim_matches()
+{
+    local target="$1" current="$2"
+    local record kind digest
+    kind="${current%%:*}"
+    if [ "${ABLETON_OWNED_KINDS[$target]-}" = "$kind" ]; then
+        return 0
+    fi
+    record="$(ableton_manifest_object_record "$target")" || return 1
+    IFS=$'\t' read -r kind digest <<< "$record"
+    case "$kind" in file|symlink) ;; *) return 1 ;; esac
+    [ "$current" = "$kind:$digest" ]
+}
+
+ableton_install_launcher_file()
+{
+    local mode="$1" source="$2" target="$3" kind="${4:-file}" desired
+    desired="$(ableton_regular_source_token "$source")" || return 1
+    ableton_backup_launcher "$target" "$desired" "$mode" || return 1
+    ableton_install_file "$mode" "$source" "$target" "$kind" replace-launcher
+}
+
+ableton_install_launcher_symlink()
+{
+    local link_text="$1" target="$2" desired
+    desired="$(ableton_symlink_text_token "$link_text")" || return 1
+    ableton_backup_launcher "$target" "$desired" || return 1
+    ableton_install_symlink "$link_text" "$target" replace-launcher
 }
 
 ableton_adopt_runtime_marker()

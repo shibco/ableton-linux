@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Updates replace launchers when their saved checksums differ. The installer
+  saves each displaced file or symlink beside its launcher as `<name>.bak`.
+  This behaviour covers Live, Max, protocol handlers, and PipeASIO. Runtime-only
+  updates record replaced PipeASIO launchers for restoration during uninstall.
+
 ## 2026.08.26.1
 
 - **MIDI controllers and audio interfaces find their way back:**

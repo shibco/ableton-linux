@@ -451,6 +451,8 @@ run_isolated "$base" bash "$here/installer.sh" --runtime-only --runtime-root "$b
 grep -q 'replace runtime tree atomically' "$base/out" || fail "runtime plan contains runtime"
 ! grep -q 'write launcher:' "$base/out" || fail "runtime plan excludes integration"
 ! grep -q 'write Link binary:' "$base/out" || fail "runtime plan excludes Link"
+grep -q 'apply the runtime PipeASIO panel record to existing launchers' "$base/out" \
+    || fail "runtime plan describes PipeASIO launcher reconciliation"
 [ ! -e "$base/runtime" ] && [ ! -e "$base/config" ] && [ ! -e "$base/state" ] || fail "runtime plan mutates no target"
 ok "runtime-only plan contains only the runtime component"
 
@@ -1149,49 +1151,123 @@ grep -q 'The installer kept the managed path because its saved checksum differs'
     || fail "changed version stamp refusal gives the reason"
 ok "update refuses to overwrite a locally modified version stamp"
 
-# Issue #251 reports a regular project launcher whose saved checksum differs
-# from the file. An update must refresh the file and its saved checksum.
-base="$(new_env stale-live-launcher)"
+# Issues #211 and #251 showed that launcher checksum drift triggered rollback.
+# Cover every primary launcher, including Max and the handler copies used by
+# runtime repair. At update time, each launcher may be a regular file or a
+# symlink. The update replaces either form and records the installed checksum.
+base="$(new_env stale-launchers)"
+mkdir -p "$base/home/.wine-ableton/drive_c/Program Files/Cycling '74/Max 9"
+printf 'exe\n' > "$base/home/.wine-ableton/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
 run_isolated "$base" bash "$here/install.sh" --integration-only \
     >"$base/first.out" 2>"$base/first.err"
-live_launcher="$base/home/.local/bin/ableton-live"
 manifest="$base/state/ableton-wine/install-manifest.tsv"
-printf '\n# project release fixture\n' >> "$live_launcher"
-grep -qF 'Ableton Live launcher for the patched Wine stack' "$live_launcher" \
-    || fail "project launcher fixture lacks its project marker"
-recorded="$(awk -F '\t' -v p="$live_launcher" '$1=="file" && $2==p { print $3 }' "$manifest")"
-current="$(sha256sum "$live_launcher" | awk '{print $1}')"
-[ -n "$recorded" ] && [ "$recorded" != "$current" ] \
-    || fail "project launcher fixture requires different saved and current checksums"
+launcher_paths=(
+    "$base/home/.local/bin/ableton-live"
+    "$base/data/applications/ableton-live.desktop"
+    "$base/data/ableton-wine/$ABLETON_PROTOCOL_DESKTOP_ID"
+    "$base/data/applications/$ABLETON_PROTOCOL_DESKTOP_ID"
+    "$base/data/ableton-wine/$ABLETON_AUZ_DESKTOP_ID"
+    "$base/data/applications/$ABLETON_AUZ_DESKTOP_ID"
+    "$base/home/.local/bin/max9"
+    "$base/data/applications/max9.desktop"
+    "$base/data/applications/wine-protocol-c74max.desktop"
+)
+launcher_copy="$base/home/ableton-live-before-update"
+mv "${launcher_paths[0]}" "$launcher_copy"
+ln -s "$launcher_copy" "${launcher_paths[0]}"
+for launcher in "${launcher_paths[@]:1}"; do
+    printf '\n# local launcher drift\n' >> "$launcher"
+done
+for launcher in "${launcher_paths[@]}"; do
+    recorded="$(awk -F '\t' -v p="$launcher" '$2==p { print $3 }' "$manifest")"
+    current="$(
+        if [ -L "$launcher" ]; then
+            { printf 'symlink\0'; readlink -n -- "$launcher"; } | sha256sum | awk '{print $1}'
+        else
+            sha256sum "$launcher" | awk '{print $1}'
+        fi
+    )"
+    [ -n "$recorded" ] && [ "$recorded" != "$current" ] \
+        || fail "launcher fixture requires different saved and current checksums: $launcher"
+done
 run_isolated "$base" bash "$here/install.sh" --integration-only \
     >"$base/out" 2>"$base/err" \
-    || { sed -n '1,40p' "$base/err" >&2; fail "update rejected the project launcher after its saved checksum changed"; }
-cmp -s -- "$here/ableton-live" "$live_launcher" \
-    || fail "update left the old project launcher in place"
-recorded="$(awk -F '\t' -v p="$live_launcher" '$1=="file" && $2==p { print $3 }' "$manifest")"
-current="$(sha256sum "$live_launcher" | awk '{print $1}')"
-[ "$recorded" = "$current" ] \
-    || fail "update saved an incorrect launcher checksum"
-grep -qF "The installer refreshed a project file because its saved checksum differed: $live_launcher" "$base/out" \
-    || fail "update omitted the launcher refresh message"
-! grep -qF "modified managed file $live_launcher" "$base/err" \
-    || fail "update described the project launcher as user-modified"
-ok "update refreshes a project launcher when its saved checksum differs"
+    || { sed -n '1,80p' "$base/err" >&2; fail "launcher checksum drift aborted integration"; }
+for launcher in "${launcher_paths[@]}"; do
+    [ -f "$launcher" ] && [ ! -L "$launcher" ] \
+        || fail "update did not install a regular launcher at $launcher"
+    ! grep -qF '# local launcher drift' "$launcher" \
+        || fail "update left launcher drift in $launcher"
+    recorded="$(awk -F '\t' -v p="$launcher" '$1=="file" && $2==p { print $3 }' "$manifest")"
+    current="$(sha256sum "$launcher" | awk '{print $1}')"
+    [ "$recorded" = "$current" ] \
+        || fail "update saved an incorrect launcher checksum for $launcher"
+    grep -qF "The installer replaced a launcher because its saved checksum differed: $launcher" "$base/out" \
+        || fail "update omitted the launcher replacement message for $launcher"
+done
+[ -L "${launcher_paths[0]}.bak" ] \
+    && [ "$(readlink -- "${launcher_paths[0]}.bak")" = "$launcher_copy" ] \
+    || fail "Live launcher backup is not the exact displaced symlink"
+for launcher in "${launcher_paths[@]:1}"; do
+    grep -qF '# local launcher drift' "${launcher}.bak" \
+        || fail "launcher backup does not contain the displaced file: ${launcher}.bak"
+done
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/noop.out" 2>"$base/noop.err" \
+    || fail "no-op launcher update failed"
+[ -L "${launcher_paths[0]}.bak" ] \
+    && [ "$(readlink -- "${launcher_paths[0]}.bak")" = "$launcher_copy" ] \
+    || fail "no-op update replaced the prior Live launcher backup"
+for launcher in "${launcher_paths[@]:1}"; do
+    grep -qF '# local launcher drift' "${launcher}.bak" \
+        || fail "no-op update replaced the prior launcher backup: ${launcher}.bak"
+done
+cmp -s -- "$here/ableton-live" "${launcher_paths[0]}" \
+    || fail "update did not install the current Live launcher"
+cmp -s -- "$here/max9" "$base/home/.local/bin/max9" \
+    || fail "update did not install the current Max launcher"
+grep -qF 'Ableton Live launcher for the patched Wine stack' "$launcher_copy" \
+    || fail "replacing the launcher symlink changed its referent"
+ok "update replaces every primary launcher after checksum drift"
 
-# The refresh instruction applies to regular launcher files. A symlink keeps
-# the path that the user selected.
-launcher_copy="$base/home/project-launcher"
-mv "$live_launcher" "$launcher_copy"
-ln -s "$launcher_copy" "$live_launcher"
-if run_isolated "$base" bash "$here/install.sh" --integration-only \
-    >"$base/symlink.out" 2>"$base/symlink.err"; then
-    fail "update replaced a symlinked project launcher"
+rollback_launcher="$base/data/applications/max9.desktop"
+printf '\n# launcher before genuine failure\n' >> "$rollback_launcher"
+printf 'previous adjacent backup\n' > "${rollback_launcher}.bak"
+mkdir -p "$base/fakebin"
+cat > "$base/fakebin/update-desktop-database" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$base/fakebin/update-desktop-database"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/install.sh" --integration-only >"$base/failure.out" 2>"$base/failure.err"; then
+    fail "desktop database failure unexpectedly succeeded"
 fi
-[ -L "$live_launcher" ] && [ "$(readlink -- "$live_launcher")" = "$launcher_copy" ] \
-    || fail "launcher refresh changed the user symlink"
-grep -q 'The installer kept the managed path because its saved checksum differs' "$base/symlink.err" \
-    || fail "symlinked launcher refusal gives the reason"
-ok "update preserves a symlinked project launcher"
+grep -qF '# launcher before genuine failure' "$rollback_launcher" \
+    || fail "genuine failure did not restore the displaced launcher"
+grep -qxF 'previous adjacent backup' "${rollback_launcher}.bak" \
+    || fail "genuine failure did not restore the previous launcher backup"
+grep -qF 'failed to update the desktop application database' "$base/failure.err" \
+    || fail "genuine failure did not report its actual cause"
+ok "genuine failure restores both the launcher and its previous adjacent backup"
+
+# When the custom data root matches the XDG applications root, one invocation
+# reaches the handler twice. The second projection recognises the installed
+# launcher from the first projection and preserves the original adjacent backup.
+base="$(new_env overlapping-launcher-roots)"
+overlap_apps="$base/data/applications"
+overlap_launcher="$overlap_apps/$ABLETON_PROTOCOL_DESKTOP_ID"
+mkdir -p "$overlap_apps"
+printf '[Desktop Entry]\nName=Original overlapping handler\n' > "$overlap_launcher"
+cp -- "$overlap_launcher" "$base/original-handler"
+run_isolated "$base" env ABLETON_DATA_HOME="$overlap_apps" \
+    bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err" \
+    || { sed -n '1,80p' "$base/err" >&2; fail "overlapping launcher roots aborted integration"; }
+cmp -s -- "$base/original-handler" "${overlap_launcher}.bak" \
+    || fail "the second handler projection replaced the original adjacent backup"
+grep -q '^Exec=.*/ableton-live %u$' "$overlap_launcher" \
+    || fail "overlapping launcher roots did not install the canonical handler"
+ok "duplicate launcher projections preserve the original adjacent backup"
 
 # A fresh install writes the desktop entry before Live exists. The first Live
 # start adds the edition name, icon, and window class. The saved checksum still
@@ -1229,8 +1305,10 @@ recorded="$(awk -F '\t' -v p="$live_desktop" '$1=="file" && $2==p { print $3 }' 
 current="$(sha256sum "$live_desktop" | awk '{print $1}')"
 [ "$recorded" = "$current" ] \
     || fail "update did not refresh the Live desktop ownership digest"
-grep -qF "The installer refreshed a project file because its saved checksum differed: $live_desktop" "$base/out" \
+grep -qF "The installer replaced a launcher because its saved checksum differed: $live_desktop" "$base/out" \
     || fail "update omitted the desktop entry refresh message"
+grep -qF 'StartupWMClass=ableton live 12 suite.exe' "${live_desktop}.bak" \
+    || fail "Live desktop backup does not contain the displaced entry"
 ok "update refreshes a launcher-updated Live desktop entry"
 
 # Uninstall must accept the same launcher-updated entry. The entry still uses
@@ -1274,21 +1352,27 @@ grep -qF "kept modified file $live_desktop" "$base/err" \
     || fail "kept re-pointed desktop entry is not reported"
 ok "uninstall keeps a desktop entry re-pointed away from the launcher"
 
-# A symlinked entry selects a user path. The refresh instruction preserves it.
+# The transaction snapshots a launcher symlink before replacement and leaves
+# its referent unchanged.
 base="$(new_env symlinked-live-desktop)"
 run_isolated "$base" bash "$here/install.sh" --integration-only \
     >"$base/first.out" 2>"$base/first.err"
 live_desktop="$base/data/applications/ableton-live.desktop"
 mv "$live_desktop" "$base/home/live-entry-copy.desktop"
 ln -s "$base/home/live-entry-copy.desktop" "$live_desktop"
-if run_isolated "$base" bash "$here/install.sh" --integration-only \
-    >"$base/out" 2>"$base/err"; then
-    fail "update replaced a user-symlinked managed desktop entry"
-fi
-[ -L "$live_desktop" ] || fail "failed update did not keep the symlinked desktop entry"
-grep -q 'The installer kept the managed path because its saved checksum differs' "$base/err" \
-    || fail "symlinked desktop entry refusal gives the reason"
-ok "update keeps a user-symlinked managed Live desktop entry"
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || fail "symlinked Live desktop entry aborted integration"
+[ -f "$live_desktop" ] && [ ! -L "$live_desktop" ] \
+    || fail "update did not replace the symlinked Live desktop entry"
+[ -f "$base/home/live-entry-copy.desktop" ] \
+    || fail "replacing the desktop symlink changed its referent"
+[ -L "${live_desktop}.bak" ] \
+    && [ "$(readlink -- "${live_desktop}.bak")" = "$base/home/live-entry-copy.desktop" ] \
+    || fail "Live desktop backup is not the displaced symlink"
+grep -qF "The installer replaced a launcher because its saved checksum differed: $live_desktop" "$base/out" \
+    || fail "symlinked desktop entry replacement was not reported"
+ok "update replaces a symlinked managed Live desktop entry"
 
 base="$(new_env link-prestate)"
 foreign_linkd="$base/data/ableton-wine/ableton-linkd"
@@ -1640,24 +1724,73 @@ grep -qxF 'x-scheme-handler/ableton=third-party.desktop' "$base/config/mimeapps.
     || fail "uninstall writes out a default the user never set explicitly"
 ok "uninstall clears its own MIME defaults and restores exactly what it found"
 
-# The installer keeps a Live desktop entry it did not write.  It must not then
-# hand that entry the file types it registers.
+# The installer saves a pre-existing launcher before writing the canonical
+# launcher. Uninstall restores the exact pre-install object.
 base="$(new_env foreign-live-entry)"
 mkdir -p "$base/data/applications" "$base/fakebin"
 printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
 chmod +x "$base/fakebin/systemctl"
 printf '[Desktop Entry]\nType=Application\nName=Foreign Live\nExec=/usr/bin/true %%f\n' \
     > "$base/data/applications/ableton-live.desktop"
+cp "$base/data/applications/ableton-live.desktop" "$base/foreign-live.before"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
     >"$base/out" 2>"$base/err" \
     || { sed -n '1,40p' "$base/err" >&2; fail "integration install failed with a foreign Live entry"; }
-grep -qxF 'Name=Foreign Live' "$base/data/applications/ableton-live.desktop" \
-    || fail "integration replaced a foreign Live desktop entry"
-if grep -Eq '^application/x-ableton-live-(set|clip|pack)=ableton-live\.desktop$' \
-    "$base/config/mimeapps.list" 2>/dev/null; then
-    fail "integration gave the Live file types to a desktop entry it did not write"
+grep -qxF 'Name=Ableton Live' "$base/data/applications/ableton-live.desktop" \
+    || fail "integration did not replace a foreign Live desktop entry"
+grep -Eq '^application/x-ableton-live-(set|clip|pack)=ableton-live\.desktop$' \
+    "$base/config/mimeapps.list" \
+    || fail "integration did not assign Live file types to its installed entry"
+prestate_id="$(printf '%s' "$base/data/applications/ableton-live.desktop" | sha256sum | awk '{print $1}')"
+cmp -s "$base/foreign-live.before" "$base/data/applications/ableton-live.desktop.bak" \
+    || fail "integration did not create ableton-live.desktop.bak"
+cmp -s "$base/foreign-live.before" "$base/state/ableton-wine/install-prestate/$prestate_id" \
+    || fail "integration did not back up the foreign Live desktop entry"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/uninstall.out" 2>"$base/uninstall.err" \
+    || { sed -n '1,40p' "$base/uninstall.err" >&2; fail "uninstall failed after replacing a foreign Live entry"; }
+cmp -s "$base/foreign-live.before" "$base/data/applications/ableton-live.desktop" \
+    || fail "uninstall did not restore the foreign Live desktop entry"
+ok "integration backs up and replaces a foreign Live launcher"
+
+base="$(new_env identical-foreign-launcher)"
+identical_launcher="$base/home/.local/bin/ableton-live"
+mkdir -p "$(dirname "$identical_launcher")" "$base/fakebin"
+install -m 700 "$here/ableton-live" "$identical_launcher"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
+chmod +x "$base/fakebin/systemctl"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
+    >"$base/install.out" 2>"$base/install.err" \
+    || fail "byte-identical pre-existing launcher blocked integration"
+cmp -s "$here/ableton-live" "${identical_launcher}.bak" \
+    && [ "$(stat -c '%a' "${identical_launcher}.bak")" = 700 ] \
+    || fail "byte-identical pre-existing launcher was not backed up with its metadata"
+[ "$(stat -c '%a' "$identical_launcher")" = 755 ] \
+    || fail "integration did not install the canonical launcher mode"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/uninstall.out" 2>"$base/uninstall.err" \
+    || fail "uninstall failed after replacing a byte-identical launcher"
+[ ! -e "$identical_launcher" ] && [ ! -L "$identical_launcher" ] \
+    || fail "uninstall retained the legacy-shaped installed launcher"
+cmp -s "$here/ableton-live" "${identical_launcher}.bak" \
+    && [ "$(stat -c '%a' "${identical_launcher}.bak")" = 700 ] \
+    || fail "uninstall changed the adjacent launcher backup"
+ok "byte-identical pre-existing launchers receive adjacent backups"
+
+base="$(new_env launcher-directory-collision)"
+directory_launcher="$base/data/applications/ableton-live.desktop"
+mkdir -p "$directory_launcher"
+if run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err"; then
+    fail "integration replaced a directory at a launcher path"
 fi
-ok "a preserved foreign Live entry does not receive the file associations"
+[ -d "$directory_launcher" ] && [ ! -L "$directory_launcher" ] \
+    || fail "launcher directory refusal changed the collision"
+[ ! -e "${directory_launcher}.bak" ] && [ ! -L "${directory_launcher}.bak" ] \
+    || fail "launcher directory refusal created an adjacent backup"
+grep -qF "launcher path points to a directory: $directory_launcher" "$base/err" \
+    || fail "launcher directory refusal did not report the actual cause"
+ok "launcher directory collisions fail with an explicit reason"
 
 # Session Link policy writes the unit for later but never runs it, so it must
 # not need a user manager that answers.  Only always-on policy does.

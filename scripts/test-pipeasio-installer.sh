@@ -724,6 +724,43 @@ manifest_has_path "$manifest" "$live_options" \
     || fail "The installation record lists the audio thread settings script."
 ok "built panel installs transactionally under custom XDG paths"
 
+user_panel_target="$base/user-retargeted-pipeasio-settings"
+rm -f -- "$panel_command"
+ln -s -- "$user_panel_target" "$panel_command"
+printf '\n# local panel launcher drift\n' >> "$panel_desktop"
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/install-drift.out" 2>"$base/install-drift.err" \
+    || { sed -n '1,80p' "$base/install-drift.err" >&2; fail "panel launcher drift aborted integration"; }
+[ -L "$panel_command" ] \
+    && [ "$(readlink -- "$panel_command")" = "$base/runtime/bin/pipeasio-settings" ] \
+    || fail "integration did not replace the retargeted panel command"
+[ -L "${panel_command}.bak" ] \
+    && [ "$(readlink -- "${panel_command}.bak")" = "$user_panel_target" ] \
+    || fail "panel command backup is not the displaced symlink"
+! grep -qF '# local panel launcher drift' "$panel_desktop" \
+    || fail "integration left drift in the panel desktop entry"
+grep -qF '# local panel launcher drift' "${panel_desktop}.bak" \
+    || fail "panel desktop backup does not contain the displaced entry"
+grep -qF "The installer replaced a launcher because its saved checksum differed: $panel_command" \
+    "$base/install-drift.out" \
+    || fail "panel command replacement was not reported"
+grep -qF "The installer replaced a launcher because its saved checksum differed: $panel_desktop" \
+    "$base/install-drift.out" \
+    || fail "panel desktop replacement was not reported"
+for launcher in "$panel_command" "$panel_desktop"; do
+    recorded="$(awk -F '\t' -v wanted="$launcher" '$2 == wanted { print $3; exit }' "$manifest")"
+    current="$(
+        if [ -L "$launcher" ]; then
+            { printf 'symlink\0'; readlink -n -- "$launcher"; } | sha256sum | awk '{print $1}'
+        else
+            sha256sum -- "$launcher" | awk '{print $1}'
+        fi
+    )"
+    [ "$recorded" = "$current" ] \
+        || fail "panel launcher manifest digest was not refreshed for $launcher"
+done
+ok "PipeASIO launcher drift is backed up and replaced"
+
 for durable_tool in audio-report.sh setup-realtime.sh rollback.sh; do
     [ -x "$base/xdg/data/ableton-wine/$durable_tool" ] \
         || fail "integration did not persist executable $durable_tool"
@@ -942,6 +979,55 @@ fi
     || fail "uninstall did not restore prestate retained across runtime-only reconcile"
 ok "built runtime-only reconcile reinstates claimed paths and preserves their uninstall prestate"
 
+# A runtime-only installation replaces existing PipeASIO command and desktop
+# launchers. Ownership records preserve each prior object for uninstall.
+base="$(new_env foreign-panel-runtime-only)"
+make_runtime_only_kit "$base"
+install_fake_host_tools "$base"
+runtime_command="$base/home/.local/bin/pipeasio-settings"
+runtime_desktop="$base/xdg/data/applications/pipeasio-settings.desktop"
+mkdir -p -- "$(dirname "$runtime_command")" "$(dirname "$runtime_desktop")"
+printf '#!/bin/sh\necho runtime-only-foreign-command\n' > "$runtime_command"
+chmod 755 "$runtime_command"
+printf '[Desktop Entry]\nName=Runtime-only foreign panel\n' > "$runtime_desktop"
+cp -- "$runtime_command" "$base/foreign-command.before"
+cp -- "$runtime_desktop" "$base/foreign-desktop.before"
+if ! run_isolated "$base" env \
+    PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    >"$base/install.out" 2>"$base/install.err"; then
+    sed -n '1,120p' "$base/install.err" >&2
+    fail "runtime-only installation failed for foreign panel launchers"
+fi
+[ -L "$runtime_command" ] \
+    && [ "$(readlink -- "$runtime_command")" = "$base/runtime/bin/pipeasio-settings" ] \
+    || fail "runtime-only installation wrote the wrong panel command"
+cmp -s -- "$base/foreign-command.before" "${runtime_command}.bak" \
+    || fail "runtime-only installation saved the wrong panel command backup"
+grep -qxF 'Name=PipeASIO Settings' "$runtime_desktop" \
+    || fail "runtime-only installation wrote the wrong panel entry"
+cmp -s -- "$base/foreign-desktop.before" "${runtime_desktop}.bak" \
+    || fail "runtime-only installation saved the wrong panel entry backup"
+runtime_manifest="$base/xdg/state/ableton-wine/install-manifest.tsv"
+manifest_has_path "$runtime_manifest" "$runtime_command" \
+    || fail "runtime-only installation omitted panel command ownership"
+manifest_has_path "$runtime_manifest" "$runtime_desktop" \
+    || fail "runtime-only installation omitted panel entry ownership"
+run_isolated "$base" env \
+    PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    ABLETON_LINK_MODE=off \
+    bash "$here/uninstall.sh" --keep-prefix --yes \
+    >"$base/uninstall.out" 2>"$base/uninstall.err" \
+    || { sed -n '1,120p' "$base/uninstall.err" >&2; fail "uninstall failed after runtime-only launcher replacement"; }
+cmp -s -- "$base/foreign-command.before" "$runtime_command" \
+    || fail "uninstall restored the wrong foreign panel command"
+cmp -s -- "$base/foreign-desktop.before" "$runtime_desktop" \
+    || fail "uninstall restored the wrong foreign panel entry"
+ok "runtime-only launcher replacement records ownership for uninstall"
+
 base="$(new_env foreign-panel-command)"
 install_fake_host_tools "$base"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
@@ -952,28 +1038,31 @@ echo foreign-settings-command
 EOF
 chmod 755 "$base/home/.local/bin/pipeasio-settings"
 foreign_digest="$(sha256sum -- "$base/home/.local/bin/pipeasio-settings" | awk '{print $1}')"
-mkdir -p -- "$base/xdg/state/ableton-wine"
-printf 'format=1\nowner=ableton-linux\n' \
-    > "$base/xdg/state/ableton-wine/.ableton-linux-state"
-printf 'symlink\t%s\t%s\n' "$base/home/.local/bin/pipeasio-settings" \
-    0000000000000000000000000000000000000000000000000000000000000000 \
-    > "$base/xdg/state/ableton-wine/install-manifest.tsv"
 run_component_install "$base" "$base/runtime" --integration-only \
     >"$base/install.out" 2>"$base/install.err" \
     || fail "foreign panel command prevented otherwise safe integration"
-[ ! -L "$base/home/.local/bin/pipeasio-settings" ] \
-    && [ "$(sha256sum -- "$base/home/.local/bin/pipeasio-settings" | awk '{print $1}')" = "$foreign_digest" ] \
-    || fail "foreign pipeasio-settings command was replaced"
+[ -L "$base/home/.local/bin/pipeasio-settings" ] \
+    && [ "$(readlink -- "$base/home/.local/bin/pipeasio-settings")" = "$base/runtime/bin/pipeasio-settings" ] \
+    || fail "foreign pipeasio-settings command was not replaced"
+grep -qxF 'echo foreign-settings-command' "$base/home/.local/bin/pipeasio-settings.bak" \
+    || fail "foreign panel command was not saved as pipeasio-settings.bak"
 foreign_manifest="$base/xdg/state/ableton-wine/install-manifest.tsv"
-! manifest_has_path "$foreign_manifest" "$base/home/.local/bin/pipeasio-settings" \
-    || fail "foreign pipeasio-settings command was claimed in the manifest"
+manifest_has_path "$foreign_manifest" "$base/home/.local/bin/pipeasio-settings" \
+    || fail "installed pipeasio-settings command was not claimed in the manifest"
+foreign_id="$(printf '%s' "$base/home/.local/bin/pipeasio-settings" | sha256sum | awk '{print $1}')"
+grep -qxF 'echo foreign-settings-command' \
+    "$base/xdg/state/ableton-wine/install-prestate/$foreign_id" \
+    || fail "foreign panel command was not retained as uninstall prestate"
 write_build_info "$base/runtime" "$base/BUILD-INFO.txt" skipped
 run_component_install "$base" "$base/runtime" --integration-only \
     >"$base/skipped.out" 2>"$base/skipped.err" \
-    || fail "skipped-panel update failed beside foreign command"
-[ "$(sha256sum -- "$base/home/.local/bin/pipeasio-settings" | awk '{print $1}')" = "$foreign_digest" ] \
-    || fail "skipped-panel cleanup removed a foreign command"
-ok "foreign pipeasio-settings command is preserved and de-owned"
+    || fail "skipped-panel update failed while restoring the displaced command"
+[ ! -L "$base/home/.local/bin/pipeasio-settings" ] \
+    && [ "$(sha256sum -- "$base/home/.local/bin/pipeasio-settings" | awk '{print $1}')" = "$foreign_digest" ] \
+    || fail "skipped-panel transition did not restore the displaced command"
+! manifest_has_path "$foreign_manifest" "$base/home/.local/bin/pipeasio-settings" \
+    || fail "restored panel command remained claimed in the manifest"
+ok "foreign pipeasio-settings command is backed up, replaced, and restored"
 
 install_managed_link()
 {
@@ -1318,6 +1407,19 @@ if transaction_target_authorised_on_exit "$base" "$prestate/not-a-digest"; then
     fail "malformed pre-install backup target was authorised during failure recovery"
 fi
 ok "failure recovery accepts only exact pre-install backup slots from an EXIT trap"
+
+base="$(new_env launcher-backup-target-exit)"
+launcher_backup="$base/xdg/data/applications/max9.desktop.bak"
+transaction_target_authorised_on_exit "$base" "$launcher_backup" \
+    || fail "exact adjacent launcher backup was refused during failure recovery"
+if transaction_target_authorised_on_exit \
+    "$base" "$base/xdg/data/applications/not-a-launcher.desktop.bak"; then
+    fail "arbitrary adjacent backup target was authorised during failure recovery"
+fi
+if transaction_target_authorised_on_exit "$base" "${launcher_backup}.bak"; then
+    fail "nested launcher backup target was authorised during failure recovery"
+fi
+ok "failure recovery authorises only exact adjacent launcher backup names"
 
 base="$(new_env staged-prefix-register)"
 make_registry_runtime "$base"
