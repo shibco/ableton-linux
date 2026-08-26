@@ -1,0 +1,134 @@
+# PipeWire Pro Audio exact-device A/B
+
+This is evaluation tooling, not a new default. PipeWire's `pro-audio` profile
+is an ALSA card profile. It is unrelated to the Windows MMCSS task string
+`Pro Audio`, and it is not a hidden PipeASIO processing mode.
+
+PipeWire 1.6.8 builds the profile from raw playback and capture PCMs, exposes
+AUX channels, and can choose different grouping and IRQ-driven behavior
+(`spa/plugins/alsa/acp/acp.c:331-496`). Changing profile disables old mappings,
+changes the card/UCM state, and enables new mappings
+(`spa/plugins/alsa/acp/acp.c:1787-1880`). The probed channel count is also
+configurable (`spa/plugins/alsa/acp/acp.c:1935-1974`). WirePlumber 0.5.15 does
+not choose generic Pro Audio automatically
+(`src/scripts/device/find-best-profile.lua:13-74`). Its ALSA documentation
+explicitly describes an interrupt-frequency versus CPU tradeoff for batch and
+non-batch devices
+(`docs/rst/daemon/configuration/alsa.rst:340-400`).
+
+Consequently, Pro Audio may expose more channels, generate more interrupts,
+keep additional nodes active, increase idle/IRQ CPU, or lose desktop mixer and
+UCM routes. A lower Live-process CPU value can simply mean that work or routing
+moved. Pro Audio is not a CPU optimization by definition.
+
+## Safety model
+
+`scripts/pipewire-pro-audio-ab.sh` accepts only an exact decimal PipeWire
+Device global ID and an explicit existing Wine prefix. It:
+
+1. creates a new private artifact directory and takes a read-only graph,
+   device, associated-node, route, default, settings, and profile-state
+   snapshot;
+2. discovers exactly one available profile named `pro-audio` on that ALSA
+   device;
+3. refuses when any Live process or Wine process for the exact prefix is
+   already active; there is no override;
+4. runs the supplied command once under the untouched original profile;
+5. requires the command to leave Live and the prefix idle, then rechecks the
+   numeric ID, device fingerprint, and original profile;
+6. selects only that device's discovered Pro Audio index with
+   `pw-cli set-param ... '{"index":N,"save":false}'` and verifies both its index
+   and name before running the same command again;
+7. restores and verifies the exact original index and name on success,
+   benchmark failure, switch failure, `HUP`, `INT`, or `TERM`; and
+8. fails the experiment if defaults, WirePlumber's persisted profile-state
+   hash, target routes, associated nodes, settings, or device identity do not
+   return to the recorded state.
+
+The tool deliberately does not use `wpctl set-profile`. In WirePlumber 0.5.15,
+that command builds a Profile parameter with `save=true`
+(`src/tools/wpctl.c:1342-1390`), and the profile-state policy persists
+user-generated choices when that flag is set
+(`src/scripts/device/state-profile.lua:67-129`). PipeWire's Profile parameter
+defines an explicit `save` Boolean
+(`spa/include/spa/param/profile.h:19-42`); the tool sends `save:false` for both
+the experimental switch and restoration. It installs no PipeWire or
+WirePlumber configuration and never selects Pro Audio automatically.
+
+`SIGKILL`, host power loss, PipeWire/WirePlumber failure, device removal, and a
+hostile benchmark command cannot be made transactional by a shell script. The
+original profile and a transient recovery command are therefore written to
+`recovery-command.txt` before the first switch. PipeWire global IDs are
+session-scoped: after a service or device restart, verify the device identity
+again before using that command. A benchmark command must fully stop everything
+it starts; if it leaves Live or Wine running after B, the tool records that
+contract violation and restores because leaving the device changed is worse.
+
+## Use
+
+First close Live and every process in the target prefix. Find the numeric ID in
+the `Devices` section of `wpctl status --name`, then run read-only discovery:
+
+```bash
+scripts/pipewire-pro-audio-ab.sh \
+  --device 42 \
+  --wine-prefix "$HOME/.wine-ableton" \
+  --output /tmp/live-pro-audio-discovery \
+  --discover
+```
+
+An existing output path is refused. Review `before/device.json`,
+`before/associated-nodes.semantic.json`, `before/routes.json`, and
+`status.json` before running the experiment.
+
+For the benchmark reporter branch, let each invocation derive its own output
+from the per-leg environment supplied by the A/B tool:
+
+```bash
+scripts/pipewire-pro-audio-ab.sh \
+  --device 42 \
+  --wine-prefix "$HOME/.wine-ableton" \
+  --output /tmp/live-pro-audio-ab-01 \
+  -- sh -c 'exec scripts/bench-suite.sh \
+      --tag "pipewire-profile/$ABLETON_PRO_AUDIO_LEG" \
+      --output "$ABLETON_PRO_AUDIO_LEG_DIR/suite"'
+```
+
+The command is executed directly without `eval`; `sh -c` above is explicit so
+that its shell, not the A/B tool, expands:
+
+- `ABLETON_PRO_AUDIO_LEG=baseline|pro-audio`
+- `ABLETON_PRO_AUDIO_LEG_DIR=.../A-original|.../B-pro-audio`
+
+This prevents the two identical command invocations from colliding on one
+explicit reporter output path. The A/B wrapper's own stdout, stderr, exit code,
+timing, and state evidence always remain under those distinct leg directories.
+
+## Reading the result
+
+`status.json` is authoritative for orchestration status, not for performance.
+It records both command exit codes and elapsed times, switch/restoration state,
+activity checks, and all restored-state comparisons. Raw evidence is retained
+under:
+
+- `before/`
+- `A-original/`
+- `B-pro-audio/`
+- `after-restoration/`
+- `events/`
+
+Do not interpret CPU when the result is anything other than `ab-complete`, or
+when the benchmark report shows route/channel, rate, quantum, crackle, xrun,
+PipeWire error, process-identity, power, or thermal differences. A release
+recommendation requires at least five matched pairs per profile at 32, 64, and
+128 frames on the real interface and loaded Sets. Compare whole-prefix,
+PipeWire, kernel IRQ, and host CPU—not only Live—and require no audible crackle,
+deadline, route, channel, or continuity regression. Even a clean result only
+supports that exact interface and configuration; it does not justify a broad
+WirePlumber rule.
+
+The hermetic policy and failure-path suite is:
+
+```bash
+make test-pipewire-pro-audio-ab
+```
