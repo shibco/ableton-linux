@@ -88,6 +88,21 @@ def manifest_hash(records: Iterable[dict[str, Any]], root: Path | None = None) -
     return digest.hexdigest()
 
 
+def effective_pipeasio_config(environment: dict[str, str] | None = None) -> dict[str, Any]:
+    values = os.environ if environment is None else environment
+    xdg_home = values.get("XDG_CONFIG_HOME", "")
+    home = values.get("HOME", "")
+    if xdg_home:
+        path, source = Path(xdg_home) / "pipeasio/config.ini", "XDG_CONFIG_HOME"
+    elif home:
+        path, source = Path(home) / ".config/pipeasio/config.ini", "HOME"
+    else:
+        return {"path": None, "resolution": "unavailable-no-XDG_CONFIG_HOME-or-HOME", "exists": False}
+    record = sha256_file(path.resolve())
+    record["resolution"] = source
+    return record
+
+
 def command_capture(name: str, argv: list[str], raw_dir: Path, timeout: int = 15) -> dict[str, Any]:
     stdout_path = raw_dir / f"{name}.stdout.txt"
     stderr_path = raw_dir / f"{name}.stderr.txt"
@@ -193,28 +208,111 @@ def cpu_sysfs_inventory(root: Path = Path("/sys/devices/system/cpu")) -> dict[st
 
 
 def parse_metadata(text: str) -> dict[str, Any]:
-    values: dict[str, str] = {}
-    transitions: list[dict[str, str]] = []
-    pattern = re.compile(r"key:'([^']+)'\s+value:'([^']*)'")
+    state: dict[tuple[int, str], str] = {}
+    seen: set[tuple[int, str]] = set()
+    transitions: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    update_pattern = re.compile(r"update:\s+id:(\d+)\s+key:'([^']+)'\s+value:'([^']*)'")
+    null_pattern = re.compile(r"update:\s+id:(\d+)\s+key:'([^']+)'\s+value:\(null\)")
+    remove_pattern = re.compile(r"remove:\s+id:(\d+)\s+key:'([^']+)'")
+    remove_all_pattern = re.compile(r"remove:\s+id:(\d+)\s+all keys")
+
+    def offset_of(raw_line: str) -> float | None:
+        if "\t" not in raw_line:
+            return None
+        try:
+            return float(raw_line.split("\t", 1)[0])
+        except ValueError:
+            return None
+
+    def transition(subject_id: int, key: str, value: str | None, operation: str,
+                   offset: float | None) -> None:
+        identity = (subject_id, key)
+        previous = state.get(identity)
+        if identity in seen and previous != value:
+            item: dict[str, Any] = {
+                "subject_id": subject_id, "key": key, "from": previous, "to": value,
+                "operation": operation,
+            }
+            if offset is not None:
+                item["offset_seconds"] = offset
+            transitions.append(item)
+        seen.add(identity)
+        if value is None:
+            state.pop(identity, None)
+        else:
+            state[identity] = value
+
     for raw_line in text.splitlines():
         line = raw_line.split("\t", 1)[-1]
-        match = pattern.search(line)
+        offset = offset_of(raw_line)
+        match = update_pattern.search(line)
+        if match:
+            subject_text, key, value = match.groups()
+            subject_id = int(subject_text)
+            transition(subject_id, key, value, "update", offset)
+            event: dict[str, Any] = {
+                "subject_id": subject_id, "key": key, "value": value, "operation": "update",
+            }
+            if offset is not None:
+                event["offset_seconds"] = offset
+            events.append(event)
+            continue
+        match = null_pattern.search(line) or remove_pattern.search(line)
+        if match:
+            subject_text, key = match.groups()
+            subject_id = int(subject_text)
+            transition(subject_id, key, None, "remove", offset)
+            event = {"subject_id": subject_id, "key": key, "value": None, "operation": "remove"}
+            if offset is not None:
+                event["offset_seconds"] = offset
+            events.append(event)
+            continue
+        match = remove_all_pattern.search(line)
         if not match:
             continue
-        key, value = match.groups()
-        if key in values and values[key] != value:
-            transitions.append({"key": key, "from": values[key], "to": value})
-        values[key] = value
-    return {"values": values, "transitions": transitions}
+        subject_id = int(match.group(1))
+        keys = sorted(key for candidate_id, key in state if candidate_id == subject_id)
+        for key in keys:
+            transition(subject_id, key, None, "remove-all", offset)
+        event = {"subject_id": subject_id, "key": None, "value": None, "operation": "remove-all"}
+        if offset is not None:
+            event["offset_seconds"] = offset
+        events.append(event)
+
+    subjects: dict[str, dict[str, str]] = {}
+    for (subject_id, key), value in sorted(state.items()):
+        subjects.setdefault(str(subject_id), {})[key] = value
+    return {
+        # PipeWire's settings metadata uses subject 0. Keep this convenient
+        # legacy view while preserving every subject in the structured form.
+        "values": subjects.get("0", {}),
+        "subjects": subjects,
+        "transitions": transitions,
+        "events": events,
+    }
 
 
 def parse_pw_top(text: str, node_pattern: str = DEFAULT_NODE_RE) -> dict[str, Any]:
     wanted = re.compile(node_pattern)
-    nodes: dict[str, dict[str, Any]] = {}
+    nodes: list[dict[str, Any]] = []
+    current: dict[int, dict[str, Any]] = {}
+    generations: dict[int, int] = {}
     transitions: list[dict[str, Any]] = []
+    lifecycle_events: list[dict[str, Any]] = []
     sample_rows = 0
+    frame = -1
     for raw_line in text.splitlines():
+        offset = None
+        if "\t" in raw_line:
+            try:
+                offset = float(raw_line.split("\t", 1)[0])
+            except ValueError:
+                pass
         line = raw_line.split("\t", 1)[-1].strip()
+        if re.match(r"^S\s+ID\s+QUANT\s+RATE\b", line):
+            frame += 1
+            continue
         fields = line.split(None, 10)
         if len(fields) < 10 or not fields[1].isdigit():
             continue
@@ -222,28 +320,59 @@ def parse_pw_top(text: str, node_pattern: str = DEFAULT_NODE_RE) -> dict[str, An
         name = fields[10] if len(fields) > 10 else ""
         if not (rate.isdigit() and int(rate) > 0 and error.isdigit() and wanted.search(name)):
             continue
+        if frame < 0:
+            frame = 0
         sample_rows += 1
-        state = nodes.setdefault(
-            node_id,
-            {"id": int(node_id), "name": name, "samples": 0, "first_err": int(error),
-             "last_err": int(error), "err_delta": 0, "quantums": []},
-        )
-        current_err = int(error)
+        numeric_id, current_err = int(node_id), int(error)
+        state = current.get(numeric_id)
+        split_reason = None
+        if state is not None:
+            if state["name"] != name:
+                split_reason = "name-change-or-id-reuse"
+            elif frame > state["last_frame"] + 1:
+                split_reason = "disappeared-and-reappeared"
+            elif current_err < state["last_err"]:
+                split_reason = "error-counter-reset-or-id-reuse"
+        if state is None or split_reason is not None:
+            generation = generations.get(numeric_id, 0) + 1
+            generations[numeric_id] = generation
+            next_state: dict[str, Any] = {
+                "id": numeric_id, "generation": generation, "name": name,
+                "samples": 0, "first_err": current_err, "last_err": current_err,
+                "err_delta": current_err if split_reason == "error-counter-reset-or-id-reuse" else 0,
+                "quantums": [], "first_frame": frame, "last_frame": frame,
+                "first_output_offset_seconds": offset, "last_output_offset_seconds": offset,
+            }
+            if split_reason is not None and state is not None:
+                lifecycle_events.append({
+                    "node_id": numeric_id,
+                    "from_generation": state["generation"],
+                    "to_generation": generation,
+                    "from_name": state["name"],
+                    "to_name": name,
+                    "reason": split_reason,
+                    "offset_seconds": offset,
+                })
+            nodes.append(next_state)
+            current[numeric_id] = next_state
+            state = next_state
         if state["samples"]:
             previous_err = state["last_err"]
-            state["err_delta"] += current_err - previous_err if current_err >= previous_err else current_err
+            state["err_delta"] += current_err - previous_err
         state["last_err"] = current_err
         state["samples"] += 1
+        state["last_frame"] = frame
+        state["last_output_offset_seconds"] = offset
         if quantum.isdigit() and int(quantum) > 0:
             current_quantum = int(quantum)
             if not state["quantums"] or state["quantums"][-1] != current_quantum:
                 if state["quantums"]:
                     transitions.append({
-                        "node_id": int(node_id), "name": name,
+                        "node_id": numeric_id, "generation": state["generation"], "name": name,
                         "from": state["quantums"][-1], "to": current_quantum,
                     })
                 state["quantums"].append(current_quantum)
-    node_values = sorted(nodes.values(), key=lambda item: item["id"])
+    node_values = sorted(nodes, key=lambda item: (item["id"], item["generation"]))
     instrumented = any(item["samples"] >= 2 for item in node_values)
     return {
         "node_pattern": node_pattern,
@@ -252,6 +381,8 @@ def parse_pw_top(text: str, node_pattern: str = DEFAULT_NODE_RE) -> dict[str, An
         "err_delta": sum(max(0, item["err_delta"]) for item in node_values),
         "nodes": node_values,
         "quantum_transitions": transitions,
+        "node_lifecycle_events": lifecycle_events,
+        "identity_confounded": bool(lifecycle_events),
     }
 
 
@@ -443,16 +574,24 @@ def host_cpu_snapshot() -> dict[str, list[int]]:
 
 
 def proc_snapshot(prefix: Path, wine_root: Path, explicit: Iterable[int]) -> dict[str, Any]:
+    begin_ns = time.monotonic_ns()
+    capture_started_at = utc_now()
     processes = []
     for pid in relevant_pids(prefix, wine_root, explicit):
         record = proc_record(pid)
         if record:
             processes.append(record)
+    host_cpu = host_cpu_snapshot()
+    end_ns = time.monotonic_ns()
     return {
+        "capture_started_at": capture_started_at,
         "captured_at": utc_now(),
-        "monotonic_ns": time.monotonic_ns(),
+        "monotonic_begin_ns": begin_ns,
+        "monotonic_end_ns": end_ns,
+        "monotonic_ns": (begin_ns + end_ns) // 2,
+        "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
         "clock_ticks_per_second": os.sysconf("SC_CLK_TCK"),
-        "host_cpu": host_cpu_snapshot(),
+        "host_cpu": host_cpu,
         "processes": processes,
     }
 
@@ -511,28 +650,96 @@ def host_cpu_delta(before: dict[str, list[int]], after: dict[str, list[int]]) ->
     return result
 
 
+def task_identity(record: dict[str, Any]) -> tuple[int, int]:
+    return int(record["pid"]), int(record["starttime_ticks"])
+
+
+def lifecycle_record(record: dict[str, Any], process: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = {
+        "pid": record["pid"],
+        "starttime_ticks": record["starttime_ticks"],
+        "comm": record.get("comm"),
+    }
+    if process is None:
+        result.update({"exe": record.get("exe"), "cmdline": record.get("cmdline", [])})
+    else:
+        result.update({
+            "process_pid": process["pid"],
+            "process_starttime_ticks": process["starttime_ticks"],
+            "process_comm": process.get("comm"),
+        })
+    return result
+
+
+def thread_lifecycle(snapshot: dict[str, Any]) -> dict[tuple[int, int, int, int], tuple[dict[str, Any], dict[str, Any]]]:
+    result = {}
+    for process in snapshot.get("processes", []):
+        for thread in process.get("threads", []):
+            key = (*task_identity(process), *task_identity(thread))
+            result[key] = (process, thread)
+    return result
+
+
 def snapshots_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     elapsed = max(0.000001, (after["monotonic_ns"] - before["monotonic_ns"]) / 1_000_000_000)
+    before_begin = before.get("monotonic_begin_ns", before["monotonic_ns"])
+    before_end = before.get("monotonic_end_ns", before["monotonic_ns"])
+    after_begin = after.get("monotonic_begin_ns", after["monotonic_ns"])
+    after_end = after.get("monotonic_end_ns", after["monotonic_ns"])
     ticks = int(before["clock_ticks_per_second"])
-    initial = {(item["pid"], item["starttime_ticks"]): item for item in before["processes"]}
+    initial = {task_identity(item): item for item in before["processes"]}
+    final = {task_identity(item): item for item in after["processes"]}
+    survivor_keys = sorted(initial.keys() & final.keys())
+    born_keys = sorted(final.keys() - initial.keys())
+    exited_keys = sorted(initial.keys() - final.keys())
+    thread_initial = thread_lifecycle(before)
+    thread_final = thread_lifecycle(after)
+    thread_survivor_keys = sorted(thread_initial.keys() & thread_final.keys())
+    thread_born_keys = sorted(thread_final.keys() - thread_initial.keys())
+    thread_exited_keys = sorted(thread_initial.keys() - thread_final.keys())
     processes = []
-    for final in after["processes"]:
-        first = initial.get((final["pid"], final["starttime_ticks"]))
-        if not first:
-            continue
-        result = one_record_delta(first, final, elapsed, ticks)
-        thread_initial = {(item["pid"], item["starttime_ticks"]): item for item in first.get("threads", [])}
+    for identity in survivor_keys:
+        first, last = initial[identity], final[identity]
+        result = one_record_delta(first, last, elapsed, ticks)
+        first_threads = {task_identity(item): item for item in first.get("threads", [])}
         threads = []
-        for thread_final in final.get("threads", []):
-            thread_first = thread_initial.get((thread_final["pid"], thread_final["starttime_ticks"]))
+        for thread_last in last.get("threads", []):
+            thread_first = first_threads.get(task_identity(thread_last))
             if thread_first:
-                threads.append(one_record_delta(thread_first, thread_final, elapsed, ticks))
+                threads.append(one_record_delta(thread_first, thread_last, elapsed, ticks))
         result["threads"] = threads
         processes.append(result)
+    churn = bool(born_keys or exited_keys or thread_born_keys or thread_exited_keys)
     return {
         "elapsed_seconds": round(elapsed, 6),
+        "elapsed_lower_bound_seconds": round(max(0, after_begin - before_end) / 1_000_000_000, 6),
+        "elapsed_upper_bound_seconds": round(max(0, after_end - before_begin) / 1_000_000_000, 6),
+        "elapsed_scope": "Midpoint estimate and bounds from the two endpoint snapshot collection intervals.",
         "host_cpu_percent": host_cpu_delta(before.get("host_cpu", {}), after.get("host_cpu", {})),
         "processes": processes,
+        "accounting": {
+            "mode": "endpoint-survivors-only",
+            "confounder": "task-churn-detected" if churn else "no-endpoint-task-churn-observed",
+            "confounded_by_task_churn": churn,
+            "processes": {
+                "survived": [lifecycle_record(final[key]) for key in survivor_keys],
+                "born": [lifecycle_record(final[key]) for key in born_keys],
+                "exited": [lifecycle_record(initial[key]) for key in exited_keys],
+            },
+            "threads": {
+                "survived": [lifecycle_record(thread_final[key][1], thread_final[key][0])
+                             for key in thread_survivor_keys],
+                "born": [lifecycle_record(thread_final[key][1], thread_final[key][0])
+                         for key in thread_born_keys],
+                "exited": [lifecycle_record(thread_initial[key][1], thread_initial[key][0])
+                           for key in thread_exited_keys],
+            },
+            "limitation": (
+                "Per-task CPU, context-switch, and schedstat deltas cover only identities present at both "
+                "endpoint snapshots. Tasks born and exited entirely between endpoints cannot be observed; "
+                "host CPU still covers the full endpoint interval."
+            ),
+        },
     }
 
 
@@ -546,8 +753,20 @@ class TimedCommand:
         self.process: subprocess.Popen[str] | None = None
         self.thread: threading.Thread | None = None
         self.error: str | None = None
+        self.start_attempt_ns: int | None = None
+        self.spawned_ns: int | None = None
+        self.first_output_ns: int | None = None
+        self.last_output_ns: int | None = None
+        self.deadline_observed_ns: int | None = None
+        self.termination_requested_ns: int | None = None
+        self.reaped_ns: int | None = None
+        self.output_line_count = 0
+
+    def offset_seconds(self, value: int | None) -> float | None:
+        return round((value - self.start_ns) / 1_000_000_000, 6) if value is not None else None
 
     def start(self) -> None:
+        self.start_attempt_ns = time.monotonic_ns()
         if not self.argv or not shutil.which(self.argv[0]):
             self.error = f"command not found: {self.argv[0] if self.argv else 'empty command'}"
             self.path.write_text("")
@@ -563,6 +782,8 @@ class TimedCommand:
                 errors="replace",
                 bufsize=1,
             )
+            self.spawned_ns = time.monotonic_ns()
+            stderr.close()
         except OSError as error:
             stderr.close()
             self.error = str(error)
@@ -572,9 +793,14 @@ class TimedCommand:
 
         def reader() -> None:
             assert self.process is not None and self.process.stdout is not None
-            with self.path.open("w") as output:
+            with self.process.stdout, self.path.open("w") as output:
                 for line in self.process.stdout:
-                    offset = (time.monotonic_ns() - self.start_ns) / 1_000_000_000
+                    observed_ns = time.monotonic_ns()
+                    if self.first_output_ns is None:
+                        self.first_output_ns = observed_ns
+                    self.last_output_ns = observed_ns
+                    self.output_line_count += 1
+                    offset = (observed_ns - self.start_ns) / 1_000_000_000
                     output.write(f"{offset:.6f}\t{line}")
                     output.flush()
 
@@ -591,6 +817,15 @@ class TimedCommand:
                 self.process.wait(timeout=2)
         if self.thread:
             self.thread.join(timeout=2)
+        if self.process is not None:
+            self.reaped_ns = time.monotonic_ns()
+        observed_end_ns = self.termination_requested_ns or self.deadline_observed_ns or self.reaped_ns
+        supervision_seconds = None
+        if self.spawned_ns is not None and observed_end_ns is not None:
+            supervision_seconds = round(max(0, observed_end_ns - self.spawned_ns) / 1_000_000_000, 6)
+        output_span_seconds = None
+        if self.first_output_ns is not None and self.last_output_ns is not None:
+            output_span_seconds = round((self.last_output_ns - self.first_output_ns) / 1_000_000_000, 6)
         return {
             "argv": self.argv,
             "available": self.error is None,
@@ -598,10 +833,28 @@ class TimedCommand:
             "returncode": self.process.returncode if self.process else None,
             "raw": str(self.path),
             "stderr": str(self.stderr_path),
+            "timing": {
+                "start_attempt_offset_seconds": self.offset_seconds(self.start_attempt_ns),
+                "spawned_offset_seconds": self.offset_seconds(self.spawned_ns),
+                "deadline_observed_offset_seconds": self.offset_seconds(self.deadline_observed_ns),
+                "termination_requested_offset_seconds": self.offset_seconds(self.termination_requested_ns),
+                "reaped_offset_seconds": self.offset_seconds(self.reaped_ns),
+                "supervision_interval_seconds": supervision_seconds,
+                "first_output_offset_seconds": self.offset_seconds(self.first_output_ns),
+                "last_output_offset_seconds": self.offset_seconds(self.last_output_ns),
+                "output_span_seconds": output_span_seconds,
+                "output_line_count": self.output_line_count,
+                "scope": (
+                    "Process supervision times are monotonic observations; first/last output bound emitted "
+                    "evidence and are not claims about unobserved samples."
+                ),
+            },
         }
 
     def terminate_at_deadline(self) -> None:
+        self.deadline_observed_ns = time.monotonic_ns()
         if self.process and self.process.poll() is None:
+            self.termination_requested_ns = time.monotonic_ns()
             self.process.terminate()
 
 
@@ -828,7 +1081,22 @@ def capture(args: argparse.Namespace) -> int:
     metadata = parse_metadata(read_text(raw / "pw-metadata.tsv"))
     osc = parse_osc(read_text(raw / "osc.tsv"))
     logs = capture_log_slices(baselines, raw)
-    crackle = crackle_status(pw_top["instrumented"], pw_top["err_delta"], logs["xrun_line_count"], args.manual_crackle)
+    crackle = crackle_status(
+        pw_top["instrumented"] and not pw_top["identity_confounded"],
+        pw_top["err_delta"], logs["xrun_line_count"], args.manual_crackle,
+    )
+    confounders = []
+    accounting = delta["accounting"]
+    if accounting["confounded_by_task_churn"]:
+        confounders.append({
+            "kind": "task-churn",
+            "effect": "Per-process/thread CPU totals omit tasks without both endpoint snapshots.",
+        })
+    if pw_top["identity_confounded"]:
+        confounders.append({
+            "kind": "pipewire-node-identity-churn",
+            "effect": "ERR and quantum histories are separated into generations; clean instrumentation is not claimed.",
+        })
     measurement = {
         "schema": SCHEMA,
         "kind": "set-measurement",
@@ -838,14 +1106,37 @@ def capture(args: argparse.Namespace) -> int:
         "duration_seconds": args.duration,
         "started_at": started_at,
         "ended_at": ended_at,
-        "actual_cpu_interval_seconds": delta["elapsed_seconds"],
-        "window": {"monotonic_start_ns": start_ns, "monotonic_deadline_ns": deadline_ns},
+        "cpu_interval_midpoint_estimate_seconds": delta["elapsed_seconds"],
+        "window": {
+            "requested_duration_seconds": args.duration,
+            "monotonic_start_ns": start_ns,
+            "monotonic_deadline_ns": deadline_ns,
+            "cpu_before_offset_seconds": round((before["monotonic_ns"] - start_ns) / 1_000_000_000, 6),
+            "cpu_after_offset_seconds": round((after["monotonic_ns"] - start_ns) / 1_000_000_000, 6),
+            "cpu_before_collection_offsets_seconds": [
+                round((before.get("monotonic_begin_ns", before["monotonic_ns"]) - start_ns) / 1_000_000_000, 6),
+                round((before.get("monotonic_end_ns", before["monotonic_ns"]) - start_ns) / 1_000_000_000, 6),
+            ],
+            "cpu_after_collection_offsets_seconds": [
+                round((after.get("monotonic_begin_ns", after["monotonic_ns"]) - start_ns) / 1_000_000_000, 6),
+                round((after.get("monotonic_end_ns", after["monotonic_ns"]) - start_ns) / 1_000_000_000, 6),
+            ],
+            "cpu_interval_midpoint_estimate_seconds": delta["elapsed_seconds"],
+            "cpu_interval_bounds_seconds": [
+                delta["elapsed_lower_bound_seconds"], delta["elapsed_upper_bound_seconds"],
+            ],
+            "scope": (
+                "The requested deadline is shared. Endpoint CPU accounting includes the explicitly reported "
+                "snapshot skew; each external collector reports its own observed supervision/output coverage."
+            ),
+        },
         "process": {"summary": process_groups(delta, prefix, wine_root), "details": delta},
         "pipewire": {"pw_top": pw_top, "settings": metadata},
         "osc_dsp": osc,
         "logs": logs,
         "live": live_identity,
         "crackle": crackle,
+        "confounders": confounders,
         "capture_commands": command_results,
         "evidence": {
             "directory": "raw",
@@ -912,6 +1203,7 @@ def profile(args: argparse.Namespace) -> int:
     raw = output / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     prefix, wine_root = Path(args.prefix).resolve(), Path(args.wine_root).resolve()
+    capture_started_at = utc_now()
     commands: dict[str, list[str]] = {
         "uname": ["uname", "-a"],
         "lscpu-json": ["lscpu", "-J"],
@@ -949,12 +1241,11 @@ def profile(args: argparse.Namespace) -> int:
         "ABLETON-WINE-BUILD-INFO.txt", "bin/wine",
         "lib/wine/x86_64-windows/pipeasio64.dll", "lib/wine/x86_64-unix/pipeasio64.dll.so",
     )]
-    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
-    config_paths = [Path(args.config_file), config_home / "pipeasio/config.ini"]
-    pipeasio_override = os.environ.get("PIPEASIO_CONFIG")
-    if pipeasio_override:
-        config_paths.append(Path(pipeasio_override))
-    config_records = [sha256_file(path.resolve()) for path in dict.fromkeys(config_paths)]
+    launcher_config_record = sha256_file(Path(args.config_file).resolve())
+    pipeasio_config_record = effective_pipeasio_config()
+    config_records = [launcher_config_record]
+    if pipeasio_config_record.get("path"):
+        config_records.append(pipeasio_config_record)
     dump_json(raw / "hash-manifest.json", {
         "prefix": prefix_records, "runtime": runtime_records, "configuration": config_records,
     })
@@ -974,6 +1265,7 @@ def profile(args: argparse.Namespace) -> int:
     profile_value = {
         "schema": SCHEMA,
         "kind": "system-profile",
+        "capture_started_at": capture_started_at,
         "captured_at": utc_now(),
         "system": {
             "uname": read_text(raw / "uname.stdout.txt").strip(),
@@ -1006,7 +1298,32 @@ def profile(args: argparse.Namespace) -> int:
                 if re.search(r"profile|route|device\.name|node\.name", line, re.I)
             ],
             "wpctl_status": wpctl_status,
-            "raw": ["raw/wpctl-status.stdout.txt", "raw/wpctl-sink.stdout.txt", "raw/wpctl-source.stdout.txt", "raw/pw-dump.stdout.txt"],
+            "capture_scope": {
+                "phase": "single-profile-snapshot; bench-suite invokes this before its first Live launch",
+                "profiles": "default sink/source and associated objects, with the complete graph retained by pw-dump",
+                "settings": "settings metadata snapshot; every set separately monitors settings changes",
+                "limitation": "WirePlumber profile changes during a set are not continuously monitored.",
+            },
+            "availability": {
+                name: {
+                    "installed": results[name].get("available", False),
+                    "successful": (
+                        results[name].get("available", False) and results[name].get("returncode") == 0
+                    ),
+                    "returncode": results[name].get("returncode"),
+                    **({"timed_out": True} if results[name].get("timed_out") else {}),
+                    **({"error": results[name]["error"]} if "error" in results[name] else {}),
+                }
+                for name in (
+                    "wpctl-status", "wpctl-sink", "wpctl-source", "pw-metadata-settings", "pw-dump",
+                    "pw-cli-version", "pipewire-version", "wireplumber-version",
+                )
+            },
+            "raw": [
+                "raw/wpctl-status.stdout.txt", "raw/wpctl-sink.stdout.txt",
+                "raw/wpctl-source.stdout.txt", "raw/pw-metadata-settings.stdout.txt",
+                "raw/pw-dump.stdout.txt",
+            ],
         },
         "runtime": {
             "root": str(wine_root),
@@ -1014,15 +1331,19 @@ def profile(args: argparse.Namespace) -> int:
             "wine_version": read_text(raw / "wine-version.stdout.txt").strip(),
             "files": runtime_records,
             "identity_hash": manifest_hash(runtime_records, wine_root),
+            "identity_scope": "build information, exact Wine launcher binary, and PE/Unix PipeASIO halves",
         },
         "prefix": {
             "path": str(prefix),
             "files": prefix_records,
             "identity_hash": manifest_hash(prefix_records, prefix),
+            "identity_scope": "managed-prefix ownership marker and Wine registry files; not mutable cache content",
         },
         "configuration": {
             "files": config_records,
             "identity_hash": manifest_hash(config_records),
+            "launcher_config": launcher_config_record,
+            "pipeasio_effective_config": pipeasio_config_record,
             "environment": {
                 key: value for key, value in sorted(os.environ.items())
                 if key.startswith(("ABLETON_", "PIPEASIO_", "WINEDEBUG", "WINED3D_"))
@@ -1084,8 +1405,8 @@ def markdown_report(report: dict[str, Any]) -> str:
         "",
         "## Results",
         "",
-        "| Set | Mode | Workers | Host CPU | Live CPU/core | Wine CPU/core | PipeWire ERR | DSP avg / peak | Quantum changes | Crackle |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Set | Mode | Workers | Host CPU | Live CPU/core | Wine CPU/core | Task churn | PipeWire ERR | DSP avg / peak | Quantum changes | Crackle |",
+        "|---|---|---:|---:|---:|---:|---|---:|---:|---:|---|",
     ]
     for item in report["sets"]:
         process = item.get("process", {}).get("summary", {})
@@ -1094,12 +1415,19 @@ def markdown_report(report: dict[str, Any]) -> str:
         wine = process.get("wine_prefix", {}).get("cpu_percent_of_one_core")
         pw = item.get("pipewire", {}).get("pw_top", {})
         dsp = item.get("osc_dsp", {})
+        accounting = item.get("process", {}).get("details", {}).get("accounting", {})
+        process_churn = accounting.get("processes", {})
+        thread_churn = accounting.get("threads", {})
+        churn = (
+            f"P+{len(process_churn.get('born', []))}/-{len(process_churn.get('exited', []))}; "
+            f"T+{len(thread_churn.get('born', []))}/-{len(thread_churn.get('exited', []))}"
+        )
         transitions = len(pw.get("quantum_transitions", [])) + len(item.get("pipewire", {}).get("settings", {}).get("transitions", []))
         number = lambda value: "NA" if value is None else f"{value:.2f}"  # noqa: E731
         lines.append(
             f"| {item.get('set')} | {item.get('mode')} | {process.get('live', {}).get('audio_worker_count', 'NA')} | "
             f"{number(host)}% | {number(live)}% | "
-            f"{number(wine)}% | {pw.get('err_delta', 'NA')} | {number(dsp.get('average_percent'))} / "
+            f"{number(wine)}% | {churn} | {pw.get('err_delta', 'NA')} | {number(dsp.get('average_percent'))} / "
             f"{number(dsp.get('peak_percent'))} | {transitions} | {item.get('crackle', {}).get('status', 'unknown')} |"
         )
     runtime = profile_value.get("runtime", {})
@@ -1108,7 +1436,13 @@ def markdown_report(report: dict[str, Any]) -> str:
     system = profile_value.get("system", {})
     cpu = system.get("cpu", {})
     pipewire = profile_value.get("pipewire", {})
+    configuration = profile_value.get("configuration", {})
     settings = pipewire.get("settings", {}).get("values", {})
+    pipewire_availability = pipewire.get("availability", {})
+    pipewire_unavailable = (
+        [name for name, status in pipewire_availability.items() if not status.get("successful")]
+        if pipewire_availability else ["availability-not-recorded"]
+    )
     runtime_dist = "unknown"
     for line in runtime.get("build_info", "").splitlines():
         if line.startswith("dist-version:"):
@@ -1130,11 +1464,15 @@ def markdown_report(report: dict[str, Any]) -> str:
         f"`{settings.get('clock.quantum', 'unknown')}`, forced quantum "
         f"`{settings.get('clock.force-quantum', 'unknown')}`",
         f"- Active audio profile evidence: `{'; '.join(pipewire.get('active_profile_lines', [])) or 'unavailable'}`",
+        f"- PipeWire profile capture scope: `{pipewire.get('capture_scope', {}).get('phase', 'unknown')}`",
+        f"- PipeWire snapshot command status: `{'complete' if not pipewire_unavailable else 'incomplete: ' + ', '.join(pipewire_unavailable)}`",
         f"- Runtime: build `{runtime_dist}`, Wine `{runtime.get('wine_version', 'unknown')}` at `{runtime.get('root', 'unknown')}`",
         f"- Runtime identity SHA-256: `{runtime.get('identity_hash', 'unknown')}`",
         f"- Prefix: `{prefix.get('path', 'unknown')}`",
         f"- Prefix identity SHA-256: `{prefix.get('identity_hash', 'unknown')}`",
         f"- Configuration identity SHA-256: `{profile_value.get('configuration', {}).get('identity_hash', 'unknown')}`",
+        f"- Effective PipeASIO config: `{configuration.get('pipeasio_effective_config', {}).get('path') or 'unavailable'}` "
+        f"(via `{configuration.get('pipeasio_effective_config', {}).get('resolution', 'unknown')}`)",
         "",
         "### Live options",
         "",
@@ -1165,7 +1503,7 @@ def markdown_report(report: dict[str, Any]) -> str:
         "- `no-instrumented-evidence`: usable instrumentation was clean; this is not proof of inaudibility.",
         "- `unknown`: instrumentation was unavailable and no positive manual observation exists.",
         "",
-        "Raw command output, process/thread snapshots, schedstat deltas, context switches, logs, OSC rows, and quantum events are retained beside this report.",
+        "Raw command output, endpoint task-lifecycle accounting, process/thread snapshots, schedstat deltas, context switches, collector timing, logs, OSC rows, and quantum events are retained beside this report.",
         "",
     ])
     return "\n".join(lines)

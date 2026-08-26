@@ -16,9 +16,15 @@ The suite performs five 30-second measurements, in this fixed order:
 5. `Benchmark_VSTs` — Dexed and Nils' K1v, playing.
 
 The single `--duration` value (default exactly 30 seconds) is passed to every
-set and governs the `/proc` CPU interval, OSC listener, `pw-top`, and PipeWire
-metadata monitor. Startup, set readiness, and the short stabilisation period are
-outside that measurement window. A quick preflight that launches nothing is:
+set and establishes one shared deadline for `/proc` CPU accounting, the OSC
+listener, `pw-top`, and the PipeWire metadata monitor. Startup, set readiness,
+and the short stabilisation period are outside that requested window. Endpoint
+CPU snapshots necessarily bracket it by a few milliseconds, while collectors
+start sequentially just after its start; the JSON records a CPU interval
+midpoint estimate plus collection bounds and each collector's observed spawn,
+deadline, reap, and first/last output coverage instead of presenting those as
+exactly 30 seconds. A quick
+preflight that launches nothing is:
 
 ```bash
 scripts/bench-suite.sh --dry-run --tag before/my-change
@@ -40,16 +46,19 @@ By default a new ignored directory is created under `bench/reports/`. Use
 - `report.md`: a compact comparison table and reproduction identity.
 - `run.json`: tag, canonical order, common duration, status, and runner hash.
 - `suite.log`: the complete post-preflight orchestrator and teardown narrative.
-- `profile/profile.json`: system, CPU topology, GPU/audio inventory, PipeWire
-  and WirePlumber state, runtime/Wine identity, prefix identity, PipeASIO and
+- `profile/profile.json`: system, CPU topology, GPU/audio inventory, a clearly
+  scoped pre-launch PipeWire/WirePlumber snapshot with command availability,
+  runtime/Wine identity, prefix identity, the effective XDG/HOME PipeASIO and
   launcher configuration hashes, installed Live versions, `Options.txt`, and
   `MaxAudioThreads` worker setting.
 - `profile/raw/`: unmodified command output including `lscpu`, PCI/USB/ALSA,
   `wpctl`, `pw-metadata`, `pw-dump`, Wine/runtime build information, and the hash
   manifest.
 - `sets/NN-SET/measurement.json`: CPU/context-switch/schedstat deltas per
-  process and thread, host CPU, PipeWire ERR delta, quantum transitions, OSC DSP
-  average and peak, observed `AudioCalc` worker count, Live's runtime-visible
+  endpoint-surviving process and thread, explicit born/exited endpoint task
+  inventories and a churn confound label, host CPU, actual collector coverage,
+  PipeWire ERR delta, node generations and quantum transitions, OSC DSP average
+  and peak, observed `AudioCalc` worker count, Live's runtime-visible
   performance/efficiency-core counts, log evidence, and crackle classification.
 - `sets/NN-SET/raw/`: before/after `/proc` snapshots, `pw-top`, PipeWire
   metadata events, OSC rows, launcher diagnostics, Live log slices, and matched
@@ -58,7 +67,10 @@ By default a new ignored directory is created under `bench/reports/`. Use
 The prefix identity is a documented composite SHA-256 over its ownership marker
 and Wine registry files; it is not a costly hash of mutable cache content. The
 runtime identity similarly covers build information, Wine, and both PipeASIO
-halves. Every constituent path, size, and digest remains in the raw manifest.
+halves. The effective PipeASIO config path follows the driver's real resolution:
+`$XDG_CONFIG_HOME/pipeasio/config.ini`, then
+`$HOME/.config/pipeasio/config.ini`. Every constituent path, size, and digest
+remains in the raw manifest.
 
 ## Crackle observations
 
@@ -107,10 +119,13 @@ scripts/bench-suite.sh --tag after/my-change
 ```
 
 Compare the JSON values rather than drawing a conclusion from one total. The
-report separates host utilisation, the whole Wine prefix, Live, PipeWire, and
-individual threads. Treat a quantum transition, an ERR increase, a changed
-profile/config hash, or a missing OSC sample as a confounder that must be
-explained before accepting a CPU result.
+report separates host utilisation, endpoint-surviving Wine/Live tasks,
+PipeWire, and individual threads. Host CPU covers the full endpoint interval,
+but a process or thread born and exited entirely between the two snapshots is
+not observable without intrusive polling. Treat endpoint task churn, PipeWire
+node-identity churn, a quantum or metadata transition, an ERR increase, a
+changed profile/config hash, or a missing OSC sample as a confounder that must
+be explained before accepting a CPU result.
 
 `scripts/bench-run.sh` is the lower-level single-window collector used by the
 suite. It can measure a set an operator already opened, but it does not start or
