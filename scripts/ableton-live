@@ -447,16 +447,16 @@ warn_missing_ntsync()
     major="${rel%%.*}"
     minor="${rel#*.}"
     minor="${minor%%[!0-9]*}"
-    echo "ableton-live: no /dev/ntsync: Windows waits will round-trip through wineserver and Live may use substantially more CPU (run audio-report.sh)" >&2
+    echo "ableton-live: Wine uses its regular wait route. Add /dev/ntsync to use NTSync. Run audio-report.sh." >&2
     case "$major" in ''|*[!0-9]*) return ;; esac
     if [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "${minor:-0}" -ge 14 ]; }; then
         if command -v modinfo >/dev/null 2>&1 && modinfo -n ntsync >/dev/null 2>&1; then
             echo "ableton-live: kernel $rel has an NTSync module; load it with 'sudo modprobe ntsync' or rerun setup-realtime.sh" >&2
         else
-            echo "ableton-live: kernel $rel exposes no NTSync module; use a kernel built with CONFIG_NTSYNC" >&2
+            echo "ableton-live: kernel $rel needs CONFIG_NTSYNC; use a kernel built with that option" >&2
         fi
     else
-        echo "ableton-live: kernel $rel predates the Linux 6.14 NTSync device" >&2
+        echo "ableton-live: Linux 6.14 or newer provides NTSync; kernel $rel uses Wine's regular wait route" >&2
     fi
 }
 if [ "${ABLETON_NTSYNC_WARN:-on}" != off ] && [ ! -c /dev/ntsync ]; then

@@ -89,7 +89,7 @@ env ABLETON_REQUIRE_NTSYNC=invalid bash "$checker" \
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "invalid strictness token does not exit 2"
-grep -q 'ABLETON_REQUIRE_NTSYNC must be on or off' "$work/invalid.err" \
+grep -q 'Use on or off for ABLETON_REQUIRE_NTSYNC' "$work/invalid.err" \
     || fail "invalid strictness token is not diagnosed"
 ok "invalid ABLETON_REQUIRE_NTSYNC fails closed"
 
@@ -98,7 +98,7 @@ run_case strict-missing "$work/no-such-device" on
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "strict missing-device check does not exit 3"
-grep -q 'rerun with ABLETON_REQUIRE_NTSYNC=off' "$work/strict-missing.err" \
+grep -q 'set ABLETON_REQUIRE_NTSYNC=off' "$work/strict-missing.err" \
     || fail "strict missing-device check omits its explicit fallback guidance"
 ok "strict mode rejects an unavailable NTSync device"
 
@@ -113,7 +113,7 @@ run_case inactive-fd /dev/full on 0
 rc=$?
 set -e
 [ "$rc" -eq 1 ] || fail "active-device proof accepts a wineserver with no device fd"
-grep -q 'runtime never opened /dev/full' "$work/inactive-fd.err" \
+grep -q 'wineserver opened 0 files for /dev/full' "$work/inactive-fd.err" \
     || fail "active-device fd failure is not diagnosed"
 ok "device presence without a wineserver fd fails proof"
 
