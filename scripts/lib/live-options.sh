@@ -73,7 +73,11 @@ ableton_reliable_audio_threads()
 {
     local physical="${1:-}" available="${2:-}" live_default reliability_floor count
 
-    case "$physical" in [1-9]|[1-5][0-9]|6[0-3]) ;; *) return 1 ;; esac
+    case "$physical" in
+        ''|*[!0-9]*) return 1 ;;
+        *[1-9]*) ;;
+        *) return 1 ;;
+    esac
     if [ -z "$available" ]; then
         available="$(nproc 2>/dev/null)" || return 1
     fi
@@ -83,7 +87,11 @@ ableton_reliable_audio_threads()
     # The measured 16-core computer keeps its 16-of-31 result.
     # Before release, test busy Sets on an SMT computer with up to 15 physical cores.
     reliability_floor=$(((live_default + 1) / 2))
-    count=$((10#$physical))
+    if [ "${#physical}" -gt 6 ]; then
+        count="$live_default"
+    else
+        count=$((10#$physical))
+    fi
     [ "$count" -ge "$reliability_floor" ] || count="$reliability_floor"
     [ "$count" -le "$live_default" ] || count="$live_default"
     printf '%s\n' "$count"

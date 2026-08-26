@@ -108,12 +108,16 @@ done
 [ "$(ableton_reliable_audio_threads 4 8)" -eq 7 ] \
     && [ "$(ableton_reliable_audio_threads 8 16)" -eq 15 ] \
     || fail 'The reliability floor does not protect smaller SMT systems.'
-for invalid in 0 64 nope; do
+for large_physical_count in 64 96 999999999999999999999999999999999999; do
+    [ "$(ableton_reliable_audio_threads "$large_physical_count" 32)" -eq 31 ] \
+        || fail "The automatic policy rejects positive physical core count $large_physical_count."
+done
+for invalid in 0 00 nope; do
     if ableton_reliable_audio_threads "$invalid" 32 >/dev/null 2>&1; then
         fail "The automatic policy accepts invalid physical core count $invalid."
     fi
 done
-ok 'The automatic formula covers every logical count from 1 to 32, preserves 16/31 and never cuts Live by more than half.'
+ok 'The automatic formula covers every logical count from 1 to 32, accepts larger physical counts, preserves 16/31 and never cuts Live by more than half.'
 
 prefix="$work/new"
 prefs="$(make_prefs "$prefix")"
