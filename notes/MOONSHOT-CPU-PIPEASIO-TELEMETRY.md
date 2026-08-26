@@ -1,50 +1,61 @@
-# PipeASIO callback-phase telemetry
+# PipeASIO callback timing
 
 Date: 26 August 2026
 
-## Decision
+## Use
 
-Ship callback telemetry as an off-by-default diagnostic, not as an optimisation.
-It is the smallest measurement that can distinguish time spent in PipeASIO from
-time spent inside Live and time lost waiting to be scheduled.
+Use the timing report to find where each audio callback spends time. Run normal
+CPU comparisons with the default setting.
 
-Enable it for one controlled run:
+Start one controlled timing run with:
 
 ```sh
 env PIPEASIO_TELEMETRY=on ableton-live
 ```
 
-The driver reports one-second aggregates for three phases: work before Live's
-buffer callback, the Live callback itself, and work after Live returns. Each
-phase includes monotonic wall time and callback-thread CPU time at p50, p95,
-p99 and maximum. A high wall/low CPU value points to scheduling or worker waits;
-a high CPU value identifies execution on the callback thread. The normal audio
-path performs no telemetry clock reads when the variable is off.
+Set `PIPEASIO_TELEMETRY=on` to start telemetry. The default path performs zero
+telemetry clock reads.
 
-## Real-time invariants
+The driver reports results once per second. It measures these 3 parts:
 
-- The callback is the only producer and never allocates, sorts, writes a file,
-  formats text, locks a mutex, or waits for the reporter.
-- A bounded single-producer/single-consumer ring drops samples when full.
-- A lifecycle worker aggregates and sorts copied integer samples off the audio
-  thread once per second.
-- The report descriptor is opened with `O_NONBLOCK|O_APPEND|O_CLOEXEC`; a full
-  pipe or slow filesystem drops a report instead of blocking audio.
-- Shutdown detaches the telemetry state before closing it, so the callback
-  cannot publish into freed storage.
+- work in PipeASIO before Live receives the buffer
+- time inside Live's buffer callback
+- PipeASIO work after Live returns the buffer
 
-## Interpretation limits
+Each part reports elapsed time and callback thread CPU time. The report includes
+`p50`, `p95`, `p99`, and the largest value.
 
-Telemetry adds six clock reads per measured callback. It is therefore unsuitable
-for before/after CPU claims and remains disabled by default. Its purpose is
-attribution: use it alongside the 30-second benchmark report, PipeWire ERR
-deltas and Live's DSP meter. It cannot by itself prove that audio was crackle
-free.
+Long elapsed time with little CPU use often means that the thread waited. High
+CPU time shows work on the callback thread.
 
-## Validation gate
+## Audio safety rules
 
-The two patches apply after the current PipeASIO 0012 hotplug patch. Their unit,
-ABI, no-Qt, ASan/UBSan and TSan tests must pass in the normal runtime build. A
-release decision additionally needs a real PipeWire run at 32, 64, 128 and 256
-frames, comparing telemetry off against on to quantify probe effect and checking
-that report backpressure produces drops rather than deadline misses.
+The callback writes fixed numeric samples into a fixed-size queue. A full queue
+discards samples and counts each discarded sample.
+
+A separate worker copies, sorts, and summarises the samples once per second.
+The audio callback continues during that work.
+
+The output write returns immediately when a pipe reaches capacity. The driver
+discards that report. Slow storage can delay the separate worker while the
+callback continues.
+
+During shutdown, the driver removes the shared timing state before it closes
+or frees that state.
+
+## Measurement limits
+
+Each measured callback reads a clock 6 times. These reads change the measured
+work. Use default mode for before and after CPU results.
+
+Use timing reports with the 30-second benchmark, PipeWire error counts, and
+Live's CPU value. Add a listening result when you assess audible crackle.
+
+## Release checks
+
+The 2 patches apply after PipeASIO patch 0012. Run the unit, ABI, `no-Qt`,
+ASan, UBSan, and TSan tests with the normal runtime build.
+
+Run PipeWire tests at 32, 64, 128, and 256 frames. Compare default and enabled
+timing runs to measure the added work. Use a slow report destination to check
+discarded reports and audio deadlines.
