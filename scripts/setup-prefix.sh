@@ -1160,6 +1160,15 @@ elif [ -L "$pipeasio_cfg" ] && [ ! -e "$pipeasio_cfg" ]; then
 fi
 
 echo "== [5/6] set portal policy and scope the Push USB bridge to its helpers =="
+# Ableton calls SetCursorPos to reposition the cursor during automation editing,
+# clip nudging, and various UI interactions. On most window managers this is fine.
+# On tiling compositors (Hyprland, i3, sway, river, etc.) it forces the cursor
+# to the center of Live's window, which breaks workspace switching and steals
+# focus from where you're working. Disabling the warp is safe because Live does
+# not depend on absolute cursor position for any critical function.
+wine reg add 'HKCU\Software\Wine\X11 Driver' \
+  /v MouseWarpOverride /t REG_SZ /d disable /f
+
 # Default only: a policy the user set with set-file-portal-policy survives re-runs.
 if ! wine reg query 'HKCU\Software\Wine\X11 Driver' /v FileDialogPortal >/dev/null 2>&1; then
   wine reg add 'HKCU\Software\Wine\X11 Driver' \
