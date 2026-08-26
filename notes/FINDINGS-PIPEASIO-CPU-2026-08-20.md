@@ -125,16 +125,17 @@ block sizes produced one Live call per graph period. Lower Live limits reduced
 process CPU and voluntary context switches. This supports a Live worker-count
 policy. It does not identify a costly native PipeASIO loop.
 
-### Repeated output check
+### Repeated output work
 
-On 26 August 2026, the review found one repeated output check after each
-successful audio block. PipeASIO ran the check 750 times each second per output
+On 26 August 2026, the review found one repeated output action after each
+successful audio block. PipeASIO ran the action 750 times each second per output
 channel at 48 kHz and 64 frames.
 
 [PipeASIO patch 0013](../patches/pipeasio/0013-avoid-redundant-output-fallback-publish.patch)
-skips the extra check after Live returns audio. During a driver stop, a
-buffer change or an audio error, PipeASIO sends one silent block at the current
-PipeWire buffer size.
+skips the fallback output publication after Live returns audio. The publication
+includes an atomic output-slot exchange. During a driver stop, a buffer change
+or an audio error, PipeASIO sends one silent block at the current PipeWire
+buffer size.
 
 The tests cover successful audio and one silent block after an audio error.
 Measure a complete Live workload before you estimate the change in CPU use.
