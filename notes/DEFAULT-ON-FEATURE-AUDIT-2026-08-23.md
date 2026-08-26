@@ -102,7 +102,8 @@ records the values and scope.
 Before release, compare the physical-core value, the automatic value and Live's
 own value. Use a computer with 4 to 8 physical cores. Test 32, 64 and 128 frames.
 Use a demanding Set with independent audio chains. Record Live's deadline
-meter, audible dropouts, PipeWire xruns and Linux process CPU.
+meter, audible dropouts and Linux process CPU. Record PipeWire xruns, which
+count missed audio periods.
 
 ## Separate engineering work
 

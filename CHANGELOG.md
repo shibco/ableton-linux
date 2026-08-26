@@ -2,15 +2,16 @@
 
 ## Unreleased
 
-Live keeps more audio workers on smaller processors. The `auto` setting uses the
-physical core count and half of Live's own worker count. It selects the larger
-value, up to Live's own count.
+Live keeps more audio workers on processors with fewer cores. Audio workers
+divide Set processing among CPU cores. The `auto` setting uses the physical core
+count and half of Live's own worker count. It selects the larger value, up to
+Live's own count.
 
 On the measured 16-core, 32-thread computer, `auto` selects 16 of Live's 31
 workers. An existing user or launcher setting takes priority. Select `auto` to
 calculate the value again.
 
-Release review requires busy Live Sets on computers with 4 to 8 physical cores.
+Before release, test busy Live Sets on computers with 4 to 8 physical cores.
 Test each Set at 32, 64 and 128 frames.
 
 ## 2026.08.26.1

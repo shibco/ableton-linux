@@ -149,12 +149,12 @@ uses that setting.
 The launcher accepts `auto`, `off`, or a value from one to 63. The default,
 `auto`, counts the physical cores and logical processors available to the
 launcher. It chooses the greater of the physical core count and half of Live's
-own worker count, up to Live's own count. Before a cold Live 12 start, it applies
-a value below Live's own count. The measured 16-core, 32-thread computer
-therefore uses 16 of Live's 31 workers. The setting keeps at least half of
-Live's workers on smaller processors. `off` removes a value that the launcher
-set and lets Live choose. Existing settings and user edits take priority. A
-number from one to 63 requests that limit.
+own worker count, up to Live's own count. Before Live 12 starts, it applies a
+value below Live's own count. The measured 16-core, 32-thread computer therefore
+uses 16 of Live's 31 workers. The setting keeps at least half of Live's workers
+on processors with fewer cores. `off` removes a value that the launcher set and
+lets Live choose. Existing settings and user edits take priority. A number from
+one to 63 requests that limit.
 
 Existing worker settings, earlier launcher choices, and later file contents
 take priority over implicit `auto`. An explicit `auto` recalculates an untouched
@@ -162,20 +162,20 @@ launcher-managed value. A fresh user profile receives the value before Live
 starts. If Live transfers an older profile after the first launch, the next
 cold launch can apply the policy when the profile has no existing choice.
 
-Live reads the worker setting when it starts. The active PipeWire buffer can
-change later. The launcher therefore bases the worker count on the processor
-layout for the whole session.
+Live reads the worker setting when it starts. PipeWire can change the buffer
+size later. The launcher chooses from the physical core count and Live's own
+count. Live uses that worker count for the whole session.
 
-The calculation provides a cautious starting value. Audio tests provide the
-release evidence. Compare 3 values on computers with 4 to 8 physical cores:
+Start with the automatic value. Use audio tests before release. Compare 3 values
+on computers with 4 to 8 physical cores:
 
 - the physical core count
 - the automatic value
 - Live's own value
 
 Use a busy Set with independent audio chains. Test 32, 64 and 128 frames. Record
-Live's deadline load, audible dropouts, PipeWire xruns, Linux process CPU and
-voluntary context switches.
+Live's deadline load, audible dropouts and Linux process CPU. Record voluntary
+context switches. Record PipeWire xruns, which count missed audio periods.
 
 The selected executable supplies the Live version. A Live 11 executable
 preserves each Live 12 profile. The prefix registry selects the Live edition for
@@ -240,7 +240,8 @@ The retained run directories start from the worktree root:
 Future release decisions require these tests:
 
 - compare the physical-core value, automatic value and Live's own value on a
-  computer with 4 to 8 physical cores and 24 to 32 independent audio chains.
+  computer with 4 to 8 physical cores.
+- use 24 to 32 independent audio chains in each Set.
 - compare standard and real-time scheduling for both Live and PipeASIO.
 - measure the same Set at 32, 64 and 128 frames. Keep 256 frames as the CPU
   reference with higher latency.

@@ -488,10 +488,13 @@ it when you open an issue.
 
 ### Live overloads after an update
 
-Live 12 uses an automatic audio-worker setting by default. It uses the physical
-core count and half of Live's own worker count. It selects the larger value, up
-to Live's own count. On the measured 16-core, 32-thread computer, it selects 16
-of Live's 31 workers. A demanding Set can benefit from Live's own worker count.
+Live 12 uses audio workers to process a Set across CPU cores. The launcher
+chooses the worker count automatically by default. It uses the physical core
+count and half of Live's own worker count. It selects the larger value, up to
+Live's own count.
+
+On the measured 16-core, 32-thread computer, the launcher selects 16 of Live's
+31 workers. A demanding Set can benefit from Live's own worker count.
 
 Start with a 256-frame buffer in PipeASIO Settings. If the Set becomes stable,
 lower the buffer only when you need less monitoring latency.
@@ -515,11 +518,11 @@ If `off` gives the same result, return to a normal launch and work through
 [audio crackling and distortion issues](#audio-crackling-and-distortion-issues).
 Existing worker settings and later edits always take priority over the default.
 
-Live reads the worker setting when it starts. PipeWire can change the active
-buffer size during the session. The launcher therefore bases the worker count
-on the processor layout for the whole session.
+Live reads the worker setting when it starts. PipeWire can change the buffer
+size later. The launcher chooses from the physical core count and Live's own
+count. Live uses that worker count for the whole session.
 
-Release review requires busy Live Sets on computers with 4 to 8 physical cores.
+Before release, test busy Live Sets on computers with 4 to 8 physical cores.
 Compare the automatic setting with Live's own count at 32, 64 and 128 frames.
 
 ### Live uses high CPU while idle
