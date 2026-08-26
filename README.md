@@ -336,9 +336,11 @@ is open.
 
 ### Using Link
 
-1. Enable **Show Link Toggle** under
+1. Set up PipeASIO as in [First launch](#first-launch). Live only offers Link
+   with an ASIO driver.
+2. Enable **Show Link Toggle** under
    **Settings/Preferences > Link, Tempo & MIDI**.
-2. Enable **Link** in Live's control bar.
+3. Enable **Link** in Live's control bar.
 
 Devices on the same local network appear automatically. See
 [Link troubleshooting](TROUBLESHOOTING.md#ableton-link-does-not-find-peers) if

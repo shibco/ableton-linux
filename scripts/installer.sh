@@ -579,6 +579,7 @@ rollback_log="$transaction/rollback.log"
 rollback_sink="$rollback_log"
 committed_cleanup_step=""
 link_transaction=0
+link_setup_failed=0
 live_unpack=""
 config_post_token=""
 
@@ -916,7 +917,19 @@ case "$command_name" in
         if [ "$desired_link" = off ]; then
             "$here/setup-link.sh" disable
         else
-            "$here/setup-link.sh" enable "--mode=$desired_link"
+            # Link setup asks for a sudo password when a firewall is active.
+            # An unanswered prompt, or Ctrl-C at it, fails the step.  Live is
+            # installed by then, so that failure must not undo the install or
+            # the update: report it, name the command that finishes Link on
+            # its own, and go on.  The Link policy stays recorded, so that
+            # command and every later update run the same setup again.
+            trap 'link_setup_failed=1' INT
+            "$here/setup-link.sh" enable "--mode=$desired_link" || link_setup_failed=1
+            trap 'exit 130' INT
+            if [ "$link_setup_failed" -eq 1 ]; then
+                echo "!! Link setup is incomplete; the $command_name continues without it" >&2
+                echo "   To finish it later, run: installer link enable --mode=$desired_link" >&2
+            fi
         fi ;;
 esac
 
@@ -1091,5 +1104,10 @@ echo "OK: $command_name${subcommand:+ $subcommand} completed"
 if [ "$command_name:$subcommand" = runtime:install ]; then
     printf '  runtime: %s\n' "$ABLETON_WINE_ROOT"
 else
-    printf '  runtime: %s\n  prefix: %s\n  Link: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINK_MODE"
+    printf '  runtime: %s\n  prefix: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX"
+    if [ "$link_setup_failed" -eq 1 ]; then
+        printf '  Link: incomplete (run: installer link enable --mode=%s)\n' "$ABLETON_LINK_MODE"
+    else
+        printf '  Link: %s\n' "$ABLETON_LINK_MODE"
+    fi
 fi

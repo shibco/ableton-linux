@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **An install or update now completes when the Link password prompt times
+  out (#258):**
+  - Link setup asks for your password when a firewall is active. If that
+    prompt times out, or you press Ctrl-C at it, the install or update now
+    completes. The installer then names the `link enable` command that
+    finishes Link setup later. Before, the installer removed the Live
+    installation it made in the same run, or restored the previous runtime
+    and dropped the update.
+  - Live only offers Link with an ASIO driver, so the Link button stays hidden
+    while MME/DirectX is the driver type. The README and the troubleshooting
+    guide now say so.
+  - Thanks ΦNYX from Discord for the report.
+
 ## 2026.08.26.1
 
 - **MIDI controllers and audio interfaces find their way back:**
