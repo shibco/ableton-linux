@@ -90,14 +90,14 @@ base="$(new_env config-help)"
 config_help="$(run_isolated "$base" bash "$here/ableton-live" --config)"
 printf '%s\n' "$config_help" | grep -q 'ABLETON_MAX_AUDIO_THREADS=auto|off|<number>' \
     || fail "launcher help omits the automatic audio thread policy"
-printf '%s\n' "$config_help" | grep -q 'physical CPU cores available to the launcher' \
-    || fail "launcher help omits the automatic audio thread basis"
-printf '%s\n' "$config_help" | grep -q 'least half the count Live calculates' \
-    || fail "launcher help omits the automatic audio thread reliability floor"
-printf '%s\n' "$config_help" | grep -q 'remove an untouched launcher-managed choice' \
-    || fail "launcher help omits the marker-aware audio thread opt-out"
-printf '%s\n' "$config_help" | grep -q 'Review the value after the prefix moves to another processor' \
-    || fail "launcher help omits the processor-change warning"
+printf '%s\n' "$config_help" | grep -q 'greater of the physical core count' \
+    || fail "launcher help needs the automatic audio thread basis"
+printf '%s\n' "$config_help" | grep -q "half of Live's own count" \
+    || fail "launcher help needs the automatic audio thread floor"
+printf '%s\n' "$config_help" | grep -q "remove the launcher's saved count" \
+    || fail "launcher help needs the saved audio thread removal"
+printf '%s\n' "$config_help" | grep -q 'Check auto after you move the prefix to another computer' \
+    || fail "launcher help needs the computer-change reminder"
 printf '%s\n' "$config_help" | grep -q 'ABLETON_SHORTCUTS=take|preserve' \
     || fail "launcher help omits the GNOME shortcut policy"
 printf '%s\n' "$config_help" | grep -q 'preserve leaves the desktop shortcuts unchanged' \

@@ -31,20 +31,16 @@ ABLETON-LIVE VARIABLES:
         realtime rights exist
 
     ABLETON_MAX_AUDIO_THREADS=auto|off|<number>
-        Set the audio thread count in Live 12. The default, auto, uses at
-        least the physical CPU cores available to the launcher and at
-        least half the count Live calculates, when that lowers Live's
-        count. This preserves more parallelism on smaller SMT systems.
-        The launcher saves the number before Live starts.
-        Existing Live settings and earlier launcher choices take
-        priority over implicit auto.
-        Set auto explicitly to recalculate an earlier launcher choice.
-        Use off to remove an untouched launcher-managed choice and
-        restore Live's calculated count. Existing and edited settings
-        remain unchanged.
-        Fewer threads reduce worker wake-ups. Demanding Sets can run
-        better with a higher count or off.
-        Review the value after the prefix moves to another processor.
+        Choose how many audio workers Live 12 uses. Audio workers divide
+        Set processing among CPU cores. The default, auto, chooses the
+        greater of the physical core count and half of Live's own count.
+        Live's own count remains the upper limit. The launcher saves the
+        count before Live starts. A user edit takes priority.
+        Set auto explicitly to calculate a launcher count again.
+        Use off to remove the launcher's saved count. Live then chooses.
+        A user edit keeps priority. Fewer workers reduce wake-ups.
+        A demanding Set can work better with a higher count or off.
+        Check auto after you move the prefix to another computer.
 
     ABLETON_POWER=off
         skip the performance power-profile hold for this launch; by

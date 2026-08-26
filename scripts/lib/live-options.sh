@@ -79,9 +79,9 @@ ableton_reliable_audio_threads()
     fi
     live_default="$(ableton_live_calculated_audio_threads "$available")" || return 1
 
-    # Preserve the measured one-worker-per-physical-core result on large hosts,
-    # but never cut Live's calculated pool by more than half. The floor protects
-    # smaller SMT systems where the physical-core-only policy is not yet proven.
+    # Keep at least half of Live's workers on processors with fewer cores.
+    # The measured 16-core computer keeps its 16-of-31 result.
+    # Before release, test busy Sets on computers with 4 to 8 physical cores.
     reliability_floor=$(((live_default + 1) / 2))
     count=$((10#$physical))
     [ "$count" -ge "$reliability_floor" ] || count="$reliability_floor"
