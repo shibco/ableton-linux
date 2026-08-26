@@ -125,6 +125,27 @@ block sizes produced one Live call per graph period. Lower Live limits reduced
 process CPU and voluntary context switches. This supports a Live worker-count
 policy. It does not identify a costly native PipeASIO loop.
 
+### Output-publication follow-up (26 August 2026)
+
+The later hot-path audit found one redundant native operation. A successful
+ASIO callback publishes every PipeWire output and clears its cycle slot with an
+acquire-release exchange. The backend cleanup loop then attempted the same
+exchange again for every output, found an empty slot, and returned. At 48 kHz
+and 64 frames this repeated 750 times per second for each output channel.
+
+[PipeASIO patch 0013](../patches/pipeasio/0013-avoid-redundant-output-fallback-publish.patch)
+skips that cleanup attempt only when the callback returned success. A missing,
+rejected, stopped, or quantum-mismatch callback still takes the unchanged
+backend path and publishes exactly one graph-sized block of silence. The
+successful callback's existing acquire-release exchange remains the ownership
+handoff; the optimisation introduces no weaker atomic order.
+
+The deterministic buffer test covers both ownership cases: a delivered cycle
+queues once, while an undelivered cycle clears and queues the fallback silence.
+This is a bounded per-port saving, not evidence that PipeASIO dominates Live's
+CPU cost. Measure the complete Live workload before assigning a percentage to
+it.
+
 The launcher requests real-time priority 10 when the host grants real-time
 rights. PipeASIO requests standard scheduling for its audio callback by default.
 
