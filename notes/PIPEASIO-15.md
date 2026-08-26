@@ -23,8 +23,10 @@ the sizes differ. It retries after five seconds and limits requests to three
 per minute. When the foreign request ends, it asks Live to return to the saved
 size.
 
-PipeASIO assigns each application's buffer request to that application.
-PipeASIO treats Live or PipeASIO sessions as separate when they share a name.
+After PipeWire binds the current filter, PipeASIO uses that filter's node ID to
+distinguish its own buffer request from requests made by other PipeASIO
+filters. Before the ID is available, a matching node name is provisional; once
+the bound ID is known, same-name filters are treated as separate sessions.
 PipeASIO also reads the buffer size that PipeWire applies to all applications.
 PipeWire controls that shared value.
 
