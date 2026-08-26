@@ -713,6 +713,60 @@ run_payload_install || fail "a quiet payload wait fails the install"
 ! grep -q 'the install is complete\.' "$base/out" || fail "a quiet prefix is reported as busy"
 ok "a quiet prefix after the payload reports nothing"
 
+# Link setup runs after the Live payload. An expired sudo prompt stops the
+# firewall step. The installer must preserve Live. It must show the command that
+# resumes Link setup. Ctrl-C sends SIGINT while the installer waits. The Link
+# process then exits with status 130.
+cat > "$kit/scripts/setup-link.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'link %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+[ "${1:-}" = enable ] || exit 0
+case "${ABLETON_TEST_LINK_ENABLE_EXIT:-0}" in
+    int) kill -INT "$PPID"; exit 130 ;;
+    *) exit "${ABLETON_TEST_LINK_ENABLE_EXIT:-0}" ;;
+esac
+EOF
+run_failed_link_install()
+{
+    : > "$base/calls.log"
+    rm -rf -- "$base/prefix" "$base/config" "$base/state" "$base/data"
+    run_isolated "$base" env ABLETON_TEST_CALL_LOG="$base/calls.log" ABLETON_TEST_LINK_ENABLE_EXIT="$1" \
+        bash "$kit/scripts/installer.sh" install \
+            --live-installer "$base/Ableton Live 12 Suite Installer.exe" \
+            --link=always --runtime-root "$base/runtime" --prefix "$base/prefix" --yes \
+        >"$base/out" 2>"$base/err"
+}
+run_failed_link_install 1 || fail "the install must finish after Link setup failure"
+grep -q 'OK: install completed' "$base/out" || fail "the output must confirm install completion"
+! grep -q 'prefix --rollback' "$base/calls.log" || fail "the installer must preserve the prefix"
+grep -qF 'Run this command to complete Link setup: installer link enable --mode=always' "$base/err" \
+    || fail "the output must include the Link recovery command and mode"
+grep -qF 'Link: setup stopped (run: installer link enable --mode=always)' "$base/out" \
+    || fail "the summary must report the stopped Link setup"
+ok "Link setup failure reports the resume command and preserves the install"
+
+run_failed_link_install int || fail "the install must finish after Ctrl-C stops Link setup"
+grep -q 'OK: install completed' "$base/out" || fail "the output must confirm install completion after Ctrl-C"
+! grep -q 'prefix --rollback' "$base/calls.log" || fail "the installer must preserve the prefix after Ctrl-C"
+grep -qF 'Run this command to complete Link setup: installer link enable --mode=always' "$base/err" \
+    || fail "the output must include the Link recovery command after Ctrl-C"
+ok "Ctrl-C stops Link setup and preserves the install"
+
+# An update preserves the prefix and commits the new runtime after the same
+# Link setup failure.
+: > "$base/calls.log"
+run_isolated "$base" env ABLETON_TEST_CALL_LOG="$base/calls.log" ABLETON_TEST_LINK_ENABLE_EXIT=1 \
+    bash "$kit/scripts/installer.sh" update --yes >"$base/out" 2>"$base/err" \
+    || fail "the update must finish after Link setup failure"
+grep -q 'OK: update completed' "$base/out" || fail "the output must confirm update completion"
+! grep -q -- '--rollback' "$base/calls.log" || fail "the installer must preserve the update"
+grep -q 'Link setup stopped; the update continues' "$base/err" \
+    || fail "the output must report the stopped Link setup"
+grep -qF 'Link: setup stopped (run: installer link enable --mode=always)' "$base/out" \
+    || fail "the update summary must report the stopped Link setup"
+ok "Link setup failure reports the resume action and preserves the update"
+
 base="$(new_env launcher-preflight)"
 mkdir -p "$base/runtime/bin" "$base/prefix"
 cat > "$base/runtime/bin/wine" <<'EOF'
