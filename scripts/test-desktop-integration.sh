@@ -162,15 +162,17 @@ grep -qF "close Live, then run $installed_ntsync_check for the dynamic proof" \
     "$base/audio-report.out" \
     || fail "installed audio report does not name the installed NTSync diagnostic"
 mkdir -p -- "$base/fake-wine/bin"
-printf '#!/bin/sh\nexit 0\n' > "$base/fake-wine/bin/wine"
-chmod +x "$base/fake-wine/bin/wine"
+for runtime_tool in wine wineserver; do
+    printf '#!/bin/sh\nexit 0\n' > "$base/fake-wine/bin/$runtime_tool"
+    chmod +x "$base/fake-wine/bin/$runtime_tool"
+done
 if run_isolated "$base" env ABLETON_WINE_ROOT="$base/fake-wine" \
     bash "$installed_ntsync_check" >"$base/ntsync.out" 2>"$base/ntsync.err"; then
     fail "NTSync diagnostic accepts a runtime without NTSync"
 fi
 ! grep -q 'semantics probe not found' "$base/ntsync.err" \
     || fail "installed NTSync diagnostic cannot find its packaged sibling probe"
-grep -q 'FAIL: ntsync not compiled in' "$base/ntsync.err" \
+grep -q 'FAIL: rebuild Wine with linux/ntsync.h' "$base/ntsync.err" \
     || fail "installed NTSync diagnostic does not reach its runtime check"
 ok "installer uses unique callback handlers and retires only its legacy entry"
 
