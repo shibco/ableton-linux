@@ -297,9 +297,9 @@ index 7f9316e..66b4d6c 100644
 +    --client->n_nodes;
 +}
 +
-+/* After PipeWire assigns the filter ID, classify same-name sessions again.
-+ * The registry thread performs this work during the activation
-+ * wait. */
++/* After PipeWire assigns the filter ID, the activation caller classifies
++ * same-name sessions again after audio_sync(). The reclassification acquires
++ * the PipeWire loop lock while it updates cached nodes. */
 +static void
 +audio_reclassify_nodes(audio_client_t *client)
 +{
