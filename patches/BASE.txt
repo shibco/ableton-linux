@@ -11,17 +11,24 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The Wine series contains 94 patch files and ends at 0106. The absent numbers
+The Wine series contains 95 patch files and ends at 0107. The absent numbers
 are 0027, 0044, 0072, 0074, 0090 through 0095, 0097, and 0098; their reasons
 are declared in `SERIES_GAPS` in `scripts/build-audit.sh`. Patch 0073 keeps
 the wheel coordinate fix separate. Patch 0100 combines 10 pointer patches.
+
+A separate performance series contains one reviewed patch under
+`patches/performance/`. Patch 0001 provides the NTSync alertable wait trial.
+The research note defines tests for 4 deferred performance proposals, numbered
+0002 to 0005. See
+`notes/MOONSHOT-CPU-WINE-BOUNDED-FASTPATHS.md`.
 
 ## Applying the series
 
 Run `./build.sh`. Inside the Podman image, `scripts/container-build.sh`
 unpacks `vendor/wine-base-5c23dd1c.tar.zst`, creates a Git repository, and
 applies `patches/[0-9][0-9][0-9][0-9]-*.patch` in lexical order with
-`git am --3way`.
+`git am --3way`. It then applies `patches/performance/*.patch`. The Nix build
+uses the same file order.
 
 The build script adds a fixed identity and date to early plain-diff patches.
 Use `./build.sh` to reproduce this step.
@@ -421,3 +428,8 @@ Apply them in sequence with the rest of the series.
 - `0106` extends the patch 0032 USB bridge for Push 3. Add synchronous bulk
   transfer, error text, and hotplug registration exports. Accept USB interface
   numbers from 0 to 255. The helper polls after the hotplug registration result.
+- `0107` restores retained X11 offscreen client surfaces after a whole-client
+  expose, so a Direct3D frame copied before the window manager mapped the
+  window comes back without a new present from Live (issue 263). It uses a
+  window-owner-thread callback, revalidates geometry and ignores partial
+  exposes. See `notes/ABLETON-WINE-OFFSCREEN-EXPOSE.md`.

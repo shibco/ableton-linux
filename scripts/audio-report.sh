@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# scripts/audio-report.sh — one-shot snapshot of everything that decides audio
-# behaviour under this stack: PipeWire settings and forced quanta, default
-# devices, realtime threads, ntsync, the PipeASIO configuration, the tail of
-# the launcher live log, and a follower-resync check for two-device setups.
-# Read-only: the script reports and changes nothing. Paste the output into an
-# issue report; home paths are shortened to ~ before printing.
+# Collect one report for an audio issue. The report includes PipeWire, devices,
+# CPU layout, realtime threads, NTSync, PipeASIO and the Live launch log.
+# The script reads system state. Add its output to an issue report. Home paths
+# appear with ~ in the report.
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -16,6 +14,11 @@ done
 declare -F ableton_config_init >/dev/null 2>&1 || {
     echo "!! audio report cannot find its installation configuration" >&2; exit 1; }
 ableton_config_init
+for topology_lib in "$here/lib/live-options.sh" \
+                    "$ABLETON_DATA_HOME/lib/live-options.sh"; do
+    # shellcheck disable=SC1090
+    if [ -r "$topology_lib" ]; then . "$topology_lib"; break; fi
+done
 
 redact() { sed "s|$HOME|~|g"; }
 sec() { printf '\n== %s\n' "$*"; }
@@ -36,12 +39,43 @@ fi
 [ -r "$WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" ] \
     && sed -n 's/^dist-version: /runtime: /p' "$WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 
+sec "CPU layout evidence for Wine"
+if declare -F ableton_cpu_topology_report >/dev/null 2>&1; then
+    ableton_cpu_topology_report
+else
+    echo "CPU layout evidence: install desktop integration again to add it"
+fi
+
 sec "ntsync device availability"
 if ls -l /dev/ntsync 2>/dev/null; then
     echo "device presence does not prove that this Wine runtime uses ntsync"
 else
     echo "no /dev/ntsync"
 fi
+
+matching_server=0
+if have pgrep; then
+    while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        prefix="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+            | sed -n 's/^WINEPREFIX=//p' | head -n 1)"
+        [ "$prefix" = "$ABLETON_WINEPREFIX" ] || continue
+        matching_server=1
+        ntsync_fds=0
+        for fd_path in "/proc/$pid/fd/"*; do
+            [ "$(readlink -- "$fd_path" 2>/dev/null || true)" = /dev/ntsync ] \
+                && ntsync_fds=$((ntsync_fds + 1))
+        done
+        if [ "$ntsync_fds" -gt 0 ]; then
+            echo "NTSync active: wineserver $pid opened $ntsync_fds /dev/ntsync file(s)"
+        else
+            echo "NTSync proof pending: wineserver $pid opened 0 /dev/ntsync files"
+        fi
+    done < <(pgrep -x wineserver 2>/dev/null)
+fi
+[ "$matching_server" -eq 1 ] \
+    || echo "NTSync proof pending: running wineserver processes for the configured Live prefix=0"
+
 ntsync_check="$ABLETON_DATA_HOME/check-ntsync.sh"
 [ -x "$ntsync_check" ] || ntsync_check="$here/check-ntsync.sh"
 if [ -x "$ntsync_check" ]; then
@@ -87,6 +121,31 @@ sec "PipeASIO configuration"
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
 [ -r "$cfg" ] && redact < "$cfg" || echo "no config.ini (driver defaults apply)"
 env | grep -E '^(PIPEASIO|ABLETON)_' | redact
+
+sec "Live audio worker count"
+options_found=0
+if [ -d "$ABLETON_WINEPREFIX/drive_c/users" ]; then
+    while IFS= read -r options_file; do
+        case "$options_file" in
+            */AppData/Roaming/Ableton/Live\ 12*/Preferences/Options.txt) ;;
+            *) continue ;;
+        esac
+        options_found=1
+        printf '%s: ' "$options_file" | redact
+        if ! sed -n '/^-MaxAudioThreads=/{p;q;}' "$options_file"; then
+            echo "(unreadable)"
+        elif ! grep -q '^-MaxAudioThreads=' "$options_file"; then
+            echo "(Live calculates the worker count; explicit -MaxAudioThreads values=0)"
+        fi
+    done < <(
+        if have rg; then
+            rg --files "$ABLETON_WINEPREFIX/drive_c/users" -g Options.txt 2>/dev/null
+        else
+            find "$ABLETON_WINEPREFIX/drive_c/users" -name Options.txt -type f 2>/dev/null
+        fi
+    )
+fi
+[ "$options_found" -eq 1 ] || echo "Live 12 Options.txt files found: 0"
 
 sec "launcher live log tail"
 slog="$ABLETON_STATE_HOME/logs/live.log"

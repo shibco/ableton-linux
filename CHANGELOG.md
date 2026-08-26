@@ -11,6 +11,27 @@ On the measured 16-core, 32-thread computer, `auto` selects 16 of Live's 31
 workers. An existing user or launcher setting takes priority. Select `auto` to
 calculate the value again.
 
+- audio reports now show the CPU layout that Linux gives Live:
+  - the report records the available CPU set, physical layout and Linux
+    processor preferences
+
+- **Live's dialogs keep their content when the desktop shows them (#263):**
+  - Dialogs such as Separate Stems could open black until you clicked a
+    control. Wine now restores retained dialog content after the desktop
+    exposes the whole client area.
+  - The hardened implementation compiles on both sides of the Wine X11
+    boundary; GNOME, KDE Plasma and NVIDIA runtime confirmation is pending.
+  - Thanks @Sandai64 for the report.
+
+- installs and updates now finish after interrupted Link setup (#258):
+  - an active firewall makes Link setup ask for your password. The installer
+    now finishes after the prompt expires or you press Ctrl-C. It reports the
+    stopped Link setup. It gives you the command to resume setup. The previous
+    behaviour removed a new Live installation or restored the previous runtime
+  - Live offers Link when you use an ASIO driver. The README shows how to select
+    PipeASIO. The troubleshooting guide shows how to display the Link button
+  - thanks ΦNYX from Discord for the report
+
 ## 2026.08.26.1
 
 - **MIDI controllers and audio interfaces find their way back:**

@@ -52,6 +52,7 @@ have already fixed your issue.
   - [Push 3 plays notes on its own](#push-3-plays-notes-on-its-own)
   - [Ableton Move support](#ableton-move-support)
 - [Ableton Link](#ableton-link)
+  - [Display the Link button](#display-the-link-button)
   - [Ableton Link does not find peers](#ableton-link-does-not-find-peers)
 - [Report a problem](#report-a-problem)
 
@@ -178,11 +179,15 @@ Close Live and run the installed check:
 A working setup ends with:
 
 ```text
-OK: sync semantics hold, ntsync active (server holds /dev/ntsync)
+OK: NTSync active; sync semantics pass; wineserver opens /dev/ntsync
 ```
 
-Any other final line means that NTSync is inactive. Install your normal system
-and kernel updates, restart the computer and run the check again.
+When `/dev/ntsync` is unavailable, the check exits with status 3 before it runs
+the semantics probe. Install your normal system and kernel updates. Restart the
+computer and run the check again.
+
+Exit status 1 reports a failed NTSync proof. Exit status 2 reports an invalid
+setting.
 
 If the command is missing, or the result still differs, update this project and
 include the complete output in a
@@ -465,6 +470,14 @@ For all other issues with audio, run the audio report and attach it when you
 ```bash
 ~/.local/share/ableton-wine/audio-report.sh
 ```
+
+The CPU section records the processors available to the report. It also records
+the physical layout and Linux processor preferences. `unavailable` means that
+file reads supplied zero usable values for a field. `invalid` marks a value
+outside its field format. A preferred-core rank and an E-core class describe
+separate facts. Use a supplied class field to decide the core class. Linux
+controls CPU placement through the
+[automatic CPU placement test gate](notes/ABLETON-WINE-HYBRID-CPU-TOPOLOGY.md#test-gate-for-automatic-cpu-placement).
 
 ### Audio cuts out for a few seconds, or plays at the wrong speed
 
@@ -978,6 +991,18 @@ Ableton Move support is in development. The current controller support covers
 Push 1, Push 2, and Push 3 in controller mode.
 
 ## Ableton Link
+
+### Display the Link button
+
+Live displays the Link button when it uses an ASIO driver.
+
+1. Open Settings > Audio.
+2. Set Driver Type to ASIO.
+3. Set Audio Device to PipeASIO.
+4. Open Settings > Link, Tempo and MIDI.
+5. Enable Show Link Toggle.
+
+The Link button appears in the control bar.
 
 ### Ableton Link does not find peers
 
