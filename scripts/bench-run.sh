@@ -24,7 +24,7 @@ usage()
     cat <<'EOF'
 usage: scripts/bench-run.sh --output-dir DIR [options]
 
-  --duration SECONDS       measurement time for CPU, Live, and PipeWire (default 30)
+  --duration SECONDS       measurement time for CPU, Live, and PipeWire (default 30; minimum 10)
   --set-name NAME          set name stored in measurement.json
   --mode MODE              playback or idle-no-controller
   --run-id ID              suite run label
@@ -58,8 +58,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$duration" in ''|*[!0-9]*) echo "bench-run: duration must be a whole number of seconds" >&2; exit 2 ;; esac
-[ "$duration" -ge 1 ] && [ "$duration" -le 3600 ] \
-    || { echo "bench-run: duration must be between 1 and 3600 seconds" >&2; exit 2; }
+[ "$duration" -ge 10 ] && [ "$duration" -le 3600 ] \
+    || { echo "bench-run: duration must be between 10 and 3600 seconds" >&2; exit 2; }
 [ -n "$output" ] || { echo "bench-run: --output-dir is required" >&2; exit 2; }
 case "$mode" in playback|idle-no-controller) ;; *) echo "bench-run: invalid mode: $mode" >&2; exit 2 ;; esac
 case "$osc" in on|off) ;; *) echo "bench-run: --osc must be on or off" >&2; exit 2 ;; esac

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import csv
 import json
@@ -262,6 +263,7 @@ class ParserTests(unittest.TestCase):
     def test_osc_average_and_peak_are_distinct(self):
         fixture = """\
 0.1\t1700000000.000 /abl/bench/cpu 10 14
+0.2\t1700000000.250 /abl/bench/playing 0
 0.2\t1700000000.500 /abl/bench/cpu -1 -1
 0.3\t1700000001.000 /abl/bench/cpu 20 31
 """
@@ -269,6 +271,9 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed["sample_count"], 2)
         self.assertEqual(parsed["average_percent"], 15.0)
         self.assertEqual(parsed["peak_percent"], 31.0)
+        self.assertEqual(parsed["addresses"]["/abl/bench/playing"], 1)
+        self.assertEqual(report.playback_state_confounder("playback", parsed)["kind"], "playback-state-changed")
+        self.assertIsNone(report.playback_state_confounder("idle-no-controller", parsed))
 
     def test_metadata_transition_parser(self):
         fixture = """\
@@ -344,6 +349,39 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed["elapsed_lower_bound_seconds"], 30.0)
         self.assertEqual(parsed["elapsed_upper_bound_seconds"], 30.0)
 
+    def test_small_thread_only_churn_is_counted_but_not_confounded(self):
+        def task(pid, start, cpu, threads=()):
+            return {
+                "pid": pid, "starttime_ticks": start, "comm": "AudioCalc",
+                "utime_ticks": cpu, "stime_ticks": 0,
+                "status": {"voluntary_ctxt_switches": cpu, "nonvoluntary_ctxt_switches": 0},
+                "schedstat": {"runtime_ns": cpu, "run_delay_ns": 0, "timeslices": cpu},
+                "threads": list(threads), "cmdline": ["AudioCalc"], "exe": "/runtime/wine64",
+            }
+
+        before_threads = [task(pid, pid, 1) for pid in range(1000, 1180)]
+        after_threads = [task(pid, pid, 2) for pid in range(1000, 1178)]
+        after_threads.extend([task(2000, 2000, 1), task(2001, 2001, 1)])
+        before = {
+            "monotonic_ns": 1_000_000_000, "clock_ticks_per_second": 100, "host_cpu": {},
+            "processes": [task(10, 10, 1, before_threads)],
+        }
+        after = {
+            "monotonic_ns": 31_000_000_000, "clock_ticks_per_second": 100, "host_cpu": {},
+            "processes": [task(10, 10, 2, after_threads)],
+        }
+        accounting = report.snapshots_delta(before, after)["accounting"]
+        self.assertFalse(accounting["confounded_by_task_churn"])
+        self.assertEqual(accounting["confounder"], "task-churn-below-threshold")
+        self.assertEqual(accounting["counts"]["thread_events"], 4)
+        self.assertEqual(accounting["thresholds"]["thread_events"], 9)
+        after["processes"][0]["threads"] = [task(pid, pid, 2) for pid in range(1000, 1170)]
+        after["processes"][0]["threads"].extend(task(pid, pid, 1) for pid in range(2000, 2010))
+        material = report.snapshots_delta(before, after)["accounting"]
+        self.assertTrue(material["confounded_by_task_churn"])
+        self.assertEqual(material["counts"]["thread_events"], 20)
+        self.assertEqual(material["thresholds"]["thread_events"], 9)
+
     def test_timed_command_reports_observed_coverage(self):
         with tempfile.TemporaryDirectory() as temporary:
             command = report.TimedCommand(
@@ -379,6 +417,25 @@ class ParserTests(unittest.TestCase):
         self.assertFalse(report.collector_command_usable(command, 30, "pw-top"))
         self.assertFalse(report.collector_command_usable(command, 30, "osc"))
         self.assertTrue(report.collector_command_usable(command, 30, "pw-metadata"))
+
+    def test_osc_collector_allows_control_device_report_edges(self):
+        command = {
+            "available": True,
+            "timing": {
+                "supervision_interval_seconds": 30.0,
+                "output_line_count": 56,
+                "first_output_offset_seconds": 1.8825,
+                "last_output_offset_seconds": 28.118,
+                "reader_alive_after_join": False,
+            },
+        }
+        self.assertTrue(report.collector_command_usable(command, 30, "osc"))
+        self.assertFalse(report.collector_command_usable(command, 30, "pw-top"))
+
+    def test_duration_floor_keeps_one_second_collectors_instrumented(self):
+        self.assertEqual(report.positive_duration("10"), 10)
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "between 10 and 3600"):
+            report.positive_duration("9")
 
     def test_udp_preflight_reports_socket_creation_failure(self):
         args = type("Args", (), {"port": 19002})()
@@ -690,6 +747,13 @@ ERR:          5
         self.assertEqual(address, "/abc")
         self.assertEqual(arguments, ["test", 7, 1.5])
 
+    def test_probe_nonce_is_always_an_osc_string(self):
+        with mock.patch.object(osc.secrets, "token_hex", return_value="1234567890123456"):
+            nonce = osc.probe_nonce()
+        self.assertEqual(nonce, "n1234567890123456")
+        _, arguments = osc.decode(osc.encode("/abl/bench/ping", [nonce]))
+        self.assertEqual(arguments, [nonce])
+
     def test_live_inventory_reports_options_and_worker_count(self):
         with tempfile.TemporaryDirectory() as temporary:
             prefix = Path(temporary)
@@ -698,8 +762,33 @@ ERR:          5
             (prefs / "Options.txt").write_text("-DisablePythonOptimize\n-MaxAudioThreads=6\n")
             inventory = report.live_inventory(prefix)
             self.assertEqual(inventory["preferences"][0]["version"], "12.4.3")
+            self.assertEqual(inventory["preferences"][0]["user"], "bench")
             self.assertEqual(inventory["preferences"][0]["max_audio_threads"], 6)
             self.assertIn("-DisablePythonOptimize", inventory["preferences"][0]["options"])
+            profile_path = prefix / "profile.json"
+            profile_path.write_text(json.dumps({"live": {"preferences": []}, "keep": "value"}))
+            (prefs / "Options.txt").write_text("-MaxAudioThreads=10\n")
+            args = type("Args", (), {"profile": str(profile_path), "prefix": str(prefix)})()
+            self.assertEqual(report.refresh_live(args), 0)
+            refreshed = json.loads(profile_path.read_text())
+            self.assertEqual(refreshed["live"]["preferences"][0]["max_audio_threads"], 10)
+            self.assertEqual(refreshed["keep"], "value")
+            self.assertIn("first runner-owned Live", refreshed["live_capture_scope"]["phase"])
+
+    def test_optional_missing_identity_values_match_between_runs(self):
+        first = benchmark_profile()
+        first["system"]["gpu_lines"] = []
+        first["system"]["gpu_renderer_lines"] = []
+        first["system"]["power_profile"] = ""
+        first["pipewire"]["active_profile_lines"] = []
+        first["pipewire"]["settings"]["values"].pop("clock.rate")
+        first["pipewire"]["settings"]["values"].pop("clock.quantum")
+        second = json.loads(json.dumps(first))
+        checks = report.profile_identity_checks({"profile": first}, {"profile": second})
+        optional = {"gpu", "gpu_renderer", "audio_profile", "sample_rate", "quantum", "power_profile"}
+        selected = [item for item in checks if item["id"] in optional]
+        self.assertEqual({item["id"] for item in selected}, optional)
+        self.assertTrue(all(item["status"] == "match" and not item["confounder"] for item in selected))
 
     def test_compare_completed_compatible_runs_and_writes_both_formats(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1001,6 +1090,30 @@ ERR:          5
         self.assertEqual((header.count("|"), separator.count("|"), row.count("|")), (18, 18, 18))
         cells = [cell.strip() for cell in row.strip("|").split("|")]
         self.assertEqual(cells[10:12], ["review", "review"])
+
+    def test_markdown_distinguishes_uninstalled_absent_and_duplicate_live_versions(self):
+        profile = benchmark_profile()
+        profile["system"]["power_profile"] = ""
+        profile["commands"] = {"power-profile": {"available": False}}
+        profile["live"]["preferences"] = [
+            {
+                "version": "12.4.3", "user": "lgillingham", "max_audio_threads": 10,
+                "options_hash": {"exists": True, "sha256": "options-user"},
+            },
+            {
+                "version": "12.4.3", "max_audio_threads": None,
+                "directory": "/prefix/drive_c/users/Public/AppData/Roaming/Ableton/Live 12.4.3/Preferences",
+                "options_hash": {"exists": False},
+            },
+        ]
+        rendered = report.markdown_report({
+            "run": {"tag": "fixture", "status": "complete", "duration_seconds_per_set": 30},
+            "profile": profile, "sets": [], "generated_at": "fixture",
+        })
+        self.assertIn("Power profile before Live starts: `not installed`", rendered)
+        self.assertIn("Live 12.4.3 (users/lgillingham): MaxAudioThreads=10", rendered)
+        self.assertIn("Live 12.4.3 (users/Public): MaxAudioThreads=Live default", rendered)
+        self.assertIn("Options.txt SHA-256 `absent`", rendered)
 
 
 if __name__ == "__main__":

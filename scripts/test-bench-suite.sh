@@ -74,10 +74,10 @@ grep -q $'^1\tBenchmark_Zero\tidle-no-controller\t30s$' "$base/default.out" \
     || fail "Benchmark_Zero is not explicitly an idle/no-controller run"
 ok "dry-run is mutation-free and fixes every set to the default 30-second window"
 
-"${fixture_env[@]}" "$here/bench-suite.sh" --dry-run --duration 7 --tag fixture \
+"${fixture_env[@]}" "$here/bench-suite.sh" --dry-run --duration 17 --tag fixture \
     --output "$base/custom-report" > "$base/custom.out" 2> "$base/custom.err" \
     || fail "custom-duration dry-run failed"
-[ "$(awk -F '\t' '$1 ~ /^[1-5]$/ && $4 == "7s" {count++} END {print count+0}' "$base/custom.out")" -eq 5 ] \
+[ "$(awk -F '\t' '$1 ~ /^[1-5]$/ && $4 == "17s" {count++} END {print count+0}' "$base/custom.out")" -eq 5 ] \
     || fail "a custom common duration did not reach all five sets"
 ok "one duration value governs every planned set"
 
@@ -100,10 +100,16 @@ grep -q 'session already exists (pid(s): 4242' "$base/existing.err" \
     || fail "existing-session refusal did not identify the pid"
 ok "preflight refuses an existing Live session before creating output"
 
-if "${fixture_env[@]}" "$here/bench-suite.sh" --dry-run --duration 0 --tag fixture \
-    --output "$base/zero-report" > "$base/zero.out" 2> "$base/zero.err"; then
-    fail "preflight accepted a zero duration"
+if "${fixture_env[@]}" "$here/bench-suite.sh" --dry-run --duration 9 --tag fixture \
+    --output "$base/short-report" > "$base/short.out" 2> "$base/short.err"; then
+    fail "preflight accepted a duration below the instrumentation floor"
 fi
-grep -q 'duration must be between 1 and 3600 seconds' "$base/zero.err" \
+grep -q 'duration must be between 10 and 3600 seconds' "$base/short.err" \
     || fail "invalid-duration refusal was not precise"
-ok "duration validation is bounded and deterministic"
+if "${fixture_env[@]}" "$here/bench-run.sh" --duration 9 --output-dir "$base/short-run" \
+    > "$base/short-run.out" 2> "$base/short-run.err"; then
+    fail "individual measurement accepted a duration below the instrumentation floor"
+fi
+grep -q 'duration must be between 10 and 3600 seconds' "$base/short-run.err" \
+    || fail "individual measurement duration refusal was not precise"
+ok "duration validation preserves the 10-second instrumentation floor"

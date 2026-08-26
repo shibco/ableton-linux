@@ -27,7 +27,7 @@ usage: scripts/bench-suite.sh [options]
 
   --tag LABEL                 report and comparison label (default manual)
   --output DIR                new report directory (default bench/reports/<UTC>-LABEL)
-  --duration SECONDS          measurement time for every set (default 30)
+  --duration SECONDS          measurement time for every set (default 30; minimum 10)
   --launch-timeout SECONDS    maximum wait for Live and the control device (default 180)
   --settle SECONDS            stabilisation time before measurement (default 5)
   --crackle SET=STATE         listener report: heard, not-heard, or unknown
@@ -52,10 +52,10 @@ fail()
 
 whole_seconds()
 {
-    local value="$1" name="$2" maximum="$3"
+    local value="$1" name="$2" maximum="$3" minimum="${4:-1}"
     case "$value" in ''|*[!0-9]*) fail "$name must be a whole number of seconds" ;; esac
-    [ "$value" -ge 1 ] && [ "$value" -le "$maximum" ] \
-        || fail "$name must be between 1 and $maximum seconds"
+    [ "$value" -ge "$minimum" ] && [ "$value" -le "$maximum" ] \
+        || fail "$name must be between $minimum and $maximum seconds"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -93,7 +93,7 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-whole_seconds "$duration" duration 3600
+whole_seconds "$duration" duration 3600 10
 whole_seconds "$launch_timeout" launch-timeout 3600
 whole_seconds "$settle" settle 120
 case "$tag" in ''|*$'\n'*|*$'\r'*) fail "tag must be one non-empty line" ;; esac
@@ -347,6 +347,11 @@ for index in "${!sets[@]}"; do
     launcher_pid=$!
     mapfile -t current_live < <(wait_for_owned_live)
     [ "${#current_live[@]}" -gt 0 ] || fail "no owned Live pid was returned"
+    if [ "$index" -eq 0 ]; then
+        python3 "$here/bench-report.py" refresh-live \
+            --profile "$output/profile/profile.json" \
+            --prefix "$ABLETON_WINEPREFIX"
+    fi
 
     if [ "$osc" = on ]; then
         python3 "$here/bench-osc.py" probe --timeout "$launch_timeout" \

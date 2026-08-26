@@ -92,6 +92,12 @@ def send(address: str, arguments: list[str]) -> int:
     return 0
 
 
+def probe_nonce() -> str:
+    # OSC arguments that look numeric are encoded as numbers. A fixed string
+    # prefix keeps every random probe token typed as an OSC string.
+    return "n" + secrets.token_hex(8)
+
+
 def dump(duration: float | None) -> int:
     deadline = time.monotonic() + duration if duration is not None else None
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener:
@@ -118,7 +124,7 @@ def probe(timeout: float) -> int:
     Send a random value until the matching reply arrives.
     """
     deadline = time.monotonic() + timeout
-    nonce = secrets.token_hex(8)
+    nonce = probe_nonce()
     next_ping = 0.0
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener:
         listener.bind(("127.0.0.1", RECV_PORT))

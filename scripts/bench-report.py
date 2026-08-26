@@ -31,6 +31,8 @@ import uuid
 SCHEMA = "ableton-linux-benchmark/v1"
 CSV_SCHEMA = "ableton-linux-cpu-benchmark-csv/v1"
 RESOURCE_SAMPLE_INTERVAL_SECONDS = 1
+MIN_BENCH_DURATION_SECONDS = 10
+OSC_EDGE_TOLERANCE_SECONDS = 2.0
 MACHINE_ID_FILENAME = "cpu-benchmark-machine-id-v1"
 MACHINE_ID_RE = re.compile(r"[0-9a-f]{32}")
 DEFAULT_NODE_RE = r"Ableton|Live|[Pp]ipe[Aa][Ss][Ii][Oo]"
@@ -734,6 +736,19 @@ def parse_osc(text: str) -> dict[str, Any]:
     }
 
 
+def playback_state_confounder(mode: str, osc: dict[str, Any]) -> dict[str, str] | None:
+    events = osc.get("addresses", {}).get("/abl/bench/playing", 0)
+    if mode != "playback" or not isinstance(events, int) or isinstance(events, bool) or events <= 0:
+        return None
+    return {
+        "kind": "playback-state-changed",
+        "effect": (
+            f"The control device reported {events} playback-state event(s) during the measurement window, "
+            "so the set did not remain in its prepared playback state."
+        ),
+    }
+
+
 def parse_proc_stat(text: str) -> dict[str, Any] | None:
     right = text.rfind(")")
     left = text.find("(")
@@ -1379,7 +1394,14 @@ def snapshots_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
                 threads.append(one_record_delta(thread_first, thread_last, elapsed, ticks))
         result["threads"] = threads
         processes.append(result)
-    churn = bool(born_keys or exited_keys or thread_born_keys or thread_exited_keys)
+    process_event_count = len(born_keys) + len(exited_keys)
+    thread_event_count = len(thread_born_keys) + len(thread_exited_keys)
+    # A few short-lived Live threads are normal at endpoint boundaries. Any
+    # whole-process change remains material; thread-only churn becomes a
+    # confounder when it exceeds both four events and 5% of surviving threads.
+    thread_event_threshold = max(4, (len(thread_survivor_keys) + 19) // 20)
+    churn = process_event_count > 0 or thread_event_count > thread_event_threshold
+    churn_observed = process_event_count > 0 or thread_event_count > 0
     return {
         "elapsed_seconds": round(elapsed, 6),
         "elapsed_lower_bound_seconds": round(max(0, after_begin - before_end) / 1_000_000_000, 6),
@@ -1389,8 +1411,28 @@ def snapshots_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
         "processes": processes,
         "accounting": {
             "mode": "endpoint-survivors-only",
-            "confounder": "task-churn-detected" if churn else "no-endpoint-task-churn-observed",
+            "confounder": (
+                "task-churn-detected" if churn else (
+                    "task-churn-below-threshold" if churn_observed
+                    else "no-endpoint-task-churn-observed"
+                )
+            ),
             "confounded_by_task_churn": churn,
+            "counts": {
+                "processes_survived": len(survivor_keys),
+                "processes_born": len(born_keys),
+                "processes_exited": len(exited_keys),
+                "threads_survived": len(thread_survivor_keys),
+                "threads_born": len(thread_born_keys),
+                "threads_exited": len(thread_exited_keys),
+                "process_events": process_event_count,
+                "thread_events": thread_event_count,
+            },
+            "thresholds": {
+                "process_events": 0,
+                "thread_events": thread_event_threshold,
+                "thread_survivor_fraction": 0.05,
+            },
             "processes": {
                 "survived": [lifecycle_record(final[key]) for key in survivor_keys],
                 "born": [lifecycle_record(final[key]) for key in born_keys],
@@ -1840,6 +1882,9 @@ def capture(args: argparse.Namespace) -> int:
         pw_top["err_delta"], logs["xrun_line_count"], args.manual_crackle,
     )
     confounders = []
+    playback_confounder = playback_state_confounder(args.mode, osc)
+    if playback_confounder:
+        confounders.append(playback_confounder)
     for name in ("pw-top", "pw-metadata", "osc"):
         intentionally_off = name == "osc" and args.osc == "off"
         if not intentionally_off and not collector_command_usable(
@@ -2022,7 +2067,7 @@ def live_inventory(prefix: Path) -> dict[str, Any]:
         preference_dirs = list(base.glob("*/AppData/Roaming/Ableton/Live */Preferences"))
     except OSError:
         preference_dirs = []
-    for directory in sorted(preference_dirs, key=lambda path: path.parent.name):
+    for directory in sorted(preference_dirs, key=lambda path: str(path.relative_to(base))):
         options = directory / "Options.txt"
         option_lines = [line.rstrip("\r") for line in read_text(options).splitlines() if line.strip()]
         workers = None
@@ -2032,6 +2077,7 @@ def live_inventory(prefix: Path) -> dict[str, Any]:
                 workers = int(match.group(1))
         preferences.append({
             "version": directory.parent.name.removeprefix("Live "),
+            "user": directory.relative_to(base).parts[0],
             "directory": str(directory),
             "options": option_lines,
             "options_hash": sha256_file(options),
@@ -2047,6 +2093,23 @@ def live_inventory(prefix: Path) -> dict[str, Any]:
         record["product_version"] = embedded_product_version(path)
         executables.append(record)
     return {"preferences": preferences, "executables": executables}
+
+
+def refresh_live(args: argparse.Namespace) -> int:
+    """Replace only the launch-written Live inventory in a pre-launch profile."""
+    path = Path(args.profile).resolve()
+    try:
+        profile_value = load_json_object(path)
+    except ValueError as error:
+        print(f"Live profile refresh: {error}", file=sys.stderr)
+        return 2
+    profile_value["live"] = live_inventory(Path(args.prefix).resolve())
+    profile_value["live_capture_scope"] = {
+        "phase": "after the first runner-owned Live process appeared",
+        "reason": "the launcher writes Options.txt, including MaxAudioThreads, at launch",
+    }
+    dump_json(path, profile_value)
+    return 0
 
 
 def profile(args: argparse.Namespace) -> int:
@@ -2385,6 +2448,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     cpu = system.get("cpu", {})
     pipewire = profile_value.get("pipewire", {})
     configuration = profile_value.get("configuration", {})
+    commands = profile_value.get("commands", {})
     settings = pipewire.get("settings", {}).get("values", {})
     pipewire_availability = pipewire.get("availability", {})
     pipewire_unavailable = (
@@ -2396,6 +2460,14 @@ def markdown_report(report: dict[str, Any]) -> str:
         if line.startswith("dist-version:"):
             runtime_dist = line.split(":", 1)[1].strip()
             break
+    power_profile = system.get("power_profile")
+    power_command = commands.get("power-profile", {}) if isinstance(commands, dict) else {}
+    if power_profile:
+        power_profile_label = power_profile
+    elif isinstance(power_command, dict) and power_command.get("available") is False:
+        power_profile_label = "not installed"
+    else:
+        power_profile_label = "pending"
     lines.extend([
         "",
         "## Run details",
@@ -2405,7 +2477,7 @@ def markdown_report(report: dict[str, Any]) -> str:
         f"cores per socket `{cpu.get('Core(s) per socket', 'pending')}`, sockets `{cpu.get('Socket(s)', 'pending')}`",
         f"- GPU: `{'; '.join(system.get('gpu_lines', [])) or 'pending'}`",
         f"- ALSA cards: `{' '.join(system.get('audio_devices', {}).get('alsa_cards', '').split()) or 'pending'}`",
-        f"- Power profile before Live starts: `{system.get('power_profile') or 'pending'}`",
+        f"- Power profile before Live starts: `{power_profile_label}`",
         f"- snd_usb_audio parameters: `"
         f"{json.dumps(system.get('audio_kernel', {}).get('parameters', {}), sort_keys=True)}`",
         f"- PipeWire: `{pipewire.get('versions', {}).get('pipewire') or 'pending'}`; "
@@ -2439,10 +2511,22 @@ def markdown_report(report: dict[str, Any]) -> str:
         )
     for preference in preferences:
         workers = preference.get("max_audio_threads")
+        user = preference.get("user")
+        if not user:
+            parts = Path(preference.get("directory", "")).parts
+            user = next((parts[index + 1] for index, part in enumerate(parts[:-1]) if part == "users"), None)
+        location = f" (users/{user})" if user else ""
+        options_hash = preference.get("options_hash", {})
+        if options_hash.get("sha256"):
+            options_hash_label = options_hash["sha256"]
+        elif options_hash.get("exists") is False:
+            options_hash_label = "absent"
+        else:
+            options_hash_label = "pending"
         lines.append(
-            f"- Live {preference.get('version')}: MaxAudioThreads="
+            f"- Live {preference.get('version')}{location}: MaxAudioThreads="
             f"{workers if workers is not None else 'Live default'}; Options.txt SHA-256 "
-            f"`{preference.get('options_hash', {}).get('sha256', 'pending')}`"
+            f"`{options_hash_label}`"
         )
     lines.extend(["", "### VST3 plug-ins", ""])
     for plugin in fixture_plugins:
@@ -2588,24 +2672,24 @@ IDENTITY_SPECS = (
     ("swap_total", "Configured swap", ("system", "memory", "SwapTotal"), True),
     ("system_software", "Kernel", ("system", "uname"), False),
     ("os_release", "Operating system", ("system", "os_release"), False),
-    ("gpu", "GPU devices", ("system", "gpu_lines"), False),
-    ("gpu_renderer", "GPU renderer", ("system", "gpu_renderer_lines"), False),
+    ("gpu", "GPU devices", ("system", "gpu_lines"), True),
+    ("gpu_renderer", "GPU renderer", ("system", "gpu_renderer_lines"), True),
     ("audio_devices", "ALSA and USB audio devices", ("system", "audio_devices"), False),
     ("audio_kernel", "snd_usb_audio parameters", ("system", "audio_kernel"), False),
-    ("audio_profile", "Active audio profiles and routes", ("pipewire", "active_profile_lines"), False),
+    ("audio_profile", "Active audio profiles and routes", ("pipewire", "active_profile_lines"), True),
     ("audio_profile_scope", "Audio profile measurement details", ("pipewire", "capture_scope"), False),
     ("audio_profile_availability", "Audio profile command results", ("pipewire", "availability"), False),
     ("pipewire_versions", "PipeWire and WirePlumber versions", ("pipewire", "versions"), False),
-    ("sample_rate", "PipeWire graph sample rate", ("pipewire", "settings", "values", "clock.rate"), False),
+    ("sample_rate", "PipeWire graph sample rate", ("pipewire", "settings", "values", "clock.rate"), True),
     ("forced_sample_rate", "PipeWire selected sample rate", ("pipewire", "settings", "values", "clock.force-rate"), True),
-    ("quantum", "PipeWire buffer size", ("pipewire", "settings", "values", "clock.quantum"), False),
+    ("quantum", "PipeWire buffer size", ("pipewire", "settings", "values", "clock.quantum"), True),
     ("minimum_quantum", "PipeWire minimum buffer size", ("pipewire", "settings", "values", "clock.min-quantum"), True),
     ("maximum_quantum", "PipeWire maximum buffer size", ("pipewire", "settings", "values", "clock.max-quantum"), True),
     ("forced_quantum", "PipeWire selected buffer size", ("pipewire", "settings", "values", "clock.force-quantum"), True),
     ("configuration", "Launcher and PipeASIO settings hash", ("configuration", "identity_hash"), False),
     ("pipeasio_config", "PipeASIO settings path and hash", ("configuration", "pipeasio_effective_config"), False),
     ("benchmark_gates", "Wine, PipeASIO, and launcher CPU settings", ("configuration", "benchmark_gates"), True),
-    ("power_profile", "Power profile before Live starts", ("system", "power_profile"), False),
+    ("power_profile", "Power profile before Live starts", ("system", "power_profile"), True),
 )
 
 
@@ -2669,6 +2753,10 @@ def collector_command_usable(
         return usable
     first, last = timing.get("first_output_offset_seconds"), timing.get("last_output_offset_seconds")
     edge_tolerance = min(1.0, duration * 0.1)
+    if name == "osc":
+        # The control device reports every 500 ms. Leave room for its report
+        # phase and the Python listener start without rejecting a full sample set.
+        edge_tolerance = min(OSC_EDGE_TOLERANCE_SECONDS, duration * 0.2)
     return (
         isinstance(first, (int, float)) and not isinstance(first, bool) and first <= edge_tolerance
         and isinstance(last, (int, float)) and not isinstance(last, bool) and last >= duration - edge_tolerance
@@ -3312,8 +3400,10 @@ def positive_duration(value: str) -> int:
         result = int(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError("duration must be a whole number of seconds") from error
-    if result < 1 or result > 3600:
-        raise argparse.ArgumentTypeError("duration must be between 1 and 3600 seconds")
+    if result < MIN_BENCH_DURATION_SECONDS or result > 3600:
+        raise argparse.ArgumentTypeError(
+            f"duration must be between {MIN_BENCH_DURATION_SECONDS} and 3600 seconds"
+        )
     return result
 
 
@@ -3345,6 +3435,13 @@ def parser() -> argparse.ArgumentParser:
     profile_parser.add_argument("--config-file", required=True)
     profile_parser.add_argument("--run-file", help="reuse the report source ID from this run record")
     profile_parser.set_defaults(func=profile)
+
+    refresh_live_parser = commands.add_parser(
+        "refresh-live", help="refresh launch-written Live options in an existing profile"
+    )
+    refresh_live_parser.add_argument("--profile", required=True)
+    refresh_live_parser.add_argument("--prefix", required=True)
+    refresh_live_parser.set_defaults(func=refresh_live)
 
     init_parser = commands.add_parser("init-run", help="create the run record")
     init_parser.add_argument("--output", required=True)

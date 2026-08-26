@@ -18,7 +18,8 @@ A standard run measures 5 sets for 30 seconds each. The run order is:
 ## Measurement period
 
 One `--duration` value applies to every set. Its default value is exactly 30
-seconds.
+seconds, and the minimum supported value is 10 seconds. Shorter windows cannot
+cover the one-second `pw-top` reporting interval at both edges.
 
 The suite uses one deadline for CPU figures, OSC messages, `pw-top`, and
 PipeWire settings. Set start-up and stabilisation happen before that period.
@@ -207,9 +208,11 @@ Review the JSON values for each component instead of one total value.
 
 The 2 process samples cover processes and threads present in either sample. A
 short-lived task can start and finish between them. Its CPU use appears in host
-CPU instead of the per-process values. Review task changes, node changes, buffer
-changes, audio errors, settings changes, and OSC coverage before you accept the
-result.
+CPU instead of the per-process values. The report lists process and thread
+change counts. Any process change limits the comparison; thread-only changes do
+so when they exceed four events and 5% of surviving threads. Review task
+changes, node changes, buffer changes, audio errors, settings changes, and OSC
+coverage before you accept the result.
 
 ## Individual measurement tools
 
