@@ -37,7 +37,7 @@ index 471990a..2e6a230 100644
 +++ b/README.md
 @@ -508,10 +508,11 @@ one more buffer period but keeps a device-driven quantum from stalling the graph
  Env: `PIPEASIO_FOLLOW_DEVICE_CLOCK` (`on`/`off`).
- 
+
  ### buffer_size
 -The preferred size returned by `GetBufferSize()`. Must be a power of two within
 -[32, 8192]. Out-of-range values fall back to 1024. The floor is 32 rather than 16
@@ -49,21 +49,21 @@ index 471990a..2e6a230 100644
 +ASIO buffers (Max/MSP crashes on them), and RS_ASIO rounds every request up to a
 +multiple of 32 regardless.
  Env: `PIPEASIO_PREFERRED_BUFFERSIZE`.
- 
+
  A size the hardware does not support makes PipeWire reject the request or insert
 @@ -546,7 +547,11 @@ Useful as a diagnostic for the scheduling-related xruns in
  [#4](https://github.com/M0n7y5/pipeasio/issues/4), not as a fix for them. It
  takes effect the next time the host starts the driver.
- 
+
 -Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
 +Env: `PIPEASIO_REALTIME` (strict boolean) overrides the file for one launch and
 +is authoritative whenever non-empty. An invalid value warns and keeps the file
 +setting rather than falling through to the legacy switch.
 +`PIPEASIO_RT_PRIORITY` (`off`/`on`) remains a compatibility fallback only when
 +`PIPEASIO_REALTIME` is unset.
- 
+
  ### callback telemetry (diagnostic)
- 
+
 @@ -563,9 +568,11 @@ The audio callback does no formatting, logging, allocation, signalling, or
  blocking synchronization. It writes completed samples into a fixed 8192-entry
  lock-free SPSC ring. A full ring drops the new sample instead of waiting. The
@@ -76,7 +76,7 @@ index 471990a..2e6a230 100644
 +delaying Stop/Destroy. The clock reads and fixed sample writes still add
 +measurement overhead, so leave the feature off outside a controlled diagnostic
 +run.
- 
+
  The experimental 32-bit WoW64 path rejects this option: its PipeWire callback
  and PE host callback execute on different threads, making one set of
 diff --git a/include/pipeasio_telemetry.h b/include/pipeasio_telemetry.h
@@ -88,11 +88,11 @@ index 20ce9f1..340b1f6 100644
  #include <stddef.h>
  #include <stdint.h>
 +#include <fcntl.h>
- 
+
  #define PIPEASIO_TELEMETRY_PHASES 3u
  #define PIPEASIO_TELEMETRY_CAPACITY 8192u
 +#define PIPEASIO_TELEMETRY_OUTPUT_FLAGS (O_WRONLY | O_NONBLOCK | O_CLOEXEC | O_APPEND)
- 
+
  enum pipeasio_telemetry_phase
  {
 diff --git a/src/asio.c b/src/asio.c
@@ -105,11 +105,11 @@ index ebc2c79..6d7394b 100644
      pipeasio_telemetry_ring ring;
 +    int                     output_fd;
  } pipeasio_telemetry_state;
- 
+
  typedef struct pipeasio_telemetry_cycle
 @@ -728,6 +729,28 @@ gate_leave_test_barrier(void)
  #endif
- 
+
  #ifndef PIPEASIO_WOW64_PE
 +/* Reports use a separately opened O_NONBLOCK descriptor. An unread stderr
 + * pipe can therefore drop diagnostic output, but it cannot strand the shared
@@ -189,7 +189,7 @@ index ebc2c79..6d7394b 100644
 +    }
  #endif
  }
- 
+
 @@ -3603,12 +3628,18 @@ configure_driver(IPipeASIOImpl *This)
                           "keeping off\n");
                      HeapFree(GetProcessHeap(), 0, state);
@@ -217,20 +217,20 @@ index 0d70ef0..1cfe423 100644
 --- a/tests/unit/test_telemetry.c
 +++ b/tests/unit/test_telemetry.c
 @@ -4,6 +4,10 @@
- 
+
  #include <pthread.h>
  #include <sched.h>
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
 +#include <unistd.h>
- 
+
  #define CONCURRENT_SAMPLES 100000u
- 
+
 @@ -116,5 +120,38 @@ main(void)
          EXPECT_EQ(test.consumed + dropped, CONCURRENT_SAMPLES);
      }
- 
+
 +    TEST_GROUP("nonblocking report descriptor appends regular files")
 +    {
 +        static const char original_text[] = "original-content\n";
@@ -266,5 +266,5 @@ index 0d70ef0..1cfe423 100644
 +
      return test_report();
  }
--- 
+--
 2.55.0

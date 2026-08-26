@@ -39,9 +39,9 @@ index c20c4df..471990a 100644
 --- a/README.md
 +++ b/README.md
 @@ -548,6 +548,30 @@ takes effect the next time the host starts the driver.
- 
+
  Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
- 
+
 +### callback telemetry (diagnostic)
 +
 +`PIPEASIO_TELEMETRY=on` enables callback-phase timing for a 64-bit host. It is
@@ -67,7 +67,7 @@ index c20c4df..471990a 100644
 +change.
 +
  ## Performance
- 
+
  A few knobs affect xrun-free, low-latency operation:
 diff --git a/include/pipeasio_telemetry.h b/include/pipeasio_telemetry.h
 new file mode 100644
@@ -198,7 +198,7 @@ index 7612767..ebc2c79 100644
 @@ -273,6 +276,27 @@ typedef struct IOChannel
      bool            active;
  } IOChannel;
- 
+
 +#ifndef PIPEASIO_WOW64_PE
 +typedef struct pipeasio_telemetry_state
 +{
@@ -239,13 +239,13 @@ index 7612767..ebc2c79 100644
 +    _Atomic uint32_t gate_owner_seq;
 +    _Atomic uint32_t lifecycle_waiters;
 +    _Atomic uint32_t stop_generation;
- 
+
      /* The app's main window handle on windows, 0 on OS/X */
      HWND sys_ref;
 @@ -697,6 +727,143 @@ gate_leave_test_barrier(void)
  }
  #endif
- 
+
 +#ifndef PIPEASIO_WOW64_PE
 +/* CLOCK_MONOTONIC measures deadline time; CLOCK_THREAD_CPUTIME_ID separates
 + * work done by this callback thread from time it spends asleep in Live.  The
@@ -426,10 +426,10 @@ index 7612767..ebc2c79 100644
 +        HeapFree(GetProcessHeap(), 0, telemetry);
 +#endif
  }
- 
+
  static DWORD WINAPI
 @@ -1338,7 +1528,20 @@ lifecycle_worker(void *arg)
- 
+
      for (;;)
      {
 +#ifndef PIPEASIO_WOW64_PE
@@ -478,7 +478,7 @@ index 7612767..ebc2c79 100644
 +        This->telemetry_cycle = NULL;
 +#endif
      }
- 
+
      /* In fail-silent mismatch mode the backend owns the graph buffer and
 @@ -3164,6 +3379,12 @@ process_callback(audio_nframes_t nframes, void *arg)
              audio_port_publish_output(This->output_channel[i].port, source, nframes, admitted,
@@ -496,7 +496,7 @@ index 7612767..ebc2c79 100644
 @@ -3352,6 +3573,54 @@ configure_driver(IPipeASIOImpl *This)
      if (read_environment("PIPEASIO_CLIENT_NAME", name_environment, sizeof(name_environment)))
          lstrcpynA(This->client_name, name_environment, sizeof(This->client_name));
- 
+
 +    if (read_environment("PIPEASIO_TELEMETRY", environment_variable, sizeof(environment_variable)))
 +    {
 +        int enabled = pipeasio_env_bool(environment_variable);
@@ -547,7 +547,7 @@ index 7612767..ebc2c79 100644
 +
      return;
  }
- 
+
 @@ -3390,6 +3659,9 @@ PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
      atomic_init(&pobj->lifecycle_waiters, 0);
      atomic_init(&pobj->stop_generation, 0);
@@ -724,6 +724,6 @@ index 0000000..0d70ef0
 +
 +    return test_report();
 +}
--- 
+--
 2.55.0
 
