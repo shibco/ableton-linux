@@ -31,9 +31,9 @@ index 4e79eb5..8123e30 100644
 +    PIPEASIO_NODE_FOREIGN,
 +} pipeasio_node_classification;
 +
-+/* PipeASIO filters do not advertise media.class.  Require the complete
-+ * property tuple created by audio_activate instead of trusting the private
-+ * marker alone. */
++/* Four audio properties identify a PipeASIO filter before PipeWire assigns
++ * its ID. The complete identity keeps other sessions
++ * separate. */
 +static inline bool
 +pipeasio_node_signature(const char *marker, const char *media_type, const char *media_category,
 +                        const char *media_role)
@@ -43,10 +43,10 @@ index 4e79eb5..8123e30 100644
 +           && !strcmp(media_role, "DSP");
 +}
 +
-+/* Once the filter has a PipeWire id it is the sole ownership authority.
-+ * Before then a matching name is the only way to avoid counting our own
-+ * force-quantum, but only nodes independently admitted as audio are eligible
-+ * for that provisional classification. */
++/* A matching audio name identifies this session until PipeWire assigns
++ * its filter ID. The assigned ID then takes priority.
++ * Same-name Live or PipeASIO sessions remain separate after
++ * assignment. */
 +static inline pipeasio_node_classification
 +pipeasio_classify_node(uint32_t node_id, uint32_t our_node_id, const char *node_name,
 +                       const char *our_node_name, const char *media_class,
@@ -74,9 +74,9 @@ index 4e79eb5..8123e30 100644
      return next ? 1 : -1;
  }
 
-+/* Convert a node's raw force state into aggregate foreign-forcer ownership.
-+ * Re-running this after our filter binds makes same-name provisional entries
-+ * countable without losing their initial quantum property. */
++/* Count a buffer request when it belongs to another session.
++ * Count again after PipeWire identifies our filter. The second count
++ * assigns a same-name peer's saved request to that peer. */
 +static inline int
 +pipeasio_quantum_forcer_count_transition(bool *counted, bool is_ours, bool forced)
 +{
@@ -108,7 +108,7 @@ index 7f9316e..66b4d6c 100644
      char           *media_class;
      pipeasio_route_identity identity;
 +    bool            pipeasio_signature;
-+    bool            force_quantum;  /* raw property state, including provisional own nodes */
++    bool            force_quantum;  /* saved request before PipeWire assigns the filter ID */
      bool            is_ours;
      bool            foreign_forcer; /* counted in foreign_forcers (issue #49) */
      struct pw_node *proxy;           /* bound for dynamic node property updates */
@@ -134,9 +134,9 @@ index 7f9316e..66b4d6c 100644
 
      /* Port globals may arrive after the filter node is bound; adopt them with
 -     * a bounded poll so CreateBuffers can connect to hardware. */
-+     * a bounded poll so CreateBuffers can connect to hardware.  The same sync
-+     * closes the unavoidable pre-bind name-classification window exactly once:
-+     * from then on only our bound id is authoritative. */
++     * a bounded poll so CreateBuffers can connect to hardware. During the same
++     * wait, the assigned filter ID separates buffer requests from same-name
++     * Live or PipeASIO sessions. */
 +    bool nodes_reclassified = false;
      for (int attempt = 0; attempt < 50; attempt++)
      {
@@ -297,9 +297,9 @@ index 7f9316e..66b4d6c 100644
 +    --client->n_nodes;
 +}
 +
-+/* Revisit provisional same-name entries once the filter has a real id.  This
-+ * runs under the registry thread-loop lock during the existing activation
-+ * sync, never from the process callback. */
++/* After PipeWire assigns the filter ID, classify same-name sessions again.
++ * The registry thread performs this work during the activation
++ * wait. */
 +static void
 +audio_reclassify_nodes(audio_client_t *client)
 +{
