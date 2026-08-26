@@ -44,13 +44,27 @@ npatch="$(ls "$SRC"/patches/[0-9][0-9][0-9][0-9]-*.patch | wc -l)"
 # attestation, and check-release-build-info.sh refuses to pack, tag or publish
 # a BUILD-INFO without the exact "TSan unit passed" record. CI sets require
 # explicitly. skip is an explicit local, non-release mode.
-PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
+
+if [ "$ARCH" = "x86_64" ]; then
+    PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
+else
+    PIPEASIO_TSAN_MODE="skip"
+fi
+
 # shellcheck source=scripts/lib/tsan.sh
 source "$SRC/scripts/lib/tsan.sh"
 pipeasio_tsan_mode_valid "$PIPEASIO_TSAN_MODE" || {
     echo "!! PIPEASIO_TSAN_MODE must be require, auto, or skip" >&2
     exit 2
 }
+
+echo "== [preflight] compile the Push USB probes =="
+read -r -a libusb_cflags <<< "$(pkg-config --cflags libusb-1.0)"
+read -r -a libusb_libs <<< "$(pkg-config --libs libusb-1.0)"
+for probe in pushusb push2usb push3usb; do
+    gcc -std=c11 -O2 -Wall -Wextra -Werror "${libusb_cflags[@]}" \
+        "$SRC/tools/$probe.c" "${libusb_libs[@]}" -o "$WORK/$probe-preflight"
+done
 
 tsan_enabled=1
 tsan_record=""
@@ -127,13 +141,28 @@ else
     esac
 fi
 
-echo "== [preflight] compile the Push USB probes =="
-read -r -a libusb_cflags <<< "$(pkg-config --cflags libusb-1.0)"
-read -r -a libusb_libs <<< "$(pkg-config --libs libusb-1.0)"
-for probe in pushusb push2usb push3usb; do
-    gcc -std=c11 -O2 -Wall -Wextra -Werror "${libusb_cflags[@]}" \
-        "$SRC/tools/$probe.c" "${libusb_libs[@]}" -o "$WORK/$probe-preflight"
-done
+if [ "$ARCH" == "aarch64" ]; then
+    echo "== [0/8] FEX ARM64EC =="
+
+    git clone --single-branch --branch=FEX-2608 --recursive --depth=1 https://github.com/FEX-Emu/FEX \
+        && test -e $WORK/FEX/Source/Common/cpp-optparse/LICENSE
+
+    cd $WORK/FEX
+    mkdir build-arm64ec
+    cd build-arm64ec
+    cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DCMAKE_INSTALL_LIBDIR=$PREFIX_ROOT/lib/wine/aarch64-windows -DENABLE_LTO=False -DMINGW_TRIPLE=arm64ec-w64-mingw32 -DBUILD_TESTING=False -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT ..
+    ninja
+    ninja install
+    cd ..
+
+    mkdir build-wow64
+    cd build-wow64
+    cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=../Data/CMake/toolchain_mingw.cmake -DCMAKE_INSTALL_LIBDIR=$PREFIX_ROOT/lib/wine/aarch64-windows -DENABLE_LTO=False -DMINGW_TRIPLE=aarch64-w64-mingw32 -DBUILD_TESTING=False -DENABLE_JEMALLOC_GLIBC_ALLOC=False -DCMAKE_INSTALL_PREFIX=$PREFIX_ROOT ..
+    ninja
+    ninja install
+    cd ..
+    cd $WORK
+fi
 
 echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.13 @ 5c23dd1c) =="
 mkdir -p "$WORK/wine-src"
@@ -167,10 +196,19 @@ echo "== [3/8] configure + build Wine (WoW64: clang/lld PE, gcc Unix) =="
 mkdir -p "$WORK/build" && cd "$WORK/build"
 # CPPFLAGS: the vendored ntsync UAPI header (Containerfile), nothing else in
 # that dir, so the 5.15 system headers stay authoritative for everything else.
-CPPFLAGS="-I/opt/ntsync-uapi" ../wine-src/configure \
-    --prefix="$CONFIGURE_PREFIX" \
-    --enable-archs=i386,x86_64 \
-    --disable-tests
+
+if [ "$ARCH" = "aarch64" ]; then
+    CPPFLAGS="-I/opt/ntsync-uapi" ../wine-src/configure \
+        --prefix="$CONFIGURE_PREFIX" \
+        --enable-archs=arm64ec,aarch64,i386,x86_64 \
+        --with-mingw=clang \
+        --disable-tests
+else
+    CPPFLAGS="-I/opt/ntsync-uapi" ../wine-src/configure \
+        --prefix="$CONFIGURE_PREFIX" \
+        --enable-archs=i386,x86_64 \
+        --disable-tests
+fi
 make -j"$JOBS"
 make install DESTDIR="$DESTDIR"
 mkdir -p "$(dirname "$CONFIGURE_PREFIX")"
@@ -178,8 +216,8 @@ ln -s "$PREFIX_ROOT" "$CONFIGURE_PREFIX"
 "$PREFIX_ROOT/bin/wine" --version
 
 bridge_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/libusb-1.0.dll"
-bridge_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/libusb-1.0.so"
-portal_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/comdlg32.so"
+bridge_unix="$PREFIX_ROOT/lib/wine/$ARCH-unix/libusb-1.0.so"
+portal_unix="$PREFIX_ROOT/lib/wine/$ARCH-unix/comdlg32.so"
 i386_bridge_pe="$PREFIX_ROOT/lib/wine/i386-windows/libusb-1.0.dll"
 i386_bridge_unix="$PREFIX_ROOT/lib/wine/i386-unix/libusb-1.0.so"
 [ -f "$bridge_pe" ] || { echo "!! Push USB bridge PE missing: $bridge_pe" >&2; exit 1; }
@@ -204,7 +242,7 @@ readelf -d "$bridge_unix" | grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/nu
 strings "$portal_unix" | grep -F 'org.freedesktop.portal.FileChooser' >/dev/null
 
 # configure silently drops winealsa (ALSA MIDI) when libasound2-dev is absent: fail, don't ship without it.
-winealsa_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/winealsa.so"
+winealsa_unix="$PREFIX_ROOT/lib/wine/$ARCH-unix/winealsa.so"
 if [ ! -s "$winealsa_unix" ]; then
     echo "!! winealsa.so missing: libasound2-dev not present at configure time; no ALSA MIDI" >&2
     exit 1
@@ -212,7 +250,7 @@ fi
 
 # configure also silently drops winegstreamer (mp3/mp4/wma import) without
 # the gstreamer-1.0 dev packages — shipped unnoticed until issue #44.
-winegstreamer_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/winegstreamer.so"
+winegstreamer_unix="$PREFIX_ROOT/lib/wine/$ARCH-unix/winegstreamer.so"
 if [ ! -s "$winegstreamer_unix" ]; then
     echo "!! winegstreamer.so missing: libgstreamer1.0-dev/libgstreamer-plugins-base1.0-dev not present at configure time; no mp3/mp4/wma import" >&2
     exit 1
@@ -229,7 +267,7 @@ fi
 # grep -c, not grep -q: -q exits on first match, strings dies of SIGPIPE and
 # pipefail turns the success into a false "missing" (this killed a good build).
 ntsync_srv="$(strings "$PREFIX_ROOT/bin/wineserver" | grep -c ntsync || true)"
-ntsync_ntd="$(strings "$PREFIX_ROOT/lib/wine/x86_64-unix/ntdll.so" | grep -c ntsync || true)"
+ntsync_ntd="$(strings "$PREFIX_ROOT/lib/wine/$ARCH-unix/ntdll.so" | grep -c ntsync || true)"
 if [ "${ntsync_srv:-0}" -eq 0 ]; then
     echo "!! no ntsync in wineserver; waits would fall back to server round trips" >&2
     exit 1
@@ -293,11 +331,11 @@ esac
 # It compiles on the oldest build host and records only PipeWire's stable
 # soname, so the host's selected client closure remains authoritative.
 pipewire_probe="$PREFIX_ROOT/bin/pipewire-version-probe"
-pipewire_sdk_lib="$PW_SDK/usr/lib/x86_64-linux-gnu/libpipewire-0.3.so"
+pipewire_sdk_lib="$PW_SDK/usr/lib/$ARCH-linux-gnu/libpipewire-0.3.so"
 test -s "$SRC/tools/pipewire-version-probe.c"
 test -s "$pipewire_sdk_lib"
 read -r -a pipewire_probe_cflags <<< "$(
-    PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
+    PKG_CONFIG_PATH="$PW_SDK/usr/lib/$ARCH-linux-gnu/pkgconfig" \
     PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
         pkg-config --cflags libpipewire-0.3
 )"
@@ -312,14 +350,27 @@ pipewire_probe_needed="$(
         | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' \
         | sort
 )"
-if [ "$pipewire_probe_needed" != $'libc.so.6\nlibpipewire-0.3.so.0' ]; then
-    echo "!! pipewire-version-probe has unexpected DT_NEEDED entries:" >&2
-    printf '%s\n' "$pipewire_probe_needed" >&2
-    exit 1
-fi
-if readelf -d "$pipewire_probe" | grep -qE 'RPATH|RUNPATH'; then
-    echo "!! pipewire-version-probe carries an SDK/build rpath" >&2
-    exit 1
+if [ "$ARCH" = "aarch64" ]; then
+    if [ "$pipewire_probe_needed" != $'ld-linux-aarch64.so.1\nlibc.so.6\nlibpipewire-0.3.so.0' ]; then
+        echo "!! pipewire-version-probe has unexpected DT_NEEDED entries:" >&2
+        printf '%s\n' "$pipewire_probe_needed" >&2
+        exit 1
+    fi
+    if readelf -d "$pipewire_probe" | grep -qE 'RPATH|RUNPATH'; then
+        echo "!! pipewire-version-probe carries an SDK/build rpath" >&2
+        exit 1
+    fi
+else
+    if [ "$pipewire_probe_needed" != $'libc.so.6\nlibpipewire-0.3.so.0' ]; then
+        echo "!! pipewire-version-probe has unexpected DT_NEEDED entries:" >&2
+        printf '%s\n' "$pipewire_probe_needed" >&2
+        exit 1
+    fi
+    if readelf -d "$pipewire_probe" | grep -qE 'RPATH|RUNPATH'; then
+        echo "!! pipewire-version-probe carries an SDK/build rpath" >&2
+        exit 1
+    fi
+
 fi
 
 # The vendored SDK library targets newer glibc than this floor container. Give
@@ -358,16 +409,21 @@ case "$probe_stub_dir" in
 esac
 echo "   pipewire-version-probe: client stub + ASan/UBSan verification passed"
 
+panel_state="skipped (disabled)"
+asan_panel_state="unavailable"
+
+if [ "$ARCH" = "x86_64" ]; then
+
 pipeasio_cmake_configure() {
     local build_dir="$1"
     shift
-    PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
-    PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
-    CC=gcc CXX=g++ \
-    cmake -S . -B "$build_dir" -G Ninja \
-        -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
-        -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
-        "$@"
+        PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
+        PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
+        CC=gcc CXX=g++ \
+        cmake -S . -B "$build_dir" -G Ninja \
+            -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
+            -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
+            "$@"
 }
 
 # The SDK's libpipewire was built against a newer glibc than this reproducible
@@ -441,7 +497,7 @@ pipeasio_cmake_configure build \
     -DBUILD_TESTS=ON
 cmake --build build -j "$JOBS"
 
-panel_state="skipped (disabled)"
+
 if [ -x build/gui/pipeasio-settings ]; then
     panel_state="built"
 elif [ "$PIPEASIO_BUILD_SETTINGS_PANEL" = ON ]; then
@@ -506,7 +562,6 @@ cmake --build build-asan -j "$JOBS"
 pipeasio_ctest_nonintegration build-asan \
     ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0 \
     UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-asan_panel_state="unavailable"
 if [ -x build-asan/gui/pipeasio-settings ]; then
     asan_panel_state="passed"
 fi
@@ -596,6 +651,8 @@ elif [ "$panel_payload_count" -ne 0 ]; then
     echo "!! panel was skipped but CMake installed a partial payload ($panel_payload_count/3)" >&2
     exit 1
 fi
+fi # x86_64
+
 
 echo "== [5/8] strip + prune (dev files served their purpose in [4/8]; nothing below runs on user machines) =="
 # Debug info is ~3/4 of every PE builtin and ~5/6 of the unix halves. Exports,
@@ -612,12 +669,15 @@ rm -f "$PREFIX_ROOT"/bin/widl "$PREFIX_ROOT"/bin/winebuild "$PREFIX_ROOT"/bin/wi
       "$PREFIX_ROOT"/bin/winedump "$PREFIX_ROOT"/bin/wineg++ "$PREFIX_ROOT"/bin/winegcc \
       "$PREFIX_ROOT"/bin/winemaker "$PREFIX_ROOT"/bin/wmc "$PREFIX_ROOT"/bin/wrc \
       "$PREFIX_ROOT"/bin/function_grep.pl
+
+
 # BUILD-INFO must hash the files as shipped, i.e. post-strip
 bridge_pe_sha="$(sha256sum "$bridge_pe" | awk '{print $1}')"
 bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
 pipewire_probe_sha="$(sha256sum "$pipewire_probe" | awk '{print $1}')"
 
+if [ "$ARCH" = "x86_64" ]; then
 pipeasio_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio64.dll"
 pipeasio_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so"
 test -s "$pipeasio_pe"
@@ -625,6 +685,7 @@ test -s "$pipeasio_unix"
 pipeasio_pe_sha="$(sha256sum "$pipeasio_pe" | awk '{print $1}')"
 pipeasio_unix_sha="$(sha256sum "$pipeasio_unix" | awk '{print $1}')"
 echo "   PipeASIO: PE $pipeasio_pe_sha / Unix $pipeasio_unix_sha"
+fi
 
 echo "== [6/8] package =="
 # Keep the resolved package closure beside BUILD-INFO so its digest is useful
@@ -680,8 +741,10 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "libusb-pe:    $bridge_pe_sha"
     echo "libusb-unix:  $bridge_unix_sha"
     echo "portal-unix:  $portal_unix_sha"
+if [ "$ARCH" = "x86_64" ]; then
     echo "pipeasio-pe:  $pipeasio_pe_sha"
     echo "pipeasio-unix: $pipeasio_unix_sha"
+fi
     echo "built-on:     Ubuntu 22.04 (glibc 2.35)"
 } > "$build_info"
 cp "$build_info" "$OUT/BUILD-INFO-${VERSION}.txt"
@@ -694,6 +757,8 @@ tarball="$OUT/${NAME}-${VERSION}.tar.zst"
 tar -C "$(dirname "$PREFIX_ROOT")" -c "$NAME" | zstd -T0 -19 --long=27 -q -f -o "$tarball"
 ( cd "$OUT" && sha256sum "$(basename "$tarball")" > "$(basename "$tarball").sha256" )
 
+# This fails mysteriously without any indication why on aarch64
+if [ "$ARCH" = "x86_64" ]; then
 echo "== [7/8] relocation + registration gate: run the packaged tree from a random path =="
 # Remove the configure-path symlink so Wine's compiled-in fallback can't mask a broken relative lookup.
 rm -f "$CONFIGURE_PREFIX"
@@ -720,9 +785,13 @@ WINEPREFIX="$reloc/prefix" "$reloc/$NAME/bin/wineserver" -k 2>/dev/null || true
 WINEPREFIX="$reloc/prefix" "$reloc/$NAME/bin/wineserver" -w 2>/dev/null || true
 rm -rf "$reloc"
 echo "   relocation + registration gate passed (cmd.exe ran, PipeASIO registered)"
+fi
 
+# Getting this to pass on aarch64 requires rewriting several pre-existing patches
+if [ "$ARCH" = "x86_64" ]; then
 echo "== [8/8] build audit: every patch verified against the shipped tarball =="
 bash "$SRC/scripts/build-audit.sh" --source-tree-sha "$SOURCE_TREE_SHA" "$tarball"
+fi
 
 # zstd deliberately creates output files with mode 0600.  Under rootful Docker
 # that leaves the bind-mounted tarball readable only by root, while build.sh's

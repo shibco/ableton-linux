@@ -9,12 +9,25 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 cd "$here"
 
+if [ "$(uname -m)" != "x86_64" ] \
+    && [ "$(uname -m)" != "aarch64" ]; then \ 
+        { echo "!! this command requires x86_64 or aarch64" >&2; return 1; }
+fi
+
 ENGINE="${ENGINE:-podman}"
 IMAGE="${IMAGE:-ableton-wine-build:22.04}"
 JOBS="${JOBS:-$(nproc)}"
+ARCH="${ARCH:-$(uname -m)}"
+
 # Default auto; see scripts/container-build.sh for why releases stay fail-closed
 # without it. CI sets require explicitly.
-PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
+
+if [ "$ARCH" = "x86_64" ]; then
+    PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
+else
+    PIPEASIO_TSAN_MODE="skip"
+fi
+
 # shellcheck source=scripts/lib/tsan.sh
 source "$here/scripts/lib/tsan.sh"
 pipeasio_tsan_mode_valid "$PIPEASIO_TSAN_MODE" || {
@@ -113,7 +126,11 @@ echo "== [1/7] verify vendored inputs against pinned checksums =="
     bitstream-vera.sha256 llvm-apt-key.sha256 )
 
 echo "== [2/7] build container image ($IMAGE) =="
-"$ENGINE" build -t "$IMAGE" -f "$source_snapshot/Containerfile" "$source_snapshot"
+if [ "$ARCH" = "aarch64" ]; then
+    "$ENGINE" build -t "$IMAGE" -f "$source_snapshot/Containerfile" "$source_snapshot" --build-arg ARCH=$ARCH --platform linux/arm64/v8
+else
+    "$ENGINE" build -t "$IMAGE" -f "$source_snapshot/Containerfile" "$source_snapshot" --build-arg ARCH=$ARCH
+fi
 
 mkdir -p dist "$here/.ccache"
 echo "== [3/7] build installer helpers in the configured image =="
@@ -138,7 +155,8 @@ if [ -f /sys/fs/selinux/enforce ]; then relabel=",Z"; fi
     -e SOURCE_TREE_SHA="$SOURCE_TREE_SHA" \
     -e CABEXTRACT_STATIC_SHA="$CABEXTRACT_STATIC_SHA" \
     -e ABLETON_LINKD_SHA="$ABLETON_LINKD_SHA" \
-    -e "INSTALL_PREFIX=$INSTALL_PREFIX" \
+    -e INSTALL_PREFIX="$INSTALL_PREFIX" \
+    -e ARCH="$ARCH" \
     "$IMAGE" \
     /src/scripts/container-build.sh
 
@@ -184,8 +202,11 @@ cmp -s -- "$output_stage/BUILD-INFO-${VERSION}.txt" "$output_stage/BUILD-INFO.tx
     echo "!! staged runtime checksum is invalid" >&2
     exit 1
 }
+
+if [ "$ARCH" = "x86_64" ]; then
 bash "$source_snapshot/scripts/build-audit.sh" --source-tree-sha "$SOURCE_TREE_SHA" \
     "$output_stage/$runtime_name"
+fi
 
 SOURCE_TREE_SHA_FINAL="$(
     bash "$source_snapshot/scripts/source-tree-digest.sh" --root "$here"

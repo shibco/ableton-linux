@@ -6,13 +6,17 @@ set -euo pipefail
 export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+ARCH="${ARCH:-$(uname -m)}"
+
 if [ -d "$here/../bin" ]; then
     kit_bin="$(cd "$here/../bin" && pwd)"
     export PATH="$kit_bin:$PATH"
 fi
 . "$here/lib/config.sh"
 . "$here/lib/lifecycle.sh"
+if [ $ARCH = "x86_64" ]; then
 . "$here/lib/pipeasio.sh"
+fi
 . "$here/lib/manifest.sh"
 
 usage()
@@ -377,8 +381,10 @@ host_preflight()
 {
     case "$command_name:$subcommand" in
         install:|update:|runtime:install|prefix:create|prefix:update|link:enable)
-            [ "$(uname -m)" = x86_64 ] \
-                || { echo "!! this command requires x86_64" >&2; return 1; } ;;
+            if [ "$(uname -m)" != "x86_64" ] \
+                && [ "$(uname -m)" != "aarch64" ]; then \ 
+                    { echo "!! this command requires x86_64 or aarch64" >&2; return 1; }
+            fi
     esac
     # repair-live11 runs no bounded external command, so it does not need GNU
     # timeout.  This only helps an extracted kit: the .run header needs timeout
@@ -438,7 +444,9 @@ if [ "$dry_run" -eq 0 ]; then
             pipewire_probe="$ABLETON_WINE_ROOT/bin/pipewire-version-probe" ;;
     esac
     if [ -n "$pipewire_probe" ]; then
-        ableton_pipewire_preflight "$pipewire_probe" "changing PipeASIO"
+        if [ "$ARCH" = "x86_64" ]; then
+            ableton_pipewire_preflight "$pipewire_probe" "changing PipeASIO"
+        fi
     fi
 fi
 

@@ -3,6 +3,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-installer-test.XXXXXX")"
+ARCH="${ARCH:-$(uname -m)}"
 # Checks that expect an installer run to succeed redirect its diagnostics into
 # the per-case log, so set -e ends the suite on an unexpected non-zero exit
 # with no failure line, leaving make's exit code as the only evidence.  Report
@@ -304,9 +305,9 @@ if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
     >"$base/enable.out" 2>"$base/enable.err"; then
     fail "Link installation accepts an incompatible architecture"
 fi
-grep -qF 'this command requires x86_64' "$base/enable.err" \
+grep -qF 'this command requires x86_64 or aarch64' "$base/enable.err" \
     || fail "architecture refusal does not identify the failing requirement"
-ok "maintenance commands remain available off x86_64 while install commands refuse"
+ok "maintenance commands remain available off x86_64 or aarch64 while install commands refuse"
 
 base="$(new_env link-status-read-only)"
 mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine"

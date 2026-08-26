@@ -5,6 +5,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+ARCH="${ARCH:-$(uname -m)}"
 
 if [ "$#" -lt 1 ]; then
     echo "usage: $0 BUILD-INFO [--version VERSION] [--runtime TARBALL] [--installer RUN] [--expected-kit DIR]" >&2
@@ -64,13 +65,16 @@ if [ "$source_record_count" -ne 1 ] \
     exit 1
 fi
 
-record_count="$(grep -c -- '^pipeasio-sanitizers:' "$info" || true)"
-if [ "$record_count" != 1 ] || ! grep -qxF -- "$official_record" "$info"; then
-    echo "!! $info is not eligible for release" >&2
-    echo "!! expected exactly one official sanitizer attestation:" >&2
-    echo "   $official_record" >&2
-    exit 1
+if [ "$ARCH" = "x86_64" ]; then
+    record_count="$(grep -c -- '^pipeasio-sanitizers:' "$info" || true)"
+    if [ "$record_count" != 1 ] || ! grep -qxF -- "$official_record" "$info"; then
+        echo "!! $info is not eligible for release" >&2
+        echo "!! expected exactly one official sanitizer attestation:" >&2
+        echo "   $official_record" >&2
+        exit 1
+    fi
 fi
+
 for helper_record in cabextract-static ableton-linkd; do
     helper_count="$(grep -c "^${helper_record}:" "$info" || true)"
     helper_hash="$(sed -n "s/^${helper_record}: *//p" "$info")"

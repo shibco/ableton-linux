@@ -12,6 +12,8 @@
 # ABLETON_LIVE_VERSION=11|12 pins the winetricks recipe; unpinned, an opted-in
 # auto-install derives it from the chosen zip's filename (default 12).
 set -euo pipefail
+
+ARCH="${ARCH:-$(uname -m)}"
 here="$(cd "$(dirname "$0")" && pwd)"
 for config_lib in "$here/lib/config.sh" "$here/config.sh" \
                   "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
@@ -20,7 +22,9 @@ done
 declare -F ableton_config_init >/dev/null 2>&1 || { echo "!! setup-prefix: config helper is missing" >&2; exit 1; }
 ableton_config_init
 . "$here/lib/manifest.sh"
+if [ "$ARCH" = "x86_64" ]; then
 . "$here/lib/pipeasio.sh"
+fi
 
 # The kit root holds vendor/. Layouts that must work:
 #   <kit>/scripts/setup-prefix.sh        -> vendor at $here/../vendor (repo, extracted .run kit)
@@ -319,12 +323,13 @@ fi
     exit 1
 }
 command -v cabextract >/dev/null || { echo "!! cabextract is required for prefix setup" >&2; exit 1; }
+if [ "$ARCH" = "x86_64" ]; then
 for required in \
     bin/pipewire-version-probe \
     ABLETON-WINE-BUILD-INFO.txt \
-    lib/wine/x86_64-unix/comdlg32.so \
+    lib/wine/$ARCH-unix/comdlg32.so \
     lib/wine/x86_64-windows/libusb-1.0.dll \
-    lib/wine/x86_64-unix/libusb-1.0.so \
+    lib/wine/$ARCH-unix/libusb-1.0.so \
     lib/wine/x86_64-windows/pipeasio64.dll \
     lib/wine/x86_64-windows/pipeasio.dll \
     lib/wine/x86_64-unix/pipeasio64.dll.so \
@@ -333,6 +338,7 @@ for required in \
 done
 ableton_pipeasio_validate_runtime "$WINE_ROOT"
 ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "configuring PipeASIO"
+fi
 
 # Prefix changes are made against a sibling staging copy, then promoted in one
 # rename.  Existing prefixes use reflink cloning where the filesystem supports
@@ -1122,6 +1128,7 @@ wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d 2
 wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$smoothing_order" /f
 ableton_wineserver_wait
 
+if [ "$ARCH" = "x86_64"]; then
 echo "== [4/6] register packaged PipeASIO =="
 # Recheck at the last safe point.  The prefix is still the sibling staging
 # copy, so a service/client change cannot leave the retained prefix half
@@ -1157,6 +1164,7 @@ EOF
     echo "   seeded $pipeasio_cfg (2 in / 2 out, fixed 256-frame buffer)"
 elif [ -L "$pipeasio_cfg" ] && [ ! -e "$pipeasio_cfg" ]; then
     echo "   kept your dangling PipeASIO configuration link: $pipeasio_cfg"
+fi
 fi
 
 echo "== [5/6] set portal policy and scope the Push USB bridge to its helpers =="

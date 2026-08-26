@@ -1,3 +1,6 @@
 dd242fed45d140f6b619b3b4a3b9938db7fda94acbe54e4bd93294832c2b10a6  pipewire-sdk/libpipewire-0.3-0t64_1.6.2-1ubuntu1.1_amd64.deb
 b25f677a59198b9ff67e7085acf342366d8d2ca0024fd4dd4ace1a16d003b509  pipewire-sdk/libpipewire-0.3-dev_1.6.2-1ubuntu1.1_amd64.deb
 7278d5b8a7c812809a40d0f1878f39733c7faead5f12007c2de0a6e2108a89a9  pipewire-sdk/libspa-0.2-dev_1.6.2-1ubuntu1.1_amd64.deb
+a1c06b8376fb05ec4c5168e2db973e71e2d843fecbe9fd6ae6165e6310565127  pipewire-sdk/libpipewire-0.3-0t64_1.6.2-1ubuntu1.1_arm64.deb
+2cfef214d403b5214492afc9c9fb38bef784943ba59c01be595d2ab4c89e7e26  pipewire-sdk/libpipewire-0.3-dev_1.6.2-1ubuntu1.1_arm64.deb
+42e247721ba7cdc72f9695f4915ecc45e3f87c4a33e19cd95fba6a9910e6052a  pipewire-sdk/libspa-0.2-dev_1.6.2-1ubuntu1.1_arm64.deb

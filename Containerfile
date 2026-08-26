@@ -18,6 +18,7 @@ ARG LLVM_PKG_VERSION=1:21.1.8~++20251221032842+2078da43e25a-1~exp1~2025122115300
 # Ubuntu archive state used for every jammy package below (snapshot.ubuntu.com).
 ARG UBUNTU_SNAPSHOT=20260718T000000Z
 ARG CA_CERTIFICATES_VERSION=20260601~22.04.1
+ARG ARCH
 
 # 1. Establish every package source before the first apt operation. The pinned
 # base image carries Ubuntu's archive key but not a CA bundle. The one bootstrap
@@ -88,6 +89,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
       # TLS (Live online auth / pack downloads), USB display bridge, XDG portal
       libgnutls28-dev libusb-1.0-0-dev libudev-dev libdbus-1-dev \
+      # python3 packaging module for FEX
+      python3-packaging \
  && rm -rf /var/lib/apt/lists/* \
  # Wine's configure looks for unversioned clang/lld; make ours the default.
  && for t in clang clang++ lld ld.lld llvm-dlltool llvm-ar llvm-strip llvm-ranlib llvm-readobj; do \
@@ -113,7 +116,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # CCACHE_DIR is a fixed mountpoint build.sh binds a persistent host directory
 # onto — /ccache with nothing mounted (a plain local `podman build`, not CI)
 # just means an empty, container-local cache each run.
-ENV PATH="/usr/lib/ccache-shims:${PATH}"
+ENV PATH="/usr/lib/ccache-shims:${PATH}:/opt/llvm-mingw-ucrt-aarch64/bin"
 ENV CCACHE_DIR=/ccache
 ENV CCACHE_MAXSIZE=5G
 
@@ -131,8 +134,21 @@ COPY vendor/ntsync-uapi/linux/ntsync.h /opt/ntsync-uapi/linux/ntsync.h
 # own 0.3.48 is too old to compile it.
 COPY vendor/pipewire-sdk/*.deb /tmp/pipewire-sdk/
 RUN for d in /tmp/pipewire-sdk/*.deb; do dpkg-deb -x "$d" /opt/pipewire-sdk; done \
- && ln -sf libpipewire-0.3.so.0 /opt/pipewire-sdk/usr/lib/x86_64-linux-gnu/libpipewire-0.3.so \
+ && ln -sf libpipewire-0.3.so.0 /opt/pipewire-sdk/usr/lib/$ARCH-linux-gnu/libpipewire-0.3.so \
  && rm -rf /tmp/pipewire-sdk \
  && test -e /opt/pipewire-sdk/usr/include/pipewire-0.3/pipewire/pipewire.h
 
+# 5 FEX ARM64EC Stuff
+COPY vendor/llvm-mingw-arm64ec-aarch64.tar.xz /tmp/llvm-mingw-ucrt-aarch64.tar.xz
+RUN if [ "$ARCH" = "aarch64" ]; then \
+    mkdir -p /opt/llvm-mingw-ucrt-aarch64 \
+    && tar -xf /tmp/llvm-mingw-ucrt-aarch64.tar.xz --directory /opt/llvm-mingw-ucrt-aarch64 \
+    && mv /opt/llvm-mingw-ucrt-aarch64/llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64/* /opt/llvm-mingw-ucrt-aarch64 \
+    && rm -rf /opt/llvm-mingw-ucrt-aarch64/llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64 \
+    && rm -rf /tmp/llvm-mingw-ucrt-aarch64.tar.xz \
+    && test -e /opt/llvm-mingw-ucrt-aarch64/bin/arm64ec-w64-mingw32-clang \
+;fi
+
 WORKDIR /work
+
+

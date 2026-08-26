@@ -3,6 +3,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-pipeasio-installer-test.XXXXXX")"
+ARCH="${ARCH:-$(uname -m)}"
 cleanup()
 {
     [ "${ABLETON_KEEP_TEST_WORK:-0}" -eq 0 ] || { printf 'kept test work: %s\n' "$work" >&2; return; }
@@ -394,10 +395,10 @@ EOF
     chmod 755 "$payload/$runtime_name/bin/wine" "$payload/$runtime_name/bin/wineserver"
     for required in \
         lib/wine/x86_64-windows/libusb-1.0.dll \
-        lib/wine/x86_64-unix/libusb-1.0.so \
-        lib/wine/x86_64-unix/comdlg32.so \
-        lib/wine/x86_64-unix/winealsa.so \
-        lib/wine/x86_64-unix/winegstreamer.so; do
+        lib/wine/$ARCH-unix/libusb-1.0.so \
+        lib/wine/$ARCH-unix/comdlg32.so \
+        lib/wine/$ARCH-unix/winealsa.so \
+        lib/wine/$ARCH-unix/winegstreamer.so; do
         printf 'runtime fixture: %s\n' "$required" > "$payload/$runtime_name/$required"
     done
     cp -- "$base/BUILD-INFO.txt" "$kit/dist/BUILD-INFO-$version.txt"
