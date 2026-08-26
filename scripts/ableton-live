@@ -308,7 +308,9 @@ case "$max_audio_threads_request" in
            && max_audio_threads="$(ableton_reliable_audio_threads "$physical_audio_cores")"; then
             :
         else
-            echo "ableton-live: Live will select its audio thread count. Run audio-report.sh to review the CPU details." >&2
+            audio_report="$launcher_here/audio-report.sh"
+            [ -x "$audio_report" ] || audio_report="$ABLETON_DATA_HOME/audio-report.sh"
+            printf 'ableton-live: Live will select its audio thread count. Run %q to review the CPU details.\n' "$audio_report" >&2
             max_audio_threads=off
             max_audio_threads_action=0
         fi ;;
