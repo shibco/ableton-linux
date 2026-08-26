@@ -3,10 +3,17 @@ set -euo pipefail
 
 fake_dispatch()
 {
-    local command="${0##*/}" current_index current_name profiles index new_name leg
+    local command="${0##*/}" current_index current_name profiles index new_name leg device_name
+    local node_state="suspended" link_state="paused"
     IFS=' ' read -r current_index current_name < "$FAKE_PW_DIR/current-profile"
     case "$command" in
         pw-dump)
+            device_name="alsa_card.test_interface"
+            if [ -e "$FAKE_PW_DIR/device-name-with-newline" ]; then
+                device_name=$'alsa_card.test_interface\nprintf "injected"'
+            fi
+            if [ -e "$FAKE_PW_DIR/target-node-running" ]; then node_state="running"; fi
+            if [ -e "$FAKE_PW_DIR/target-link-active" ]; then link_state="active"; fi
             profiles='[
               {"index":0,"name":"off","description":"Off","available":"yes"},
               {"index":1,"name":"analog-stereo-duplex","description":"Analog Stereo Duplex","available":"yes"},
@@ -32,14 +39,16 @@ fake_dispatch()
                 ]'
             fi
             jq -n --argjson id "$FAKE_DEVICE_ID" --argjson index "$current_index" \
-                --arg name "$current_name" --argjson profiles "$profiles" '[
+                --arg name "$current_name" --arg device_name "$device_name" \
+                --arg node_state "$node_state" --arg link_state "$link_state" \
+                --argjson profiles "$profiles" '[
               {
                 id: $id,
                 type: "PipeWire:Interface:Device",
                 info: {
                   props: {
                     "device.api": "alsa",
-                    "device.name": "alsa_card.test_interface",
+                    "device.name": $device_name,
                     "device.bus-id": "usb-test-1",
                     "device.bus-path": "pci-test-usb-test",
                     "object.path": "alsa:acp:test",
@@ -56,7 +65,7 @@ fake_dispatch()
               {
                 id: 100,
                 type: "PipeWire:Interface:Node",
-                info: {props: {
+                info: {state: $node_state, props: {
                   "device.id": ($id | tostring),
                   "media.class": "Audio/Sink",
                   "node.name": (if $name == "pro-audio" then "alsa_output.test.pro" else "alsa_output.test.stereo" end),
@@ -70,7 +79,7 @@ fake_dispatch()
               {
                 id: 101,
                 type: "PipeWire:Interface:Node",
-                info: {props: {
+                info: {state: "suspended", props: {
                   "device.id": ($id | tostring),
                   "media.class": "Audio/Source",
                   "node.name": (if $name == "pro-audio" then "alsa_input.test.pro" else "alsa_input.test.stereo" end),
@@ -80,6 +89,20 @@ fake_dispatch()
                   "audio.channels": (if $name == "pro-audio" then 8 else 2 end),
                   "audio.position": (if $name == "pro-audio" then "AUX0,AUX1,AUX2,AUX3,AUX4,AUX5,AUX6,AUX7" else "FL,FR" end)
                 }}
+              },
+              {
+                id: 102,
+                type: "PipeWire:Interface:Link",
+                info: {
+                  state: $link_state,
+                  "input-node-id": 100,
+                  "output-node-id": 200,
+                  props: {
+                    "link.input.node": 100,
+                    "link.output.node": 200,
+                    "link.passive": true
+                  }
+                }
               }
             ]'
             ;;
@@ -101,6 +124,13 @@ fake_dispatch()
                 *) exit 94 ;;
             esac
             printf '%s %s\n' "$index" "$new_name" > "$FAKE_PW_DIR/current-profile"
+            if [ "$index" = 1 ] && [ -e "$FAKE_PW_DIR/activity-after-restore" ]; then
+                mkdir -p -- "$PIPEWIRE_PRO_AUDIO_PROC_ROOT/704"
+                printf '%s\0' '/opt/wine/bin/wine64-preloader' \
+                    > "$PIPEWIRE_PRO_AUDIO_PROC_ROOT/704/cmdline"
+                printf '%s\0' "WINEPREFIX=$FAKE_TARGET_PREFIX" \
+                    > "$PIPEWIRE_PRO_AUDIO_PROC_ROOT/704/environ"
+            fi
             if [ "$index" = 9 ] && [ -e "$FAKE_PW_DIR/switch-fails-after-mutation" ]; then exit 17; fi
             printf 'set transient profile %s\n' "$index"
             ;;
@@ -144,9 +174,18 @@ fake_dispatch()
             if [ "$leg" = baseline ] && [ -e "$FAKE_PW_DIR/benchmark-drifts-state" ]; then
                 : > "$FAKE_PW_DIR/metadata-drift"
             fi
+            if [ "$leg" = pro-audio ] && [ -e "$FAKE_PW_DIR/benchmark-leaves-active-link" ]; then
+                : > "$FAKE_PW_DIR/target-link-active"
+            fi
             if [ -r "$FAKE_PW_DIR/benchmark-sleep-leg" ] \
                 && [ "$leg" = "$(< "$FAKE_PW_DIR/benchmark-sleep-leg")" ]; then
                 exec sleep 30
+            fi
+            if [ -r "$FAKE_PW_DIR/benchmark-ignore-signal-leg" ] \
+                && [ "$leg" = "$(< "$FAKE_PW_DIR/benchmark-ignore-signal-leg")" ]; then
+                printf '%s\n' "$BASHPID" > "$FAKE_PW_DIR/benchmark-child.pid"
+                trap '' HUP INT TERM
+                exec sleep 2
             fi
             if [ -r "$FAKE_PW_DIR/benchmark-fail-leg" ] \
                 && [ "$leg" = "$(< "$FAKE_PW_DIR/benchmark-fail-leg")" ]; then
@@ -233,8 +272,11 @@ start_tool()
             PIPEWIRE_PRO_AUDIO_VERIFY_ATTEMPTS=3 \
             PIPEWIRE_PRO_AUDIO_VERIFY_DELAY=0 \
             PIPEWIRE_PRO_AUDIO_PROBE_TIMEOUT=2 \
+            PIPEWIRE_PRO_AUDIO_SETTLE_SECONDS=0 \
+            PIPEWIRE_PRO_AUDIO_SIGNAL_WAIT_TIMEOUT=1 \
             FAKE_PW_DIR="$case_dir/state" \
             FAKE_DEVICE_ID=42 \
+            FAKE_TARGET_PREFIX="$case_dir/prefix" \
             "$tool" "${args[@]}"
     ) > "$case_dir/run.stdout" 2> "$case_dir/run.stderr" &
     TOOL_PID=$!
@@ -262,14 +304,24 @@ assert_eq "$(wc -l < "$case_dir/state/pw-cli.log")" 2 \
 [ "$(grep -c '"save":false' "$case_dir/state/pw-cli.log")" -eq 2 ] \
     || fail 'Every profile mutation explicitly disables persistence.'
 [ -f "$case_dir/output/A-original/timing.json" ] \
+    && [ -f "$case_dir/output/A-original/before-state/device.json" ] \
     && [ -f "$case_dir/output/B-pro-audio/timing.json" ] \
     && [ -f "$case_dir/output/B-pro-audio/before-state/device.json" ] \
+    && [ -f "$case_dir/output/B-pro-audio/after-state/associated-links.json" ] \
+    && [ -f "$case_dir/output/events/immediately-before-switch/target-device-activity.json" ] \
     && [ -f "$case_dir/output/after-restoration/device.json" ] \
     || fail 'Both leg directories and restoration evidence are retained.'
 assert_status "$case_dir/output" '.result' 'ab-complete' 'The success report classifies the complete A/B.'
 assert_status "$case_dir/output" '.restoration' 'verified' 'The success report proves restoration.'
+assert_status "$case_dir/output" '.settle_seconds' '0' 'The report records the equal per-leg settle interval.'
 assert_status "$case_dir/output" '.restored_evidence.wireplumber_profile_state' 'verified' \
     'The WirePlumber profile state remains byte-identical.'
+assert_status "$case_dir/output" '.restored_evidence.associated_node_fingerprint' 'verified' \
+    'The stable associated-node fingerprint is explicitly named and restored.'
+assert_status "$case_dir/output" '.target_device_graph.immediately_before_switch' 'clear' \
+    'The exact target graph is clear at the last bounded pre-switch check.'
+assert_status "$case_dir/output" '.target_device_graph.after_pro_audio' 'clear' \
+    'The target graph is clear after the Pro Audio command.'
 if ! grep -q "$case_dir/output/A-original" "$case_dir/state/benchmark-dirs.log" \
     || ! grep -q "$case_dir/output/B-pro-audio" "$case_dir/state/benchmark-dirs.log"; then
     fail 'Each command receives its own explicit artifact directory.'
@@ -339,6 +391,30 @@ assert_eq "$TOOL_RC" 65 'Duplicate Pro Audio profiles fail exact discovery.'
 assert_status "$case_dir/output" '.result' 'pro-audio-ambiguous' 'Ambiguous Pro Audio is classified exactly.'
 ok 'Ambiguous profile enumeration is rejected without guessing an index.'
 
+new_case running-target-node
+: > "$case_dir/state/target-node-running"
+run_tool
+assert_eq "$TOOL_RC" 73 'A running node on the exact device blocks the experiment.'
+[ ! -e "$case_dir/state/benchmark.log" ] && [ ! -e "$case_dir/state/pw-cli.log" ] \
+    || fail 'A running target node must be refused before command execution or mutation.'
+assert_status "$case_dir/output" '.result' 'target-device-active' \
+    'Running target-node activity is classified exactly.'
+assert_eq "$(jq '.blockers.running_nodes | length' \
+    "$case_dir/output/before/target-device-activity.json")" 1 \
+    'The focused graph evidence retains the running target node.'
+ok 'A running target node is an evidence-backed pre-mutation refusal.'
+
+new_case active-target-link
+: > "$case_dir/state/target-link-active"
+run_tool
+assert_eq "$TOOL_RC" 73 'An active link connected to the exact device blocks the experiment.'
+[ ! -e "$case_dir/state/benchmark.log" ] && [ ! -e "$case_dir/state/pw-cli.log" ] \
+    || fail 'An active target link must be refused before command execution or mutation.'
+assert_eq "$(jq '.blockers.active_links | length' \
+    "$case_dir/output/before/target-device-activity.json")" 1 \
+    'The focused graph evidence retains the active target link.'
+ok 'An active target link is refused while the default paused passive link remains allowed.'
+
 new_case restoration-failure
 : > "$case_dir/state/restore-fails"
 run_tool
@@ -352,6 +428,19 @@ grep -Fq '\"save\":false' "$case_dir/output/recovery-command.txt" \
 bash -n "$case_dir/output/recovery-command.txt" \
     || fail 'The recovery artifact is valid shell syntax.'
 ok 'A restoration failure is loud, nonzero, and leaves an exact recovery record.'
+
+new_case recovery-comment-safety
+: > "$case_dir/state/device-name-with-newline"
+run_tool
+assert_eq "$TOOL_RC" 0 'A device name containing a newline remains data, not recovery shell.'
+assert_eq "$(wc -l < "$case_dir/output/recovery-command.txt")" 2 \
+    'The recovery artifact remains exactly one command and one fixed comment.'
+if grep -Fq 'injected' "$case_dir/output/recovery-command.txt"; then
+    fail 'A PipeWire device name must never be embedded in executable recovery shell.'
+fi
+bash -n "$case_dir/output/recovery-command.txt" \
+    || fail 'The recovery artifact remains valid shell syntax for hostile device names.'
+ok 'Untrusted device identity cannot inject lines into the recovery shell artifact.'
 
 new_case prefix-activity
 mkdir -- "$case_dir/proc/700"
@@ -378,6 +467,30 @@ grep -q $'701\tLive' "$case_dir/output/before/activity.tsv" \
     || fail 'The activity artifact records global Live evidence.'
 ok 'Live activity is independently refused even when its prefix cannot be read.'
 
+new_case unresolved-wine-activity
+mkdir -- "$case_dir/proc/702" "$case_dir/proc/702/environ"
+printf '%s\0' '/opt/wine/bin/wine64-preloader' > "$case_dir/proc/702/cmdline"
+run_tool
+assert_eq "$TOOL_RC" 73 'Wine activity with an unreadable prefix environment blocks the experiment.'
+[ ! -e "$case_dir/state/benchmark.log" ] && [ ! -e "$case_dir/state/pw-cli.log" ] \
+    || fail 'Unresolved Wine activity runs no benchmark and changes no profile.'
+grep -q $'702\tprefix-unresolved' "$case_dir/output/before/activity.tsv" \
+    || fail 'The activity artifact records that the Wine prefix could not be resolved.'
+if grep -Eq 'Permission denied|Is a directory' "$case_dir/run.stderr"; then
+    fail 'An unreadable Wine environment must be classified without shell redirection noise.'
+fi
+ok 'Unreadable Wine prefix evidence is a conservative, quiet refusal.'
+
+new_case unrelated-unreadable-environ
+mkdir -- "$case_dir/proc/703" "$case_dir/proc/703/environ"
+printf '%s\0' '/usr/bin/sleep' '30' > "$case_dir/proc/703/cmdline"
+run_tool discover
+assert_eq "$TOOL_RC" 0 'An unrelated process with unreadable environment data does not block discovery.'
+if grep -Eq 'Permission denied|Is a directory' "$case_dir/run.stderr"; then
+    fail 'The process guard must not open unrelated process environments.'
+fi
+ok 'Unrelated unreadable process environments are neither opened nor reported.'
+
 new_case discovery
 run_tool discover
 assert_eq "$TOOL_RC" 0 'Read-only discovery succeeds on an eligible idle device.'
@@ -385,6 +498,30 @@ assert_eq "$TOOL_RC" 0 'Read-only discovery succeeds on an eligible idle device.
     || fail 'Discovery neither runs the command nor changes a profile.'
 assert_status "$case_dir/output" '.result' 'discovery-ok' 'Discovery status is explicit.'
 ok 'Discovery captures evidence without executing or mutating anything.'
+
+new_case final-activity
+: > "$case_dir/state/activity-after-restore"
+run_tool
+assert_eq "$TOOL_RC" 73 'Activity first observed after restoration invalidates an otherwise successful pair.'
+assert_eq "$(cat "$case_dir/state/current-profile")" '1 analog-stereo-duplex' \
+    'Final activity detection does not prevent verified profile restoration.'
+assert_status "$case_dir/output" '.result' 'post-restoration-activity' \
+    'The final activity race cannot be reported as a complete A/B.'
+assert_status "$case_dir/output" '.activity.after_restoration' 'detected' \
+    'The late exact-prefix process remains explicit in status.'
+ok 'Late activity makes a restored pair fail loud instead of returning a false clean result.'
+
+new_case pro-leaves-active-link
+: > "$case_dir/state/benchmark-leaves-active-link"
+run_tool
+assert_eq "$TOOL_RC" 73 'A target link left active after B invalidates the pair.'
+assert_eq "$(cat "$case_dir/state/current-profile")" '1 analog-stereo-duplex' \
+    'Post-B target activity still triggers exact profile restoration.'
+assert_status "$case_dir/output" '.result' 'pro-audio-target-active' \
+    'Post-B target graph activity is classified before restoration.'
+assert_status "$case_dir/output" '.target_device_graph.after_pro_audio' 'active' \
+    'The report records target graph activity observed after B.'
+ok 'Post-B active-link evidence fails loud and restoration still wins.'
 
 new_case signal
 printf 'pro-audio\n' > "$case_dir/state/benchmark-sleep-leg"
@@ -411,5 +548,42 @@ assert_status "$case_dir/output" '.result' 'signal-term' 'The report identifies 
 assert_status "$case_dir/output" '.restoration' 'verified' 'Signal cleanup verifies restoration.'
 assert_status "$case_dir/output" '.legs.B_pro_audio.state' 'signalled' 'The interrupted B leg is explicit.'
 ok 'TERM during B stops the child, restores the profile, and retains timing/status.'
+
+new_case signal-ignored
+printf 'pro-audio\n' > "$case_dir/state/benchmark-ignore-signal-leg"
+start_tool
+reached_pro=0
+for _ in $(seq 1 100); do
+    if [ "$(cat "$case_dir/state/current-profile")" = '9 pro-audio' ] \
+        && grep -qx 'pro-audio' "$case_dir/state/benchmark.log" 2>/dev/null; then
+        reached_pro=1
+        break
+    fi
+    sleep 0.05
+done
+[ "$reached_pro" -eq 1 ] || fail 'The ignored-signal fixture did not reach the Pro Audio benchmark.'
+kill -TERM "$TOOL_PID"
+signal_started="$SECONDS"
+set +e
+wait "$TOOL_PID"
+TOOL_RC=$?
+set -e
+[ "$((SECONDS - signal_started))" -le 3 ] \
+    || fail 'An uncooperative benchmark child delayed restoration beyond the bounded wait.'
+assert_eq "$TOOL_RC" 143 'TERM remains the wrapper status when the exact child ignores it.'
+assert_eq "$(cat "$case_dir/state/current-profile")" '1 analog-stereo-duplex' \
+    'An uncooperative child cannot indefinitely postpone profile restoration.'
+assert_status "$case_dir/output" '.legs.B_pro_audio.state' 'signal-child-active' \
+    'The report does not claim that the uncooperative direct child stopped.'
+[ -f "$case_dir/output/B-pro-audio/signal-child-active.pid" ] \
+    || fail 'The exact still-active child PID is retained as evidence.'
+child_pid="$(cat "$case_dir/state/benchmark-child.pid")"
+child_gone=0
+for _ in $(seq 1 60); do
+    if ! kill -0 "$child_pid" 2>/dev/null; then child_gone=1; break; fi
+    sleep 0.05
+done
+[ "$child_gone" -eq 1 ] || fail 'The bounded ignored-signal fixture did not end naturally.'
+ok 'Signal teardown is bounded to the exact direct child and restores without broad killing.'
 
 printf '1..%s\n' "$pass"

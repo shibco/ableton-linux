@@ -100,6 +100,8 @@ fi
 probe_timeout="${PIPEWIRE_PRO_AUDIO_PROBE_TIMEOUT:-8}"
 verify_attempts="${PIPEWIRE_PRO_AUDIO_VERIFY_ATTEMPTS:-20}"
 verify_delay="${PIPEWIRE_PRO_AUDIO_VERIFY_DELAY:-0.1}"
+settle_seconds="${PIPEWIRE_PRO_AUDIO_SETTLE_SECONDS:-2}"
+signal_wait_timeout="${PIPEWIRE_PRO_AUDIO_SIGNAL_WAIT_TIMEOUT:-5}"
 proc_root="${PIPEWIRE_PRO_AUDIO_PROC_ROOT:-/proc}"
 
 [[ "$probe_timeout" =~ ^[1-9][0-9]*$ ]] && [ "$probe_timeout" -le 60 ] \
@@ -108,9 +110,13 @@ proc_root="${PIPEWIRE_PRO_AUDIO_PROC_ROOT:-/proc}"
     || { printf 'PIPEWIRE_PRO_AUDIO_VERIFY_ATTEMPTS must be an integer from 1 to 100.\n' >&2; exit "$EX_USAGE"; }
 [[ "$verify_delay" =~ ^[0-9]+([.][0-9]+)?$ ]] \
     || { printf 'PIPEWIRE_PRO_AUDIO_VERIFY_DELAY must be a non-negative number.\n' >&2; exit "$EX_USAGE"; }
+[[ "$settle_seconds" =~ ^[0-9]+$ ]] && [ "$settle_seconds" -le 30 ] \
+    || { printf 'PIPEWIRE_PRO_AUDIO_SETTLE_SECONDS must be an integer from 0 to 30.\n' >&2; exit "$EX_USAGE"; }
+[[ "$signal_wait_timeout" =~ ^[1-9][0-9]*$ ]] && [ "$signal_wait_timeout" -le 60 ] \
+    || { printf 'PIPEWIRE_PRO_AUDIO_SIGNAL_WAIT_TIMEOUT must be an integer from 1 to 60.\n' >&2; exit "$EX_USAGE"; }
 [ -d "$proc_root" ] || { printf 'Process information root is unavailable: %s\n' "$proc_root" >&2; exit "$EX_UNAVAILABLE"; }
 
-for dependency in cmp date jq pw-cli pw-dump pw-metadata readlink realpath sed sha256sum sort timeout tr wpctl; do
+for dependency in cmp date jq pw-cli pw-dump pw-metadata readlink realpath sed sha256sum sleep sort timeout tr wpctl; do
     command -v "$dependency" >/dev/null 2>&1 || {
         printf 'Required command is unavailable: %s\n' "$dependency" >&2
         exit "$EX_UNAVAILABLE"
@@ -123,7 +129,7 @@ if ! mkdir -m 700 -- "$output_dir"; then
     exit "$EX_USAGE"
 fi
 output_dir="$(realpath -e -- "$output_dir")" || exit "$EX_SOFTWARE"
-mkdir -- "$output_dir/events"
+mkdir -- "$output_dir/events" || exit "$EX_SOFTWARE"
 
 if [ "${#benchmark_command[@]}" -gt 0 ]; then
     {
@@ -146,9 +152,17 @@ pro_exit=""
 baseline_elapsed_ms=""
 pro_elapsed_ms=""
 preflight_activity="unknown"
+pre_baseline_activity="not-checked"
 post_baseline_activity="not-checked"
+pre_pro_activity="not-checked"
 post_pro_activity="not-checked"
 post_restore_activity="not-checked"
+target_preflight_activity="not-checked"
+target_after_baseline_activity="not-checked"
+target_pre_switch_activity="not-checked"
+target_before_pro_activity="not-checked"
+target_after_pro_activity="not-checked"
+target_after_restore_activity="not-checked"
 defaults_restored="not-checked"
 profile_state_restored="not-checked"
 nodes_restored="not-checked"
@@ -174,6 +188,7 @@ write_status()
         --arg result "$result" \
         --arg message "$message" \
         --arg mode "$mode" \
+        --arg settle_seconds "$settle_seconds" \
         --arg device_id "$device_id" \
         --arg device_name "$device_name" \
         --arg wine_prefix "$wine_prefix" \
@@ -190,9 +205,17 @@ write_status()
         --arg pro_exit "$pro_exit" \
         --arg pro_elapsed "$pro_elapsed_ms" \
         --arg preflight_activity "$preflight_activity" \
+        --arg pre_baseline_activity "$pre_baseline_activity" \
         --arg post_baseline_activity "$post_baseline_activity" \
+        --arg pre_pro_activity "$pre_pro_activity" \
         --arg post_pro_activity "$post_pro_activity" \
         --arg post_restore_activity "$post_restore_activity" \
+        --arg target_preflight_activity "$target_preflight_activity" \
+        --arg target_after_baseline_activity "$target_after_baseline_activity" \
+        --arg target_pre_switch_activity "$target_pre_switch_activity" \
+        --arg target_before_pro_activity "$target_before_pro_activity" \
+        --arg target_after_pro_activity "$target_after_pro_activity" \
+        --arg target_after_restore_activity "$target_after_restore_activity" \
         --arg defaults_restored "$defaults_restored" \
         --arg profile_state_restored "$profile_state_restored" \
         --arg nodes_restored "$nodes_restored" \
@@ -206,6 +229,7 @@ write_status()
           result: $result,
           message: $message,
           mode: $mode,
+          settle_seconds: ($settle_seconds | tonumber),
           exit_code: ($exit_code | tonumber),
           device: {
             id: ($device_id | tonumber), name: $device_name,
@@ -217,9 +241,19 @@ write_status()
           restoration: $restoration,
           activity: {
             preflight: $preflight_activity,
+            before_baseline: $pre_baseline_activity,
             after_baseline: $post_baseline_activity,
+            before_pro_audio: $pre_pro_activity,
             after_pro_audio: $post_pro_activity,
             after_restoration: $post_restore_activity
+          },
+          target_device_graph: {
+            preflight: $target_preflight_activity,
+            after_baseline: $target_after_baseline_activity,
+            immediately_before_switch: $target_pre_switch_activity,
+            before_pro_audio: $target_before_pro_activity,
+            after_pro_audio: $target_after_pro_activity,
+            after_restoration: $target_after_restore_activity
           },
           legs: {
             A_original: {
@@ -238,7 +272,7 @@ write_status()
           restored_evidence: {
             defaults: $defaults_restored,
             wireplumber_profile_state: $profile_state_restored,
-            associated_nodes: $nodes_restored,
+            associated_node_fingerprint: $nodes_restored,
             routes: $routes_restored,
             settings: $settings_restored,
             device_identity: $identity_restored
@@ -276,11 +310,12 @@ canonicalize_metadata()
 
 capture_profile_state_hash()
 {
-    local destination="$1"
+    local destination="$1" digest
     local state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
     local state_file="$state_home/wireplumber/default-profile"
     if [ -r "$state_file" ]; then
-        sha256sum -- "$state_file" | sed "s|  $state_file$|  default-profile|" > "$destination"
+        digest="$(sha256sum -- "$state_file")" || return 1
+        printf '%s  default-profile\n' "${digest%% *}" > "$destination"
     elif [ -e "$state_file" ]; then
         printf 'unreadable  default-profile\n' > "$destination"
     else
@@ -299,6 +334,50 @@ filter_exact_device()
     ' "$graph" > "$destination"
 }
 
+write_associated_graph_evidence()
+{
+    local stage="$1"
+    jq -S --arg id "$device_id" '[.[] | select(
+      .type == "PipeWire:Interface:Node"
+      and ((.info.props["device.id"] // "") | tostring) == $id
+    )]' "$stage/graph.json" > "$stage/associated-nodes.json" || return 1
+    jq -S --slurpfile nodes "$stage/associated-nodes.json" '
+      ($nodes[0] | map(.id)) as $ids
+      | [.[] | . as $object | select(
+          .type == "PipeWire:Interface:Link"
+          and (
+            ($ids | index($object.info["input-node-id"] // $object.info.props["link.input.node"])) != null
+            or ($ids | index($object.info["output-node-id"] // $object.info.props["link.output.node"])) != null
+          )
+        )]
+    ' "$stage/graph.json" > "$stage/associated-links.json" || return 1
+    jq -S -n --slurpfile nodes "$stage/associated-nodes.json" \
+        --slurpfile links "$stage/associated-links.json" '{
+      nodes: [$nodes[0][] | {
+        id, state: .info.state,
+        name: .info.props["node.name"],
+        media_class: .info.props["media.class"]
+      }],
+      links: [$links[0][] | {
+        id, state: .info.state,
+        input_node_id: (.info["input-node-id"] // .info.props["link.input.node"]),
+        output_node_id: (.info["output-node-id"] // .info.props["link.output.node"]),
+        passive: (.info.props["link.passive"] // false)
+      }],
+      blockers: {
+        running_nodes: [$nodes[0][] | select(.info.state == "running") | {
+          id, state: .info.state, name: .info.props["node.name"]
+        }],
+        active_links: [$links[0][] | select(.info.state == "active") | {
+          id, state: .info.state,
+          input_node_id: (.info["input-node-id"] // .info.props["link.input.node"]),
+          output_node_id: (.info["output-node-id"] // .info.props["link.output.node"]),
+          passive: (.info.props["link.passive"] // false)
+        }]
+      }
+    }' > "$stage/target-device-activity.json" || return 1
+}
+
 write_device_derived_evidence()
 {
     local stage="$1"
@@ -312,13 +391,10 @@ write_device_derived_evidence()
         object_path: .info.props["object.path"],
         object_serial: .info.props["object.serial"]
       }
-    }' "$stage/device.json" > "$stage/device-identity.json"
+    }' "$stage/device.json" > "$stage/device-identity.json" || return 1
     jq -S '.info.params.Route // [] | sort_by(.index // -1)' \
-        "$stage/device.json" > "$stage/routes.json"
-    jq -S --arg id "$device_id" '[.[] | select(
-      .type == "PipeWire:Interface:Node"
-      and ((.info.props["device.id"] // "") | tostring) == $id
-    )]' "$stage/graph.json" > "$stage/associated-nodes.json"
+        "$stage/device.json" > "$stage/routes.json" || return 1
+    write_associated_graph_evidence "$stage" || return 1
     jq -S '[.[] | {
       media_class: .info.props["media.class"],
       node_name: .info.props["node.name"],
@@ -328,7 +404,7 @@ write_device_derived_evidence()
       channels: .info.props["audio.channels"],
       position: .info.props["audio.position"]
     }] | sort_by(.media_class, .node_name, .alsa_path)' \
-        "$stage/associated-nodes.json" > "$stage/associated-nodes.semantic.json"
+        "$stage/associated-nodes.json" > "$stage/associated-nodes.semantic.json" || return 1
 }
 
 snapshot()
@@ -349,10 +425,10 @@ snapshot()
     probe "$stage/default-nodes.txt" pw-metadata -n default || failed=1
     probe "$stage/default-profiles.txt" pw-metadata -n default-profile || failed=1
     probe "$stage/settings.txt" pw-metadata -n settings || failed=1
-    canonicalize_metadata "$stage/default-nodes.txt" "$stage/default-nodes.canonical.txt"
-    canonicalize_metadata "$stage/default-profiles.txt" "$stage/default-profiles.canonical.txt"
-    canonicalize_metadata "$stage/settings.txt" "$stage/settings.canonical.txt"
-    capture_profile_state_hash "$stage/wireplumber-default-profile.sha256"
+    canonicalize_metadata "$stage/default-nodes.txt" "$stage/default-nodes.canonical.txt" || failed=1
+    canonicalize_metadata "$stage/default-profiles.txt" "$stage/default-profiles.canonical.txt" || failed=1
+    canonicalize_metadata "$stage/settings.txt" "$stage/settings.canonical.txt" || failed=1
+    capture_profile_state_hash "$stage/wireplumber-default-profile.sha256" || failed=1
 
     return "$failed"
 }
@@ -405,6 +481,27 @@ identity_matches_original()
     cmp -s "$output_dir/before/device-identity.json" "$normalized"
 }
 
+target_graph_activity_state()
+{
+    jq -er '
+      if (.blockers.running_nodes | type) != "array"
+          or (.blockers.active_links | type) != "array" then empty
+      elif ((.blockers.running_nodes | length) + (.blockers.active_links | length)) == 0
+        then "clear"
+      else "active" end
+    ' "$1"
+}
+
+capture_target_graph_activity()
+{
+    local stage="$1"
+    mkdir -- "$stage" || return 1
+    probe "$stage/graph.json" pw-dump || return 1
+    filter_exact_device "$stage/graph.json" "$stage/device.json" || return 1
+    identity_matches_original "$stage/device.json" "$stage/device-identity.json" || return 1
+    write_associated_graph_evidence "$stage"
+}
+
 verify_profile()
 {
     local expected_index="$1" expected_name="$2" label="$3"
@@ -436,38 +533,45 @@ set_profile_transient()
 scan_activity()
 {
     local destination="$1" proc_dir pid cmdline item process_prefix process_prefix_real process_cwd reason
-    local default_prefix=""
+    local process_home process_default_prefix environment_state
     local count=0 wine_like=0
-    if [ -n "${HOME:-}" ] && [ -d "$HOME/.wine" ]; then
-        default_prefix="$(realpath -e -- "$HOME/.wine" 2>/dev/null || true)"
-    fi
-    printf 'pid\treason\tcommand\n' > "$destination"
+    printf 'pid\treason\tcommand\n' > "$destination" || return 1
     shopt -s nullglob nocasematch
     for proc_dir in "$proc_root"/[0-9]*; do
         pid="${proc_dir##*/}"
         [ "$pid" = "$$" ] && continue
         [ -r "$proc_dir/cmdline" ] || continue
-        cmdline="$(tr '\000\t\r\n' '    ' < "$proc_dir/cmdline" 2>/dev/null)"
+        cmdline="$(tr '\000\t\r\n' '    ' 2>/dev/null < "$proc_dir/cmdline" || true)"
         [ -n "$cmdline" ] || continue
         reason=""
         if [[ "$cmdline" =~ Ableton[[:space:]]+Live.*\.exe ]]; then
             reason="Live"
         fi
 
-        process_prefix=""
-        if [ -r "$proc_dir/environ" ]; then
-            while IFS= read -r -d '' item; do
-                case "$item" in
-                    WINEPREFIX=*) process_prefix="${item#WINEPREFIX=}" ;;
-                esac
-            done < "$proc_dir/environ"
-        fi
         wine_like=0
-        if [[ "$cmdline" =~ (^|[[:space:]/])(wine|wine64|wine-preloader|wineserver)([[:space:]/]|$) \
+        if [[ "$cmdline" =~ (^|[[:space:]/])(wine|wine64|wine-preloader|wine64-preloader|wineserver)([[:space:]/]|$) \
             || "$cmdline" =~ \.exe([[:space:]]|$) ]]; then
             wine_like=1
         fi
-        if [ -n "$process_prefix" ] && [ "$wine_like" -eq 1 ]; then
+
+        process_prefix=""
+        process_home=""
+        environment_state="not-needed"
+        if [ "$wine_like" -eq 1 ]; then
+            environment_state="unreadable"
+            if while IFS= read -r -d '' item; do
+                case "$item" in
+                    WINEPREFIX=*) process_prefix="${item#WINEPREFIX=}" ;;
+                    HOME=*) process_home="${item#HOME=}" ;;
+                esac
+            done 2>/dev/null < "$proc_dir/environ"; then
+                environment_state="read"
+            fi
+        fi
+
+        if [ "$wine_like" -eq 1 ] && [ "$environment_state" != read ]; then
+            if [ -n "$reason" ]; then reason="$reason+prefix-unresolved"; else reason="prefix-unresolved"; fi
+        elif [ -n "$process_prefix" ] && [ "$wine_like" -eq 1 ]; then
             if [[ "$process_prefix" != /* ]]; then
                 process_cwd="$(readlink -e -- "$proc_dir/cwd" 2>/dev/null || true)"
                 if [ -n "$process_cwd" ]; then process_prefix="$process_cwd/$process_prefix"; fi
@@ -476,9 +580,16 @@ scan_activity()
             if [ "$process_prefix_real" = "$wine_prefix" ]; then
                 if [ -n "$reason" ]; then reason="$reason+prefix"; else reason="prefix"; fi
             fi
-        elif [ "$wine_like" -eq 1 ] && [ -n "$default_prefix" ] \
-            && [ "$default_prefix" = "$wine_prefix" ]; then
-            if [ -n "$reason" ]; then reason="$reason+prefix"; else reason="prefix"; fi
+        elif [ "$wine_like" -eq 1 ]; then
+            process_default_prefix=""
+            if [[ "$process_home" = /* ]]; then
+                process_default_prefix="$(realpath -m -- "$process_home/.wine" 2>/dev/null || true)"
+            fi
+            if [ -z "$process_default_prefix" ]; then
+                if [ -n "$reason" ]; then reason="$reason+prefix-unresolved"; else reason="prefix-unresolved"; fi
+            elif [ "$process_default_prefix" = "$wine_prefix" ]; then
+                if [ -n "$reason" ]; then reason="$reason+prefix"; else reason="prefix"; fi
+            fi
         fi
         if [ -n "$reason" ]; then
             printf '%s\t%s\t%s\n' "$pid" "$reason" "$cmdline" >> "$destination"
@@ -602,26 +713,58 @@ stage_matches_before()
 }
 
 # shellcheck disable=SC2329 # Called by signal traps.
+benchmark_child_active()
+{
+    local candidate
+    while IFS= read -r candidate; do
+        [ "$candidate" = "$benchmark_pid" ] && return 0
+    done < <(jobs -pr; jobs -ps)
+    return 1
+}
+
+# shellcheck disable=SC2329 # Called by signal traps.
+wait_for_signalled_benchmark()
+{
+    local attempt limit=$((signal_wait_timeout * 20))
+    for ((attempt = 0; attempt < limit; attempt++)); do
+        if ! benchmark_child_active; then
+            wait "$benchmark_pid" 2>/dev/null || true
+            return 0
+        fi
+        sleep 0.05
+    done
+    if benchmark_child_active; then return 1; fi
+    wait "$benchmark_pid" 2>/dev/null || true
+    return 0
+}
+
+# shellcheck disable=SC2329 # Called by signal traps.
 handle_signal()
 {
-    local signal_name="$1" signal_code="$2" finish
+    local signal_name="$1" signal_code="$2" finish child_stopped=1 stage
     trap - HUP INT TERM
     result="signal-${signal_name,,}"
     message="Received $signal_name; restoring the exact original profile."
     if [ -n "$benchmark_pid" ]; then
         kill -s "$signal_name" "$benchmark_pid" 2>/dev/null || true
-        wait "$benchmark_pid" 2>/dev/null || true
-        benchmark_pid=""
+        if ! wait_for_signalled_benchmark; then
+            child_stopped=0
+            message="$message The exact benchmark child did not stop within ${signal_wait_timeout}s; it was not killed."
+        fi
         finish="$(now_ns)"
         if [ "$benchmark_phase" = baseline ]; then
-            baseline_state="signalled"
+            stage="$output_dir/A-original"
+            if [ "$child_stopped" -eq 1 ]; then baseline_state="signalled"; else baseline_state="signal-child-active"; fi
             baseline_exit="$signal_code"
-            write_timing "$output_dir/A-original" "$benchmark_start_ns" "$finish" "$signal_code" "$signal_name"
+            write_timing "$stage" "$benchmark_start_ns" "$finish" "$signal_code" "$signal_name"
         elif [ "$benchmark_phase" = pro-audio ]; then
-            pro_state="signalled"
+            stage="$output_dir/B-pro-audio"
+            if [ "$child_stopped" -eq 1 ]; then pro_state="signalled"; else pro_state="signal-child-active"; fi
             pro_exit="$signal_code"
-            write_timing "$output_dir/B-pro-audio" "$benchmark_start_ns" "$finish" "$signal_code" "$signal_name"
+            write_timing "$stage" "$benchmark_start_ns" "$finish" "$signal_code" "$signal_name"
         fi
+        if [ "$child_stopped" -eq 0 ]; then printf '%s\n' "$benchmark_pid" > "$stage/signal-child-active.pid"; fi
+        benchmark_pid=""
     fi
     exit "$signal_code"
 }
@@ -629,7 +772,8 @@ handle_signal()
 # shellcheck disable=SC2329 # Called by the EXIT trap.
 finish()
 {
-    local requested_exit="$?" final_exit="$?" snapshot_failed=0 restore_failed=0 drift_failed=0
+    local requested_exit="$?" final_exit="$?" snapshot_failed=0 restore_failed=0 drift_failed=0 activity_failed=0
+    local target_graph_failed=0
     trap - EXIT
     trap '' HUP INT TERM
     final_exit="$requested_exit"
@@ -648,11 +792,15 @@ finish()
         snapshot "$output_dir/after-restoration" || snapshot_failed=1
         if [ "$snapshot_failed" -eq 0 ]; then
             compare_restored_state || drift_failed=1
+            target_after_restore_activity="$(target_graph_activity_state \
+                "$output_dir/after-restoration/target-device-activity.json")" || snapshot_failed=1
+            if [ "$target_after_restore_activity" = active ]; then target_graph_failed=1; fi
         fi
         if scan_activity "$output_dir/after-restoration/activity.tsv"; then
             post_restore_activity="clear"
         else
             post_restore_activity="detected"
+            activity_failed=1
         fi
     fi
 
@@ -668,8 +816,14 @@ finish()
     elif [ "$drift_failed" -eq 1 ] \
         && { [ "$requested_exit" -eq 0 ] || [ "$profile_mutation_started" -eq 1 ]; }; then
         result="restored-state-drift"
-        message="The profile was restored, but defaults, state, routes, nodes, settings, or identity drifted."
+        message="The profile was restored, but defaults, state, routes, the node fingerprint, settings, or identity drifted."
         final_exit="$EX_SOFTWARE"
+    elif { [ "$activity_failed" -eq 1 ] || [ "$target_graph_failed" -eq 1 ]; } \
+        && [ "$requested_exit" -eq 0 ] \
+        && [ "$profile_mutation_started" -eq 1 ]; then
+        result="post-restoration-activity"
+        message="The profile was restored, but guarded process or target-device graph activity invalidated the pair."
+        final_exit="$EX_ACTIVITY"
     fi
 
     write_status "$final_exit" || true
@@ -734,11 +888,16 @@ pro_profile_available="$(jq -r '.info.params.EnumProfile[] | select(.name == "pr
     || fail "$EX_DATAERR" already-pro-audio 'The device already uses Pro Audio; there is no original-profile A/B.'
 
 preflight_complete=1
+target_preflight_activity="$(target_graph_activity_state \
+    "$output_dir/before/target-device-activity.json")" \
+    || fail "$EX_DATAERR" target-activity-evidence-invalid 'Could not classify the exact device graph activity evidence.'
+[ "$target_preflight_activity" = clear ] \
+    || fail "$EX_ACTIVITY" target-device-active 'The exact device has a running node or active link; close its PipeWire clients before continuing.'
 if scan_activity "$output_dir/before/activity.tsv"; then
     preflight_activity="clear"
 else
     preflight_activity="detected"
-    fail "$EX_ACTIVITY" active-processes 'Live or Wine activity for the supplied prefix is already running.'
+    fail "$EX_ACTIVITY" active-processes 'Live, exact-prefix Wine, or unresolved Wine activity is already running.'
 fi
 
 if [ "$mode" = discover ]; then
@@ -747,10 +906,35 @@ if [ "$mode" = discover ]; then
     exit 0
 fi
 
-printf 'pw-cli set-param %q Profile %q\n' "$device_id" \
-    "{\"index\":$original_profile_index,\"save\":false}" > "$output_dir/recovery-command.txt"
-printf '# PipeWire global IDs are session-scoped. Verify that ID %s is still device %s before recovery.\n' \
-    "$device_id" "$device_name" >> "$output_dir/recovery-command.txt"
+{
+    printf '# PipeWire global IDs are session-scoped. Verify ID %s against before/device-identity.json before recovery.\n' \
+        "$device_id"
+    printf 'pw-cli set-param %q Profile %q\n' "$device_id" \
+        "{\"index\":$original_profile_index,\"save\":false}"
+} > "$output_dir/recovery-command.txt"
+
+mkdir -- "$output_dir/A-original" \
+    || fail "$EX_SOFTWARE" artifact-failed 'Could not create the original-profile leg artifact directory.'
+sleep "$settle_seconds"
+if ! verify_profile "$original_profile_index" "$original_profile_name" settle-baseline; then
+    fail "$EX_DATAERR" baseline-settle-profile-changed 'The target identity or original profile changed during the baseline settle interval.'
+fi
+if scan_activity "$output_dir/A-original/activity-before.tsv"; then
+    pre_baseline_activity="clear"
+else
+    pre_baseline_activity="detected"
+    fail "$EX_ACTIVITY" baseline-settle-activity 'Live, exact-prefix Wine, or unresolved Wine activity appeared before the baseline leg.'
+fi
+if ! snapshot "$output_dir/A-original/before-state"; then
+    fail "$EX_DATAERR" baseline-before-snapshot-failed 'Could not snapshot the settled state before the baseline command.'
+fi
+if ! identity_matches_original "$output_dir/A-original/before-state/device.json" \
+        "$output_dir/events/baseline-before.device-identity.json" \
+    || [ "$(profile_index "$output_dir/A-original/before-state/device.json" 2>/dev/null || true)" != "$original_profile_index" ] \
+    || [ "$(profile_name "$output_dir/A-original/before-state/device.json" 2>/dev/null || true)" != "$original_profile_name" ] \
+    || ! stage_matches_before "$output_dir/A-original/before-state"; then
+    fail "$EX_DATAERR" baseline-settle-state-changed 'The settled baseline no longer matches the recorded target, profile, routes, defaults, node fingerprint, settings, or saved state.'
+fi
 
 if run_benchmark_leg baseline "$output_dir/A-original"; then
     baseline_exit=0
@@ -767,7 +951,7 @@ if scan_activity "$output_dir/A-original/activity-after.tsv"; then
     post_baseline_activity="clear"
 else
     post_baseline_activity="detected"
-    fail "$EX_ACTIVITY" baseline-left-activity 'The baseline command left Live or prefix activity running; Pro Audio was not selected.'
+    fail "$EX_ACTIVITY" baseline-left-activity 'The baseline command left Live, exact-prefix Wine, or unresolved Wine activity running; Pro Audio was not selected.'
 fi
 if ! snapshot "$output_dir/A-original/after-state"; then
     fail "$EX_DATAERR" baseline-snapshot-failed 'Could not snapshot the state after the baseline command.'
@@ -777,8 +961,25 @@ if ! identity_matches_original "$output_dir/A-original/after-state/device.json" 
     || [ "$(profile_index "$output_dir/A-original/after-state/device.json" 2>/dev/null || true)" != "$original_profile_index" ] \
     || [ "$(profile_name "$output_dir/A-original/after-state/device.json" 2>/dev/null || true)" != "$original_profile_name" ] \
     || ! stage_matches_before "$output_dir/A-original/after-state"; then
-    fail "$EX_DATAERR" baseline-state-changed 'The baseline command changed the target, profile, routes, defaults, nodes, settings, or saved state.'
+    fail "$EX_DATAERR" baseline-state-changed 'The baseline command changed the target, profile, routes, defaults, node fingerprint, settings, or saved state.'
 fi
+target_after_baseline_activity="$(target_graph_activity_state \
+    "$output_dir/A-original/after-state/target-device-activity.json")" \
+    || fail "$EX_DATAERR" baseline-target-evidence-invalid 'Could not classify target-device graph activity after the baseline leg.'
+[ "$target_after_baseline_activity" = clear ] \
+    || fail "$EX_ACTIVITY" baseline-target-active 'The baseline left a target node running or target link active; Pro Audio was not selected.'
+if ! scan_activity "$output_dir/A-original/activity-pre-switch.tsv"; then
+    post_baseline_activity="detected"
+    fail "$EX_ACTIVITY" baseline-pre-switch-activity 'Live, exact-prefix Wine, or unresolved Wine activity appeared before the profile switch.'
+fi
+if ! capture_target_graph_activity "$output_dir/events/immediately-before-switch"; then
+    fail "$EX_DATAERR" pre-switch-target-evidence-failed 'Could not recheck the exact device graph immediately before the profile switch.'
+fi
+target_pre_switch_activity="$(target_graph_activity_state \
+    "$output_dir/events/immediately-before-switch/target-device-activity.json")" \
+    || fail "$EX_DATAERR" pre-switch-target-evidence-invalid 'Could not classify the immediate pre-switch device graph.'
+[ "$target_pre_switch_activity" = clear ] \
+    || fail "$EX_ACTIVITY" pre-switch-target-active 'A target node became running or a target link became active immediately before the profile switch.'
 
 profile_mutation_started=1
 if ! set_profile_transient "$pro_profile_index" switch-pro-audio; then
@@ -793,10 +994,27 @@ switch_state="verified"
 
 mkdir -- "$output_dir/B-pro-audio" \
     || fail "$EX_SOFTWARE" artifact-failed 'Could not create the Pro Audio leg artifact directory.'
+sleep "$settle_seconds"
+if ! verify_profile "$pro_profile_index" pro-audio settle-pro-audio; then
+    fail "$EX_SWITCH" pro-audio-settle-profile-changed 'The target identity or Pro Audio profile changed during the Pro Audio settle interval.'
+fi
+if scan_activity "$output_dir/B-pro-audio/activity-before.tsv"; then
+    pre_pro_activity="clear"
+else
+    pre_pro_activity="detected"
+    fail "$EX_ACTIVITY" pro-audio-settle-activity 'Live, exact-prefix Wine, or unresolved Wine activity appeared before the Pro Audio leg.'
+fi
 if ! snapshot "$output_dir/B-pro-audio/before-state"; then
     fail "$EX_SWITCH" pro-audio-snapshot-failed 'Could not capture the Pro Audio node/device evidence before the B leg.'
 fi
-if [ "$(profile_index "$output_dir/B-pro-audio/before-state/device.json" 2>/dev/null || true)" != "$pro_profile_index" ] \
+target_before_pro_activity="$(target_graph_activity_state \
+    "$output_dir/B-pro-audio/before-state/target-device-activity.json")" \
+    || fail "$EX_SWITCH" pro-audio-target-evidence-invalid 'Could not classify the settled Pro Audio device graph.'
+[ "$target_before_pro_activity" = clear ] \
+    || fail "$EX_ACTIVITY" pro-audio-target-active-before-run 'A Pro Audio target node is running or target link is active before the B command.'
+if ! identity_matches_original "$output_dir/B-pro-audio/before-state/device.json" \
+        "$output_dir/events/pro-audio-before.device-identity.json" \
+    || [ "$(profile_index "$output_dir/B-pro-audio/before-state/device.json" 2>/dev/null || true)" != "$pro_profile_index" ] \
     || [ "$(profile_name "$output_dir/B-pro-audio/before-state/device.json" 2>/dev/null || true)" != pro-audio ]; then
     fail "$EX_SWITCH" pro-audio-state-changed 'The target left Pro Audio before the B command started.'
 fi
@@ -820,9 +1038,17 @@ if [ "$pro_state" = failed ]; then
     message="The Pro Audio benchmark failed; the exact original profile will be restored."
     exit "$pro_exit"
 fi
-if [ "$post_pro_activity" = detected ]; then
-    fail "$EX_ACTIVITY" pro-audio-left-activity 'The Pro Audio command left Live or prefix activity running; restoring despite this contract violation.'
+if ! snapshot "$output_dir/B-pro-audio/after-state"; then
+    fail "$EX_DATAERR" pro-audio-after-snapshot-failed 'Could not capture target-device graph evidence after the Pro Audio leg.'
 fi
+target_after_pro_activity="$(target_graph_activity_state \
+    "$output_dir/B-pro-audio/after-state/target-device-activity.json")" \
+    || fail "$EX_DATAERR" pro-audio-target-evidence-invalid 'Could not classify target-device graph activity after the Pro Audio leg.'
+if [ "$post_pro_activity" = detected ]; then
+    fail "$EX_ACTIVITY" pro-audio-left-activity 'The Pro Audio command left Live, exact-prefix Wine, or unresolved Wine activity running; restoring despite this contract violation.'
+fi
+[ "$target_after_pro_activity" = clear ] \
+    || fail "$EX_ACTIVITY" pro-audio-target-active 'The Pro Audio command left a target node running or target link active; restoring immediately.'
 
 result="ab-complete"
 message="Both matched legs passed; the exact original profile was restored and verified."
