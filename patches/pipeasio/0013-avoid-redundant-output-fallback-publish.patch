@@ -28,10 +28,10 @@ index e30ff2f..067fa83 100644
 -/* Returns 0 when the ASIO host consumed the cycle, nonzero when it did not (no
 - * buffers, or stopped).  The backend uses this to tell a real xrun apart from
 - * the idle cycles of a deliberate Stop. */
-+/* Returns 0 when the ASIO host consumed the cycle and finalized every output
-+ * buffer, nonzero when it did not (no buffers, or stopped).  The backend uses
-+ * this both to avoid publishing those outputs twice and to tell a real xrun
-+ * apart from the idle cycles of a deliberate Stop. */
++/* Zero means the ASIO host completed the cycle and queued each output once.
++ * The recovery result gives each output to the backend for one silent block.
++ * The backend also uses that result to tell a deliberate Stop from
++ * an xrun. */
  typedef int (*audio_process_cb)(audio_nframes_t nframes, void *arg);
  typedef int (*audio_sample_rate_cb)(audio_nframes_t nframes, void *arg);
 
@@ -43,9 +43,9 @@ index f9c40dd..fcabe45 100644
 
  typedef int (*pipeasio_pw_queue_fn)(void *context, struct pw_buffer *buffer);
 
-+/* A delivered process callback has already exchanged and queued every output
-+ * slot in the cycle.  All other cycles remain backend-owned and need the
-+ * existing fail-silent publication. */
++/* After Live returns audio, the callback owns each output and queues it once.
++ * During recovery, the backend owns each output and sends one silent
++ * block. */
 +static inline bool
 +pipeasio_pw_output_needs_fallback(bool delivered)
 +{
@@ -70,11 +70,11 @@ index 7f9316e..1d19ddf 100644
 -            audio_port_publish_output(port, NULL, quantum_supported ? quantum : 0, false, false);
 +        {
 +            if (pipeasio_pw_output_needs_fallback(delivered))
-+                /* During a mismatch the PE callback deliberately leaves the live
-+                 * PipeWire buffer alone; publish exactly one quantum of silence
-+                 * here.  Publishing host-sized chunks at foreign cadence violated
-+                 * the graph contract, especially when quantum > host size.  A
-+                 * delivered callback already exchanged and queued this slot. */
++                /* During a buffer-size change, the backend owns the PipeWire
++                 * output. It sends one silent block at the current PipeWire
++                 * buffer size. After Live returns audio, the callback owns the
++                 * output and queues it once.
++                 * Each audio block has one owner. */
 +                audio_port_publish_output(port, NULL, quantum_supported ? quantum : 0, false,
 +                                          false);
 +        }
