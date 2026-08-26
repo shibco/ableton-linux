@@ -467,10 +467,11 @@ For all other issues with audio, run the audio report and attach it when you
 ```
 
 The report is read-only. Its CPU section records the effective cpuset, physical
-cores, SMT siblings, optional capacity/core-type fields, and Wine's available
-efficiency-class inputs. `unavailable` means the kernel did not expose a field;
-it is not evidence that every CPU core is equivalent. Automatic E-core pinning
-remains disabled pending the
+cores, SMT siblings, optional capacity/core-type fields, CPPC and `amd_pstate`
+preferred-core hints, and Wine's available efficiency-class inputs.
+`unavailable` means the kernel did not expose a field; it is not evidence that
+every CPU core is equivalent. A preferred-core rank is also not an E-core
+class. Automatic affinity remains disabled pending the
 [cross-hardware validation gate](notes/ABLETON-WINE-HYBRID-CPU-TOPOLOGY.md#gate-for-any-future-automatic-policy).
 
 ### Audio cuts out for a few seconds, or plays at the wrong speed

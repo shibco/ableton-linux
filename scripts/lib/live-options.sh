@@ -152,12 +152,15 @@ ableton_cpu_topology_report()
     local devices_root="${3:-/sys/devices}"
     local allowed="" allowed_source="" online possible discovered=""
     local cpu_dir cpu package core siblings capacity core_type max_khz current_khz
+    local cppc_highest cppc_nominal amd_pstate_highest
     local allowed_count=0 reported=0 topology_complete=1 smt_seen=0 smt_unknown=0
-    local smt_evidence heterogeneous_evidence=not_observed
+    local smt_evidence heterogeneous_evidence=not_observed preferred_core_evidence=unavailable
     local wine_performance_cpus kernel_efficiency_cpus wine_class_source=unavailable
-    local physical_count capacity_count type_count
+    local physical_count capacity_count type_count cppc_highest_count driver_highest_count
+    local amd_pstate_status amd_pstate_prefcore amd_pstate_dynamic_epp
     local -a cpu_dirs cpus rows=()
-    local -A physical_cores=() capacities=() core_types=()
+    local -A physical_cores=() capacities=() core_types=() cppc_highest_values=()
+    local -A driver_highest_values=()
 
     shopt -s nullglob
     cpu_dirs=("$cpu_root"/cpu[0-9]*)
@@ -210,6 +213,10 @@ ableton_cpu_topology_report()
             "$cpu_dir/cpufreq/cpuinfo_max_freq" "$cpu_dir/cpufreq/scaling_max_freq")"
         current_khz="$(ableton_cpu_report_frequency \
             "$cpu_dir/cpufreq/scaling_cur_freq" "$cpu_dir/cpufreq/cpuinfo_cur_freq")"
+        cppc_highest="$(ableton_cpu_report_integer "$cpu_dir/acpi_cppc/highest_perf")"
+        cppc_nominal="$(ableton_cpu_report_integer "$cpu_dir/acpi_cppc/nominal_perf")"
+        amd_pstate_highest="$(ableton_cpu_report_integer \
+            "$cpu_dir/cpufreq/amd_pstate_highest_perf")"
 
         if [[ "$package" =~ ^[0-9]+$ ]] && [[ "$core" =~ ^[0-9]+$ ]]; then
             physical_cores["$package:$core"]=1
@@ -224,13 +231,18 @@ ableton_cpu_topology_report()
         fi
         [[ "$capacity" =~ ^[0-9]+$ ]] && capacities["$capacity"]=1
         case "$core_type" in unavailable|invalid) ;; *) core_types["$core_type"]=1 ;; esac
-        rows+=("cpu=$cpu package=$package core=$core siblings=$siblings cpu_capacity=$capacity core_type=$core_type max_khz=$max_khz current_khz=$current_khz")
+        [[ "$cppc_highest" =~ ^[0-9]+$ ]] && cppc_highest_values["$cppc_highest"]=1
+        [[ "$amd_pstate_highest" =~ ^[0-9]+$ ]] \
+            && driver_highest_values["$amd_pstate_highest"]=1
+        rows+=("cpu=$cpu package=$package core=$core siblings=$siblings cpu_capacity=$capacity core_type=$core_type max_khz=$max_khz current_khz=$current_khz cppc_highest_perf=$cppc_highest cppc_nominal_perf=$cppc_nominal amd_pstate_highest_perf=$amd_pstate_highest")
         reported=$((reported + 1))
     done
 
     physical_count="${#physical_cores[@]}"
     capacity_count="${#capacities[@]}"
     type_count="${#core_types[@]}"
+    cppc_highest_count="${#cppc_highest_values[@]}"
+    driver_highest_count="${#driver_highest_values[@]}"
     if [ "$smt_seen" -eq 1 ]; then
         smt_evidence=present
     elif [ "$reported" -eq 0 ] || [ "$smt_unknown" -eq 1 ]; then
@@ -250,7 +262,16 @@ ableton_cpu_topology_report()
     [ "$capacity_count" -le 1 ] || heterogeneous_evidence=present
     [ "$type_count" -le 1 ] || heterogeneous_evidence=present
 
-    printf 'cpu_topology_format=1\n'
+    amd_pstate_status="$(ableton_cpu_report_token "$cpu_root/amd_pstate/status")"
+    amd_pstate_prefcore="$(ableton_cpu_report_token "$cpu_root/amd_pstate/prefcore")"
+    amd_pstate_dynamic_epp="$(ableton_cpu_report_token "$cpu_root/amd_pstate/dynamic_epp")"
+    if [ "$cppc_highest_count" -gt 1 ] || [ "$driver_highest_count" -gt 1 ]; then
+        preferred_core_evidence=present
+    elif [ "$cppc_highest_count" -eq 1 ] || [ "$driver_highest_count" -eq 1 ]; then
+        preferred_core_evidence=not_observed
+    fi
+
+    printf 'cpu_topology_format=2\n'
     printf 'allowed_cpus=%s\n' "$allowed"
     printf 'allowed_source=%s\n' "$allowed_source"
     printf 'online_cpus=%s\n' "$online"
@@ -260,6 +281,10 @@ ableton_cpu_topology_report()
     printf 'reported_physical_cores=%s\n' "$physical_count"
     printf 'smt_evidence=%s\n' "$smt_evidence"
     printf 'heterogeneous_evidence=%s\n' "$heterogeneous_evidence"
+    printf 'preferred_core_evidence=%s\n' "$preferred_core_evidence"
+    printf 'amd_pstate_status=%s\n' "$amd_pstate_status"
+    printf 'amd_pstate_prefcore=%s\n' "$amd_pstate_prefcore"
+    printf 'amd_pstate_dynamic_epp=%s\n' "$amd_pstate_dynamic_epp"
     printf 'topology_fields_complete=%s\n' "$([ "$topology_complete" -eq 1 ] && printf yes || printf no)"
     # Wine 11.x reads online CPU topology and /sys/devices/cpu_core/cpus.
     # These raw inputs are useful evidence, but are not a Win32 API assertion.

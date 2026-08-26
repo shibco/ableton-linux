@@ -160,7 +160,7 @@ run_isolated "$base" bash "$base/data/ableton-wine/audio-report.sh" \
     >"$base/audio-report.out" 2>"$base/audio-report.err"
 grep -q '^== CPU topology and Wine visibility$' "$base/audio-report.out" \
     || fail "installed audio report omits the CPU topology section"
-grep -q '^cpu_topology_format=1$' "$base/audio-report.out" \
+grep -q '^cpu_topology_format=2$' "$base/audio-report.out" \
     || fail "installed audio report cannot run its CPU topology probe"
 grep -q '^wine_win32_efficiency_class_probe=not_run_read_only$' "$base/audio-report.out" \
     || fail "installed audio report overstates Wine efficiency-class evidence"
