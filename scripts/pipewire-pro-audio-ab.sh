@@ -29,7 +29,7 @@ Options:
   --output DIR      New directory for the report files.
   --discover        Record and check the device state.
   --dry-run         Alias for --discover.
-  -h, --help        Show this help.
+  -h, --help        Show command help.
 
 The benchmark command must close every process it starts. Pro Audio can add
 channels and use more CPU while idle. Treat each result as specific to the
