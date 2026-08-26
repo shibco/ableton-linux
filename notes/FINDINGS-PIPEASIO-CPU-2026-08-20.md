@@ -128,16 +128,23 @@ policy. It does not identify a costly native PipeASIO loop.
 ### Repeated output work
 
 On 26 August 2026, the review found one repeated output action after each
-successful audio block. PipeASIO ran the action 750 times each second per output
-channel at 48 kHz and 64 frames.
+successful audio block. The skipped action is one acquire load followed by one
+acquire-release exchange on an empty output slot. A standalone `-O2`
+microbenchmark measured 5.48 ns per action over 200 million iterations.
+`audio_on_process` runs once per PipeWire graph cycle, not per ASIO buffer. At
+48 kHz with a 64-frame graph quantum, PipeASIO ran the action 750 times each
+second per output. At the default 1024-frame quantum and two outputs, that is
+about 94 actions, or 0.5 microseconds of measured work, each second.
 
 [PipeASIO patch 0013](../patches/pipeasio/0013-avoid-redundant-output-fallback-publish.patch)
-skips the fallback output publication after Live returns audio. The publication
-includes an atomic output-slot exchange. During a driver stop, a buffer change
-or an audio error, PipeASIO sends one silent block at the current PipeWire
-buffer size.
+skips the fallback output publication after Live returns audio. When no process
+callback is installed, Stop or teardown rejects the callback, or the graph
+quantum differs from the host buffer size, PipeASIO instead sends one silent
+block at the current PipeWire buffer size.
 
-The tests cover successful audio and one silent block after an audio error.
+The unit test covers `pipeasio_pw_finish_output` with delivered and fallback
+inputs. The integration-labelled headless `tests/asio_loopback` analyzer covers
+the output-ownership decision; it is not part of the non-integration CTest gate.
 Measure a complete Live workload before you estimate the change in CPU use.
 
 The launcher requests real-time priority 10 when the host grants real-time
