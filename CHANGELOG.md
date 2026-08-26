@@ -2,13 +2,12 @@
 
 ## Unreleased
 
-- **Audio reports now include read-only CPU topology evidence:**
-  - The report records the effective CPU set, physical-core and SMT layout,
-    optional kernel capacity/core-type fields, frequency and CPPC preferred-core
-    evidence, `amd_pstate` policy state, and the sysfs inputs Wine can use for
-    efficiency classes.
-  - It does not change affinity or enable E-core pinning. Hybrid scheduling
-    remains gated on matched low-buffer tests on real heterogeneous hardware.
+- Audio reports include CPU layout evidence:
+  - the report records the available CPU set, physical layout and Linux
+    processor preferences
+  - Linux keeps control of CPU placement
+  - future automatic placement requires matched audio tests on several CPU
+    designs
 
 ## 2026.08.26.1
 

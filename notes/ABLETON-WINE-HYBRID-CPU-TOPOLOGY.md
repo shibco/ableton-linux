@@ -1,94 +1,82 @@
-# Hybrid CPU topology evidence
+# CPU layout evidence for audio reports
 
-This work adds observation, not an affinity policy. The audio report records
-the CPUs available to its own process and the kernel topology fields needed to
-evaluate a future P-core/E-core policy. It never writes sysfs, changes a CPU
-mask, changes scheduling, or starts Wine merely to collect topology.
+The audio report records the CPU layout available to its own process. Linux
+controls CPU placement. The report performs read operations.
 
-## What the report proves
+## Recorded CPU data
 
-For every allowed logical CPU that sysfs exposes, the report records package
-and core IDs, the complete SMT sibling list, `cpu_capacity`, `topology/core_type`
-when the kernel exports it, maximum and current frequency, ACPI CPPC highest and
-nominal performance, and the `amd_pstate` driver's performance scale, maximum
-frequency, hardware-prefcore state, and current preferred-core ranking. The
-global `amd_pstate` mode, preferred-core switch, and dynamic-EPP state are also
-preserved. Current frequency is explicitly a single snapshot. Neither it nor a
-preferred-core rank is treated as a stable P/E core class.
+The report defines and records these values for each available processor:
 
-In Linux 7.1.8, `amd-pstate` passes `amd_pstate_prefcore_ranking` to
-`sched_set_itmt_core_prio()` and updates the scheduler topology if the firmware
-rank changes (`drivers/cpufreq/amd-pstate.c:904-945`). The kernel documentation
-also says the rank can change at runtime
-(`Documentation/admin-guide/pm/amd-pstate.rst:269-280`). The report therefore
-records the driver field directly instead of reconstructing a permanent mask
-from a one-time CPPC value.
+- the effective CPU set lists the processors that the report can use
+- package and core identifiers describe the physical layout
+- simultaneous multithreading siblings share one physical core
+- `cpu_capacity` and `topology/core_type` describe Linux CPU classes
+- maximum frequency gives a limit and current frequency gives one sample
+- CPPC and `amd_pstate` values show firmware and Linux scheduler preferences
 
-The effective CPU set comes from `Cpus_allowed_list` in `/proc/self/status`.
-The online list and Wine-related sysfs inputs remain separate, so a sparse
-cpuset does not disappear from the evidence. Missing and malformed fields are
-reported as `unavailable` or `invalid`; the probe does not infer a core type
-from a model name or clock rate.
+The report also records the global `amd_pstate` mode, preferred-core setting
+and dynamic EPP state. CPPC gives the firmware performance scale for each
+processor. EPP means energy performance preference. It describes a balance
+between power use and speed.
 
-The packaged Wine 11.x topology path consumes the kernel's online topology and,
-when present, `/sys/devices/cpu_core/cpus` to populate processor efficiency-class
-information. The report therefore preserves that P-core list and the kernel's
-companion `/sys/devices/cpu_atom/cpus` list. This is input evidence, not proof of
-what a particular Windows process received. The line
-`wine_win32_efficiency_class_probe=not_run_read_only` makes that boundary
-explicit: obtaining a fresh Win32 API result would require starting Wine and
-could modify or contend for the prefix.
+Linux 7.1.8 passes `amd_pstate_prefcore_ranking` to its scheduler. Linux updates
+the scheduler when firmware changes that rank
+(`drivers/cpufreq/amd-pstate.c:904-945`). The Linux guide confirms that the rank
+can change during use
+(`Documentation/admin-guide/pm/amd-pstate.rst:269-280`). A rank describes a
+current preference. `core_type` supplies a separate CPU class.
 
-## Why this host does not enable E-core pinning
+`Cpus_allowed_list` in `/proc/self/status` supplies the effective CPU set. The
+report records the online set and Wine input files as separate values. The
+value `unavailable` marks an omitted field. The value `invalid` marks an
+unexpected input format.
 
-The 2026-08-26 development host is an AMD Ryzen AI MAX+ 395 with 16 physical
-cores and 32 SMT threads. Its allowed and online sets are both `0-31`; each
-physical core has two siblings, every reported `cpu_capacity` is 1024, and the
-kernel exposes neither `topology/core_type`, `cpu_core/cpus`, nor
-`cpu_atom/cpus`. The probe consequently reports no heterogeneous-core evidence.
+Wine 11 reads the online CPU layout and `/sys/devices/cpu_core/cpus` for its
+Windows efficiency class. The report also records
+`/sys/devices/cpu_atom/cpus`. The marker
+`wine_win32_efficiency_class_probe=not_run_read_only` identifies the report's
+collection from Linux files. A separate Wine test supplies the result visible
+to a Windows process.
 
-The host does expose a separate preferred-core signal: both ACPI CPPC
-`highest_perf` and `amd_pstate_prefcore_ranking` span 166 through 236 across
-physical cores, hardware prefcore is enabled, and the global `amd_pstate` mode
-is `active` with `prefcore=enabled`. That is a firmware ranking among otherwise
-equal-capacity cores, not an efficiency-core class. It also means Linux already
-has a dynamic preference signal for movable work; a static application mask
-could override that scheduler choice and retain a worse core after power,
-thermal, or firmware conditions change.
+## Development host result
 
-That machine cannot answer which Windows and Wine threads benefit from an
-efficiency core, whether PipeASIO and Live agree on Windows-to-Linux CPU
-numbering, or whether restricting a background thread steals capacity needed by
-a synchronous audio dependency. Enabling automatic pinning from this host would
-therefore be an untested scheduling policy, not an optimisation. It could also
-override a user's cpuset, collide with IRQ placement, or strand work after CPU
-hotplug or suspend. Preferred-core ranking is therefore reported as evidence,
-not converted into affinity.
+The host on 26 August 2026 used an AMD Ryzen AI MAX+ 395. It provided 16
+physical cores and 32 simultaneous multithreading threads. Its available and
+online CPU sets both contained `0-31`. Each physical core had two siblings.
 
-## Gate for any future automatic policy
+Every reported `cpu_capacity` value was 1024. The `topology/core_type`,
+`cpu_core/cpus` and `cpu_atom/cpus` fields each produced `unavailable`. These
+results describe a symmetric reported capacity. A complete core-class decision
+also needs an available class field.
 
-Automatic classification or affinity remains off until all of the following
-are recorded:
+ACPI CPPC `highest_perf` and `amd_pstate_prefcore_ranking` ranged from 166 to
+236. Hardware preferred cores used `enabled`. The global `amd_pstate` mode used
+`active` with `prefcore=enabled`.
 
-1. On at least two Intel hybrid generations and one capacity-tiered non-Intel
-   system, the sysfs report must map every allowed CPU consistently to
-   `GetLogicalProcessorInformationEx` and `GetSystemCpuSetInformation`, including
-   their `EfficiencyClass` results. A symmetric SMT host remains the control.
-2. Full, sparse and externally restricted cpusets must retain their exact mask.
-   Missing or contradictory class fields must select the unchanged, unpinned
-   path. The mapping must survive a cold boot, suspend/resume and CPU
-   offline/online cycle.
-3. Each machine must run matched unpinned, proposed-affinity and reversal runs
-   for a loaded Set at 32, 64 and 128 frames. Use at least five 30-second windows
-   per condition and record audible discontinuities, PipeWire xruns, Live's
-   deadline meter, process and per-thread CPU, context switches, CPU migrations,
-   frequency, temperature and package power.
-4. The proposed policy must add no dropout or xrun, show no repeatable deadline
-   regression, and produce a repeatable CPU or power benefit. It must also prove
-   that callback dependencies such as wineserver work are not placed behind
-   unrelated real-time work on a slower class.
-5. An explicit off switch, the original affinity mask and an automatic fallback
-   for incomplete evidence must be tested before any default-on review.
+Linux already receives changes to these preferred-core ranks. A fixed
+application CPU set could keep work on an earlier preferred core after power,
+temperature or firmware changes. Linux therefore controls CPU placement on
+this host.
 
-Until that gate passes, the topology data is suitable for reports and manual
-experiments only.
+Tests on hybrid CPUs must show how Wine and PipeASIO number each processor.
+They must also show where each Live thread runs. A future rule must preserve the
+user CPU set, account for audio interrupts and update after CPU state changes.
+It must also give prompt CPU access to every audio dependency.
+
+## Test gate for automatic CPU placement
+
+Follow these steps before a default placement rule enters release review.
+
+1. Test 2 Intel hybrid generations, one tiered non-Intel system and one symmetric simultaneous multithreading control.
+2. Map every available Linux processor to the Windows `EfficiencyClass` result.
+3. Test full, sparse and externally limited CPU sets. Repeat after cold boot, suspend and resume, and CPU offline and online cycles.
+4. Run original placement, proposed placement and reversal tests at 32, 64 and 128 frames.
+5. Collect at least five 30-second windows for each condition.
+6. Record audible gaps, PipeWire xruns and Live deadline use. Record process and thread CPU use.
+7. Record context switches, moves between processors, frequency, temperature and package power.
+8. Require dropout and xrun counts at or below the original result. Require deadline results that match or improve it.
+9. Require a repeated CPU or power benefit. Confirm prompt CPU access for every audio dependency.
+10. Test an explicit off switch, original CPU set restoration and automatic original placement for partial evidence.
+
+Use the report for manual experiments. Keep Linux in control of CPU placement
+through this test gate.
