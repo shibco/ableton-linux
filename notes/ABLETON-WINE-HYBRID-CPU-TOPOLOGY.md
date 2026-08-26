@@ -10,10 +10,19 @@ mask, changes scheduling, or starts Wine merely to collect topology.
 For every allowed logical CPU that sysfs exposes, the report records package
 and core IDs, the complete SMT sibling list, `cpu_capacity`, `topology/core_type`
 when the kernel exports it, maximum and current frequency, ACPI CPPC highest and
-nominal performance, and the `amd_pstate` driver's highest-performance value.
-The global `amd_pstate` mode, preferred-core switch, and dynamic-EPP state are
-also preserved. Current frequency is explicitly a single snapshot. Neither it
-nor a CPPC preference rank is treated as a stable P/E core class.
+nominal performance, and the `amd_pstate` driver's performance scale, maximum
+frequency, hardware-prefcore state, and current preferred-core ranking. The
+global `amd_pstate` mode, preferred-core switch, and dynamic-EPP state are also
+preserved. Current frequency is explicitly a single snapshot. Neither it nor a
+preferred-core rank is treated as a stable P/E core class.
+
+In Linux 7.1.8, `amd-pstate` passes `amd_pstate_prefcore_ranking` to
+`sched_set_itmt_core_prio()` and updates the scheduler topology if the firmware
+rank changes (`drivers/cpufreq/amd-pstate.c:904-945`). The kernel documentation
+also says the rank can change at runtime
+(`Documentation/admin-guide/pm/amd-pstate.rst:269-280`). The report therefore
+records the driver field directly instead of reconstructing a permanent mask
+from a one-time CPPC value.
 
 The effective CPU set comes from `Cpus_allowed_list` in `/proc/self/status`.
 The online list and Wine-related sysfs inputs remain separate, so a sparse
@@ -38,13 +47,14 @@ physical core has two siblings, every reported `cpu_capacity` is 1024, and the
 kernel exposes neither `topology/core_type`, `cpu_core/cpus`, nor
 `cpu_atom/cpus`. The probe consequently reports no heterogeneous-core evidence.
 
-The host does expose a separate preferred-core signal: ACPI CPPC
-`highest_perf` spans 166 through 236 across physical cores, while
-`amd_pstate/status` is `active` and `amd_pstate/prefcore` is `enabled`. That is a
-firmware ranking among otherwise equal-capacity cores, not an efficiency-core
-class. It also means Linux already has a preference signal for movable work; a
-static application mask could override that scheduler choice and retain a worse
-core after power, thermal, or firmware conditions change.
+The host does expose a separate preferred-core signal: both ACPI CPPC
+`highest_perf` and `amd_pstate_prefcore_ranking` span 166 through 236 across
+physical cores, hardware prefcore is enabled, and the global `amd_pstate` mode
+is `active` with `prefcore=enabled`. That is a firmware ranking among otherwise
+equal-capacity cores, not an efficiency-core class. It also means Linux already
+has a dynamic preference signal for movable work; a static application mask
+could override that scheduler choice and retain a worse core after power,
+thermal, or firmware conditions change.
 
 That machine cannot answer which Windows and Wine threads benefit from an
 efficiency core, whether PipeASIO and Live agree on Windows-to-Linux CPU

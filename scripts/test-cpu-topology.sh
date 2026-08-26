@@ -42,6 +42,8 @@ make_cpu()
     local capacity="$5" core_type="$6" max_khz="$7" current_khz="$8"
     local cppc_highest="${9:-missing}" cppc_nominal="${10:-missing}"
     local amd_pstate_highest="${11:-missing}"
+    local amd_pstate_ranking="${12:-missing}" amd_pstate_hw_prefcore="${13:-missing}"
+    local amd_pstate_max_khz="${14:-missing}"
     local dir="$cpu_root/cpu$cpu"
 
     mkdir -p -- "$dir/topology"
@@ -50,12 +52,20 @@ make_cpu()
     [ "$siblings" = missing ] || printf '%s\n' "$siblings" > "$dir/topology/thread_siblings_list"
     [ "$capacity" = missing ] || printf '%s\n' "$capacity" > "$dir/cpu_capacity"
     [ "$core_type" = missing ] || printf '%s\n' "$core_type" > "$dir/topology/core_type"
-    if [ "$max_khz" != missing ] || [ "$current_khz" != missing ]; then
+    if [ "$max_khz" != missing ] || [ "$current_khz" != missing ] \
+       || [ "$amd_pstate_highest" != missing ] || [ "$amd_pstate_ranking" != missing ] \
+       || [ "$amd_pstate_hw_prefcore" != missing ] || [ "$amd_pstate_max_khz" != missing ]; then
         mkdir -p -- "$dir/cpufreq"
         [ "$max_khz" = missing ] || printf '%s\n' "$max_khz" > "$dir/cpufreq/cpuinfo_max_freq"
         [ "$current_khz" = missing ] || printf '%s\n' "$current_khz" > "$dir/cpufreq/scaling_cur_freq"
         [ "$amd_pstate_highest" = missing ] \
             || printf '%s\n' "$amd_pstate_highest" > "$dir/cpufreq/amd_pstate_highest_perf"
+        [ "$amd_pstate_ranking" = missing ] \
+            || printf '%s\n' "$amd_pstate_ranking" > "$dir/cpufreq/amd_pstate_prefcore_ranking"
+        [ "$amd_pstate_hw_prefcore" = missing ] \
+            || printf '%s\n' "$amd_pstate_hw_prefcore" > "$dir/cpufreq/amd_pstate_hw_prefcore"
+        [ "$amd_pstate_max_khz" = missing ] \
+            || printf '%s\n' "$amd_pstate_max_khz" > "$dir/cpufreq/amd_pstate_max_freq"
     fi
     if [ "$cppc_highest" != missing ] || [ "$cppc_nominal" != missing ]; then
         mkdir -p -- "$dir/acpi_cppc"
@@ -83,7 +93,7 @@ has_line "$report" 'smt_evidence=present'
 has_line "$report" 'heterogeneous_evidence=not_observed'
 has_line "$report" 'topology_fields_complete=yes'
 has_line "$report" 'preferred_core_evidence=unavailable'
-has_line "$report" 'cpu=0 package=0 core=0 siblings=0,2 cpu_capacity=1024 core_type=unavailable max_khz=4200000 current_khz=3100000 cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable'
+has_line "$report" 'cpu=0 package=0 core=0 siblings=0,2 cpu_capacity=1024 core_type=unavailable max_khz=4200000 current_khz=3100000 cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable amd_pstate_prefcore_ranking=unavailable amd_pstate_hw_prefcore=unavailable amd_pstate_max_khz=unavailable'
 ok 'A homogeneous SMT fixture reports physical cores, sibling pairs and frequency snapshots without inventing core classes.'
 
 make_fixture preferred-core-amd
@@ -94,17 +104,17 @@ mkdir -p -- "$cpu_root/amd_pstate"
 printf 'active\n' > "$cpu_root/amd_pstate/status"
 printf 'enabled\n' > "$cpu_root/amd_pstate/prefcore"
 printf 'disabled\n' > "$cpu_root/amd_pstate/dynamic_epp"
-make_cpu 0 0 0 0,2 1024 missing 5100000 4000000 220 96 166
-make_cpu 1 0 1 1,3 1024 missing 5100000 3900000 180 96 166
-make_cpu 2 0 0 0,2 1024 missing 5100000 3800000 220 96 166
-make_cpu 3 0 1 1,3 1024 missing 5100000 3700000 180 96 166
+make_cpu 0 0 0 0,2 1024 missing 5100000 4000000 220 96 166 220 enabled 5187500
+make_cpu 1 0 1 1,3 1024 missing 5100000 3900000 180 96 166 180 enabled 5000000
+make_cpu 2 0 0 0,2 1024 missing 5100000 3800000 220 96 166 220 enabled 5187500
+make_cpu 3 0 1 1,3 1024 missing 5100000 3700000 180 96 166 180 enabled 5000000
 report="$(ableton_cpu_topology_report "$cpu_root" "$proc_status" "$devices_root")"
 has_line "$report" 'heterogeneous_evidence=not_observed'
 has_line "$report" 'preferred_core_evidence=present'
 has_line "$report" 'amd_pstate_status=active'
 has_line "$report" 'amd_pstate_prefcore=enabled'
 has_line "$report" 'amd_pstate_dynamic_epp=disabled'
-has_line "$report" 'cpu=0 package=0 core=0 siblings=0,2 cpu_capacity=1024 core_type=unavailable max_khz=5100000 current_khz=4000000 cppc_highest_perf=220 cppc_nominal_perf=96 amd_pstate_highest_perf=166'
+has_line "$report" 'cpu=0 package=0 core=0 siblings=0,2 cpu_capacity=1024 core_type=unavailable max_khz=5100000 current_khz=4000000 cppc_highest_perf=220 cppc_nominal_perf=96 amd_pstate_highest_perf=166 amd_pstate_prefcore_ranking=220 amd_pstate_hw_prefcore=enabled amd_pstate_max_khz=5187500'
 ok 'CPPC preferred-core rankings remain distinct from P/E capacity classes and expose the active scheduler hint.'
 
 make_fixture hybrid-pe
@@ -124,7 +134,7 @@ has_line "$report" 'wine_efficiency_class_source=cpu_core/cpus'
 has_line "$report" 'wine_performance_cpus=0-1'
 has_line "$report" 'kernel_efficiency_cpus=2-3'
 has_line "$report" 'wine_win32_efficiency_class_probe=not_run_read_only'
-has_line "$report" 'cpu=2 package=0 core=2 siblings=2 cpu_capacity=640 core_type=efficiency max_khz=3800000 current_khz=2700000 cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable'
+has_line "$report" 'cpu=2 package=0 core=2 siblings=2 cpu_capacity=640 core_type=efficiency max_khz=3800000 current_khz=2700000 cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable amd_pstate_prefcore_ranking=unavailable amd_pstate_hw_prefcore=unavailable amd_pstate_max_khz=unavailable'
 ok 'A P/E fixture preserves kernel class evidence and labels Wine input separately from an unrun Win32 proof.'
 
 printf 'Cpus_allowed_list:\t0,2\n' > "$proc_status"
@@ -150,7 +160,7 @@ has_line "$report" 'possible_cpus=unavailable'
 has_line "$report" 'reported_physical_cores=0'
 has_line "$report" 'smt_evidence=unknown'
 has_line "$report" 'topology_fields_complete=no'
-has_line "$report" 'cpu=0 package=unavailable core=unavailable siblings=unavailable cpu_capacity=unavailable core_type=unavailable max_khz=unavailable current_khz=unavailable cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable'
+has_line "$report" 'cpu=0 package=unavailable core=unavailable siblings=unavailable cpu_capacity=unavailable core_type=unavailable max_khz=unavailable current_khz=unavailable cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable amd_pstate_prefcore_ranking=unavailable amd_pstate_hw_prefcore=unavailable amd_pstate_max_khz=unavailable'
 ok 'Missing and malformed sysfs fields remain explicit while a valid online list provides a bounded fallback.'
 
 make_fixture no-smt
