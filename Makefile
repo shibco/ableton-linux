@@ -21,6 +21,7 @@ uninstall:                    ## remove installed Wine tree + launcher
 test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-tsan-policy.sh
 	./scripts/test-release-policy.sh
+	./scripts/test-check-ntsync.sh
 	./scripts/test-shortcut-hold.sh
 	./scripts/test-live-options.sh
 	./scripts/test-desktop-integration.sh

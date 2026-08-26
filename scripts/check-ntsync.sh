@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Check that a runtime has ntsync compiled in and actually uses it, and that
 # NT sync semantics hold, by running ntsyncprobe.exe against a prefix.
-# Exit 0 = compiled in, active (when /dev/ntsync exists), all assertions pass.
+# Exit 0 = assertions pass with active NTSync, or with the fallback explicitly
+# accepted through ABLETON_REQUIRE_NTSYNC=off. Exit 3 means strict mode found
+# that /dev/ntsync is unavailable.
 # Refuses a prefix that already has a wineserver. Never point it at the live
 # prefix while Live is running.
 set -uo pipefail
@@ -18,8 +20,45 @@ else
     PROBE="$here/../beta/tester-kit/probes/windows/ntsyncprobe.exe"
 fi
 TIMEOUT="${ABLETON_CHECK_TIMEOUT:-120}"
+ntsync_device=/dev/ntsync
+if [ -n "${ABLETON_TEST_NTSYNC_DEVICE:-}" ]; then
+    if [ "${ABLETON_NTSYNC_TEST_MODE:-}" != 1 ]; then
+        echo "!! ABLETON_TEST_NTSYNC_DEVICE is reserved for the hermetic test suite" >&2
+        exit 2
+    fi
+    ntsync_device="$ABLETON_TEST_NTSYNC_DEVICE"
+fi
+require_ntsync="${ABLETON_REQUIRE_NTSYNC:-on}"
+case "${require_ntsync,,}" in
+    1|on|true|yes) require_ntsync=1 ;;
+    0|off|false|no) require_ntsync=0 ;;
+    *)
+        echo "!! ABLETON_REQUIRE_NTSYNC must be on or off (got '$require_ntsync')" >&2
+        exit 2
+        ;;
+esac
+
+work=""
+server_started=0
+cleanup()
+{
+    local old_status=$?
+    if [ "$server_started" -eq 1 ]; then
+        "$WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 || true
+    fi
+    if [ -n "$work" ] && [ -d "$work" ]; then
+        case "$work" in
+            /tmp/check-ntsync.*) rm -rf -- "$work" ;;
+            *) echo "!! refusing to remove unexpected temporary path: $work" >&2 ;;
+        esac
+    fi
+    return "$old_status"
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "!! no wine at $WINE_ROOT" >&2; exit 1; }
+[ -x "$WINE_ROOT/bin/wineserver" ] || { echo "!! no wineserver at $WINE_ROOT" >&2; exit 1; }
 [ -f "$PROBE" ]              || { echo "!! ntsync semantics probe not found at $PROBE" >&2; exit 1; }
 
 for pid in $(pgrep -x wineserver); do
@@ -40,13 +79,21 @@ if [ "$srv" -eq 0 ]; then
     echo "!! FAIL: ntsync not compiled in (no linux/ntsync.h at build time); every wait is a wineserver round trip" >&2
     exit 1
 fi
-[ -c /dev/ntsync ] || echo "-- note: no /dev/ntsync (kernel < 6.14?); checking fallback semantics only"
+if [ ! -c "$ntsync_device" ]; then
+    echo "!! INACTIVE: no $ntsync_device (kernel < 6.14, or module unloaded; try sudo modprobe ntsync)" >&2
+    if [ "$require_ntsync" -eq 1 ]; then
+        echo "!! rerun with ABLETON_REQUIRE_NTSYNC=off only when deliberately testing Wine's slower fallback" >&2
+        exit 3
+    fi
+    echo "-- ABLETON_REQUIRE_NTSYNC=off: checking fallback semantics only"
+fi
 
 mkdir -p "$WINEPREFIX"
 work="$(mktemp -d /tmp/check-ntsync.XXXXXX)"
 cd "$work" || exit 1
 
 "$WINE_ROOT/bin/wineserver" -p || { echo "!! could not start wineserver" >&2; exit 1; }
+server_started=1
 sleep 1
 sp=""
 for pid in $(pgrep -x wineserver); do
@@ -60,23 +107,24 @@ timeout "$TIMEOUT" "$WINE_ROOT/bin/wine" "$PROBE"
 rc=$?
 t1=$(date +%s%N)
 c1=$(awk '/ctxt/{s+=$2}END{print s}' "/proc/$sp/status" 2>/dev/null || echo "$c0")
-fds=$(ls -l "/proc/$sp/fd" 2>/dev/null | grep -c '/dev/ntsync')
+fds=0
+for fd_path in "/proc/$sp/fd/"*; do
+    [ "$(readlink -- "$fd_path" 2>/dev/null || true)" = "$ntsync_device" ] \
+        && fds=$((fds + 1))
+done
 
 echo "-- probe results:"
 sed 's/^/   /' ntsyncprobe.txt 2>/dev/null || echo "   (no ntsyncprobe.txt written)"
 echo "-- probe rc=$rc wall_ms=$(( (t1-t0)/1000000 )) server_ctx_delta=$((c1-c0)) server_dev_ntsync_fds=$fds"
 
-"$WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1
-cd / && rm -rf "$work"
-
 [ "$rc" -eq 0 ] || { echo "!! FAIL: $rc sync semantics assertion(s) failed" >&2; exit 1; }
-if [ -c /dev/ntsync ] && [ "$fds" -eq 0 ]; then
-    echo "!! FAIL: runtime never opened /dev/ntsync despite the device existing" >&2
+if [ -c "$ntsync_device" ] && [ "$fds" -eq 0 ]; then
+    echo "!! FAIL: runtime never opened $ntsync_device despite the device existing" >&2
     exit 1
 fi
 if [ "$fds" -gt 0 ]; then
-    echo "OK: sync semantics hold, ntsync active (server holds /dev/ntsync)"
+    echo "OK: sync semantics hold, ntsync active (server holds $ntsync_device)"
 else
-    echo "OK: sync semantics hold (fallback path, no /dev/ntsync)"
+    echo "OK: sync semantics hold on the explicitly accepted fallback path (NTSync inactive)"
 fi
 exit 0

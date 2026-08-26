@@ -42,6 +42,29 @@ if ls -l /dev/ntsync 2>/dev/null; then
 else
     echo "no /dev/ntsync"
 fi
+
+matching_server=0
+if have pgrep; then
+    while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        prefix="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+            | sed -n 's/^WINEPREFIX=//p' | head -n 1)"
+        [ "$prefix" = "$ABLETON_WINEPREFIX" ] || continue
+        matching_server=1
+        ntsync_fds=0
+        for fd_path in "/proc/$pid/fd/"*; do
+            [ "$(readlink -- "$fd_path" 2>/dev/null || true)" = /dev/ntsync ] \
+                && ntsync_fds=$((ntsync_fds + 1))
+        done
+        if [ "$ntsync_fds" -gt 0 ]; then
+            echo "wineserver $pid: NTSync active ($ntsync_fds /dev/ntsync fd(s))"
+        else
+            echo "wineserver $pid: NTSync NOT proven (no /dev/ntsync fd)"
+        fi
+    done < <(pgrep -x wineserver 2>/dev/null)
+fi
+[ "$matching_server" -eq 1 ] || echo "no running wineserver for the configured Live prefix"
+
 ntsync_check="$ABLETON_DATA_HOME/check-ntsync.sh"
 [ -x "$ntsync_check" ] || ntsync_check="$here/check-ntsync.sh"
 if [ -x "$ntsync_check" ]; then
@@ -87,6 +110,31 @@ sec "PipeASIO configuration"
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
 [ -r "$cfg" ] && redact < "$cfg" || echo "no config.ini (driver defaults apply)"
 env | grep -E '^(PIPEASIO|ABLETON)_' | redact
+
+sec "Live audio worker setting"
+options_found=0
+if [ -d "$ABLETON_WINEPREFIX/drive_c/users" ]; then
+    while IFS= read -r options_file; do
+        case "$options_file" in
+            */AppData/Roaming/Ableton/Live\ 12*/Preferences/Options.txt) ;;
+            *) continue ;;
+        esac
+        options_found=1
+        printf '%s: ' "$options_file" | redact
+        if ! sed -n '/^-MaxAudioThreads=/{p;q;}' "$options_file"; then
+            echo "(unreadable)"
+        elif ! grep -q '^-MaxAudioThreads=' "$options_file"; then
+            echo "(no explicit -MaxAudioThreads; Live calculates it)"
+        fi
+    done < <(
+        if have rg; then
+            rg --files "$ABLETON_WINEPREFIX/drive_c/users" -g Options.txt 2>/dev/null
+        else
+            find "$ABLETON_WINEPREFIX/drive_c/users" -name Options.txt -type f 2>/dev/null
+        fi
+    )
+fi
+[ "$options_found" -eq 1 ] || echo "no Live 12 Options.txt found"
 
 sec "launcher live log tail"
 slog="$ABLETON_STATE_HOME/logs/live.log"
