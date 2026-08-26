@@ -32,6 +32,8 @@ ABLETON_LINKD_SHA="${ABLETON_LINKD_SHA:-}"
 DESTDIR="$WORK/stage"
 PREFIX_ROOT="$DESTDIR$CONFIGURE_PREFIX"
 npatch="$(ls "$SRC"/patches/[0-9][0-9][0-9][0-9]-*.patch | wc -l)"
+performance_patches=("$SRC"/patches/performance/*.patch)
+nperf="${#performance_patches[@]}"
 
 # TSan reserves a fixed shadow address range. High-entropy ASLR can collide
 # with that range, and newer runtimes may be unable to request process-local
@@ -139,7 +141,7 @@ echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.13 @ 5c23dd1c) =
 mkdir -p "$WORK/wine-src"
 zstd -dc --long=27 "$SRC/vendor/wine-base-5c23dd1c.tar.zst" | tar -x -C "$WORK/wine-src"
 
-echo "== [2/8] git init + apply the $npatch-patch fix series =="
+echo "== [2/8] git init + apply the $npatch-patch fix series + $nperf bounded performance patch(es) =="
 cd "$WORK/wine-src"
 # Rootless podman can bind-mount /work owned by a UID outside the container's
 # user namespace; git (>=2.35.2) refuses to operate on a tree it doesn't own.
@@ -151,7 +153,7 @@ git -c user.email=build@localhost -c user.name=dist commit -q -m "base 5c23dd1c"
 # The series ships without From:/Date: mail headers; git am refuses to commit
 # with an empty author, so supply a fixed neutral ident (fixed date keeps the
 # apply reproducible). Patches that still carry headers keep their own.
-for p in "$SRC"/patches/[0-9][0-9][0-9][0-9]-*.patch; do
+for p in "$SRC"/patches/[0-9][0-9][0-9][0-9]-*.patch "${performance_patches[@]}"; do
     if head -8 "$p" | grep -q '^From: '; then
         git -c user.email=build@localhost -c user.name=dist am --3way "$p"
     else
@@ -637,7 +639,7 @@ LC_ALL=C sort -c -u "$builder_packages"
 builder_packages_sha="$(sha256sum "$builder_packages" | awk '{print $1}')"
 # Stamp per-patch sha256s into the tree; build-audit.sh diffs this against patches/SERIES.sha256.
 stack_stamp="$PREFIX_ROOT/ABLETON-WINE-PATCH-STACK.txt"
-( cd "$SRC/patches" && sha256sum [0-9][0-9][0-9][0-9]-*.patch pipeasio/*.patch ) > "$stack_stamp"
+( cd "$SRC/patches" && sha256sum [0-9][0-9][0-9][0-9]-*.patch performance/*.patch pipeasio/*.patch ) > "$stack_stamp"
 stack_sha="$(sha256sum "$stack_stamp" | awk '{print $1}')"
 build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 {
@@ -645,8 +647,9 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "wine:         $("$PREFIX_ROOT/bin/wine" --version)"
     echo "base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c"
     echo "prefix:       $CONFIGURE_PREFIX (configure-time only; tarball is relocatable, see relocation gate)"
-    echo "patches:      $((npatch + nasio))"     # wine series + pipeasio series
+    echo "patches:      $((npatch + nperf + nasio))"     # wine + bounded performance + pipeasio
     echo "wine-patches: $npatch"
+    echo "performance-patches: $nperf"
     echo "pipeasio-patches: $nasio"
     echo "patch-head:   $patch_head"
     echo "patch-stack:  $stack_sha"

@@ -267,7 +267,7 @@ bash "$series_checker" --check-series-policy "$series" >/dev/null \
 # Read the terminal members off the manifest rather than naming them: the
 # policy pins whichever patch currently ends each series, so a hardcoded name
 # turns into a failing negative test the next time either series grows.
-wine_tail="$(awk '$2 !~ /^pipeasio\// { print $2 }' "$series" | sort | tail -1)"
+wine_tail="$(awk '$2 !~ /^(pipeasio|performance)\// { print $2 }' "$series" | sort | tail -1)"
 pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' "$series" | sort | tail -1)"
 
 grep -v "  $wine_tail\$" \
@@ -286,4 +286,22 @@ grep -v '  pipeasio/' "$series" > "$tmp/no-pipeasio-series"
 if bash "$series_checker" --check-series-policy "$tmp/no-pipeasio-series" >/dev/null 2>&1; then
     fail 'series policy accepted an empty PipeASIO series'
 fi
-printf 'ok - patch series cannot lose either required terminal member\n'
+
+while read -r performance_member; do
+    grep -v "  $performance_member\$" "$series" > "$tmp/no-performance-member"
+    if bash "$series_checker" --check-series-policy "$tmp/no-performance-member" >/dev/null 2>&1; then
+        fail "series policy accepted missing reviewed performance member $performance_member"
+    fi
+done < <(awk '$2 ~ /^performance\// { print $2 }' "$series")
+
+grep -v '  performance/' "$series" > "$tmp/no-performance-series"
+if bash "$series_checker" --check-series-policy "$tmp/no-performance-series" >/dev/null 2>&1; then
+    fail 'series policy accepted an empty performance series'
+fi
+
+cp "$series" "$tmp/extra-performance-member"
+printf '%064d  performance/0002-unreviewed.patch\n' 0 >> "$tmp/extra-performance-member"
+if bash "$series_checker" --check-series-policy "$tmp/extra-performance-member" >/dev/null 2>&1; then
+    fail 'series policy accepted an unreviewed performance member'
+fi
+printf 'ok - patch series pins required Wine/PipeASIO tails and the exact bounded-performance set\n'
