@@ -5,7 +5,8 @@ controls CPU placement. The report performs read operations.
 
 ## Recorded CPU data
 
-The report defines and records these values for each available processor:
+The report defines and records the following values for each available
+processor:
 
 - the effective CPU set lists the processors that the report can use
 - package and core identifiers describe the physical layout
@@ -27,16 +28,14 @@ can change during use
 current preference. `core_type` supplies a separate CPU class.
 
 `Cpus_allowed_list` in `/proc/self/status` supplies the effective CPU set. The
-report records the online set and Wine input files as separate values. The
-value `unavailable` marks an omitted field. The value `invalid` marks an
-unexpected input format.
+report records the online set and Wine input files as separate values.
+Machine-readable states mark system-omitted fields and unexpected field
+content.
 
 Wine 11 reads the online CPU layout and `/sys/devices/cpu_core/cpus` for its
 Windows efficiency class. The report also records
-`/sys/devices/cpu_atom/cpus`. The marker
-`wine_win32_efficiency_class_probe=not_run_read_only` identifies the report's
-collection from Linux files. A separate Wine test supplies the result visible
-to a Windows process.
+`/sys/devices/cpu_atom/cpus`. The report identifies Linux files as its collection
+source. A separate Wine test supplies the result visible to a Windows process.
 
 ## Development host result
 
@@ -45,18 +44,18 @@ physical cores and 32 simultaneous multithreading threads. Its available and
 online CPU sets both contained `0-31`. Each physical core had two siblings.
 
 Every reported `cpu_capacity` value was 1024. The `topology/core_type`,
-`cpu_core/cpus` and `cpu_atom/cpus` fields each produced `unavailable`. These
+`cpu_core/cpus` and `cpu_atom/cpus` files produced the system-omitted state. The
 results describe a symmetric reported capacity. A complete core-class decision
-also needs an available class field.
+also needs a supplied class field.
 
 ACPI CPPC `highest_perf` and `amd_pstate_prefcore_ranking` ranged from 166 to
 236. Hardware preferred cores used `enabled`. The global `amd_pstate` mode used
 `active` with `prefcore=enabled`.
 
-Linux already receives changes to these preferred-core ranks. A fixed
+Linux already receives changes to the preferred-core ranks. A fixed
 application CPU set could keep work on an earlier preferred core after power,
-temperature or firmware changes. Linux therefore controls CPU placement on
-this host.
+temperature or firmware changes. Linux therefore controls CPU placement on the
+development host.
 
 Tests on hybrid CPUs must show how Wine and PipeASIO number each processor.
 They must also show where each Live thread runs. A future rule must preserve the
@@ -65,7 +64,7 @@ It must also give prompt CPU access to every audio dependency.
 
 ## Test gate for automatic CPU placement
 
-Follow these steps before a default placement rule enters release review.
+Follow the steps before a default placement rule enters release review.
 
 1. Test 2 Intel hybrid generations, one tiered non-Intel system and one symmetric simultaneous multithreading control.
 2. Map every available Linux processor to the Windows `EfficiencyClass` result.
@@ -76,7 +75,7 @@ Follow these steps before a default placement rule enters release review.
 7. Record context switches, moves between processors, frequency, temperature and package power.
 8. Require dropout and xrun counts at or below the original result. Require deadline results that match or improve it.
 9. Require a repeated CPU or power benefit. Confirm prompt CPU access for every audio dependency.
-10. Test an explicit off switch, original CPU set restoration and automatic original placement for partial evidence.
+10. Test a control setting, original CPU set restoration and automatic original placement for partial evidence.
 
 Use the report for manual experiments. Keep Linux in control of CPU placement
-through this test gate.
+through the test gate.
