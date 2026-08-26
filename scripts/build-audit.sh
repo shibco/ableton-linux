@@ -466,6 +466,7 @@ STAMP_ONLY='
 0102|logic-only (natural modes use outlines; GDI-compatible and aliased modes keep strikes; adds no string literal)
 0103|logic-only (natural rendering quantised to 16 horizontal phases, glyph cache budget scaled with the phase count; adds no string literal)
 0104|logic-only (resize derives target bitmap options from the DXGI surface and preserves its pixel format; adds no string literal)
+pipeasio/0013|logic-only (successful callbacks already finalize output slots; no distinctive string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
