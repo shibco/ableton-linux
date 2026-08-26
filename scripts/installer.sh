@@ -918,17 +918,16 @@ case "$command_name" in
             "$here/setup-link.sh" disable
         else
             # Link setup asks for a sudo password when a firewall is active.
-            # An unanswered prompt, or Ctrl-C at it, fails the step.  Live is
-            # installed by then, so that failure must not undo the install or
-            # the update: report it, name the command that finishes Link on
-            # its own, and go on.  The Link policy stays recorded, so that
-            # command and every later update run the same setup again.
+            # Preserve the completed Live changes when the prompt expires or
+            # receives Ctrl-C. Report the stopped Link step. Show the command that
+            # resumes it. The stored Link choice makes later updates repeat the
+            # setup.
             trap 'link_setup_failed=1' INT
             "$here/setup-link.sh" enable "--mode=$desired_link" || link_setup_failed=1
             trap 'exit 130' INT
             if [ "$link_setup_failed" -eq 1 ]; then
-                echo "!! Link setup is incomplete; the $command_name continues without it" >&2
-                echo "   To finish it later, run: installer link enable --mode=$desired_link" >&2
+                echo "!! Link setup stopped; the $command_name continues" >&2
+                echo "   Run this command to complete Link setup: installer link enable --mode=$desired_link" >&2
             fi
         fi ;;
 esac
@@ -1106,7 +1105,7 @@ if [ "$command_name:$subcommand" = runtime:install ]; then
 else
     printf '  runtime: %s\n  prefix: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX"
     if [ "$link_setup_failed" -eq 1 ]; then
-        printf '  Link: incomplete (run: installer link enable --mode=%s)\n' "$ABLETON_LINK_MODE"
+        printf '  Link: setup stopped (run: installer link enable --mode=%s)\n' "$ABLETON_LINK_MODE"
     else
         printf '  Link: %s\n' "$ABLETON_LINK_MODE"
     fi

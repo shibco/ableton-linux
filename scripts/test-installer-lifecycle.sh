@@ -711,11 +711,10 @@ run_payload_install || fail "a quiet payload wait fails the install"
 ! grep -q 'the install is complete\.' "$base/out" || fail "a quiet prefix is reported as busy"
 ok "a quiet prefix after the payload reports nothing"
 
-# Link setup runs after the Live payload, and an unanswered sudo prompt for the
-# firewall rule fails it.  Live is installed by then, so the install must
-# complete, keep the prefix, and name the command that finishes Link on its own.
-# 'int' stands in for Ctrl-C at that prompt: the installer takes the signal
-# while it waits on the step, and the step ends the way a signalled one does.
+# Link setup runs after the Live payload. An expired sudo prompt stops the
+# firewall step. The installer must preserve Live. It must show the command that
+# resumes Link setup. Ctrl-C sends SIGINT while the installer waits. The Link
+# process then exits with status 130.
 cat > "$kit/scripts/setup-link.sh" <<'EOF'
 #!/bin/sh
 set -eu
@@ -736,35 +735,35 @@ run_failed_link_install()
             --link=always --runtime-root "$base/runtime" --prefix "$base/prefix" --yes \
         >"$base/out" 2>"$base/err"
 }
-run_failed_link_install 1 || fail "a failed Link setup after the Live payload fails the install"
-grep -q 'OK: install completed' "$base/out" || fail "a failed Link setup leaves the install incomplete"
-! grep -q 'prefix --rollback' "$base/calls.log" || fail "a failed Link setup rolls the prefix back"
-grep -qF 'run: installer link enable --mode=always' "$base/err" \
-    || fail "a failed Link setup does not name the command and mode that finish it"
-grep -qF 'Link: incomplete (run: installer link enable --mode=always)' "$base/out" \
-    || fail "the summary reports Link as set up after its setup failed"
-ok "a failed Link setup after the Live payload reports itself and keeps the install"
+run_failed_link_install 1 || fail "the install must finish after Link setup failure"
+grep -q 'OK: install completed' "$base/out" || fail "the output must confirm install completion"
+! grep -q 'prefix --rollback' "$base/calls.log" || fail "the installer must preserve the prefix"
+grep -qF 'Run this command to complete Link setup: installer link enable --mode=always' "$base/err" \
+    || fail "the output must include the Link recovery command and mode"
+grep -qF 'Link: setup stopped (run: installer link enable --mode=always)' "$base/out" \
+    || fail "the summary must report the stopped Link setup"
+ok "Link setup failure reports the resume command and preserves the install"
 
-run_failed_link_install int || fail "Ctrl-C at the Link step fails the install"
-grep -q 'OK: install completed' "$base/out" || fail "Ctrl-C at the Link step leaves the install incomplete"
-! grep -q 'prefix --rollback' "$base/calls.log" || fail "Ctrl-C at the Link step rolls the prefix back"
-grep -qF 'run: installer link enable --mode=always' "$base/err" \
-    || fail "Ctrl-C at the Link step does not name the command that finishes it"
-ok "Ctrl-C at the Link step ends only that step"
+run_failed_link_install int || fail "the install must finish after Ctrl-C stops Link setup"
+grep -q 'OK: install completed' "$base/out" || fail "the output must confirm install completion after Ctrl-C"
+! grep -q 'prefix --rollback' "$base/calls.log" || fail "the installer must preserve the prefix after Ctrl-C"
+grep -qF 'Run this command to complete Link setup: installer link enable --mode=always' "$base/err" \
+    || fail "the output must include the Link recovery command after Ctrl-C"
+ok "Ctrl-C stops Link setup and preserves the install"
 
-# The same step on an update: the previous runtime and prefix are kept in
-# place, and the update is not thrown away either.
+# An update preserves the prefix and commits the new runtime after the same
+# Link setup failure.
 : > "$base/calls.log"
 run_isolated "$base" env ABLETON_TEST_CALL_LOG="$base/calls.log" ABLETON_TEST_LINK_ENABLE_EXIT=1 \
     bash "$kit/scripts/installer.sh" update --yes >"$base/out" 2>"$base/err" \
-    || fail "a failed Link setup during an update fails the update"
-grep -q 'OK: update completed' "$base/out" || fail "a failed Link setup leaves the update incomplete"
-! grep -q -- '--rollback' "$base/calls.log" || fail "a failed Link setup rolls the update back"
-grep -q 'the update continues without it' "$base/err" \
-    || fail "a failed Link setup during an update is not reported as such"
-grep -qF 'Link: incomplete (run: installer link enable --mode=always)' "$base/out" \
-    || fail "the update summary reports Link as set up after its setup failed"
-ok "a failed Link setup during an update reports itself and keeps the update"
+    || fail "the update must finish after Link setup failure"
+grep -q 'OK: update completed' "$base/out" || fail "the output must confirm update completion"
+! grep -q -- '--rollback' "$base/calls.log" || fail "the installer must preserve the update"
+grep -q 'Link setup stopped; the update continues' "$base/err" \
+    || fail "the output must report the stopped Link setup"
+grep -qF 'Link: setup stopped (run: installer link enable --mode=always)' "$base/out" \
+    || fail "the update summary must report the stopped Link setup"
+ok "Link setup failure reports the resume action and preserves the update"
 
 base="$(new_env launcher-preflight)"
 mkdir -p "$base/runtime/bin" "$base/prefix"

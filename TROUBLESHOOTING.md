@@ -52,7 +52,7 @@ have already fixed your issue.
   - [Push 3 plays notes on its own](#push-3-plays-notes-on-its-own)
   - [Ableton Move support](#ableton-move-support)
 - [Ableton Link](#ableton-link)
-  - [The Link button is missing from the control bar](#the-link-button-is-missing-from-the-control-bar)
+  - [Display the Link button](#display-the-link-button)
   - [Ableton Link does not find peers](#ableton-link-does-not-find-peers)
 - [Report a problem](#report-a-problem)
 
@@ -973,17 +973,17 @@ Push 1, Push 2, and Push 3 in controller mode.
 
 ## Ableton Link
 
-### The Link button is missing from the control bar
+### Display the Link button
 
-Open **Settings > Audio** and select:
+Live displays the Link button when it uses an ASIO driver.
 
-- **Driver Type:** ASIO
-- **Audio Device:** PipeASIO
+1. Open Settings > Audio.
+2. Set Driver Type to ASIO.
+3. Set Audio Device to PipeASIO.
+4. Open Settings > Link, Tempo and MIDI.
+5. Enable Show Link Toggle.
 
-Live only offers Link with an ASIO driver. While **MME/DirectX** is the driver
-type, Live hides the Link button. After you select PipeASIO, enable
-**Show Link Toggle** under **Settings > Link, Tempo and MIDI**. The button
-returns to the control bar.
+The Link button appears in the control bar.
 
 ### Ableton Link does not find peers
 
