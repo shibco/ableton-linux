@@ -129,14 +129,23 @@ to prove exact event order during the suspend test.
 
 ## Release checks
 
-Build the exact patched Wine target with Wine's warning rules. Record the
-following results from matched loaded Sets:
+Build the exact patched Wine target with Wine's warning rules. Run the benchmark
+suite twice from the same prefix snapshot:
 
-- combined Live and wineserver CPU use or request traffic falls
-- PipeWire `ERR` and xrun issue counts match or improve the regular route
-- all 45 `apcprobe` checks give the same result in each setting
-- runtime, prefix snapshot, Set, buffer size, sample rate and launch policy match
-- the host suspend test passes every case
+```sh
+WINE_APC_FASTPATH=1 ./scripts/bench-suite.sh --tag apc-on --duration 30
+                    ./scripts/bench-suite.sh --tag apc-off --duration 30
+```
+
+Compare the `apc-on` and `apc-off` reports. The suite records Live and Wine
+prefix CPU use and context switches, PipeWire CPU use, and PipeWire `ERR` and
+xrun deltas. Its run metadata records the runtime, prefix, Set, buffer size,
+sample rate and launch policy. `Benchmark_VSTs` requires `Dexed.vst3`; use
+`--skip-vst-check` when the comparison excludes that fixture. Use `--dry-run`
+to inspect both plans before recording them.
+
+Run all 45 `apcprobe` checks in each setting. Complete every host suspend case
+before approving the trial for release.
 
 The opt-in result proves route selection and wait behaviour. The loaded Set
 result measures the CPU benefit.

@@ -3,8 +3,10 @@
 # Run it from the repository root: tools/run_in_prefix.sh apcprobe.exe
 set -e
 cd "$(dirname "$0")"
+[ -n "${ABLETON_WINE_SOURCE:-}" ] || exec x86_64-w64-mingw32-gcc -Wall -O1 \
+  -nostartfiles -Wl,-e,mainCRTStartup -o apcprobe.exe apcprobe.c \
+  -lkernel32 -luser32 -lntdll
 SRC="${ABLETON_WINE_SOURCE:-}"
-[ -n "$SRC" ] || { echo "!! Set ABLETON_WINE_SOURCE to the Wine source tree. ABLETON_WINE_BUILD selects another build tree." >&2; exit 1; }
 BLD=${ABLETON_WINE_BUILD:-$SRC/build-wow64}
 INC=$SRC/include
 K=$BLD/dlls/kernel32/x86_64-windows

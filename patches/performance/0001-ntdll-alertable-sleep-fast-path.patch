@@ -1,4 +1,4 @@
-From 543fd0675da0ee457e243f68e978e145a954681e Mon Sep 17 00:00:00 2001
+From 18c33d4ab6794f477673ead6dc7caf0b33c2ddc6 Mon Sep 17 00:00:00 2001
 From: dist <build@localhost>
 Date: Wed, 5 Aug 2026 18:59:54 +0200
 Subject: [PATCH] ntdll: reroute alertable zero-handle sleeps through the
@@ -6,31 +6,23 @@ Subject: [PATCH] ntdll: reroute alertable zero-handle sleeps through the
 
 Result
 
-An empty Live 12 Set produced about 3,650 wineserver context switches each
-second. `NtDelayExecution` sent each alertable delay through wineserver.
+An empty Live 12 Set produced about 3,650 wineserver context switches each second. NtDelayExecution sent each alertable delay through wineserver.
 
 Scope
 
-`WINE_APC_FASTPATH=1` selects the NTSync alert-event trial. Wine uses its
-regular wait by default. The trial keeps APC routing in wineserver. It preserves
-timeout results, the timeout yield and the remaining time after a partial
-relative wait.
+WINE_APC_FASTPATH=1 selects the NTSync alert-event trial. Wine uses its regular wait by default. The trial keeps APC routing in wineserver. It preserves timeout results, the timeout yield and the remaining time after a partial relative wait.
 
-Wine selects the trial after its NTSync device and alert event are ready. Other
-setup results and kernel wait errors use the regular route.
+Wine selects the trial after its NTSync device and alert event are ready. Other setup results and kernel wait errors use the regular route. Partial waits measure elapsed time with CLOCK_MONOTONIC, matching the NTSync deadline clock across host suspend.
 
 Verification
 
-The exact patched build passed all 45 checks with `WINE_APC_FASTPATH=1`, the
-default setting and `off`. The observer identified the NTSync request during
-the trial. Both regular settings used wineserver. An injected `EIO` result also
-passed all 45 checks through the regular route.
+The exact patched build passed all 45 checks with WINE_APC_FASTPATH=1, the default setting and off. The observer identified the NTSync request during the trial. Both regular settings used wineserver. An injected EIO result also passed all 45 checks through the regular route.
 ---
- dlls/ntdll/unix/sync.c | 96 +++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 95 insertions(+), 1 deletion(-)
+ dlls/ntdll/unix/sync.c | 99 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 98 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index fbf054e..717df1f 100644
+index fbf054e..b3aee8e 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
 @@ -49,6 +49,7 @@
@@ -82,7 +74,7 @@ index fbf054e..717df1f 100644
              ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &timeout );
              assert( ret == STATUS_USER_APC );
              return ret;
-@@ -2413,6 +2441,68 @@ NTSTATUS WINAPI NtYieldExecution(void)
+@@ -2413,6 +2441,71 @@ NTSTATUS WINAPI NtYieldExecution(void)
  }
  
  
@@ -96,7 +88,8 @@ index fbf054e..717df1f 100644
 +static BOOL alertable_sleep_fastpath( const LARGE_INTEGER *timeout, unsigned int *result )
 +{
 +    static const LARGE_INTEGER zero_timeout;
-+    LARGE_INTEGER start, now, remaining;
++    LARGE_INTEGER remaining;
++    struct timespec start, now;
 +    const LARGE_INTEGER *fallback_timeout = timeout;
 +    NTSTATUS status;
 +    BOOL relative_timeout;
@@ -106,7 +99,7 @@ index fbf054e..717df1f 100644
 +    if ((alert_fd = get_inproc_alert_fd()) < 0) return FALSE;
 +
 +    relative_timeout = timeout && timeout->QuadPart < 0 && timeout->QuadPart != TIMEOUT_INFINITE;
-+    if (relative_timeout) NtQueryPerformanceCounter( &start, NULL );
++    if (relative_timeout) clock_gettime( CLOCK_MONOTONIC, &start );
 +
 +    status = linux_wait_objs( inproc_device_fd, 0, NULL, WaitAny, alert_fd, timeout );
 +    if (status == STATUS_TIMEOUT)
@@ -135,8 +128,10 @@ index fbf054e..717df1f 100644
 +server_fallback:
 +    if (relative_timeout)
 +    {
-+        NtQueryPerformanceCounter( &now, NULL );
-+        remaining.QuadPart = timeout->QuadPart + (now.QuadPart - start.QuadPart);
++        clock_gettime( CLOCK_MONOTONIC, &now );
++        remaining.QuadPart = timeout->QuadPart
++                             + (now.tv_sec - start.tv_sec) * (LONGLONG)TICKSPERSEC
++                             + (now.tv_nsec - start.tv_nsec) / 100;
 +        if (remaining.QuadPart > 0) remaining.QuadPart = 0;  /* expired: zero-timeout poll */
 +        fallback_timeout = &remaining;
 +    }
@@ -151,7 +146,7 @@ index fbf054e..717df1f 100644
  /******************************************************************
   *		NtDelayExecution (NTDLL.@)
   */
-@@ -2420,9 +2510,13 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+@@ -2420,9 +2513,13 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
  {
      unsigned int status = STATUS_SUCCESS;
  
@@ -166,3 +161,6 @@ index fbf054e..717df1f 100644
          /* Since server_wait will result in an unconditional implicit yield,
             we never return STATUS_NO_YIELD_PERFORMED */
          if ((status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, timeout )) == STATUS_TIMEOUT)
+-- 
+2.55.0
+

@@ -92,7 +92,7 @@ ef22b175d9a86906f2d6da3a57783621bae260e7f34eb25bb816e8104f87b990  0102-dwrite-us
 30349187c38d6ae69cc6ce6953ec66df66da4561f8c411b4f412889da190e79c  0104-d2d1-keep-target-pixel-format-on-resize.patch
 9b6f9bf2ee80a4a400d407847b7d4d6e90acfba82bedd4ccaac1368dd8ae2034  0105-winealsa-make-MIDI-topology-dynamic-and-recover-hotplug.patch
 69bcc0562e68b7663a482b98879a06897561c6f4510caaa7a2f7e162c10dabc7  0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch
-ed27f3d515f11cbe1e55f60a5d06d92feaa0ffd1a14d173cb1a754903f554f30  performance/0001-ntdll-alertable-sleep-fast-path.patch
+0cf53f4e8702b5242264a25a68f3c714e6ad00b0cc4ed1cd5ca24118952c8715  performance/0001-ntdll-alertable-sleep-fast-path.patch
 e2759a5aee2cc5820a3ed27d2d4f954a6a5262c1a95172ad11ffa5302c487387  pipeasio/0001-asio-clamp-unavailable-sample-rate-requests.patch
 b4d53b6ebb24e39c7d23efcbddd837149d4d08886167637a73bb085af851d2c1  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
 65555e38187564f77ac4f2ba1dd76d812e452c5442e21474b9c8a31706beb7ba  pipeasio/0004-accept-any-buffer-size-in-range-log-every-adjustment.patch
