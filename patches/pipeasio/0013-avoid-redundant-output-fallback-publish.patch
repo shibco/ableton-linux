@@ -1,0 +1,110 @@
+From 0ffde29e58d171344c3b5dcb16c56bae3947e86b Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Wed, 26 Aug 2026 03:21:51 +0200
+Subject: [PATCH] audio: skip fallback output publish after delivery
+
+A successful ASIO process callback already exchanges and queues every output
+buffer. Avoid repeating the acq_rel exchange in the backend cleanup loop for
+that delivered cycle.
+
+Keep the existing silence fallback unchanged when no callback ran, the
+callback was rejected, or the graph quantum is mismatched. Unit-test the
+output handoff; the integration loopback analyzer covers the ownership
+decision.
+---
+ include/audio.h                    |  7 ++++---
+ src/audio.c                        | 16 +++++++++++-----
+ tests/unit/test_pw_buffer_region.c | 33 +++++++++++++++++++++++++++++++++
+ 3 files changed, 48 insertions(+), 8 deletions(-)
+
+diff --git a/include/audio.h b/include/audio.h
+index e30ff2f..8e558e5 100644
+--- a/include/audio.h
++++ b/include/audio.h
+@@ -59,9 +59,10 @@ typedef enum
+
+ /* Callback signatures */
+
+-/* Returns 0 when the ASIO host consumed the cycle, nonzero when it did not (no
+- * buffers, or stopped).  The backend uses this to tell a real xrun apart from
+- * the idle cycles of a deliberate Stop. */
++/* Returns 0 when the ASIO host consumed the cycle and queued each output once,
++ * nonzero when it did not (no buffers, or stopped), which leaves every output
++ * to the backend for one silent block.  The backend also uses this to tell a
++ * real xrun apart from the idle cycles of a deliberate Stop. */
+ typedef int (*audio_process_cb)(audio_nframes_t nframes, void *arg);
+ typedef int (*audio_sample_rate_cb)(audio_nframes_t nframes, void *arg);
+
+diff --git a/src/audio.c b/src/audio.c
+index 7f9316e..0e48292 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -2646,11 +2646,17 @@ audio_on_process(void *userdata, struct spa_io_position *position)
+     {
+         audio_port_t *port = c->ports[i];
+         if (port->direction == PW_DIRECTION_OUTPUT)
+-            /* During a mismatch the PE callback deliberately leaves the live
+-             * PipeWire buffer alone; publish exactly one quantum of silence
+-             * here.  Publishing host-sized chunks at foreign cadence violated
+-             * the graph contract, especially when quantum > host size. */
+-            audio_port_publish_output(port, NULL, quantum_supported ? quantum : 0, false, false);
++        {
++            if (!delivered)
++                /* A delivered cycle has already exchanged and queued every
++                 * output slot.  The three cases that leave one full publish
++                 * here instead, one silent block at the current PipeWire
++                 * buffer size: no process callback installed, a callback the
++                 * host gate rejected (Stop or teardown), and a graph quantum
++                 * that disagrees with the host buffer size. */
++                audio_port_publish_output(port, NULL, quantum_supported ? quantum : 0, false,
++                                          false);
++        }
+         else
+         {
+             struct pw_buffer *buffer
+diff --git a/tests/unit/test_pw_buffer_region.c b/tests/unit/test_pw_buffer_region.c
+index b70cf50..f7465f3 100644
+--- a/tests/unit/test_pw_buffer_region.c
++++ b/tests/unit/test_pw_buffer_region.c
+@@ -89,6 +89,39 @@ main(void)
+             EXPECT_EQ(f.storage[i], 0);
+     }
+
++    TEST_GROUP("delivered callback publishes output exactly once")
++    {
++        const bool                  delivered = true;
++        struct queue_state          queue = { 0 };
++        _Atomic(struct pw_buffer *) slot;
++        fixture_init(&f);
++        atomic_init(&slot, &f.pw);
++        EXPECT_TRUE(pipeasio_pw_finish_output(&slot, source, 4, true, true, fake_queue, &queue));
++        EXPECT_EQ(queue.calls, 1);
++        EXPECT_TRUE(atomic_load_explicit(&slot, memory_order_acquire) == NULL);
++        if (!delivered)
++            pipeasio_pw_finish_output(&slot, NULL, 4, false, false, fake_queue, &queue);
++        EXPECT_EQ(queue.calls, 1);
++    }
++
++    TEST_GROUP("undelivered callback publishes fallback silence")
++    {
++        const bool                  delivered = false;
++        struct queue_state          queue = { 0 };
++        _Atomic(struct pw_buffer *) slot;
++        fixture_init(&f);
++        memset(f.storage, 0xff, sizeof(source));
++        atomic_init(&slot, &f.pw);
++        if (!delivered)
++            EXPECT_TRUE(pipeasio_pw_finish_output(&slot, NULL, 4, false, false, fake_queue,
++                                                  &queue));
++        EXPECT_EQ(queue.calls, 1);
++        EXPECT_TRUE(queue.buffer == &f.pw);
++        EXPECT_TRUE(atomic_load_explicit(&slot, memory_order_acquire) == NULL);
++        for (size_t i = 0; i < sizeof(source); ++i)
++            EXPECT_EQ(f.storage[i], 0);
++    }
++
+     TEST_GROUP("malformed output queues once and clears slot")
+     {
+         struct queue_state          queue = { 0 };
+--
+2.55.0

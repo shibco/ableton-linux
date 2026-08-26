@@ -11,7 +11,7 @@ say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
 readonly REQUIRED_WINE_TAIL='0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch'
-readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0012-recover-selected-routes-after-hotplug.patch'
+readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0013-avoid-redundant-output-fallback-publish.patch'
 
 check_required_series_tails()
 {
@@ -464,6 +464,7 @@ STAMP_ONLY='
 0102|logic-only (natural modes use outlines; GDI-compatible and aliased modes keep strikes; adds no string literal)
 0103|logic-only (natural rendering quantised to 16 horizontal phases, glyph cache budget scaled with the phase count; adds no string literal)
 0104|logic-only (resize derives target bitmap options from the DXGI surface and preserves its pixel format; adds no string literal)
+pipeasio/0013|logic-only (successful callbacks already finalize output slots; no distinctive string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
