@@ -42,29 +42,29 @@ index c20c4df..471990a 100644
 
  Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
 
-+### callback telemetry (diagnostic)
++### Callback timing diagnostic
 +
-+`PIPEASIO_TELEMETRY=on` enables callback-phase timing for a 64-bit host. It is
-+off by default and is intentionally an environment-only diagnostic, not a saved
-+driver setting. Each accepted, matched-quantum cycle measures monotonic wall
-+time and `CLOCK_THREAD_CPUTIME_ID` for three phases:
++`PIPEASIO_TELEMETRY=on` records callback timing for a 64-bit host. The
++environment controls the setting for one launch. Each accepted audio cycle
++with matching buffer sizes records wall time and callback CPU time in 3
++phases:
 +
-+1. PipeASIO callback entry to the call into the ASIO host.
-+2. Time inside the host's `swapBuffersWithTimeInfo` (or legacy `bufferSwitch`).
-+3. Return from the host to the point where all output buffers have been queued.
++1. `entry_to_live`: time from callback entry to Live's audio call.
++2. `live_callback`: time that Live uses for its audio callback.
++3. `live_to_outputs`: time from Live's return until PipeASIO queues all output.
 +
-+The audio callback does no formatting, logging, allocation, signalling, or
-+blocking synchronization. It writes completed samples into a fixed 8192-entry
-+lock-free SPSC ring. A full ring drops the new sample instead of waiting. The
-+existing lifecycle worker drains it once per second, sorts at most 8192 values,
-+and writes p50/p95/p99/maximum aggregates plus the drop count to stderr. The
-+clock reads and fixed sample writes still add measurement overhead, so leave the
-+feature off outside a controlled diagnostic run.
++The audio callback stores samples in a fixed area with 8192 entries.
++A full area drops the next sample, and audio continues. The lifecycle worker
++reports once per second. It sorts at most 8192 samples. It writes the 50th,
++95th and 99th percentiles as p50, p95 and p99. It writes the largest value as
++maximum, plus the dropped sample count, to stderr. Clock reads and fixed sample
++writes add CPU work. Use telemetry during controlled measurement
++runs.
 +
-+The experimental 32-bit WoW64 path rejects this option: its PipeWire callback
-+and PE host callback execute on different threads, making one set of
-+`CLOCK_THREAD_CPUTIME_ID` phase deltas invalid without a larger bridge-ABI
-+change.
++PipeASIO supports this report for 64-bit hosts. For a 32-bit WoW64 host,
++PipeASIO keeps telemetry off. PipeWire and Live callbacks use different
++threads there. A single CPU phase report would combine different thread
++clocks.
 +
  ## Performance
 
@@ -79,12 +79,12 @@ index 0000000..20ce9f1
 +#pragma once
 +
 +/*
-+ * Bounded single-producer/single-consumer storage for callback telemetry.
++ * Full storage drops the next sample so audio continues.
 + *
-+ * The producer is PipeWire's one data-loop callback.  It performs only plain
-+ * stores plus lock-free C11 atomic loads/stores.  The lifecycle worker is the
-+ * sole consumer and owns sorting and output.  A full ring drops the new sample
-+ * instead of delaying the audio callback.
++ * The PipeWire callback adds samples to fixed storage.
++ * The lifecycle worker reads samples, sorts them and writes the report.
++ * Each worker updates its own position and keeps one-way ownership.
++ * The storage has 8192 entries.
 + */
 +
 +#include <stdatomic.h>
@@ -127,7 +127,7 @@ index 0000000..20ce9f1
 +    atomic_init(&ring->dropped, 0);
 +}
 +
-+/* Audio-thread producer. Never waits and never overwrites unread data. */
++/* The audio thread adds a sample or counts one drop when storage is full. */
 +static inline bool
 +pipeasio_telemetry_ring_publish(pipeasio_telemetry_ring         *ring,
 +                                const pipeasio_telemetry_sample *sample)
@@ -144,7 +144,7 @@ index 0000000..20ce9f1
 +    return true;
 +}
 +
-+/* Worker-side snapshot. The producer cannot reuse these slots until consume. */
++/* The report worker owns each listed sample until it marks the sample read. */
 +static inline size_t
 +pipeasio_telemetry_ring_snapshot(const pipeasio_telemetry_ring *ring, uint64_t *first)
 +{
@@ -170,7 +170,7 @@ index 0000000..20ce9f1
 +    atomic_store_explicit(&ring->read_seq, first + count, memory_order_release);
 +}
 +
-+/* Nearest-rank percentile index for a sorted, non-empty sample array. */
++/* A sorted sample set with at least one value uses the nearest-rank position. */
 +static inline size_t
 +pipeasio_telemetry_percentile_index(size_t count, unsigned percentile)
 +{
@@ -232,8 +232,8 @@ index 7612767..ebc2c79 100644
 -    _Atomic uint32_t        stop_generation;
 +#ifndef PIPEASIO_WOW64_PE
 +    _Atomic(pipeasio_telemetry_state *) telemetry;
-+    /* Data-loop-only pointer to the stack sample currently spanning the host
-+     * callback. It is never read by the reporting worker. */
++    /* The PipeWire callback sets this pointer while Live processes one block.
++     * The report worker reads completed samples from fixed storage. */
 +    pipeasio_telemetry_cycle *telemetry_cycle;
 +#endif
 +    _Atomic uint32_t gate_owner_seq;
@@ -247,9 +247,9 @@ index 7612767..ebc2c79 100644
  #endif
 
 +#ifndef PIPEASIO_WOW64_PE
-+/* CLOCK_MONOTONIC measures deadline time; CLOCK_THREAD_CPUTIME_ID separates
-+ * work done by this callback thread from time it spends asleep in Live.  The
-+ * calls are made only when PIPEASIO_TELEMETRY is enabled. */
++/* Monotonic time records the full deadline. Thread CPU time records work on
++ * the callback thread. Wall time also includes sleep in Live. These clock
++ * reads occur while PIPEASIO_TELEMETRY is on. */
 +static bool
 +telemetry_now(struct timespec *wall, struct timespec *cpu)
 +{
@@ -296,8 +296,8 @@ index 7612767..ebc2c79 100644
 +    cycle->live_returned = cycle->valid;
 +}
 +
-+/* Audio-thread finalization: fixed stack arithmetic plus one nonblocking SPSC
-+ * publication. No allocation, lock, signal, formatting, or I/O is reachable. */
++/* The audio thread completes each sample with fixed calculations and one
++ * write to the report storage. */
 +static void
 +telemetry_cycle_finish(pipeasio_telemetry_cycle *cycle)
 +{
@@ -329,9 +329,9 @@ index 7612767..ebc2c79 100644
 +    return (a > b) - (a < b);
 +}
 +
-+/* Lifecycle-worker consumer. It deliberately leaves read_seq unchanged until
-+ * all six aggregates are emitted, so the producer drops instead of ever
-+ * overwriting data being sorted. */
++/* The report worker owns the current batch while it sorts values.
++ * It writes six summaries. New samples use free storage or increase the
++ * dropped count. */
 +static void
 +telemetry_emit(IPipeASIOImpl *This)
 +{
@@ -485,8 +485,8 @@ index 7612767..ebc2c79 100644
                                        This->output_channel[i].active);
          }
 +#ifndef PIPEASIO_WOW64_PE
-+    /* In mismatch mode the graph, not this callback, queues the silence, so
-+     * there is no honest return-to-output boundary to publish. */
++    /* During a buffer mismatch, the graph owns and queues the silent block.
++     * Telemetry resumes output timing when the callback owns the output. */
 +    if (admitted && !muted && telemetry)
 +        telemetry_cycle_finish(&cycle);
 +#endif
@@ -533,8 +533,8 @@ index 7612767..ebc2c79 100644
 +                    PIPEASIO_LOG("[pipeasio telemetry] ",
 +                                 "enabled for 64-bit host; capacity=%u, interval_ms=1000\n",
 +                                 PIPEASIO_TELEMETRY_CAPACITY);
-+                    /* The lifecycle worker may be in its non-telemetry infinite
-+                     * wait. Wake it once so subsequent waits use the report tick. */
++                    /* Wake the lifecycle worker when telemetry starts.
++                     * Its next wait uses the one-second report interval. */
 +                    SetEvent(This->work_event);
 +                }
 +            }
