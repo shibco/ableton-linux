@@ -571,7 +571,14 @@ if [ "$dry_run" -eq 1 ]; then
         printf '  replace runtime tree atomically: %s\n' "$ABLETON_WINE_ROOT"
         printf '  write runtime ownership marker: %s/.ableton-linux-runtime\n' "$ABLETON_WINE_ROOT"
     }
+    if [ "$want_runtime" -eq 1 ] && [ "$want_integration" -eq 0 ]; then
+        printf '  apply the runtime PipeASIO panel record to existing launchers\n'
+        printf '  save each replaced PipeASIO launcher beside it as: <name>.bak\n'
+        printf '  record ownership for each replaced PipeASIO launcher in: %s/install-manifest.tsv\n' \
+            "$ABLETON_STATE_HOME"
+    fi
     if [ "$want_integration" -eq 1 ]; then
+        printf '  back up each displaced launcher beside it as: <name>.bak\n'
         printf '  write launcher: %s/ableton-live\n' "$bin"
         printf '  write launcher support and recovery tools below: %s\n' "$data"
         printf '  write NTSync diagnostic: %s/{check-ntsync.sh,ntsyncprobe.exe}\n' "$data"
@@ -735,21 +742,9 @@ record_mime_prestate()
     fi
 }
 
-# Wine and other packages use some of these desktop entry names.  The installer
-# leaves an entry that does not run its own launcher, and never makes that entry
-# the default for the types it registers.
-desktop_entry_is_foreign()
-{
-    local target="$1" owner="$2"
-    [ -e "$target" ] || return 1
-    ! grep -qxF "Exec=$owner %f" "$target" \
-        && ! grep -qxF "Exec=$owner %u" "$target"
-}
-
 install_integration()
 {
     local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d i
-    local live_desktop_foreign=0 max_desktop_foreign=0 max_protocol_foreign=0 foreign=0
     local probe_source="" ntsync_probe_source="" mime_stage="" mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
     local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
     local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
@@ -758,9 +753,7 @@ install_integration()
     for tool in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
-    # An update refreshes this project launcher when its saved checksum differs.
-    # The update preserves a symlink.
-    ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live" file refresh-stale-record
+    ableton_install_launcher_file 755 "$here/ableton-live" "$bin/ableton-live"
     for tool in detect-scale.sh detect-theme.sh shortcut-hold.sh; do
         ableton_install_file 644 "$here/$tool" "$data/$tool"
     done
@@ -817,15 +810,7 @@ install_integration()
         -e "s#@WMCLASS@#$(sed_escape "$live_wmclass")#g" \
         "$root/desktop/ableton-live.desktop.in" > "$tmp"
     [ -n "$live_wmclass" ] || sed -i '/^StartupWMClass=/d' "$tmp"
-    if desktop_entry_is_foreign "$apps/ableton-live.desktop" "$bin/ableton-live"; then
-        live_desktop_foreign=1
-        echo "   preserving foreign $apps/ableton-live.desktop"
-        echo "   the Live file types stay with their current application"
-    else
-        # The launcher updates this generated entry after Live starts. An update
-        # refreshes the entry when its saved checksum differs.
-        ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop" file refresh-stale-record
-    fi
+    ableton_install_launcher_file 644 "$tmp" "$apps/ableton-live.desktop"
     rm -f -- "$tmp"
 
     for ((i=0; i<${#handler_ids[@]}; i++)); do
@@ -833,8 +818,8 @@ install_integration()
         tmp="$(mktemp)"
         sed -e "s#@HOME@#$(sed_escape "$HOME")#g" -e "s#@BIN@#$(sed_escape "$bin")#g" \
             "$root/desktop/${handler_templates[i]}.desktop.in" > "$tmp"
-        ableton_install_file 644 "$tmp" "$data/$d"
-        ableton_install_file 644 "$tmp" "$apps/$d"
+        ableton_install_launcher_file 644 "$tmp" "$data/$d"
+        ableton_install_launcher_file 644 "$tmp" "$apps/$d"
         rm -f -- "$tmp"
     done
 
@@ -866,15 +851,6 @@ install_integration()
     ableton_install_file 644 "$root/desktop/x-wine-extension-auz.xml" "$mime_root/packages/x-wine-extension-auz.xml"
     ableton_install_file 644 "$root/desktop/icons/application-ableton-live.xml" "$mime_root/packages/application-ableton-live.xml"
 
-    # The loop below writes the Max entries, but this stages their defaults,
-    # so settle their ownership first.
-    if desktop_entry_is_foreign "$apps/max9.desktop" "$bin/max9"; then
-        max_desktop_foreign=1
-    fi
-    if desktop_entry_is_foreign "$apps/wine-protocol-c74max.desktop" "$bin/max9"; then
-        max_protocol_foreign=1
-    fi
-
     record_mime_prestate
     if command -v xdg-mime >/dev/null 2>&1; then
         if [ -e "$mimeapps_file" ] || [ -L "$mimeapps_file" ]; then
@@ -887,21 +863,18 @@ install_integration()
                 "$ABLETON_PROTOCOL_DESKTOP_ID" x-scheme-handler/ableton \
            || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
                 "$ABLETON_AUZ_DESKTOP_ID" application/x-wine-extension-auz \
-           || { [ "$live_desktop_foreign" -eq 0 ] \
-                && ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
-                    ableton-live.desktop application/x-ableton-live-set \
-                    application/x-ableton-live-clip application/x-ableton-live-pack; }; then
+           || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                ableton-live.desktop application/x-ableton-live-set \
+                application/x-ableton-live-clip application/x-ableton-live-pack; then
             rm -rf -- "$mime_stage"
             echo "!! MIME association staging failed; existing associations were unchanged" >&2
             return 1
         fi
         if [ -f "$max_unix" ] \
-           && { { [ "$max_desktop_foreign" -eq 0 ] \
-                  && ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
-                      max9.desktop application/x-ableton-live-max-device; } \
-                || { [ "$max_protocol_foreign" -eq 0 ] \
-                     && ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
-                         wine-protocol-c74max.desktop x-scheme-handler/c74max; }; }; then
+           && { ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                    max9.desktop application/x-ableton-live-max-device \
+                || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                    wine-protocol-c74max.desktop x-scheme-handler/c74max; }; then
             rm -rf -- "$mime_stage"
             echo "!! MIME association staging failed; existing associations were unchanged" >&2
             return 1
@@ -913,23 +886,14 @@ install_integration()
     fi
 
     if [ -f "$max_unix" ]; then
-        ableton_install_file 755 "$here/max9" "$bin/max9"
+        ableton_install_launcher_file 755 "$here/max9" "$bin/max9"
         for d in max9 wine-protocol-c74max; do
             tmp="$(mktemp)"
             sed -e "s#@HOME@#$(sed_escape "$HOME")#g" -e "s#@BIN@#$(sed_escape "$bin")#g" \
                 -e "s#@PREFIX@#$(sed_escape "$ABLETON_WINEPREFIX")#g" \
                 "$root/desktop/$d.desktop.in" > "$tmp"
             target="$apps/$d.desktop"
-            case "$d" in
-                max9) foreign="$max_desktop_foreign" ;;
-                *) foreign="$max_protocol_foreign" ;;
-            esac
-            if [ "$foreign" -eq 1 ]; then
-                echo "   preserving foreign $target"
-                echo "   its associations stay with their current application"
-            else
-                ableton_install_file 644 "$tmp" "$target"
-            fi
+            ableton_install_launcher_file 644 "$tmp" "$target"
             rm -f -- "$tmp"
         done
     fi
@@ -954,18 +918,12 @@ install_integration()
     }
     pin_mime_default "$ABLETON_PROTOCOL_DESKTOP_ID" x-scheme-handler/ableton
     pin_mime_default "$ABLETON_AUZ_DESKTOP_ID" application/x-wine-extension-auz
-    if [ "$live_desktop_foreign" -eq 0 ]; then
-        for d in application/x-ableton-live-set application/x-ableton-live-clip application/x-ableton-live-pack; do
-            pin_mime_default ableton-live.desktop "$d"
-        done
-    fi
+    for d in application/x-ableton-live-set application/x-ableton-live-clip application/x-ableton-live-pack; do
+        pin_mime_default ableton-live.desktop "$d"
+    done
     if [ -f "$max_unix" ]; then
-        if [ "$max_desktop_foreign" -eq 0 ]; then
-            pin_mime_default max9.desktop application/x-ableton-live-max-device
-        fi
-        if [ "$max_protocol_foreign" -eq 0 ]; then
-            pin_mime_default wine-protocol-c74max.desktop x-scheme-handler/c74max
-        fi
+        pin_mime_default max9.desktop application/x-ableton-live-max-device
+        pin_mime_default wine-protocol-c74max.desktop x-scheme-handler/c74max
     fi
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -q "$icons" || \
@@ -1042,9 +1000,8 @@ if [ "$want_integration" -eq 1 ]; then
 fi
 [ "$want_link" -eq 0 ] || install_link_assets
 
-# The panel follows the selected runtime even for a runtime-only update.  An
-# integration-only install remains independently usable when no runtime has
-# been installed yet.
+# Runtime updates use the selected runtime's panel record. Integration-only
+# installs use the current runtime's compatible panel record when available.
 if [ "$want_runtime" -eq 1 ]; then
     ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT"
     if [ "$want_integration" -eq 1 ]; then
@@ -1077,7 +1034,8 @@ if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
     rm -f -- "$version_tmp"
 fi
 if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ] \
-   || { [ "$want_runtime" -eq 1 ] && [ "$ownership_manifest_was_present" -eq 1 ]; }; then
+   || { [ "$want_runtime" -eq 1 ] && [ "$ownership_manifest_was_present" -eq 1 ]; } \
+   || [ "${#ABLETON_OWNED_PATHS[@]}" -gt 0 ]; then
     ableton_write_ownership_manifest
 fi
 

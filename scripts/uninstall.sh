@@ -544,7 +544,7 @@ remove_owned_manifest_files()
                 fi
                 if [ -n "$backup" ]; then
                     backup_expected="$ABLETON_STATE_HOME/install-prestate/$(printf '%s' "$path" | sha256sum | awk '{print $1}')"
-                    if [ "$backup" != "$backup_expected" ] || [ ! -e "$backup" ] \
+                    if [ "$backup" != "$backup_expected" ] \
                        || { [ ! -f "$backup" ] && [ ! -L "$backup" ]; }; then
                         echo "!! cannot safely restore the recorded pre-install file $path" >&2
                         rc=1; uninstall_partial=1; continue
