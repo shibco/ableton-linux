@@ -57,13 +57,14 @@ if have pgrep; then
                 && ntsync_fds=$((ntsync_fds + 1))
         done
         if [ "$ntsync_fds" -gt 0 ]; then
-            echo "wineserver $pid: NTSync active ($ntsync_fds /dev/ntsync fd(s))"
+            echo "NTSync active: wineserver $pid opened $ntsync_fds /dev/ntsync file(s)"
         else
-            echo "wineserver $pid: NTSync NOT proven (no /dev/ntsync fd)"
+            echo "NTSync proof pending: wineserver $pid opened 0 /dev/ntsync files"
         fi
     done < <(pgrep -x wineserver 2>/dev/null)
 fi
-[ "$matching_server" -eq 1 ] || echo "no running wineserver for the configured Live prefix"
+[ "$matching_server" -eq 1 ] \
+    || echo "NTSync proof pending: running wineserver processes for the configured Live prefix=0"
 
 ntsync_check="$ABLETON_DATA_HOME/check-ntsync.sh"
 [ -x "$ntsync_check" ] || ntsync_check="$here/check-ntsync.sh"
@@ -111,7 +112,7 @@ cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
 [ -r "$cfg" ] && redact < "$cfg" || echo "no config.ini (driver defaults apply)"
 env | grep -E '^(PIPEASIO|ABLETON)_' | redact
 
-sec "Live audio worker setting"
+sec "Live audio worker count"
 options_found=0
 if [ -d "$ABLETON_WINEPREFIX/drive_c/users" ]; then
     while IFS= read -r options_file; do
@@ -124,7 +125,7 @@ if [ -d "$ABLETON_WINEPREFIX/drive_c/users" ]; then
         if ! sed -n '/^-MaxAudioThreads=/{p;q;}' "$options_file"; then
             echo "(unreadable)"
         elif ! grep -q '^-MaxAudioThreads=' "$options_file"; then
-            echo "(no explicit -MaxAudioThreads; Live calculates it)"
+            echo "(Live calculates the worker count; explicit -MaxAudioThreads values=0)"
         fi
     done < <(
         if have rg; then
@@ -134,7 +135,7 @@ if [ -d "$ABLETON_WINEPREFIX/drive_c/users" ]; then
         fi
     )
 fi
-[ "$options_found" -eq 1 ] || echo "no Live 12 Options.txt found"
+[ "$options_found" -eq 1 ] || echo "Live 12 Options.txt files found: 0"
 
 sec "launcher live log tail"
 slog="$ABLETON_STATE_HOME/logs/live.log"

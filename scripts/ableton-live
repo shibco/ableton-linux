@@ -31,8 +31,8 @@ ABLETON-LIVE VARIABLES:
         realtime rights exist
 
     ABLETON_NTSYNC_WARN=off
-        silence the warning when /dev/ntsync is unavailable; the
-        performance fallback itself remains active
+        keep launch quiet while Wine uses its regular wait route;
+        run audio-report.sh to see current NTSync evidence
 
     ABLETON_MAX_AUDIO_THREADS=auto|off|<number>
         Set the audio thread count in Live 12. The default, auto, uses
@@ -436,10 +436,10 @@ export WINE_WIN32_RESIZABLE_CLASS="${WINE_WIN32_RESIZABLE_CLASS:-Ableton Live Wi
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 
-# The runtime build gate proves that Wine contains NTSync support. This host
-# gate catches the much slower case where the kernel device is unavailable.
-# It warns without blocking so recovery and deliberate fallback tests remain
-# possible; scripts/check-ntsync.sh supplies the dynamic proof.
+# The build record confirms Wine NTSync support.
+# The host check looks for the kernel device used by the faster wait route.
+# The launcher prints guidance and continues with Wine's regular route.
+# scripts/check-ntsync.sh supplies proof from a running wineserver.
 warn_missing_ntsync()
 {
     local rel major minor

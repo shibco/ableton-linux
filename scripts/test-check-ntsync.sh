@@ -104,7 +104,7 @@ ok "strict mode rejects an unavailable NTSync device"
 
 run_case fallback "$work/no-such-device" off \
     || fail "explicit fallback semantics run failed"
-grep -q 'explicitly accepted fallback path (NTSync inactive)' "$work/fallback.out" \
+grep -q 'regular Wine route selected; sync semantics pass' "$work/fallback.out" \
     || fail "fallback success is not labelled inactive"
 ok "explicit fallback runs semantics without claiming active NTSync"
 
@@ -119,7 +119,7 @@ ok "device presence without a wineserver fd fails proof"
 
 run_case active-fd /dev/full on \
     || fail "active-device proof rejected a matching wineserver fd"
-grep -q 'ntsync active (server holds /dev/full)' "$work/active-fd.out" \
+grep -q 'NTSync active; sync semantics pass; wineserver opens /dev/full' "$work/active-fd.out" \
     || fail "active-device success is not reported"
 ok "matching wineserver device fd proves the active path"
 

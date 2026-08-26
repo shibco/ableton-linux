@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Check that a runtime has ntsync compiled in and actually uses it, and that
-# NT sync semantics hold, by running ntsyncprobe.exe against a prefix.
-# Exit 0 = assertions pass with active NTSync, or with the fallback explicitly
-# accepted through ABLETON_REQUIRE_NTSYNC=off. Exit 3 means strict mode found
-# that /dev/ntsync is unavailable.
-# Refuses a prefix that already has a wineserver. Never point it at the live
-# prefix while Live is running.
+# Verify Wine support, host device use and wait results with ntsyncprobe.exe.
+# Exit 0 records passing assertions for active NTSync or a selected regular route.
+# Exit 3 means the host must provide the NTSync device in required mode.
+# Close Live first, then use a separate test prefix.
 set -uo pipefail
 
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
@@ -123,8 +120,8 @@ if [ -c "$ntsync_device" ] && [ "$fds" -eq 0 ]; then
     exit 1
 fi
 if [ "$fds" -gt 0 ]; then
-    echo "OK: sync semantics hold, ntsync active (server holds $ntsync_device)"
+    echo "OK: NTSync active; sync semantics pass; wineserver opens $ntsync_device"
 else
-    echo "OK: sync semantics hold on the explicitly accepted fallback path (NTSync inactive)"
+    echo "OK: regular Wine route selected; sync semantics pass"
 fi
 exit 0
