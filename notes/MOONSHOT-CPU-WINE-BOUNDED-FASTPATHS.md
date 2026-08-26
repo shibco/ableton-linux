@@ -21,11 +21,48 @@ appends that event as the sole queued object for a count-zero wait.
 hrtimer and `TASK_INTERRUPTIBLE`, which matches Wine's existing absolute NTSync
 deadline conversion and EINTR retry.
 
-This is not yet a measured Live CPU win. The 2026-08-05 Live 12.4.3 idle trace
-recorded no user-APC requests, so 0001 is not an explanation for that trace's
-idle wineserver traffic. Its plausible benefit is limited to playback or
-plug-in workloads that repeatedly enter alertable delays. A matched 30-second
-Set matrix remains the performance gate.
+This is an evaluation-only candidate, not a release candidate. It is not yet a
+measured Live CPU win. The 2026-08-05 Live 12.4.3 idle trace recorded no
+user-APC requests, so 0001 is not an explanation for that trace's idle
+wineserver traffic. Its plausible benefit is limited to playback or plug-in
+workloads that repeatedly enter alertable delays. A matched 30-second Set
+matrix remains the performance gate, and the host-suspend clock test below is a
+release blocker while the patch is default-on.
+
+### Relative-timeout clock boundary
+
+The fast path does not preserve this Wine build's behavior across host system
+suspend. `linux_wait_objs()` converts a finite relative timeout into an
+absolute `CLOCK_MONOTONIC` NTSync deadline (`dlls/ntdll/unix/sync.c:425-445`).
+The existing `server_wait()` instead converts it with
+`NtQueryPerformanceCounter()` (`dlls/ntdll/unix/server.c:795-810`), whose Unix
+counter prefers `CLOCK_BOOTTIME` (`dlls/ntdll/unix/sync.c:114-130`). Monotonic
+time stops during suspend; boottime includes it. On 2026-08-26 this host had
+accumulated 17,302,527,783,051 ns more boottime than monotonic time, so this is a
+real clock boundary rather than a theoretical alias.
+
+NTSync v7.1.8 offers only monotonic deadlines or `NTSYNC_WAIT_REALTIME`
+(`Documentation/userspace-api/ntsync.rst:276-310`). There is no boottime flag.
+Converting a relative timeout to an absolute realtime deadline would count host
+suspend, but it would also make a relative wait jump with manual or NTP wall
+clock adjustments. That is not an exact replacement for Wine's boottime
+deadline and is rejected. Falling every finite relative delay back to the
+wineserver would preserve behavior but remove the path this experiment is meant
+to measure, so it is not presented as an optimisation.
+
+Microsoft documents that Windows 8 and newer exclude low-power-state time from
+the relative timeout of alertable
+[`WaitForSingleObjectEx`](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobjectex)
+and
+[`WaitForMultipleObjectsEx`](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjectsex)
+waits. That makes NTSync's monotonic behavior plausibly closer to current
+Windows than this Wine server path, but it does not prove that changing
+`NtDelayExecution` is safe for Live and its plug-ins. Before release, run an
+isolated suspend/resume matrix with the gate on and off: finite relative,
+absolute, and infinite delays; APC queued before suspend, during suspend, and
+immediately after resume; elapsed-time and APC-count assertions; and a bounded
+watchdog outside the Wine process. Until that passes, retain
+`WINE_APC_FASTPATH=off` in any release candidate.
 
 ## Deferred and rejected experiments
 
@@ -69,8 +106,25 @@ runs must emit `MOONSHOT_NTSYNC_ALERT_WAIT`; rollback runs must emit none. With
 `MOONSHOT_NTSYNC_ALERT_WAIT_FAULT=1`, it returns `EIO` only for count-zero
 `NTSYNC_IOC_WAIT_ANY` calls carrying an alert fd. The same 45-check `apcprobe`
 result then proves the immediate generic-error fallback without disturbing
-handle-bearing NTSync waits. This shim is never installed or launched by the
-product.
+handle-bearing NTSync waits.
+
+Its validity is deliberately narrower than an arbitrary Wine process. The
+interposer must fetch and forward the variadic third `ioctl()` argument, while
+the Wine tree contains legitimate two-argument ioctl call sites (for example
+`dlls/wineoss.drv/ossmidi.c:293`). There is no portable interposer-side way to
+recover an argument the caller did not pass. Use the shim only with this exact
+x86-64 `apcprobe` process and its minimal test prefix; do not preload it into
+Live, plug-ins, or a general Wine session. A generally safe observer would need
+call-site instrumentation or a syscall tracer that predicates on both the
+request and copied `ntsync_wait_args`. This shim is never installed or launched
+by the product.
+
+Case 11 also signals its ready event immediately before `SleepEx(INFINITE,
+TRUE)` and then relies on a 50 ms parent delay. It proves infinite-timeout and
+queued-APC behavior, but it does not deterministically prove that the kernel
+ioctl was already blocked before the APC was queued. The ioctl observer proves
+reachability, not that scheduling order. A release suspend probe needs an
+external syscall-entry handshake.
 
 The exact patched Wine target must compile with Wine's warning policy. A
 release report must also show:
