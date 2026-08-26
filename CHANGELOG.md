@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Audio reports now include read-only CPU topology evidence:**
+  - The report records the effective CPU set, physical-core and SMT layout,
+    optional kernel capacity/core-type fields, frequency snapshots, and the
+    sysfs inputs Wine can use for efficiency classes.
+  - It does not change affinity or enable E-core pinning. Hybrid scheduling
+    remains gated on matched low-buffer tests on real heterogeneous hardware.
+
 ## 2026.08.26.1
 
 - **MIDI controllers and audio interfaces find their way back:**

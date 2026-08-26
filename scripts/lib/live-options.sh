@@ -52,6 +52,226 @@ ableton_available_physical_cores()
     printf '%s\n' "$count"
 )
 
+ableton_cpu_list_valid()
+{
+    local list="${1:-}" part first last previous=-1
+    local IFS=,
+
+    [[ "$list" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] || return 1
+    for part in $list; do
+        case "$part" in
+            *-*) first="${part%%-*}"; last="${part#*-}" ;;
+            *)   first="$part"; last="$part" ;;
+        esac
+        [ "${#first}" -le 6 ] && [ "${#last}" -le 6 ] || return 1
+        first=$((10#$first)); last=$((10#$last))
+        [ "$first" -le "$last" ] && [ "$first" -gt "$previous" ] || return 1
+        previous="$last"
+    done
+}
+
+ableton_cpu_list_count()
+{
+    local list="${1:-}" part first last count=0
+    local IFS=,
+
+    ableton_cpu_list_valid "$list" || return 1
+    for part in $list; do
+        case "$part" in
+            *-*) first="${part%%-*}"; last="${part#*-}" ;;
+            *)   first="$part"; last="$part" ;;
+        esac
+        first=$((10#$first)); last=$((10#$last))
+        count=$((count + last - first + 1))
+    done
+    printf '%s\n' "$count"
+}
+
+ableton_cpu_report_token()
+{
+    local path="$1" value
+
+    if [ ! -r "$path" ] || ! IFS= read -r value < "$path"; then
+        printf 'unavailable\n'
+        return 0
+    fi
+    value="${value//[[:space:]]/}"
+    case "$value" in
+        ''|*[!A-Za-z0-9_,.+=:-]*) printf 'invalid\n' ;;
+        *) printf '%s\n' "$value" ;;
+    esac
+}
+
+ableton_cpu_report_integer()
+{
+    local value
+
+    value="$(ableton_cpu_report_token "$1")"
+    [[ "$value" =~ ^-?[0-9]+$ ]] || {
+        printf '%s\n' "$value"
+        return 0
+    }
+    [ "${#value}" -le 12 ] || value=invalid
+    printf '%s\n' "$value"
+}
+
+ableton_cpu_report_frequency()
+{
+    local path value
+
+    for path in "$@"; do
+        value="$(ableton_cpu_report_token "$path")"
+        [[ "$value" =~ ^[0-9]+$ ]] || continue
+        [ "${#value}" -le 12 ] || continue
+        printf '%s\n' "$value"
+        return 0
+    done
+    printf 'unavailable\n'
+}
+
+ableton_cpu_report_list()
+{
+    local value
+
+    value="$(ableton_cpu_report_token "$1")"
+    ableton_cpu_list_valid "$value" || {
+        [ "$value" = unavailable ] || value=invalid
+        printf '%s\n' "$value"
+        return 0
+    }
+    printf '%s\n' "$value"
+}
+
+# Print a read-only snapshot of the CPU topology that can affect Live and Wine.
+# Optional roots make every input fixture-testable; production callers use the
+# kernel's sysfs tree and this process's effective affinity from /proc.
+ableton_cpu_topology_report()
+(
+    local cpu_root="${1:-/sys/devices/system/cpu}"
+    local proc_status="${2:-/proc/self/status}"
+    local devices_root="${3:-/sys/devices}"
+    local allowed="" allowed_source="" online possible discovered=""
+    local cpu_dir cpu package core siblings capacity core_type max_khz current_khz
+    local allowed_count=0 reported=0 topology_complete=1 smt_seen=0 smt_unknown=0
+    local smt_evidence heterogeneous_evidence=not_observed
+    local wine_performance_cpus kernel_efficiency_cpus wine_class_source=unavailable
+    local physical_count capacity_count type_count
+    local -a cpu_dirs cpus rows=()
+    local -A physical_cores=() capacities=() core_types=()
+
+    shopt -s nullglob
+    cpu_dirs=("$cpu_root"/cpu[0-9]*)
+    shopt -u nullglob
+    for cpu_dir in "${cpu_dirs[@]}"; do
+        cpu="${cpu_dir##*/cpu}"
+        [[ "$cpu" =~ ^[0-9]+$ ]] && [ "${#cpu}" -le 6 ] || continue
+        cpus+=("$((10#$cpu))")
+    done
+    if [ "${#cpus[@]}" -gt 0 ]; then
+        mapfile -t cpus < <(printf '%s\n' "${cpus[@]}" | LC_ALL=C sort -n -u)
+        for cpu in "${cpus[@]}"; do
+            [ -z "$discovered" ] && discovered="$cpu" || discovered="$discovered,$cpu"
+        done
+    fi
+
+    if [ -r "$proc_status" ]; then
+        allowed="$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' "$proc_status" 2>/dev/null | sed -n '1p')"
+        allowed="${allowed//[[:space:]]/}"
+    fi
+    if ableton_cpu_list_valid "$allowed"; then
+        allowed_source=proc_status
+    else
+        allowed="$(ableton_cpu_report_list "$cpu_root/online")"
+        if ableton_cpu_list_valid "$allowed"; then
+            allowed_source=sysfs_online_fallback
+        elif ableton_cpu_list_valid "$discovered"; then
+            allowed="$discovered"
+            allowed_source=cpu_directory_fallback
+        else
+            allowed=unavailable
+            allowed_source=unavailable
+        fi
+    fi
+    online="$(ableton_cpu_report_list "$cpu_root/online")"
+    possible="$(ableton_cpu_report_list "$cpu_root/possible")"
+    if ableton_cpu_list_valid "$allowed"; then
+        allowed_count="$(ableton_cpu_list_count "$allowed")"
+    fi
+
+    for cpu in "${cpus[@]}"; do
+        ableton_cpu_is_allowed "$cpu" "$allowed" || continue
+        cpu_dir="$cpu_root/cpu$cpu"
+        package="$(ableton_cpu_report_integer "$cpu_dir/topology/physical_package_id")"
+        core="$(ableton_cpu_report_integer "$cpu_dir/topology/core_id")"
+        siblings="$(ableton_cpu_report_list "$cpu_dir/topology/thread_siblings_list")"
+        capacity="$(ableton_cpu_report_integer "$cpu_dir/cpu_capacity")"
+        core_type="$(ableton_cpu_report_token "$cpu_dir/topology/core_type")"
+        max_khz="$(ableton_cpu_report_frequency \
+            "$cpu_dir/cpufreq/cpuinfo_max_freq" "$cpu_dir/cpufreq/scaling_max_freq")"
+        current_khz="$(ableton_cpu_report_frequency \
+            "$cpu_dir/cpufreq/scaling_cur_freq" "$cpu_dir/cpufreq/cpuinfo_cur_freq")"
+
+        if [[ "$package" =~ ^[0-9]+$ ]] && [[ "$core" =~ ^[0-9]+$ ]]; then
+            physical_cores["$package:$core"]=1
+        else
+            topology_complete=0
+        fi
+        if ableton_cpu_list_valid "$siblings"; then
+            [ "$(ableton_cpu_list_count "$siblings")" -le 1 ] || smt_seen=1
+        else
+            smt_unknown=1
+            topology_complete=0
+        fi
+        [[ "$capacity" =~ ^[0-9]+$ ]] && capacities["$capacity"]=1
+        case "$core_type" in unavailable|invalid) ;; *) core_types["$core_type"]=1 ;; esac
+        rows+=("cpu=$cpu package=$package core=$core siblings=$siblings cpu_capacity=$capacity core_type=$core_type max_khz=$max_khz current_khz=$current_khz")
+        reported=$((reported + 1))
+    done
+
+    physical_count="${#physical_cores[@]}"
+    capacity_count="${#capacities[@]}"
+    type_count="${#core_types[@]}"
+    if [ "$smt_seen" -eq 1 ]; then
+        smt_evidence=present
+    elif [ "$reported" -eq 0 ] || [ "$smt_unknown" -eq 1 ]; then
+        smt_evidence=unknown
+    else
+        smt_evidence=not_observed
+    fi
+    [ "$reported" -gt 0 ] || topology_complete=0
+
+    wine_performance_cpus="$(ableton_cpu_report_list "$devices_root/cpu_core/cpus")"
+    kernel_efficiency_cpus="$(ableton_cpu_report_list "$devices_root/cpu_atom/cpus")"
+    if ableton_cpu_list_valid "$wine_performance_cpus"; then
+        wine_class_source=cpu_core/cpus
+        heterogeneous_evidence=present
+    fi
+    ableton_cpu_list_valid "$kernel_efficiency_cpus" && heterogeneous_evidence=present
+    [ "$capacity_count" -le 1 ] || heterogeneous_evidence=present
+    [ "$type_count" -le 1 ] || heterogeneous_evidence=present
+
+    printf 'cpu_topology_format=1\n'
+    printf 'allowed_cpus=%s\n' "$allowed"
+    printf 'allowed_source=%s\n' "$allowed_source"
+    printf 'online_cpus=%s\n' "$online"
+    printf 'possible_cpus=%s\n' "$possible"
+    printf 'allowed_logical_cpus=%s\n' "$allowed_count"
+    printf 'reported_logical_cpus=%s\n' "$reported"
+    printf 'reported_physical_cores=%s\n' "$physical_count"
+    printf 'smt_evidence=%s\n' "$smt_evidence"
+    printf 'heterogeneous_evidence=%s\n' "$heterogeneous_evidence"
+    printf 'topology_fields_complete=%s\n' "$([ "$topology_complete" -eq 1 ] && printf yes || printf no)"
+    # Wine 11.x reads online CPU topology and /sys/devices/cpu_core/cpus.
+    # These raw inputs are useful evidence, but are not a Win32 API assertion.
+    printf 'wine_topology_online_cpus=%s\n' "$online"
+    printf 'wine_efficiency_class_source=%s\n' "$wine_class_source"
+    printf 'wine_performance_cpus=%s\n' "$wine_performance_cpus"
+    printf 'kernel_efficiency_cpus=%s\n' "$kernel_efficiency_cpus"
+    printf 'wine_win32_efficiency_class_probe=not_run_read_only\n'
+    printf 'frequency_note=current_khz_is_a_single_snapshot\n'
+    printf '%s\n' "${rows[@]}"
+)
+
 ableton_live_product_version()
 {
     local exe="$1" key pattern key_bytes offset candidate
