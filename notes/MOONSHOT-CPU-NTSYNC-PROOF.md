@@ -15,7 +15,7 @@ wineserver to its exact `WINEPREFIX`. It counts that process's open
 
 `check-ntsync.sh` requires host device evidence by default. Pending device
 evidence makes the check exit with status 3 before Wine starts. Set
-`ABLETON_REQUIRE_NTSYNC=0` for a planned regular-route test. The result then
+`ABLETON_REQUIRE_NTSYNC=off` for a planned regular-route test. The result then
 identifies Wine's regular route.
 
 The checker also runs 27 timing and wake tests through `ntsyncprobe.exe`. Use

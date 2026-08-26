@@ -178,11 +178,14 @@ Close Live and run the installed check:
 A working setup ends with:
 
 ```text
-OK: sync semantics hold, ntsync active (server holds /dev/ntsync)
+OK: NTSync active; sync semantics pass; wineserver opens /dev/ntsync
 ```
 
-Any other final line means that NTSync is inactive. Install your normal system
-and kernel updates, restart the computer and run the check again.
+When `/dev/ntsync` is unavailable, the check exits with status 3 before it runs
+the semantics probe. Install your normal system and kernel updates. Restart the
+computer and run the check again.
+
+Exit status 1 or 2 means that the NTSync proof failed.
 
 If the command is missing, or the result still differs, update this project and
 include the complete output in a
