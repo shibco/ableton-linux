@@ -11,7 +11,7 @@ say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
 readonly REQUIRED_WINE_TAIL='0106-libusb-1.0-extend-the-host-bridge-for-Push-3.patch'
-readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0014-nonblocking-telemetry-reporting.patch'
+readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0015-nonblocking-telemetry-reporting.patch'
 
 check_required_series_tails()
 {
@@ -397,8 +397,8 @@ pipeasio/0009|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-honest-realtim
 pipeasio/0010|wide|bin/pipeasio-settings|pick a preset or type any value
 pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
 pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotplug
-pipeasio/0013|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|enabled for 64-bit host; capacity=%u, interval_ms=1000
-pipeasio/0014|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|PIPEASIO_TELEMETRY could not open a nonblocking report descriptor
+pipeasio/0014|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|enabled for 64-bit host; capacity=%u, interval_ms=1000
+pipeasio/0015|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|PIPEASIO_TELEMETRY could not open a nonblocking report descriptor
 '
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,

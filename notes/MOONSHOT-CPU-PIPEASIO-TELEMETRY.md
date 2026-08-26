@@ -25,6 +25,10 @@ The driver reports results once per second. It measures these 3 parts:
 Each part reports elapsed time and callback thread CPU time. The report includes
 `p50`, `p95`, `p99`, and the largest value.
 
+The cycle record separates Live's time-info and legacy callback paths. Its
+`muted` value counts admitted callbacks silenced after a buffer-size mismatch,
+while `dropped` counts timing samples discarded when the fixed queue is full.
+
 Long elapsed time with little CPU use often means that the thread waited. High
 CPU time shows work on the callback thread.
 
@@ -45,15 +49,18 @@ or frees that state.
 
 ## Measurement limits
 
-Each measured callback reads a clock 6 times. These reads change the measured
-work. Use default mode for before and after CPU results.
+Each measured callback performs 8 clock reads: 4 `CLOCK_MONOTONIC` reads and 4
+`CLOCK_THREAD_CPUTIME_ID` reads. On the review host, the thread CPU clock cost
+137.5 ns per read and the monotonic clock cost 12.1 ns per read. This adds about
+598 ns to each measured callback. Use default mode for before and after CPU
+results.
 
 Use timing reports with the 30-second benchmark, PipeWire error counts, and
 Live's CPU value. Add a listening result when you assess audible crackle.
 
 ## Release checks
 
-The 2 patches apply after PipeASIO patch 0012. Run the unit, ABI, minimal driver,
+The 2 patches apply after PipeASIO patch 0013. Run the unit, ABI, minimal driver,
 ASan, UBSan, and TSan tests with the normal runtime build.
 
 Run PipeWire tests at 32, 64, 128, and 256 frames. Compare default and enabled

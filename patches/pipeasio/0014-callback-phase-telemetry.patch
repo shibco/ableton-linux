@@ -1,7 +1,7 @@
-From 7425fdcefdc8379aef3877d7f73913a8edb228b0 Mon Sep 17 00:00:00 2001
+From f3744749bb6dbe4ac3c07ad52fe5671ed5076cab Mon Sep 17 00:00:00 2001
 From: Telemetry Prototype <prototype@localhost>
 Date: Mon, 24 Aug 2026 01:24:35 +0200
-Subject: [PATCH] asio: add opt-in callback phase telemetry
+Subject: [PATCH 1/2] asio: add opt-in callback phase telemetry
 
 Live's deadline meter and Linux process CPU cannot identify where a callback
 period is spent. Add an environment-only diagnostic that records both
@@ -21,7 +21,6 @@ The new ring/percentile/concurrency test passes ASan, UBSan, and TSan. The
 WoW64 ABI test passes; a full 32-bit build was unavailable because the cross
 compiler is not installed. A live probe was unavailable because this test
 environment has no PipeWire daemon.
-
 ---
  README.md                    |  24 +++
  include/pipeasio_telemetry.h | 106 +++++++++++++
@@ -35,13 +34,13 @@ environment has no PipeWire daemon.
  create mode 100644 tests/unit/test_telemetry.c
 
 diff --git a/README.md b/README.md
-index c20c4df..471990a 100644
+index c20c4df..1373bf3 100644
 --- a/README.md
 +++ b/README.md
 @@ -548,6 +548,30 @@ takes effect the next time the host starts the driver.
-
+ 
  Env: `PIPEASIO_RT_PRIORITY` (`off`/`on`). The environment overrides the file.
-
+ 
 +### Callback timing diagnostic
 +
 +`PIPEASIO_TELEMETRY=on` records callback timing for a 64-bit host. The
@@ -67,11 +66,11 @@ index c20c4df..471990a 100644
 +clocks.
 +
  ## Performance
-
+ 
  A few knobs affect xrun-free, low-latency operation:
 diff --git a/include/pipeasio_telemetry.h b/include/pipeasio_telemetry.h
 new file mode 100644
-index 0000000..20ce9f1
+index 0000000..7525921
 --- /dev/null
 +++ b/include/pipeasio_telemetry.h
 @@ -0,0 +1,106 @@
@@ -182,7 +181,7 @@ index 0000000..20ce9f1
 +    return rank ? rank - 1u : 0u;
 +}
 diff --git a/src/asio.c b/src/asio.c
-index 7612767..ebc2c79 100644
+index 7612767..fc38757 100644
 --- a/src/asio.c
 +++ b/src/asio.c
 @@ -71,6 +71,9 @@
@@ -198,7 +197,7 @@ index 7612767..ebc2c79 100644
 @@ -273,6 +276,27 @@ typedef struct IOChannel
      bool            active;
  } IOChannel;
-
+ 
 +#ifndef PIPEASIO_WOW64_PE
 +typedef struct pipeasio_telemetry_state
 +{
@@ -239,13 +238,13 @@ index 7612767..ebc2c79 100644
 +    _Atomic uint32_t gate_owner_seq;
 +    _Atomic uint32_t lifecycle_waiters;
 +    _Atomic uint32_t stop_generation;
-
+ 
      /* The app's main window handle on windows, 0 on OS/X */
      HWND sys_ref;
 @@ -697,6 +727,143 @@ gate_leave_test_barrier(void)
  }
  #endif
-
+ 
 +#ifndef PIPEASIO_WOW64_PE
 +/* Monotonic time records the full deadline. Thread CPU time records work on
 + * the callback thread. Wall time also includes sleep in Live. These clock
@@ -426,10 +425,10 @@ index 7612767..ebc2c79 100644
 +        HeapFree(GetProcessHeap(), 0, telemetry);
 +#endif
  }
-
+ 
  static DWORD WINAPI
 @@ -1338,7 +1528,20 @@ lifecycle_worker(void *arg)
-
+ 
      for (;;)
      {
 +#ifndef PIPEASIO_WOW64_PE
@@ -478,7 +477,7 @@ index 7612767..ebc2c79 100644
 +        This->telemetry_cycle = NULL;
 +#endif
      }
-
+ 
      /* In fail-silent mismatch mode the backend owns the graph buffer and
 @@ -3164,6 +3379,12 @@ process_callback(audio_nframes_t nframes, void *arg)
              audio_port_publish_output(This->output_channel[i].port, source, nframes, admitted,
@@ -496,7 +495,7 @@ index 7612767..ebc2c79 100644
 @@ -3352,6 +3573,54 @@ configure_driver(IPipeASIOImpl *This)
      if (read_environment("PIPEASIO_CLIENT_NAME", name_environment, sizeof(name_environment)))
          lstrcpynA(This->client_name, name_environment, sizeof(This->client_name));
-
+ 
 +    if (read_environment("PIPEASIO_TELEMETRY", environment_variable, sizeof(environment_variable)))
 +    {
 +        int enabled = pipeasio_env_bool(environment_variable);
@@ -547,7 +546,7 @@ index 7612767..ebc2c79 100644
 +
      return;
  }
-
+ 
 @@ -3390,6 +3659,9 @@ PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
      atomic_init(&pobj->lifecycle_waiters, 0);
      atomic_init(&pobj->stop_generation, 0);
@@ -724,5 +723,6 @@ index 0000000..0d70ef0
 +
 +    return test_report();
 +}
---
+-- 
 2.55.0
+
