@@ -103,3 +103,4 @@ dad3840da339256af7b3a929a5c2d84052402d26298e2d5706b298aba6515675  pipeasio/0009-
 adf7f8446f8b4e60ab7df8bf433f50fcfd65ddf123c731027e513f4057ad2207  pipeasio/0010-gui-accept-any-buffer-size.patch
 bea289bb6f78f4b217813c4457c54bf2e4224fb74bb0435ac17bbb50a1db5a53  pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch
 8542e3eb5f4e77559783b85bc741c1c21e99027e2e3989a1456909819385227e  pipeasio/0012-recover-selected-routes-after-hotplug.patch
+ec509d3559896a4c5f877ef4a8ba562bedbbb69e44891d18d475892a65d8a704  pipeasio/0013-avoid-redundant-output-fallback-publish.patch
