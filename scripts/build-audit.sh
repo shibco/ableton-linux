@@ -11,7 +11,7 @@ say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
 readonly REQUIRED_WINE_TAIL='0107-win32u-restore-offscreen-client-content-on-expose.patch'
-readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0015-nonblocking-telemetry-reporting.patch'
+readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0016-classify-pipeasio-forcers-by-bound-node-id.patch'
 
 check_required_series_tails()
 {
@@ -400,6 +400,7 @@ pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-contro
 pipeasio/0012|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-reliable-hotplug
 pipeasio/0014|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|enabled for 64-bit host; capacity=%u, interval_ms=1000
 pipeasio/0015|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|PIPEASIO_TELEMETRY could not open a nonblocking report descriptor
+pipeasio/0016|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-node-arbitration
 '
 # 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
 # not reach the panel binary; its fingerprint is the tooltip literal above,
