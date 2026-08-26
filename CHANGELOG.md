@@ -11,9 +11,6 @@ On the measured 16-core, 32-thread computer, `auto` selects 16 of Live's 31
 workers. An existing user or launcher setting takes priority. Select `auto` to
 calculate the value again.
 
-Before release, test busy Live Sets on computers with 4 to 8 physical cores.
-Test each Set at 32, 64 and 128 frames.
-
 ## 2026.08.26.1
 
 - **MIDI controllers and audio interfaces find their way back:**

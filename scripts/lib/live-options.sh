@@ -81,7 +81,7 @@ ableton_reliable_audio_threads()
 
     # Keep at least half of Live's workers on processors with fewer cores.
     # The measured 16-core computer keeps its 16-of-31 result.
-    # Before release, test busy Sets on computers with 4 to 8 physical cores.
+    # Before release, test busy Sets on an SMT computer with up to 15 physical cores.
     reliability_floor=$(((live_default + 1) / 2))
     count=$((10#$physical))
     [ "$count" -ge "$reliability_floor" ] || count="$reliability_floor"

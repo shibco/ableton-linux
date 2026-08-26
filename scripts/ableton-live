@@ -261,6 +261,8 @@ for live_options_lib in "$launcher_here/lib/live-options.sh" "$ABLETON_DATA_HOME
     if [ -r "$live_options_lib" ]; then . "$live_options_lib"; break; fi
 done
 for live_options_function in ableton_available_physical_cores \
+                             ableton_live_calculated_audio_threads \
+                             ableton_reliable_audio_threads \
                              ableton_live_product_version \
                              ableton_seed_max_audio_threads; do
     declare -F "$live_options_function" >/dev/null 2>&1 || {
@@ -308,9 +310,20 @@ case "$max_audio_threads_request" in
            && max_audio_threads="$(ableton_reliable_audio_threads "$physical_audio_cores")"; then
             :
         else
-            audio_report="$launcher_here/audio-report.sh"
-            [ -x "$audio_report" ] || audio_report="$ABLETON_DATA_HOME/audio-report.sh"
-            printf 'ableton-live: Live will select its audio thread count. Run %q to review the CPU details.\n' "$audio_report" >&2
+            audio_report=""
+            for audio_report_candidate in "$launcher_here/audio-report.sh" \
+                                          "$ABLETON_DATA_HOME/audio-report.sh" \
+                                          "$ABLETON_WINE_ROOT/share/ableton-wine/scripts/audio-report.sh"; do
+                if [ -x "$audio_report_candidate" ]; then
+                    audio_report="$audio_report_candidate"
+                    break
+                fi
+            done
+            if [ -n "$audio_report" ]; then
+                printf 'ableton-live: Live will select its audio thread count. Run %q to review the CPU details.\n' "$audio_report" >&2
+            else
+                echo "ableton-live: Live will select its audio thread count. The CPU details report is unavailable." >&2
+            fi
             max_audio_threads=off
             max_audio_threads_action=0
         fi ;;

@@ -522,9 +522,6 @@ Live reads the worker setting when it starts. PipeWire can change the buffer
 size later. The launcher chooses from the physical core count and Live's own
 count. Live uses that worker count for the whole session.
 
-Before release, test busy Live Sets on computers with 4 to 8 physical cores.
-Compare the automatic setting with Live's own count at 32, 64 and 128 frames.
-
 ### Live uses high CPU while idle
 
 Open **Settings > Display & Input** and turn on **Enable GPU Renderer**. Close

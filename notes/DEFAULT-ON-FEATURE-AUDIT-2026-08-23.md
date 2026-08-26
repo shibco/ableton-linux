@@ -100,10 +100,12 @@ topology remain unrecorded. The
 records the values and scope.
 
 Before release, compare the physical-core value, the automatic value and Live's
-own value. Use a computer with 4 to 8 physical cores. Test 32, 64 and 128 frames.
-Use a demanding Set with independent audio chains. Record Live's deadline
-meter, audible dropouts and Linux process CPU. Record PipeWire xruns, which
-count missed audio periods.
+calculated value. Use a computer with simultaneous multithreading (SMT) and up
+to 15 physical cores. Include the available computer with 10 physical cores and
+16 logical processors. Test buffer sizes of 32, 64 and 128 frames. Use a
+demanding Set with independent audio chains. Record Live's deadline meter,
+audible dropouts and Linux process CPU use. Record PipeWire xruns, which count
+missed audio periods.
 
 ## Separate engineering work
 

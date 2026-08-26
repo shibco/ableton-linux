@@ -154,7 +154,8 @@ value below Live's own count. The measured 16-core, 32-thread computer therefore
 uses 16 of Live's 31 workers. The setting keeps at least half of Live's workers
 on processors with fewer cores. `off` removes a value that the launcher set and
 lets Live choose. Existing settings and user edits take priority. A number from
-one to 63 requests that limit.
+one to 63 requests a limit. The launcher uses the limit when it is below Live's
+calculated count. At or above that count, Live uses its calculated count.
 
 Existing worker settings, earlier launcher choices, and later file contents
 take priority over implicit `auto`. An explicit `auto` recalculates an untouched
@@ -167,7 +168,8 @@ size later. The launcher chooses from the physical core count and Live's own
 count. Live uses that worker count for the whole session.
 
 Start with the automatic value. Use audio tests before release. Compare 3 values
-on computers with 4 to 8 physical cores:
+on a computer with simultaneous multithreading (SMT) and up to 15 physical
+cores:
 
 - the physical core count
 - the automatic value
@@ -239,8 +241,8 @@ The retained run directories start from the worktree root:
 
 Future release decisions require these tests:
 
-- compare the physical-core value, automatic value and Live's own value on a
-  computer with 4 to 8 physical cores.
+- compare the physical-core value, automatic value and Live's calculated value
+  on an SMT computer with up to 15 physical cores.
 - use 24 to 32 independent audio chains in each Set.
 - compare standard and real-time scheduling for both Live and PipeASIO.
 - measure the same Set at 32, 64 and 128 frames. Keep 256 frames as the CPU

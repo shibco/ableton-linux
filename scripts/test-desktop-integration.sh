@@ -104,18 +104,33 @@ printf '%s\n' "$config_help" | grep -q 'preserve leaves the desktop shortcuts un
     || fail "launcher help omits the shortcut opt-out"
 ok "launcher help reports the default-on worker and GNOME shortcut policies"
 
-base="$(new_env missing-live-options-helper)"
-mkdir -p -- "$base/launcher/lib"
-cp -- "$here/ableton-live" "$base/launcher/ableton-live"
-cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$base/launcher/lib/"
-: > "$base/launcher/lib/live-options.sh"
-if run_isolated "$base" bash "$base/launcher/ableton-live" \
-    >"$base/out" 2>"$base/err"; then
-    fail "launcher accepts an incomplete live-options.sh helper"
-fi
-grep -q 'live-options.sh helper is missing or incomplete' "$base/err" \
-    || fail "launcher does not name its incomplete audio settings helper"
-ok "launcher names and refuses an incomplete live-options.sh helper"
+for missing_live_options_function in ableton_live_calculated_audio_threads \
+                                     ableton_reliable_audio_threads; do
+    base="$(new_env "incomplete-live-options-$missing_live_options_function")"
+    mkdir -p -- "$base/launcher/lib"
+    cp -- "$here/ableton-live" "$base/launcher/ableton-live"
+    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$base/launcher/lib/"
+    cat > "$base/launcher/lib/live-options.sh" <<'EOF'
+ableton_available_physical_cores() { printf '4\n'; }
+ableton_live_product_version() { return 1; }
+ableton_seed_max_audio_threads() { return 0; }
+EOF
+    if [ "$missing_live_options_function" != ableton_live_calculated_audio_threads ]; then
+        printf '%s\n' 'ableton_live_calculated_audio_threads() { printf '\''7\n'\''; }' \
+            >> "$base/launcher/lib/live-options.sh"
+    fi
+    if [ "$missing_live_options_function" != ableton_reliable_audio_threads ]; then
+        printf '%s\n' 'ableton_reliable_audio_threads() { printf '\''4\n'\''; }' \
+            >> "$base/launcher/lib/live-options.sh"
+    fi
+    if run_isolated "$base" bash "$base/launcher/ableton-live" \
+        >"$base/out" 2>"$base/err"; then
+        fail "launcher accepts live-options.sh without $missing_live_options_function"
+    fi
+    grep -q 'live-options.sh helper is missing or incomplete' "$base/err" \
+        || fail "launcher does not name its incomplete audio settings helper"
+done
+ok "launcher requires every audio thread calculation helper"
 
 base="$(new_env unique-handlers)"
 install_fake_desktop_tools "$base"
@@ -241,6 +256,35 @@ live_major=12
 link_mode=off
 linkd=$base/data/ableton-wine/ableton-linkd
 EOF
+: > "$base/wine.log"
+mkdir -p -- "$base/nix/libexec/lib" "$base/runtime/share/ableton-wine/scripts"
+cp -- "$here/ableton-live" "$base/nix/libexec/ableton-live"
+cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
+    "$base/nix/libexec/lib/"
+cat > "$base/runtime/share/ableton-wine/scripts/audio-report.sh" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$base/runtime/share/ableton-wine/scripts/audio-report.sh"
+cat > "$base/fakebin/nproc" <<'EOF'
+#!/bin/sh
+printf 'unavailable\n'
+EOF
+run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=auto ABLETON_POWER=off \
+    ABLETON_RT=off ABLETON_THEME_MODE=preserve ABLETON_DPI_MODE=preserve \
+    ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
+    ABLETON_TOPBAR_MODE=preserve ABLETON_LAUNCH_TIMEOUT=5 \
+    ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$base/nix/libexec/ableton-live" \
+    'ableton://invalid-ableton-linux-probe' >"$base/nix.out" 2>"$base/nix.err" || true
+grep -qF "Run $base/runtime/share/ableton-wine/scripts/audio-report.sh to review the CPU details" \
+    "$base/nix.err" || fail "The Nix launcher fallback does not name its packaged audio report."
+cat > "$base/fakebin/nproc" <<'EOF'
+#!/bin/sh
+[ "$#" -eq 0 ] || exit 2
+printf '32\n'
+EOF
+ok "automatic worker fallback names the packaged Nix audio report"
+
 : > "$base/wine.log"
 if run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=64 \
     ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" \
