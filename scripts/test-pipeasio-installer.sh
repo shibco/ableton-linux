@@ -1015,6 +1015,10 @@ manifest_has_path "$runtime_manifest" "$runtime_command" \
     || fail "runtime-only installation omitted panel command ownership"
 manifest_has_path "$runtime_manifest" "$runtime_desktop" \
     || fail "runtime-only installation omitted panel entry ownership"
+manifest_has_path "$runtime_manifest" "${runtime_command}.bak" \
+    || fail "runtime-only installation omitted panel command backup ownership"
+manifest_has_path "$runtime_manifest" "${runtime_desktop}.bak" \
+    || fail "runtime-only installation omitted panel entry backup ownership"
 run_isolated "$base" env \
     PATH="$base/fakebin:$PATH" \
     ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
@@ -1026,6 +1030,10 @@ cmp -s -- "$base/foreign-command.before" "$runtime_command" \
     || fail "uninstall restored the wrong foreign panel command"
 cmp -s -- "$base/foreign-desktop.before" "$runtime_desktop" \
     || fail "uninstall restored the wrong foreign panel entry"
+[ ! -e "${runtime_command}.bak" ] && [ ! -L "${runtime_command}.bak" ] \
+    || fail "uninstall retained the runtime-only panel command backup"
+[ ! -e "${runtime_desktop}.bak" ] && [ ! -L "${runtime_desktop}.bak" ] \
+    || fail "uninstall retained the runtime-only panel entry backup"
 ok "runtime-only launcher replacement records ownership for uninstall"
 
 base="$(new_env foreign-panel-command)"
@@ -1093,12 +1101,12 @@ run_minimal_uninstall()
         bash "$here/uninstall.sh" --keep-prefix --yes
 }
 
-base="$(new_env symlink-prestate)"
+base="$(new_env relative-symlink-prestate)"
 managed_link="$base/home/.local/bin/pipeasio-settings"
 mkdir -p -- "$(dirname "$managed_link")"
-printf '#!/bin/sh\necho original\n' > "$base/original-foreign-command"
-chmod 755 "$base/original-foreign-command"
-ln -s -- "$base/original-foreign-command" "$managed_link"
+printf '#!/bin/sh\necho original\n' > "$(dirname "$managed_link")/original-foreign-command"
+chmod 755 "$(dirname "$managed_link")/original-foreign-command"
+ln -s -- original-foreign-command "$managed_link"
 install_managed_link "$base" "$base/managed-panel-v1" "$managed_link" "$base/txn-v1" \
     || fail "first managed symlink update failed"
 [ "$(readlink -- "$managed_link")" = "$base/managed-panel-v1" ] \
@@ -1110,9 +1118,10 @@ install_managed_link "$base" "$base/managed-panel-v2" "$managed_link" "$base/txn
 run_minimal_uninstall "$base" >"$base/uninstall.out" 2>"$base/uninstall.err" \
     || fail "uninstall failed while restoring symlink prestate"
 [ -L "$managed_link" ] \
-    && [ "$(readlink -- "$managed_link")" = "$base/original-foreign-command" ] \
-    || fail "uninstall did not restore the original foreign symlink"
-ok "two managed symlink updates retain and restore original foreign prestate"
+    && [ -e "$managed_link" ] \
+    && [ "$(readlink -- "$managed_link")" = original-foreign-command ] \
+    || fail "uninstall did not restore the original relative foreign symlink"
+ok "two managed symlink updates retain and restore relative foreign prestate"
 
 base="$(new_env retargeted-managed-link)"
 managed_link="$base/home/.local/bin/pipeasio-settings"

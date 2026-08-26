@@ -1816,6 +1816,34 @@ cmp -s "$base/foreign-live-backup.before" "$base/data/applications/ableton-live.
     || fail "uninstall did not restore the pre-existing adjacent backup"
 ok "integration restores a foreign launcher and its pre-existing adjacent backup"
 
+base="$(new_env dangling-launcher-backup)"
+dangling_launcher="$base/data/applications/ableton-live.desktop"
+dangling_backup="${dangling_launcher}.bak"
+dangling_target=personal-missing-backup-target
+mkdir -p "$(dirname "$dangling_launcher")" "$base/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
+chmod +x "$base/fakebin/systemctl"
+printf '[Desktop Entry]\nType=Application\nName=Foreign Live\nExec=/usr/bin/true %%f\n' \
+    > "$dangling_launcher"
+ln -s "$dangling_target" "$dangling_backup"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
+    >"$base/install.out" 2>"$base/install.err" \
+    || fail "integration install failed with a dangling adjacent backup"
+dangling_prestate_id="$(printf '%s' "$dangling_backup" | sha256sum | awk '{print $1}')"
+dangling_prestate="$base/state/ableton-wine/install-prestate/$dangling_prestate_id"
+[ -L "$dangling_prestate" ] && [ ! -e "$dangling_prestate" ] \
+    && [ "$(readlink -- "$dangling_prestate")" = "$dangling_target" ] \
+    || fail "integration did not preserve the dangling adjacent backup"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/uninstall.out" 2>"$base/uninstall.err" \
+    || { sed -n '1,40p' "$base/uninstall.err" >&2; fail "uninstall failed with dangling launcher backup prestate"; }
+grep -qxF 'Name=Foreign Live' "$dangling_launcher" \
+    || fail "uninstall did not restore the launcher beside a dangling backup"
+[ -L "$dangling_backup" ] && [ ! -e "$dangling_backup" ] \
+    && [ "$(readlink -- "$dangling_backup")" = "$dangling_target" ] \
+    || fail "uninstall did not restore the dangling adjacent backup"
+ok "integration restores dangling adjacent launcher backup prestate"
+
 base="$(new_env identical-foreign-launcher)"
 identical_launcher="$base/home/.local/bin/ableton-live"
 mkdir -p "$(dirname "$identical_launcher")" "$base/fakebin"
