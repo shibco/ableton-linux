@@ -20,6 +20,8 @@ and dynamic EPP state. CPPC gives the firmware performance scale for each
 processor. EPP means energy performance preference. It describes a balance
 between power use and speed.
 
+Per-processor rows appear when class or preferred-core evidence is present.
+
 Linux 7.1.8 passes `amd_pstate_prefcore_ranking` to its scheduler. Linux updates
 the scheduler when firmware changes that rank
 (`drivers/cpufreq/amd-pstate.c:904-945`). The Linux guide confirms that the rank
@@ -28,14 +30,17 @@ can change during use
 current preference. `core_type` supplies a separate CPU class.
 
 `Cpus_allowed_list` in `/proc/self/status` supplies the effective CPU set. The
-report records the online set and Wine input files as separate values.
+report records the present, possible and online sets as separate values.
 `unavailable` means that file reads supplied zero usable values for a field.
 `invalid` marks a value outside its field format.
 
-Wine 11 reads the online CPU layout and `/sys/devices/cpu_core/cpus` for its
-Windows efficiency class. The report also records
-`/sys/devices/cpu_atom/cpus`. The report identifies Linux files as its collection
-source. A separate Wine test supplies the result visible to a Windows process.
+Wine 11 reads the present and online CPU layouts. It also reads
+`/sys/devices/cpu_core/cpus` for its Windows efficiency class. Wine stops its
+current Linux enumeration before processor index 64. The report records that
+limit beside the raw Wine inputs.
+
+The report also records `/sys/devices/cpu_atom/cpus`. It identifies each Linux
+file as its collection source. A separate Wine test supplies the Windows result.
 
 ## Development host result
 
@@ -69,9 +74,10 @@ Record the processor that handles each audio device interrupt.
 
 Follow the steps before a default placement rule enters release review.
 
-The class fields are `cpu_capacity`, `core_type`, `wine_performance_cpus`,
-`kernel_efficiency_cpus` and the Windows `EfficiencyClass` result. Partial
-evidence means that one or more class fields report `unavailable` or `invalid`.
+The class sources are `cpu_capacity`, `core_type`, `wine_performance_cpus` and
+`kernel_efficiency_cpus`. One usable distinction supplies class evidence.
+`heterogeneous_evidence=unknown` identifies a report with zero usable class
+values.
 
 1. Test 2 Intel hybrid generations, one tiered non-Intel system and one symmetric simultaneous multithreading control.
 2. Map every available Linux processor to the Windows `EfficiencyClass` result.
@@ -84,7 +90,7 @@ evidence means that one or more class fields report `unavailable` or `invalid`.
 9. Require a repeated CPU or power benefit.
 10. Use Linux automatic placement as the control setting.
 11. Confirm that each proposed placement run restores the original CPU set.
-12. Keep Linux automatic placement when the report contains partial evidence.
+12. Keep Linux automatic placement when `heterogeneous_evidence=unknown`.
 
 Use the report for manual experiments. Keep Linux in control of CPU placement
 through the test gate.

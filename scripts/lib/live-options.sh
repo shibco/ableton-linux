@@ -150,16 +150,17 @@ ableton_cpu_topology_report()
     local cpu_root="${1:-/sys/devices/system/cpu}"
     local proc_status="${2:-/proc/self/status}"
     local devices_root="${3:-/sys/devices}"
-    local allowed="" allowed_source="" online possible discovered=""
+    local allowed="" allowed_source="" online present possible discovered=""
     local cpu_dir cpu package core siblings capacity core_type max_khz current_khz
     local cppc_highest cppc_nominal amd_pstate_highest amd_pstate_ranking
     local amd_pstate_hw_prefcore amd_pstate_max_khz
     local allowed_count=0 reported=0 topology_complete=1 smt_seen=0 smt_unknown=0
-    local smt_evidence heterogeneous_evidence=not_observed preferred_core_evidence=unavailable
+    local class_field_seen=0 emit_cpu_rows=0
+    local smt_evidence heterogeneous_evidence=unknown preferred_core_evidence=unavailable
     local wine_performance_cpus kernel_efficiency_cpus wine_class_source=unavailable
     local physical_count capacity_count type_count cppc_highest_count driver_ranking_count
     local amd_pstate_status amd_pstate_prefcore amd_pstate_dynamic_epp
-    local -a cpu_dirs cpus rows=()
+    local -a cpu_dirs=() cpus=() rows=()
     local -A physical_cores=() capacities=() core_types=() cppc_highest_values=()
     local -A driver_ranking_values=()
 
@@ -197,6 +198,7 @@ ableton_cpu_topology_report()
         fi
     fi
     online="$(ableton_cpu_report_list "$cpu_root/online")"
+    present="$(ableton_cpu_report_list "$cpu_root/present")"
     possible="$(ableton_cpu_report_list "$cpu_root/possible")"
     if ableton_cpu_list_valid "$allowed"; then
         allowed_count="$(ableton_cpu_list_count "$allowed")"
@@ -263,11 +265,20 @@ ableton_cpu_topology_report()
     kernel_efficiency_cpus="$(ableton_cpu_report_list "$devices_root/cpu_atom/cpus")"
     if ableton_cpu_list_valid "$wine_performance_cpus"; then
         wine_class_source=cpu_core/cpus
+        class_field_seen=1
         heterogeneous_evidence=present
     fi
-    ableton_cpu_list_valid "$kernel_efficiency_cpus" && heterogeneous_evidence=present
+    if ableton_cpu_list_valid "$kernel_efficiency_cpus"; then
+        class_field_seen=1
+        heterogeneous_evidence=present
+    fi
+    [ "$capacity_count" -eq 0 ] || class_field_seen=1
+    [ "$type_count" -eq 0 ] || class_field_seen=1
     [ "$capacity_count" -le 1 ] || heterogeneous_evidence=present
     [ "$type_count" -le 1 ] || heterogeneous_evidence=present
+    if [ "$class_field_seen" -eq 1 ] && [ "$heterogeneous_evidence" = unknown ]; then
+        heterogeneous_evidence=not_observed
+    fi
 
     amd_pstate_status="$(ableton_cpu_report_token "$cpu_root/amd_pstate/status")"
     amd_pstate_prefcore="$(ableton_cpu_report_token "$cpu_root/amd_pstate/prefcore")"
@@ -277,11 +288,15 @@ ableton_cpu_topology_report()
     elif [ "$cppc_highest_count" -eq 1 ] || [ "$driver_ranking_count" -eq 1 ]; then
         preferred_core_evidence=not_observed
     fi
+    if [ "$heterogeneous_evidence" = present ] || [ "$preferred_core_evidence" = present ]; then
+        emit_cpu_rows=1
+    fi
 
     printf 'cpu_topology_format=2\n'
     printf 'allowed_cpus=%s\n' "$allowed"
     printf 'allowed_source=%s\n' "$allowed_source"
     printf 'online_cpus=%s\n' "$online"
+    printf 'present_cpus=%s\n' "$present"
     printf 'possible_cpus=%s\n' "$possible"
     printf 'allowed_logical_cpus=%s\n' "$allowed_count"
     printf 'reported_logical_cpus=%s\n' "$reported"
@@ -293,16 +308,18 @@ ableton_cpu_topology_report()
     printf 'amd_pstate_prefcore=%s\n' "$amd_pstate_prefcore"
     printf 'amd_pstate_dynamic_epp=%s\n' "$amd_pstate_dynamic_epp"
     printf 'topology_fields_complete=%s\n' "$([ "$topology_complete" -eq 1 ] && printf yes || printf no)"
-    # Wine 11 reads the online CPU list and /sys/devices/cpu_core/cpus.
-    # The report includes both inputs. A launched Windows probe is a separate
-    # test.
+    # Wine 11 reads the present and online CPU lists plus
+    # /sys/devices/cpu_core/cpus. Its current Linux enumeration stops before
+    # processor index 64. A launched Windows probe is a separate test.
+    printf 'wine_topology_present_cpus=%s\n' "$present"
     printf 'wine_topology_online_cpus=%s\n' "$online"
+    printf 'wine_topology_processor_index_limit=64\n'
     printf 'wine_efficiency_class_source=%s\n' "$wine_class_source"
     printf 'wine_performance_cpus=%s\n' "$wine_performance_cpus"
     printf 'kernel_efficiency_cpus=%s\n' "$kernel_efficiency_cpus"
     printf 'wine_win32_efficiency_class_probe=not_run_read_only\n'
     printf 'frequency_note=current_khz_is_a_single_snapshot\n'
-    printf '%s\n' "${rows[@]}"
+    [ "$emit_cpu_rows" -eq 0 ] || printf '%s\n' "${rows[@]}"
 )
 
 ableton_live_product_version()

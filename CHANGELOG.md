@@ -2,12 +2,9 @@
 
 ## Unreleased
 
-- Audio reports include CPU layout evidence:
+- audio reports now show the CPU layout that Linux gives Live:
   - the report records the available CPU set, physical layout and Linux
     processor preferences
-  - Linux keeps control of CPU placement
-  - future automatic placement requires matched audio tests on several CPU
-    designs
 
 ## 2026.08.26.1
 

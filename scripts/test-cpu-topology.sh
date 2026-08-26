@@ -78,6 +78,7 @@ make_cpu()
 
 make_fixture homogeneous-smt
 printf '0-3\n' > "$cpu_root/online"
+printf '0-3\n' > "$cpu_root/present"
 printf '0-3\n' > "$cpu_root/possible"
 printf 'Name:\ttopology-test\nCpus_allowed_list:\t0-3\n' > "$proc_status"
 make_cpu 0 0 0 0,2 1024 missing 4200000 3100000
@@ -93,11 +94,13 @@ has_line "$report" 'smt_evidence=present'
 has_line "$report" 'heterogeneous_evidence=not_observed'
 has_line "$report" 'topology_fields_complete=yes'
 has_line "$report" 'preferred_core_evidence=unavailable'
-has_line "$report" 'cpu=0 package=0 core=0 siblings=0,2 cpu_capacity=1024 core_type=unavailable max_khz=4200000 current_khz=3100000 cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable amd_pstate_prefcore_ranking=unavailable amd_pstate_hw_prefcore=unavailable amd_pstate_max_khz=unavailable'
+! printf '%s\n' "$report" | grep -q '^cpu=' \
+    || fail 'a symmetric fixture emits per-CPU rows without class or preference evidence'
 ok 'A homogeneous SMT fixture reports physical cores, sibling pairs and frequency snapshots without inventing core classes.'
 
 make_fixture preferred-core-amd
 printf '0-3\n' > "$cpu_root/online"
+printf '0-3\n' > "$cpu_root/present"
 printf '0-3\n' > "$cpu_root/possible"
 printf 'Cpus_allowed_list:\t0-3\n' > "$proc_status"
 mkdir -p -- "$cpu_root/amd_pstate"
@@ -119,6 +122,7 @@ ok 'CPPC preferred-core rankings remain distinct from P/E capacity classes and e
 
 make_fixture hybrid-pe
 printf '0-3\n' > "$cpu_root/online"
+printf '0-3\n' > "$cpu_root/present"
 printf '0-3\n' > "$cpu_root/possible"
 printf 'Cpus_allowed_list:\t0-3\n' > "$proc_status"
 make_cpu 0 0 0 0 1024 performance 5200000 5100000
@@ -133,6 +137,8 @@ has_line "$report" 'heterogeneous_evidence=present'
 has_line "$report" 'wine_efficiency_class_source=cpu_core/cpus'
 has_line "$report" 'wine_performance_cpus=0-1'
 has_line "$report" 'kernel_efficiency_cpus=2-3'
+has_line "$report" 'wine_topology_present_cpus=0-3'
+has_line "$report" 'wine_topology_processor_index_limit=64'
 has_line "$report" 'wine_win32_efficiency_class_probe=not_run_read_only'
 has_line "$report" 'cpu=2 package=0 core=2 siblings=2 cpu_capacity=640 core_type=efficiency max_khz=3800000 current_khz=2700000 cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable amd_pstate_prefcore_ranking=unavailable amd_pstate_hw_prefcore=unavailable amd_pstate_max_khz=unavailable'
 ok 'A P/E fixture preserves kernel class evidence and labels Wine input separately from an unrun Win32 proof.'
@@ -159,12 +165,15 @@ has_line "$report" 'allowed_source=sysfs_online_fallback'
 has_line "$report" 'possible_cpus=unavailable'
 has_line "$report" 'reported_physical_cores=0'
 has_line "$report" 'smt_evidence=unknown'
+has_line "$report" 'heterogeneous_evidence=unknown'
 has_line "$report" 'topology_fields_complete=no'
-has_line "$report" 'cpu=0 package=unavailable core=unavailable siblings=unavailable cpu_capacity=unavailable core_type=unavailable max_khz=unavailable current_khz=unavailable cppc_highest_perf=unavailable cppc_nominal_perf=unavailable amd_pstate_highest_perf=unavailable amd_pstate_prefcore_ranking=unavailable amd_pstate_hw_prefcore=unavailable amd_pstate_max_khz=unavailable'
+! printf '%s\n' "$report" | grep -q '^cpu=' \
+    || fail 'a fixture without class evidence emits per-CPU rows'
 ok 'Missing and malformed sysfs fields remain explicit while a valid online list provides a bounded fallback.'
 
 make_fixture no-smt
 printf '0-2\n' > "$cpu_root/online"
+printf '0-2\n' > "$cpu_root/present"
 printf '0-2\n' > "$cpu_root/possible"
 printf 'Cpus_allowed_list:\t0-2\n' > "$proc_status"
 make_cpu 0 0 0 0 1024 missing 4400000 3400000
@@ -177,5 +186,17 @@ has_line "$report" 'smt_evidence=not_observed'
 has_line "$report" 'heterogeneous_evidence=not_observed'
 has_line "$report" 'topology_fields_complete=yes'
 ok 'A multi-package no-SMT fixture counts every core and does not infer heterogeneity from package IDs.'
+
+make_fixture zero-cpus
+report="$(ableton_cpu_topology_report "$cpu_root" "$proc_status" "$devices_root")"
+has_line "$report" 'allowed_cpus=unavailable'
+has_line "$report" 'allowed_source=unavailable'
+has_line "$report" 'reported_logical_cpus=0'
+has_line "$report" 'smt_evidence=unknown'
+has_line "$report" 'heterogeneous_evidence=unknown'
+has_line "$report" 'topology_fields_complete=no'
+! printf '%s\n' "$report" | grep -q '^cpu=' \
+    || fail 'a zero-CPU root emits a per-CPU row'
+ok 'A zero-CPU root reports an explicit degraded state.'
 
 printf 'PASS: %s CPU topology report checks\n' "$pass"
