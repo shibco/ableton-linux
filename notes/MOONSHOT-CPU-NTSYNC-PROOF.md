@@ -1,22 +1,22 @@
-# NTSync is a measured prerequisite, not a build label
+# Prove NTSync during each benchmark
 
 Date: 26 August 2026
 
-The runtime build record says whether Wine was compiled with NTSync. That is not
-enough to attribute a benchmark: the kernel device must exist and the matching
-wineserver must hold it while Live runs.
+A useful NTSync result records three separate facts:
 
-This branch makes the distinction explicit:
+- the Wine build includes NTSync support
+- the host provides `/dev/ntsync`
+- the matching wineserver opens `/dev/ntsync` while Live runs
 
-- the launcher warns when the host device is unavailable but remains usable;
-- audio-report.sh associates each wineserver with its exact WINEPREFIX and
-  counts that process's /dev/ntsync descriptors;
-- check-ntsync.sh defaults to strict proof and exits 3 before starting Wine
-  when the device is unavailable;
-- deliberate fallback testing requires ABLETON_REQUIRE_NTSYNC=off, and its
-  success message still labels NTSync inactive.
+The branch records each fact directly. The launcher prints a warning for an
+`unavailable` host device and continues. `audio-report.sh` links each wineserver
+to its exact `WINEPREFIX`. It counts that process's open `/dev/ntsync` files.
 
-The checker continues to verify 27 synchronization semantics with
-ntsyncprobe.exe. Device presence alone is never called proof. The benchmark
-report should record all three facts independently: runtime compiled support,
-host device availability, and live wineserver fd use.
+`check-ntsync.sh` requires the host device by default. A host device result of
+`unavailable` makes the check exit with status 3 before Wine starts. Set
+`ABLETON_REQUIRE_NTSYNC=off` for a planned regular-route test. The result then
+labels NTSync as inactive.
+
+The checker also runs 27 timing and wake tests through `ntsyncprobe.exe`. Use
+the device state, build support and wineserver file count together in every
+benchmark report.
