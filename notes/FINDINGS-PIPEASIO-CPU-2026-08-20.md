@@ -147,16 +147,14 @@ uses that setting.
 ## Package option
 
 The launcher accepts `auto`, `off`, or a value from one to 63. The default,
-`auto`, counts unique physical cores and logical processors among the CPUs
-available to the launcher. It selects the greater of the physical-core count
-and half of Live's calculated pool, rounded up, then applies that value before a
-cold Live 12 start when it is below Live's calculated count. In symbols,
-`W = min(L, max(P, ceil(L / 2)))`. The measured 16-physical-core, 32-logical-CPU
-host therefore remains at 16 of Live's calculated 31 workers, while the policy
-never removes more than half of Live's pool on a smaller SMT system. `off`
-removes an untouched launcher-managed value and restores Live's calculated
-count. Existing settings and user edits remain. An explicit number requests
-that limit.
+`auto`, counts the physical cores and logical processors available to the
+launcher. It chooses the greater of the physical core count and half of Live's
+own worker count, up to Live's own count. Before a cold Live 12 start, it applies
+a value below Live's own count. The measured 16-core, 32-thread computer
+therefore uses 16 of Live's 31 workers. The setting keeps at least half of
+Live's workers on smaller processors. `off` removes a value that the launcher
+set and lets Live choose. Existing settings and user edits take priority. A
+number from one to 63 requests that limit.
 
 Existing worker settings, earlier launcher choices, and later file contents
 take priority over implicit `auto`. An explicit `auto` recalculates an untouched
@@ -164,20 +162,20 @@ launcher-managed value. A fresh user profile receives the value before Live
 starts. If Live transfers an older profile after the first launch, the next
 cold launch can apply the policy when the profile has no existing choice.
 
-The automatic policy is deliberately independent of the saved PipeASIO buffer
-size. Live reads `-MaxAudioThreads` at process startup, but the active graph
-quantum can change later through Live, PipeASIO negotiation or another
-PipeWire client. A launch-time config read can therefore be stale, while a
-runtime watcher would keep competing over settings that cannot safely take
-effect until the next cold start. The reliability floor is stable for the whole
-launch instead.
+Live reads the worker setting when it starts. The active PipeWire buffer can
+change later. The launcher therefore bases the worker count on the processor
+layout for the whole session.
 
-This arithmetic is a conservative guardrail, not low-core audio validation.
-Before release, compare the physical-only value, the guarded automatic value
-and Live's calculated value on real 4-to-8-physical-core hardware with a loaded
-Set and independent chains at 32, 64 and 128 frames. Record deadline load,
-audible dropouts, missed PipeWire periods, Linux process CPU and voluntary
-context switches.
+The calculation provides a cautious starting value. Audio tests provide the
+release evidence. Compare 3 values on computers with 4 to 8 physical cores:
+
+- the physical core count
+- the automatic value
+- Live's own value
+
+Use a busy Set with independent audio chains. Test 32, 64 and 128 frames. Record
+Live's deadline load, audible dropouts, PipeWire xruns, Linux process CPU and
+voluntary context switches.
 
 The selected executable supplies the Live version. A Live 11 executable
 preserves each Live 12 profile. The prefix registry selects the Live edition for
@@ -241,12 +239,11 @@ The retained run directories start from the worktree root:
 
 Future release decisions require these tests:
 
-- compare the physical-core value, guarded automatic value and Live's
-  calculated value on a host with 4 to 8 physical cores and 24 to 32
-  independent audio chains.
+- compare the physical-core value, automatic value and Live's own value on a
+  computer with 4 to 8 physical cores and 24 to 32 independent audio chains.
 - compare standard and real-time scheduling for both Live and PipeASIO.
-- measure the same Set at 32, 64, and 128 frames, retaining 256 as the
-  higher-latency CPU reference.
+- measure the same Set at 32, 64 and 128 frames. Keep 256 frames as the CPU
+  reference with higher latency.
 - close Live and run `scripts/check-ntsync.sh` to prove which wait driver the
   tested runtime uses.
 - record monotonic wall time and callback-thread CPU time for PipeASIO callback

@@ -2,17 +2,16 @@
 
 ## Unreleased
 
-- **The automatic Live audio-worker limit keeps more reliability headroom on
-  smaller SMT processors:**
-  - `auto` now keeps at least one worker per available physical core and at
-    least half of Live's calculated pool. It therefore never removes more than
-    half of Live's workers.
-  - The measured 16-worker result on a 16-core, 32-thread host remains 16 of
-    Live's calculated 31. Existing user and launcher choices remain untouched
-    unless `auto` is requested explicitly.
-  - Loaded Sets on real 4-to-8-core systems still need release validation at
-    32, 64 and 128 frames; arithmetic and configuration tests cannot replace
-    that audio test.
+Live keeps more audio workers on smaller processors. The `auto` setting uses the
+physical core count and half of Live's own worker count. It selects the larger
+value, up to Live's own count.
+
+On the measured 16-core, 32-thread computer, `auto` selects 16 of Live's 31
+workers. An existing user or launcher setting takes priority. Select `auto` to
+calculate the value again.
+
+Release review requires busy Live Sets on computers with 4 to 8 physical cores.
+Test each Set at 32, 64 and 128 frames.
 
 ## 2026.08.26.1
 
