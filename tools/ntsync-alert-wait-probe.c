@@ -1,9 +1,9 @@
 #define _GNU_SOURCE
 
-/* Test-only LD_PRELOAD observer and fault injector for the alert-only NTSync
- * wait used by performance/0001. It never changes handle-bearing waits. Set
- * MOONSHOT_NTSYNC_ALERT_WAIT_FAULT=1 to fail only count=0 waits carrying an
- * alert fd with EIO, which must make Wine use its ordinary wineserver wait.
+/* Record the NTSync alert-event wait used by performance/0001.
+ * MOONSHOT_NTSYNC_ALERT_WAIT_FAULT=1 returns EIO for count=0 alert waits.
+ * Wine then uses its regular wineserver route. Handle waits keep their
+ * original route.
  */
 #include <errno.h>
 #include <linux/ntsync.h>

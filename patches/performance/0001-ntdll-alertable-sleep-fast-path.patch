@@ -95,9 +95,9 @@ index fbf054e..8047a5f 100644
 +/***********************************************************************
 + *           apc_fastpath_enabled
 + *
-+ * Single gate for the WINE_APC_FASTPATH path that keeps alertable sleeps
-+ * off the wineserver socket. Disabled by default; "1", "on", "true", or
-+ * "yes" (case-insensitive) explicitly enables it.
++ * The regular wineserver wait is the default. WINE_APC_FASTPATH values "1",
++ * "on", "true", and "yes" select the NTSync alert wait. Letter case has
++ * equal meaning.
 + */
 +static int apc_fastpath;
 +
@@ -124,7 +124,7 @@ index fbf054e..8047a5f 100644
          {
              static const LARGE_INTEGER timeout;
  
-+            if (!count) return STATUS_USER_APC;  /* alert-only wait: leave the drain to the caller */
++            if (!count) return STATUS_USER_APC;  /* alert-event wait: caller drains the queue */
              ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &timeout );
              assert( ret == STATUS_USER_APC );
              return ret;
@@ -135,15 +135,15 @@ index fbf054e..8047a5f 100644
 +/***********************************************************************
 + *           alertable_sleep_fastpath
 + *
-+ * Perform an alertable sleep without a wineserver round trip, as an
-+ * in-kernel ntsync wait with count 0 whose only wake source is the calling
-+ * thread's own alert event (a count 0 wait with only an alert fd is legal;
-+ * NTSYNC_MAX_WAIT_COUNT only bounds count above). The wait goes through
-+ * linux_wait_objs() so that EINTR/system APC (SIGUSR1) handling is identical
-+ * to alertable handle waits. Returns FALSE before the ioctl when the fast path
-+ * is unavailable and the caller should use server_wait() instead. Once an
-+ * ioctl was attempted, writes the final status and returns TRUE, including
-+ * when a kernel error required the ordinary server fallback.
++ * Wait on the calling thread's NTSync alert event with object count 0.
++ * The calling thread's alert event supplies the wake source.
++ * NTSync accepts object count 0 when the alert file is present.
++ * Use linux_wait_objs() to retain EINTR and system APC handling.
++ * Return FALSE when device setup selects server_wait().
++ * Return FALSE when alert setup selects server_wait().
++ * After a kernel call, store the final status and return TRUE.
++ * All remaining kernel results select the regular server route.
++ * The count and alert fields keep handle waits on their existing route.
 + */
 +static BOOL alertable_sleep_fastpath( const LARGE_INTEGER *timeout, unsigned int *result )
 +{
@@ -163,17 +163,17 @@ index fbf054e..8047a5f 100644
 +    status = linux_wait_objs( inproc_device_fd, 0, NULL, WaitAny, alert_fd, timeout );
 +    if (status == STATUS_TIMEOUT)
 +    {
-+        /* server_wait() yields implicitly when a wait times out
-+           (dlls/ntdll/unix/server.c:813-816); replicate that here so the
-+           implicit-yield behavior of an expired alertable sleep is unchanged */
++        /* Wine's server wait yields after a timeout
++           (dlls/ntdll/unix/server.c:813-816). Apply the same yield to the
++           NTSync route. */
 +        NtYieldExecution();
 +        *result = STATUS_SUCCESS;
 +        return TRUE;
 +    }
-+    if (status != STATUS_USER_APC) goto server_fallback;  /* ntsync error */
++    if (status != STATUS_USER_APC) goto server_fallback;  /* use the regular route */
 +
-+    /* The alert event was signaled: drain the server-side user APC queue the
-+       same way the alert branch of linux_wait_objs() does for handle waits. */
++    /* The alert event signalled. Drain the server APC queue with the same
++       operation used after an alertable handle wait. */
 +    status = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero_timeout );
 +    if (status != STATUS_TIMEOUT)
 +    {
@@ -181,9 +181,9 @@ index fbf054e..8047a5f 100644
 +        return TRUE;
 +    }
 +
-+    /* Spurious wake (the APC was cancelled between the kernel wake and the
-+       drain): never loop client-side — block in the server for the remaining
-+       timeout instead. */
++    /* The APC left the queue between kernel wake and server drain.
++       Continue through the server.
++       Use the remaining timeout. */
 +server_fallback:
 +    if (relative_timeout)
 +    {
@@ -208,8 +208,8 @@ index fbf054e..8047a5f 100644
      unsigned int status = STATUS_SUCCESS;
  
 -    /* if alertable, we need to query the server */
-+    /* if alertable, the server-side user APC queue has to be checked; the
-+       WINE_APC_FASTPATH path does that in-kernel through the alert event */
++    /* Alertable waits check the server APC queue. WINE_APC_FASTPATH uses the
++       kernel alert event for the wait. */
      if (alertable)
      {
 +        if (apc_fastpath_enabled() && alertable_sleep_fastpath( timeout, &status ))

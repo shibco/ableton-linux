@@ -123,9 +123,8 @@ RUNTIME VARIABLES:
         the device name Live shows discloses the substitution
 
     WINE_APC_FASTPATH=1
-        opt in to the experimental NTSync alertable-sleep path for one
-        launch; unset is the default-off control, and 0, off, false,
-        or no explicitly roll back to Wine's ordinary wineserver wait
+        run one NTSync alert-wait trial;
+        Wine's regular wait route remains the launch default
 
     The pointer variables below override the saved pointer setting
     for one launch; the launcher exports none of them, and registry

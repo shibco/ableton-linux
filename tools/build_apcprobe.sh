@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Build the retained alertable-delay/APC probe (apcprobe.exe) as a real PE (no mingw, no
-# msvcrt) the same way the patched Wine builds its own PE modules:
-# clang -target x86_64-windows + Wine's headers and x86_64-windows import
-# libs. Runs under the new-WoW64 patched Wine. Mirrors build_swamprobe.sh;
-# apcprobe needs kernel32 (delays/APCs/pipes), user32 (wsprintfA), and ntdll
-# (NtTestAlert, NtQueueApcThreadEx2). Run it with: run_in_prefix.sh apcprobe.exe
+# Build apcprobe.exe as an x86-64 Windows programme with Clang.
+# The build uses Wine headers, Wine import libraries and a direct entry point.
+# The programme runs under the patched new-WoW64 Wine build.
+# Run it with: run_in_prefix.sh apcprobe.exe
 set -e
 cd "$(dirname "$0")"
 SRC="${ABLETON_WINE_SOURCE:-}"

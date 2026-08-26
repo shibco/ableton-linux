@@ -1,58 +1,36 @@
-/* apcprobe.c: pin down the alertable-delay and user-APC semantics that
- * performance/0001 must preserve (PE, CRT-free).
+/* apcprobe.c verifies alertable delays and user APC results for
+ * performance/0001. The patch waits on the calling thread's NTSync alert event.
+ * Wineserver drains the APC queue after a wake. Wineserver keeps APC routing.
  *
- * The retained patch changes only NtDelayExecution(alertable=TRUE): a
- * zero-handle delay waits on the calling thread's existing NTSync alert event,
- * then uses the ordinary wineserver drain when it wakes. It does not change
- * APC queueing or routing. The focused cases below cover zero, finite,
- * absolute, and infinite alertable delays. The older APC FIFO/access/lifetime
- * cases remain as defense-in-depth around the drain, but success there is not
- * evidence for any rejected same-process APC queue proposal.
+ * The cases provide the following evidence:
+ *   case0  checks zero, relative finite and absolute finite delays
+ *   case1  checks FIFO delivery for 8 user APCs
+ *   case2  checks FIFO within each producer and records cross-producer timing
+ *   case3  checks that NtTestAlert drains self-queued APCs
+ *   case4  keeps APC delivery queued during a regular wait and runs it during
+ *          an alertable wait
+ *   case5  checks pipe completion APC order; SKIP records pipe setup results
+ *   case6  checks special APC delivery and Wine's shared FIFO order
+ *   case7  checks that a recycled handle reaches the replacement thread
+ *   case8  checks waiter and queuer progress during suspend and resume calls
+ *   case9  compares server access results for 3 thread handle rights
+ *   case10 checks strict FIFO across normal and special APCs
+ *   case11 checks that a queued user APC wakes an infinite alertable delay
  *
- * What it pins down:
- *   case0  no-APC zero, relative finite, and absolute finite delay contracts
- *   case1  FIFO delivery of 8 user APCs into another thread's alertable wait
- *   case2  per-producer FIFO with two racing producer threads (cross-producer
- *          interleave intentionally NOT asserted, racy by design)
- *   case3  NtTestAlert drains all self-queued APCs (via the dispatcher's
- *          NtContinueEx TEST_ALERT chain) and leaves the queue empty
- *   case4  alertability discipline: a non-alertable wait must not deliver,
- *          an alertable zero-timeout wait must
- *   case5  ReadFileEx/WriteFileEx completion routines are user APCs and drain
- *          from the same FIFO as QueueUserAPC, in issue order (reports SKIP,
- *          not FAIL, if the overlapped pipe setup fails)
- *   case6  NtQueueApcThreadEx2 QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC is
- *          delivered at alertable points and keeps its FIFO position against
- *          normal APCs (Wine behaviour: one shared FIFO user queue)
- *   case7  a closed thread handle recycled by CreateThread for a different
- *          thread must resolve to the NEW thread (wineserver hands a freed
- *          handle slot straight back; retained as baseline coverage for the
- *          rejected client-side handle-cache proposal)
- *   case8  a SuspendThread/ResumeThread hammer against an alertable waiter
- *          and its queuer must not wedge either side (SIGUSR1 interrupts the
- *          retained NTSync wait and exercises linux_wait_objs' EINTR handling)
- *   case9  handles with and without THREAD_SET_CONTEXT retain the server's
- *          exact access checks; a query-only handle cannot smuggle an APC
- *          through any future client-side route (legacy rejected coverage)
- *   case10 a normal APC, synchronously server-routed special APC, then another
- *          normal APC retain strict FIFO (legacy rejected-routing coverage)
- *   case11 an infinite alertable delay wakes only after a queued user APC
+ * --relaxed-fifo uses wider rules for the earlier FIFO cases.
+ * Focused alertable-delay checks retain their standard rules.
  *
- * --relaxed-fifo remains only as a diagnostic mode for the legacy FIFO cases;
- * it does not relax any focused alertable-delay assertion.
+ * Results go to apcprobe.txt and standard output as PASS, FAIL, SKIP, info and
+ * SUMMARY lines. The exit code gives the FAIL count. Each case has a fixed
+ * time limit.
  *
- * output: apcprobe.txt in cwd (also mirrored to stdout), "PASS"/"FAIL"/
- * "SKIP"/"info" lines + SUMMARY. exit code: number of failed assertions
- * (0 = pass). All waits are bounded; timeouts are FAILs with diagnostics.
- *
- * build: build_apcprobe.sh (this dir), then run inside the Ableton prefix:
- *   tools/run_in_prefix.sh apcprobe.exe
+ * Build with build_apcprobe.sh in the current directory. Run inside the
+ * Ableton prefix with: tools/run_in_prefix.sh apcprobe.exe
  */
 #include <windows.h>
 
-/* ntdll entries used directly; declared manually per probe convention
- * (avoids pulling in winternl.h; LONG is NTSTATUS, which bare windows.h
- * does not define). */
+/* Manual declarations provide the ntdll entries used by the probe.
+ * LONG supplies the NTSTATUS type for the direct entry points. */
 #define QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC 0x1
 #define STATUS_ACCESS_DENIED ((LONG)0xc0000022)
 typedef void (CALLBACK *NTAPCFUNC)( ULONG_PTR, ULONG_PTR, ULONG_PTR );
@@ -76,7 +54,7 @@ static void emit( const char *s )
                                else { g_fail++; P( "FAIL %s (line %d, lasterr %u)\n", name, __LINE__, (UINT)GetLastError() ); } } while (0)
 #define SKIP(name, why) do { g_skip++; P( "SKIP %s: %s (lasterr %u)\n", name, why, (UINT)GetLastError() ); } while (0)
 
-/* ---- shared delivery recorder: callbacks append their payload here ------- */
+/* Callbacks add their payload to the shared delivery record. */
 #define MAX_DELIV 32
 static volatile LONG g_ndeliv;
 static ULONG_PTR     g_deliv[MAX_DELIV];
@@ -87,7 +65,7 @@ static void CALLBACK apc_record( ULONG_PTR data )
     if (i >= 1 && i <= MAX_DELIV) g_deliv[i - 1] = data;
 }
 
-/* 3-arg variant for NtQueueApcThreadEx2 (PNTAPCFUNC signature) */
+/* Declare the 3-argument callback used by NtQueueApcThreadEx2. */
 static void CALLBACK apc_record3( ULONG_PTR a, ULONG_PTR b, ULONG_PTR c )
 {
     (void)b; (void)c;
@@ -118,7 +96,7 @@ static int order_is( const ULONG_PTR *exp, LONG n )
     return 1;
 }
 
-/* index of a payload in the delivery record, or -1 */
+/* Return the payload index. A result of -1 marks a payload outside the record. */
 static LONG pos_of( ULONG_PTR v )
 {
     LONG i, n = g_ndeliv;
@@ -127,7 +105,7 @@ static LONG pos_of( ULONG_PTR v )
     return -1;
 }
 
-/* CRT-free substring scan for the --relaxed-fifo command-line flag */
+/* Scan the command line for --relaxed-fifo. */
 static int cmdline_has( const char *needle )
 {
     const char *s = GetCommandLineA();
@@ -143,7 +121,7 @@ static int cmdline_has( const char *needle )
 
 static int g_relaxed;
 
-/* alertable-wait until target APCs have been delivered or the budget is spent */
+/* Wait alertably for the target APC count or the fixed time budget. */
 static LONG drain_until( LONG target, DWORD budget_ms )
 {
     DWORD t0 = GetTickCount();
@@ -152,15 +130,15 @@ static LONG drain_until( LONG target, DWORD budget_ms )
     return g_ndeliv;
 }
 
-/* drop anything left in this thread's queue between cases (bounded: a
- * zero-timeout alertable sleep returns 0 once the queue is empty) */
+/* Drain the thread APC queue between cases. A zero-time alertable wait returns
+ * 0 when the drain finishes. */
 static void drop_pending( void )
 {
     int i;
     for (i = 0; i < 64 && SleepEx( 0, TRUE ) == WAIT_IO_COMPLETION; i++) {}
 }
 
-/* ---- case 0: direct contracts of the retained alertable-delay path -------- */
+/* Case 0 checks delay results for the retained alert wait. */
 static void case0_delay_contracts( void )
 {
     ULARGE_INTEGER now;
@@ -198,7 +176,7 @@ static void case0_delay_contracts( void )
     CHECK( elapsed >= 50 && elapsed < 3000, "case0-absolute-no-apc-duration" );
 }
 
-/* ---- case 1: FIFO delivery into another thread's alertable wait ---------- */
+/* Case 1 checks FIFO delivery into another thread's alertable wait. */
 static HANDLE g_ready;
 
 static DWORD WINAPI waiter_thread( LPVOID arg )
@@ -234,8 +212,7 @@ static void case1_fifo( void )
     }
     else
     {
-        Sleep( 100 );  /* bias: waiter already blocked in the alertable wait, so
-                          APC #1 must wake it through the alert-event path */
+        Sleep( 100 );  /* Place the waiter in its alertable wait before APC 1. */
         for (i = 0; i < 8; i++)
             if (!QueueUserAPC( apc_record, b, exp[i] )) break;
         if (i < 8)
@@ -255,7 +232,7 @@ static void case1_fifo( void )
             P( "FAIL case1-fifo: waiter stuck 12s (delivered %ld/8)\n", g_ndeliv );
         }
     }
-    if (WaitForSingleObject( b, 0 ) == WAIT_TIMEOUT)  /* don't leave a stuck waiter */
+    if (WaitForSingleObject( b, 0 ) == WAIT_TIMEOUT)  /* Release the bounded waiter. */
     {
         TerminateThread( b, 0 );
         WaitForSingleObject( b, 5000 );
@@ -264,7 +241,7 @@ static void case1_fifo( void )
     CloseHandle( g_ready );
 }
 
-/* ---- case 2: per-producer FIFO with two racing producers ----------------- */
+/* Case 2 checks each producer's FIFO order during concurrent work. */
 static HANDLE g_start;
 static HANDLE g_self;
 
@@ -285,7 +262,7 @@ static int per_producer_order_ok( void )
     for (i = 0; i < g_ndeliv; i++)
     {
         int id = (int)(g_deliv[i] >> 8), seq = (int)(g_deliv[i] & 0xff);
-        if (id < 0 || id > 1 || seq != next[id]) return 0;  /* foreign payload or reorder */
+        if (id < 0 || id > 1 || seq != next[id]) return 0;  /* Validate source and order. */
         next[id]++;
         count[id]++;
     }
@@ -329,12 +306,9 @@ static void case2_two_producers( void )
     CloseHandle( g_start );
 }
 
-/* ---- case 3: self-queue + NtTestAlert drains the whole queue -------------
- * GetCurrentThread() is a pseudo-handle: it always means *the calling
- * thread*, so it happens to work for self-targeted QueueUserAPC on Wine
- * (dlls/kernel32/tests/pipe.c relies on that), but it cannot be handed to
- * another thread and is not what real APC consumers hold. OpenThread()
- * returns a real handle to self; that is what this probe exercises. */
+/* Case 3 checks self-queued APC delivery through NtTestAlert.
+ * GetCurrentThread() refers to the calling thread. OpenThread() supplies a
+ * transferable handle, which matches the form used by APC consumers. */
 static void case3_testalert( void )
 {
     static const ULONG_PTR exp[4] = { 0x30, 0x31, 0x32, 0x33 };
@@ -363,7 +337,7 @@ static void case3_testalert( void )
     CHECK( after == 0, "case3-queue-empty-after" );
 }
 
-/* ---- case 4: alertability discipline ------------------------------------- */
+/* Case 4 compares APC delivery in regular and alertable waits. */
 static void case4_alertable_discipline( void )
 {
     DWORD r1, r2;
@@ -376,20 +350,18 @@ static void case4_alertable_discipline( void )
         P( "FAIL case4-alertable-gating: QueueUserAPC failed (lasterr %u)\n", (UINT)GetLastError() );
         return;
     }
-    r1 = SleepEx( 0, FALSE );  /* non-alertable: must NOT deliver */
+    r1 = SleepEx( 0, FALSE );  /* The regular wait keeps delivery queued. */
     CHECK( r1 == 0 && g_ndeliv == 0, "case4-nonalertable-skips-apc" );
-    r2 = SleepEx( 0, TRUE );   /* alertable: must deliver */
+    r2 = SleepEx( 0, TRUE );   /* The alertable wait runs the delivery. */
     print_order( "case4" );
     P( "info case4 nonalert-ret=%lx alert-ret=%lx\n", r1, r2 );
     CHECK( r2 == WAIT_IO_COMPLETION && g_ndeliv == 1 && g_deliv[0] == 0x51,
            "case4-alertable-delivers" );
 }
 
-/* ---- case 5: I/O completion routines share the user-APC FIFO -------------
- * The Sleep(100) barriers after each I/O only order the *queueing* of the
- * completion APCs (the write completes as soon as the bytes hit the pipe
- * buffer; the read then completes at once). The assertion itself is the
- * drained order, not any timing. */
+/* Case 5 checks FIFO order for input and output completion APCs.
+ * The 100 ms steps establish queue order after each pipe operation. The final
+ * assertion checks the order recorded during the drain. */
 static DWORD g_io_err[2];
 static DWORD g_io_len[2];
 
@@ -446,14 +418,14 @@ static void case5_io_completion_order( void )
     }
     else
     {
-        Sleep( 100 );  /* let the write completion APC land in the queue */
+        Sleep( 100 );  /* Let the write completion APC enter the queue. */
         if (!ReadFileEx( srv, rbuf, 2, &rov, read_done ))
         {
             SKIP( "case5-io-order", "ReadFileEx failed" );
         }
         else
         {
-            Sleep( 100 );  /* let the read completion APC land before queueing 0x44 */
+            Sleep( 100 );  /* Queue the read completion APC before payload 0x44. */
             if (!QueueUserAPC( apc_record, g_self, 0x44 ))
             {
                 g_fail++;
@@ -479,14 +451,10 @@ static void case5_io_completion_order( void )
     CloseHandle( srv );
 }
 
-/* ---- case 6: special user APC delivery + ordering -------------------------
- * NtQueueApcThreadEx2 with QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC: native
- * Windows runs special user APCs ahead of normal ones; Wine sets
- * SERVER_USER_APC_SPECIAL but queues onto the same FIFO user queue
- * (server/thread.c:1482 list_add_tail) and delivers at alertable points like
- * a normal APC (the dispatcher only FIXMEs the flag). The pinned Wine
- * behaviour this probe enforces: delivered at the alertable wait, FIFO
- * position preserved against normal APCs. */
+/* Case 6 checks special user APC delivery and Wine FIFO order.
+ * Windows gives special APCs earlier service. Wine adds them to its shared
+ * user queue and delivers them at alertable points. The probe checks Wine's
+ * current order against normal APCs. */
 static void case6_special_apc( void )
 {
     static const ULONG_PTR exp[3] = { 0x61, 0x62, 0x63 };
@@ -527,13 +495,10 @@ static void case6_special_apc( void )
         CHECK( order_is( exp, 3 ), "case6-special-fifo-position" );
 }
 
-/* ---- case 7: a recycled thread handle must resolve to the new thread ------
- * wineserver hands a freed handle slot straight back (server/handle.c:
- * alloc_entry starts at table->free), so CloseHandle + CreateThread commonly
- * reuses the same handle value for a different thread. This is authoritative
- * server-routing coverage retained from the rejected client handle-cache
- * experiment: queueing through the recycled handle must reach the NEW thread,
- * never the old one. */
+/* Case 7 checks a recycled thread handle.
+ * Wineserver can reuse a freed handle value for a replacement thread. The
+ * queued payload must reach the replacement thread. The original thread keeps
+ * its earlier priming payload. */
 static HANDLE g_c7_ready;
 static HANDLE g_c7_done;
 static HANDLE g_c7_exit_a, g_c7_exit_b;
@@ -552,9 +517,8 @@ static DWORD WINAPI c7_idle_thread( LPVOID arg )
     DWORD ret;
 
     SetEvent( g_c7_ready );
-    /* An APC makes an alertable wait return WAIT_IO_COMPLETION. Keep the
-       original thread alive until its exit event is signalled; otherwise the
-       priming APC would terminate it before the handle-reuse assertion. */
+    /* An APC makes an alertable wait return WAIT_IO_COMPLETION. The loop keeps
+       thread A alive for the later handle-reuse assertion. */
     do ret = WaitForSingleObjectEx( (HANDLE)arg, INFINITE, TRUE );
     while (ret == WAIT_IO_COMPLETION);
     return 0;
@@ -586,23 +550,21 @@ static void case7_recycled_handle( void )
         goto out;
     }
 
-    /* Queue once through hA before closing it. This primed the rejected
-       experiment's client-side cache; on the retained server route it simply
-       establishes the same handle-lifetime sequence for baseline comparison.
-       Thread A stays alive in its alertable-wait loop while hA is recycled. */
+    /* Queue one priming APC through hA. The delivery confirms that hA targets
+       thread A. The wait loop keeps thread A alive while Wine reuses the
+       handle value. */
     if (!QueueUserAPC( apc_record_tid, hA, 0x70 ))
         P( "info case7 priming QueueUserAPC failed (lasterr %u)\n", (UINT)GetLastError() );
-    Sleep( 200 );  /* let the priming APC run on A */
+    Sleep( 200 );  /* Let thread A run the priming APC. */
     CloseHandle( hA );
 
-    /* the first CreateThread after the close reuses the freed slot; retry a
-       few times in case something else grabs it first */
+    /* Create replacement threads until Wine reuses the freed handle slot. */
     for (i = 0; i < 32; i++)
     {
         HANDLE h = CreateThread( NULL, 0, c7_idle_thread, g_c7_exit_b, CREATE_SUSPENDED, &tidB );
         if (!h) break;
         if (h == hA) { hB = h; reused = i; break; }
-        spare[nspare++] = h;  /* still suspended; mass-resumed below */
+        spare[nspare++] = h;  /* Resume the spare threads together below. */
     }
     if (!hB)
     {
@@ -618,7 +580,7 @@ static void case7_recycled_handle( void )
         P( "FAIL case7-recycled-handle: thread B never signalled ready\n" );
         goto resume_spares;
     }
-    Sleep( 100 );  /* bias: B blocked in its alertable wait */
+    Sleep( 100 );  /* Place thread B in its alertable wait. */
 
     InterlockedExchange( &g_c7_tag, 0 );
     InterlockedExchange( &g_c7_tid, 0 );
@@ -648,12 +610,9 @@ out:
     if (g_c7_exit_b) CloseHandle( g_c7_exit_b );
 }
 
-/* ---- case 8: suspend/resume hammer must not wedge the APC machinery -------
- * SIGUSR1 (SuspendThread, or a system APC queued to a thread not already in
- * an APC wait) can interrupt the retained NTSync ioctl. The retained patch
- * deliberately reuses linux_wait_objs(), including its EINTR retry. The old
- * apc_mutex-specific deadlock rationale belonged to the rejected client APC
- * queue; this branch introduces no such mutex. */
+/* Case 8 checks progress while suspend and resume calls repeat.
+ * SIGUSR1 can interrupt the NTSync kernel wait. The patch uses Wine's existing
+ * EINTR retry path. The test requires progress from the waiter and queuer. */
 static volatile LONG g_c8_stop;
 static volatile LONG g_c8_waits;
 static volatile LONG g_c8_queued;
@@ -683,7 +642,7 @@ static DWORD WINAPI c8_queuer( LPVOID arg )
     {
         if (QueueUserAPC( apc_c8_noop, target, 0 ))
             InterlockedIncrement( &g_c8_queued );
-        if (g_c8_queued - g_c8_deliv > 4096) Sleep( 1 );  /* bound the backlog */
+        if (g_c8_queued - g_c8_deliv > 4096) Sleep( 1 );  /* Keep backlog within 4096. */
     }
     return 0;
 }
@@ -721,13 +680,13 @@ static void case8_suspend_hammer( void )
     }
     else
     {
-        Sleep( 500 );  /* warm up */
+        Sleep( 500 );  /* Start the queue and wait cycle. */
         delivered0 = g_c8_deliv;
         queued0 = g_c8_queued;
-        Sleep( 3000 );  /* hammer window */
-        /* A continuously non-empty APC queue may keep one SleepEx call
-           dispatching callbacks for the whole window, so completed callbacks
-           are the reliable proof that the waiter itself is still running. */
+        Sleep( 3000 );  /* Repeat suspend and resume for 3 seconds. */
+        /* A full APC queue can keep one SleepEx call returning
+           WAIT_IO_COMPLETION. Delivery and queue counts show progress from
+           both threads. */
         CHECK( g_c8_deliv > delivered0, "case8-waiter-progresses" );
         CHECK( g_c8_queued > queued0, "case8-queuer-progresses" );
     }
@@ -742,16 +701,13 @@ static void case8_suspend_hammer( void )
     CloseHandle( w );
 }
 
-/* ---- case 9: exact access checks on restricted thread handles -----------
- * The eligible handle has THREAD_SET_CONTEXT plus query access, set_only has
- * the Win32-documented minimum THREAD_SET_CONTEXT access, and denied is
- * query-only. The denied attempts happen first; the eligible APC then acts as
- * a deterministic delivery fence: by the time payload 0x92 runs, any
- * incorrectly accepted earlier payload 0x91 must also have run because both
- * the client and server queues are FIFO. set_only separately proves that a
- * handle with no query access still succeeds through the authoritative server
- * route. This is legacy coverage for the rejected client handle-cache design;
- * performance/0001 does not change QueueUserAPC routing. */
+/* Case 9 checks server access results for 3 thread handles.
+ * eligible adds query access to THREAD_SET_CONTEXT. set_only uses the Windows
+ * minimum. denied provides query access. The first calls record
+ * STATUS_ACCESS_DENIED and ERROR_ACCESS_DENIED. Payload 0x92 marks the order
+ * boundary for earlier payload 0x91.
+ * set_only confirms the minimum right through the server route.
+ * performance/0001 keeps QueueUserAPC routing in wineserver. */
 static HANDLE g_c9_ready, g_c9_done, g_c9_exit;
 
 static void CALLBACK apc_c9_record( ULONG_PTR data )
@@ -860,13 +816,10 @@ out:
     g_c9_ready = g_c9_done = g_c9_exit = NULL;
 }
 
-/* ---- case 10: strict FIFO across normal and special APCs ------------------
- * The target remains in a non-alertable wait while all three APCs are queued,
- * so no timing sleeps are needed and nothing can drain early. This was the
- * transition test for the rejected client APC queue. In the retained branch
- * performance/0001 changes only the wait: normal and special APC routing stays
- * authoritative in wineserver. Strict FIFO remains useful baseline coverage,
- * but it does not establish safety of a client-side routing proposal. */
+/* Case 10 checks strict FIFO across normal and special APCs.
+ * A regular wait keeps all 3 APCs queued before release. The release gives a
+ * direct order check. performance/0001 changes the wait route. Wineserver
+ * retains normal and special APC routing. */
 static HANDLE g_c10_ready, g_c10_release;
 
 static DWORD WINAPI c10_waiter( LPVOID arg )
@@ -936,7 +889,7 @@ out:
     g_c10_ready = g_c10_release = NULL;
 }
 
-/* ---- case 11: an infinite alertable delay wakes for a user APC ------------ */
+/* Case 11 checks a user APC wake from an infinite alertable delay. */
 static HANDLE g_c11_ready;
 
 static DWORD WINAPI c11_waiter( LPVOID arg )
@@ -963,7 +916,7 @@ static void case11_infinite_alertable_wake( void )
         goto out;
     }
 
-    Sleep( 50 );  /* establish that the target is blocked in the infinite wait */
+    Sleep( 50 );  /* Place the target in the infinite wait. */
     queued = QueueUserAPC( apc_record, thread, 0xb1 ) != 0;
     CHECK( queued, "case11-infinite-apc-queued" );
     if (queued && WaitForSingleObject( thread, 5000 ) == WAIT_OBJECT_0)

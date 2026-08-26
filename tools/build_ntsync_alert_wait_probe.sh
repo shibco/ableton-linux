@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the test-only LD_PRELOAD observer/fault injector used to prove that
-# performance/0001 reaches its alert-only NTSync wait and safely falls back.
+# Build the observer library for an isolated performance/0001 test.
+# The observer records the NTSync alert wait and can return EIO for a route test.
 set -euo pipefail
 cd "$(dirname "$0")"
 
