@@ -12,7 +12,7 @@ worker policy still needs the low-core workload test described below.
 | Pull requests | Feature | Decision |
 |---|---|---|
 | [#153](https://github.com/shibco/ableton-linux/pull/153) | GNOME global shortcut hold | Default to `ABLETON_SHORTCUTS=take`. Keep `preserve` as the opt-out. The existing recovery, concurrency, and user-edit safeguards remain. |
-| [#236](https://github.com/shibco/ableton-linux/pull/236), [#249](https://github.com/shibco/ableton-linux/pull/249) | Live 12 `-MaxAudioThreads` policy and replacement fix | Default to the physical cores available to the launcher. Preserve existing or edited settings. An explicit `auto` recalculates an untouched launcher value. An explicit `off` removes that value and restores Live's calculation. |
+| [#236](https://github.com/shibco/ableton-linux/pull/236), [#249](https://github.com/shibco/ableton-linux/pull/249) | Live 12 `-MaxAudioThreads` policy and replacement fix | Use the greater of the physical core count and half of Live's own worker count, up to Live's own count. Give priority to an existing setting or a user edit. `auto` calculates a launcher value again. `off` removes that launcher value and lets Live choose. |
 
 ## Merged features already active
 
@@ -99,10 +99,13 @@ topology remain unrecorded. The
 [same-host project report](FINDINGS-PIPEASIO-CPU-2026-08-20.md#same-host-project-report)
 records the values and scope.
 
-Before release, compare the physical-core value with Live's calculated value
-on a host with 4 to 8 physical cores. Use a demanding Set that runs independent
-audio chains at the same time. Record Live's deadline meter, audible dropouts,
-PipeWire xruns, and Linux process CPU for the same Set section and buffer size.
+Before release, compare the physical-core value, the automatic value and Live's
+calculated value. Use a computer with simultaneous multithreading (SMT) and up
+to 15 physical cores. Include the available computer with 10 physical cores and
+16 logical processors. Test buffer sizes of 32, 64 and 128 frames. Use a
+demanding Set with independent audio chains. Record Live's deadline meter,
+audible dropouts and Linux process CPU use. Record PipeWire xruns, which count
+missed audio periods.
 
 ## Separate engineering work
 

@@ -433,9 +433,10 @@ stdenv.mkDerivation {
         # two-digit prefix glob stops matching at 0100 and would drop that
         # patch from the stamp while wine.nix still applied it, so the audit
         # would reject the tree over a stamp that is the only thing wrong.
-        ( cd ${patchesDir} && sha256sum [0-9][0-9][0-9][0-9]-*.patch pipeasio/*.patch ) \
+        ( cd ${patchesDir} && sha256sum [0-9][0-9][0-9][0-9]-*.patch performance/*.patch pipeasio/*.patch ) \
           > $out/ABLETON-WINE-PATCH-STACK.txt
         n_wine=$(ls ${patchesDir}/[0-9][0-9][0-9][0-9]-*.patch | wc -l)
+        n_perf=$(ls ${patchesDir}/performance/*.patch | wc -l)
         n_asio=$(ls ${patchesDir}/pipeasio/*.patch | wc -l)
         stack_sha=$(sha256sum $out/ABLETON-WINE-PATCH-STACK.txt | awk '{print $1}')
         sha_of() { sha256sum "$out/$1" | awk '{print $1}'; }
@@ -448,8 +449,9 @@ stdenv.mkDerivation {
     package:      $out
     wine:         wine-${wine.version}
     base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c
-    patches:      $((n_wine + n_asio))
+    patches:      $((n_wine + n_perf + n_asio))
     wine-patches: $n_wine
+    performance-patches: $n_perf
     pipeasio-patches: $n_asio
     patch-stack:  $stack_sha
     pipeasio:     1.5.0
@@ -525,7 +527,8 @@ stdenv.mkDerivation {
     done
     # The launcher sources these and exits 1 naming any whose functions are
     # absent. Check what it checks, rather than that files exist.
-    for fn in ableton_available_physical_cores ableton_live_product_version \
+    for fn in ableton_available_physical_cores ableton_live_calculated_audio_threads \
+              ableton_reliable_audio_threads ableton_live_product_version \
               ableton_seed_max_audio_threads; do
       ${stdenv.shell} -c ". $out/libexec/lib/live-options.sh; declare -F $fn >/dev/null" \
         || { echo "live-options.sh does not define $fn; the launcher would refuse to start"; exit 1; }

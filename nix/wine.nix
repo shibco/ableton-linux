@@ -130,13 +130,17 @@ stdenv.mkDerivation rec {
   # mismatches, unlisted on-disk patches, and an empty series all fail loud.
   postUnpack = ''
     echo "Applying patch series from ${patchesDir} (pinned by SERIES.sha256)"
-    series=$(grep -E '^[0-9a-f]{64}  [0-9]{4}-.*\.patch$' ${patchesDir}/SERIES.sha256 | awk '{print $2}')
+    series=$(grep -E '^[0-9a-f]{64}  ([0-9]{4}-|performance/[0-9]{4}-).*\.patch$' ${patchesDir}/SERIES.sha256 | awk '{print $2}')
     [ -n "$series" ] || { echo "!! SERIES.sha256 lists no wine patches" >&2; exit 1; }
-    (cd ${patchesDir} && grep -E '^[0-9a-f]{64}  [0-9]{4}-.*\.patch$' SERIES.sha256 | sha256sum -c --quiet) \
+    (cd ${patchesDir} && grep -E '^[0-9a-f]{64}  ([0-9]{4}-|performance/[0-9]{4}-).*\.patch$' SERIES.sha256 | sha256sum -c --quiet) \
       || { echo "!! patch series does not match SERIES.sha256" >&2; exit 1; }
-    for f in ${patchesDir}/[0-9]*.patch; do
-      echo "$series" | grep -qx "$(basename $f)" \
-        || { echo "!! $(basename $f) on disk but not in SERIES.sha256 — update the manifest" >&2; exit 1; }
+    for f in ${patchesDir}/[0-9]*.patch ${patchesDir}/performance/*.patch; do
+      relative="$(basename "$f")"
+      case "$f" in
+        */performance/*) relative="performance/$relative" ;;
+      esac
+      echo "$series" | grep -qx "$relative" \
+        || { echo "!! Run ./scripts/build-audit.sh --freeze to add $relative to SERIES.sha256" >&2; exit 1; }
     done
     # Applied the way scripts/container-build.sh applies them, with `git am
     # --3way`, because the two builders have to produce the same tree and
@@ -167,7 +171,7 @@ stdenv.mkDerivation rec {
     # The history was only the vehicle for --3way; the build does not want it,
     # and leaving it would put a .git tree into the derivation output's inputs.
     rm -rf .git
-    echo "Applied $n wine patches"
+    echo "Applied $n Wine and bounded performance patches"
   '';
 
   # The Nix clang wrapper breaks `clang -target i686-windows`; configure

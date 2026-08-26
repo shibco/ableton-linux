@@ -13,6 +13,16 @@
   removes a `.bak` created in an empty path, or restores a `.bak` that existed
   before installation. Runtime-only updates record replaced PipeASIO launchers
   and adjacent backup paths for the same uninstall handling.
+
+Live keeps more audio workers on processors with fewer cores. Audio workers
+divide Set processing among CPU cores. The `auto` setting uses the physical core
+count and half of Live's own worker count. It selects the larger value, up to
+Live's own count.
+
+On the measured 16-core, 32-thread computer, `auto` selects 16 of Live's 31
+workers. An existing user or launcher setting takes priority. Select `auto` to
+calculate the value again.
+
 - audio reports now show the CPU layout that Linux gives Live:
   - the report records the available CPU set, physical layout and Linux
     processor preferences
