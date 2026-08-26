@@ -19,16 +19,16 @@ Usage:
   scripts/pipewire-pro-audio-ab.sh --device ID --wine-prefix DIR --output DIR -- COMMAND [ARG...]
   scripts/pipewire-pro-audio-ab.sh --device ID --wine-prefix DIR --output DIR --discover
 
-Runs COMMAND with the current profile and then with Pro Audio. The tool checks
-that Live and the Wine prefix are idle. It restores and checks the current
-profile after both runs, including when HUP, INT, or TERM interrupts the run.
+The script runs COMMAND with the current profile and then with Pro Audio. It
+checks that Live and the Wine prefix are idle. It restores and checks the
+current profile after both runs, including when HUP, INT, or TERM interrupts the run.
 
 Options:
-  --device ID       Numeric PipeWire device ID.
-  --wine-prefix DIR Existing Wine prefix. Close its Wine and Live processes first.
-  --output DIR      New directory for the report files.
+  --device ID       Select a numeric PipeWire device ID.
+  --wine-prefix DIR Use an existing Wine prefix. Close its Wine and Live processes first.
+  --output DIR      Create the report files in a new directory.
   --discover        Record and check the device state.
-  --dry-run         Alias for --discover.
+  --dry-run         Perform the same action as --discover.
   -h, --help        Show command help.
 
 The benchmark command must close every process it starts. Pro Audio can add
