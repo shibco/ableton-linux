@@ -37,8 +37,8 @@ more. Add the device from the [control device guide](../m4l/README.md) when a
 controlled set reports `0`.
 
 `Benchmark_Zero.als` provides an idle measurement. The control device stays
-closed. The report uses `unavailable` for its DSP fields. The other files in
-this folder belong to `Benchmark_Empty.als`.
+closed and produces zero DSP samples. Use the host and process CPU values for
+this set. The other files in this folder belong to `Benchmark_Empty.als`.
 
 ## VST3 plug-ins
 

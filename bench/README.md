@@ -10,7 +10,7 @@ scripts/bench-suite.sh --tag before/my-change
 The suite measures 5 sets for 30 seconds each. It uses this order:
 
 1. Run `Benchmark_Zero` with Live idle and the control device closed.
-2. Run `Benchmark_Empty` with only the control device.
+2. Run `Benchmark_Empty` with the control device active.
 3. Run `Benchmark_Inbuilts` with Live instruments and effects.
 4. Run `Benchmark_Max4Live` with Live and Max for Live devices.
 5. Run `Benchmark_VSTs` with Dexed and Nils' K1v.
@@ -102,19 +102,18 @@ listening result with:
 
 ```bash
 scripts/bench-suite.sh --tag after/my-change \
-  --crackle Inbuilts=not-heard \
   --crackle Max4Live=heard
 ```
 
-The report uses these values:
+The report separates crackle evidence into these cases:
 
-- `detected`: PipeWire reported more errors, or a Live or PipeASIO log reported an xrun
-- `manual`: the listener heard crackle and the tools recorded zero matching events
-- `no-instrumented-evidence`: all usable tools completed and reported zero matching events
-- `unknown`: the run needs more tool or listener evidence
+- a tool detected a PipeWire error or an xrun report
+- the listener heard crackle while the tools recorded zero matching events
+- all usable tools completed and recorded zero matching events
+- the report needs more tool or listener evidence
 
-`not-heard` records only the listener's experience during that run. Use the
-full report to judge system stability.
+Each listener report describes one measured run. Use the full report to judge
+system stability.
 
 Add a listening result after a run with:
 
@@ -158,8 +157,7 @@ before you accept a CPU result.
 
 Each set includes before, after, difference, and percentage values. These values
 cover CPU use, scheduling, audio, task changes, collection time, and interrupts.
-The status field records `undefined` when sampling yields zero records or the
-starting value equals zero.
+The status field records each sampling limit and each zero starting value.
 
 One pair describes one result. Repeated pairs support a stronger conclusion.
 Review the JSON values for each component instead of one total value.
@@ -179,8 +177,8 @@ usage details through `--help`.
 
 ## Set files
 
-Keep the committed `.als` files, audio samples, and control device unchanged.
-Add a newly named set when you change its contents.
+Keep the committed `.als` files, audio samples, and control device at their
+recorded contents and hashes. Add a newly named set for revised contents.
 
 Live places generated files in `Backup/` folders. Git ignores these folders.
 Keep generated backups outside commits.
