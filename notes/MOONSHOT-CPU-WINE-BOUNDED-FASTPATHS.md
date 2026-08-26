@@ -2,7 +2,7 @@
 
 The release setting uses Wine's regular wait route. Set
 `WINE_APC_FASTPATH=1` for an isolated test of the NTSync route. Keep release
-launch rules at the regular setting through the test gate in this document.
+launch rules at the regular setting through the test gate below.
 
 ## Release decision
 
@@ -20,9 +20,8 @@ Both build routes use the same one-patch list. Their checks count and identify
 that patch. Wine reads the setting once per process. The read stays safe when
 several threads start together.
 
-The values `1`, `on`, `true` and `yes` select the trial route. They accept any
-letter case. An unset, empty or unrecognised value selects the regular route.
-The values `0`, `off`, `false` and `no` also select the regular route.
+Wine uses the regular route by default. The values `1`, `on`, `true` and `yes`
+select the trial route. The values accept any letter case.
 
 Wine selects the trial after its device and alert checks succeed. Every other
 check or wait result uses the regular route. Linux 7.1.8 accepts a zero-object
@@ -43,7 +42,7 @@ The 2 routes measure suspended time differently. Wine's regular route uses
 which pauses during host suspend (`dlls/ntdll/unix/sync.c:425-445`).
 
 The host measurement on 26 August 2026 found a 17,302,527,783,051 ns difference
-between those clocks. The difference confirms separate timing rules on this
+between those clocks. The difference confirms separate timing rules on the
 host.
 
 NTSync v7.1.8 provides monotonic and real-time deadlines
@@ -59,7 +58,7 @@ and
 That rule resembles the trial's monotonic timing. Live and plug-in tests decide
 release safety.
 
-Complete this suspend test before a release review:
+Complete the suspend test before a release review:
 
 1. Run the regular route and the trial route from identical prefix snapshots.
 2. Test finite relative, finite absolute and infinite waits.
@@ -68,8 +67,7 @@ Complete this suspend test before a release review:
 5. Use a separate process with a fixed end time.
 6. Repeat each case after a cold start.
 
-Keep every release candidate at an unset value or an explicit regular-route
-value through this test.
+Keep every release candidate at the regular default through the suspend test.
 
 ## Ideas reserved for future tests
 
@@ -84,19 +82,19 @@ must also prove the life of each saved hook object.
 
 The earlier `performance/0004` idea saves a queue mask. Source review found
 consistent mask writers. A paired upstream `user32:msg` run produced 185
-flagged assertions with the idea enabled and 186 with its rollback setting. The
-one differing IME assertion appeared in the rollback run. An earlier pair
+flagged assertions with the idea enabled and 186 with its control setting. The
+one differing IME assertion appeared in the control run. An earlier pair
 produced 206 and 186 flagged assertions.
 
 A future `performance/0004` test must use a nested send, a callback and a
-3-second heartbeat. It must also prove every required wake. These tests cover
-the message wait while callbacks run.
+3-second heartbeat. It must also prove every required wake. The tests cover the
+message wait while callbacks run.
 
 The earlier `performance/0005` idea uses a saved window-state result. Repeated
-`updateprobe` runs produced the same flagged result with the idea active and
-with `WINE_MSG_FASTPATH=off`. Affected runs reported zero paint queue state
-after window invalidation. The X driver treated the test window as effectively
-invisible. Use a stable visible-window test before another review.
+`updateprobe` runs produced the same flagged result in both test states.
+Affected runs reported zero paint queue state after window invalidation. The X
+driver treated the test window as effectively invisible. Use a stable
+visible-window test before another review.
 
 The branch keeps whole-process CPU placement and priority at their base
 settings.
@@ -108,21 +106,19 @@ zero-delay, finite relative, finite absolute and infinite alertable waits. The
 infinite case wakes through a user APC.
 
 Additional checks cover APC order, input and output completion, special APCs,
-access, handle reuse and suspend. Run the exact Wine build with
-`WINE_APC_FASTPATH=1`, with `WINE_APC_FASTPATH` unset and with
-`WINE_APC_FASTPATH=off`.
+access, handle reuse and suspend. Run the exact Wine build with the trial setting
+and with the regular default.
 
 `tools/ntsync-alert-wait-probe.c` provides an isolated observer. `LD_PRELOAD`
 loads the observer before Wine starts. A trial run records
-`MOONSHOT_NTSYNC_ALERT_WAIT`. The unset and explicit off runs record zero
-matching lines.
+`MOONSHOT_NTSYNC_ALERT_WAIT`. A regular-route run records zero matching lines.
 
 Set `MOONSHOT_NTSYNC_ALERT_WAIT_FAULT=1` to return `EIO` for the trial wait. The
-same 45 checks must pass. This result proves the immediate return to Wine's
+same 45 checks must pass. The result proves the immediate return to Wine's
 regular wait.
 
 Use the observer with the exact x86-64 `apcprobe` process and its small test
-prefix. The observer expects the 3-part kernel request used by this process.
+prefix. The observer expects the 3-part kernel request used by the test process.
 Other Wine paths can use a 2-part request. Use source tracing for a wider Wine
 test.
 
@@ -133,8 +129,8 @@ to prove exact event order during the suspend test.
 
 ## Release checks
 
-Build the exact patched Wine target with Wine's warning rules. Record these
-results from matched loaded Sets:
+Build the exact patched Wine target with Wine's warning rules. Record the
+following results from matched loaded Sets:
 
 - combined Live and wineserver CPU use or request traffic falls
 - PipeWire `ERR` and xrun issue counts match or improve the regular route
@@ -146,6 +142,6 @@ The opt-in result proves route selection and wait behaviour. The loaded Set
 result measures the CPU benefit.
 
 After a partial finite wait, the regular route uses the remaining time. The
-fault observer proves the immediate error case. Future fault tests must cover
-alert event cancellation between kernel wake and server processing. They must
-also cover a delayed kernel error.
+injection observer proves the immediate `EIO` case. Future injection tests must
+cover alert event cancellation between kernel wake and server processing. They
+must also cover a delayed `EIO` result.
