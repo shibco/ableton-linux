@@ -527,7 +527,8 @@ stdenv.mkDerivation {
     done
     # The launcher sources these and exits 1 naming any whose functions are
     # absent. Check what it checks, rather than that files exist.
-    for fn in ableton_available_physical_cores ableton_live_product_version \
+    for fn in ableton_available_physical_cores ableton_live_calculated_audio_threads \
+              ableton_reliable_audio_threads ableton_live_product_version \
               ableton_seed_max_audio_threads; do
       ${stdenv.shell} -c ". $out/libexec/lib/live-options.sh; declare -F $fn >/dev/null" \
         || { echo "live-options.sh does not define $fn; the launcher would refuse to start"; exit 1; }

@@ -138,12 +138,14 @@ These environment variables change one launch without changing the saved install
 - `ABLETON_LINKD` selects the Link daemon path. The generated user unit uses
   this exact resolved path.
 - `ABLETON_MAX_AUDIO_THREADS=auto|off|<number>` controls Live 12's audio thread
-  setting. The default, `auto`, uses the physical CPU cores available to the
-  launcher when that lowers Live's calculated count. `off` removes an
-  untouched launcher-managed value and restores Live's calculated count.
-  Existing settings and user edits remain unchanged. Fewer threads reduce
-  worker wake-ups, while demanding Sets can benefit from a higher count. An
-  explicit value must be from one to 63.
+  setting. The default, `auto`, compares the available physical core count with
+  half of Live's calculated count. It uses the higher value, up to Live's count.
+  `off` removes the launcher's saved value and restores Live's calculated count.
+  Existing settings and user edits take priority. Fewer threads reduce worker
+  wake-ups, while demanding Sets can benefit from a higher count. The launcher
+  accepts an explicit value from one to 63. It uses the value when it is below
+  Live's calculated count. At or above that count, Live uses its calculated
+  count.
 - `ABLETON_SHORTCUTS=take|preserve` controls the GNOME shortcut hold. The
   default, `take`, temporarily turns off the exact Ctrl+Alt+Up and
   Ctrl+Alt+Down entries. Live 11 also turns off Ctrl+Alt+Delete. `preserve`

@@ -52,6 +52,51 @@ ableton_available_physical_cores()
     printf '%s\n' "$count"
 )
 
+ableton_live_calculated_audio_threads()
+{
+    local processors="${1:-}" count
+
+    case "$processors" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "${#processors}" -gt 6 ]; then
+        count=31
+    else
+        processors=$((10#$processors))
+        [ "$processors" -ge 1 ] || return 1
+        count=$((2 * processors - 2))
+        [ "$count" -ge 1 ] || count=1
+        [ "$count" -le 31 ] || count=31
+    fi
+    printf '%s\n' "$count"
+}
+
+ableton_reliable_audio_threads()
+{
+    local physical="${1:-}" available="${2:-}" live_default reliability_floor count
+
+    case "$physical" in
+        ''|*[!0-9]*) return 1 ;;
+        *[1-9]*) ;;
+        *) return 1 ;;
+    esac
+    if [ -z "$available" ]; then
+        available="$(nproc 2>/dev/null)" || return 1
+    fi
+    live_default="$(ableton_live_calculated_audio_threads "$available")" || return 1
+
+    # Keep at least half of Live's workers on processors with fewer cores.
+    # The measured 16-core computer keeps its 16-of-31 result.
+    # Before release, test busy Sets on an SMT computer with up to 15 physical cores.
+    reliability_floor=$(((live_default + 1) / 2))
+    if [ "${#physical}" -gt 6 ]; then
+        count="$live_default"
+    else
+        count=$((10#$physical))
+    fi
+    [ "$count" -ge "$reliability_floor" ] || count="$reliability_floor"
+    [ "$count" -le "$live_default" ] || count="$live_default"
+    printf '%s\n' "$count"
+}
+
 ableton_cpu_list_valid()
 {
     local list="${1:-}" part first last previous=-1
@@ -861,15 +906,7 @@ ableton_seed_max_audio_threads()
         option=off
     else
         online="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || return 0
-        case "$online" in ''|*[!0-9]*) return 0 ;; esac
-        if [ "${#online}" -gt 6 ]; then
-            live_default=31
-        else
-            [ "$online" -ge 1 ] || return 0
-            live_default=$((2 * online - 2))
-            [ "$live_default" -ge 1 ] || live_default=1
-            [ "$live_default" -le 31 ] || live_default=31
-        fi
+        live_default="$(ableton_live_calculated_audio_threads "$online")" || return 0
         if [ "$count" -ge "$live_default" ]; then
             [ "$restore_at_default" -eq 1 ] || return 0
             option=off
@@ -877,16 +914,10 @@ ableton_seed_max_audio_threads()
 
         if [ "$option" != off ]; then
             available="$(nproc 2>/dev/null)" || return 0
-            case "$available" in ''|*[!0-9]*) return 0 ;; esac
-            if [ "${#available}" -le 6 ]; then
-                [ "$available" -ge 1 ] || return 0
-                live_default=$((2 * available - 2))
-                [ "$live_default" -ge 1 ] || live_default=1
-                [ "$live_default" -le 31 ] || live_default=31
-                if [ "$count" -ge "$live_default" ]; then
-                    [ "$restore_at_default" -eq 1 ] || return 0
-                    option=off
-                fi
+            live_default="$(ableton_live_calculated_audio_threads "$available")" || return 0
+            if [ "$count" -ge "$live_default" ]; then
+                [ "$restore_at_default" -eq 1 ] || return 0
+                option=off
             fi
         fi
         [ -n "$option" ] || option="-MaxAudioThreads=$count"
