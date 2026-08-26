@@ -943,21 +943,19 @@ Update this project, then start Live again:
 sh ~/Downloads/install-ableton-latest.run update
 ```
 
-Live runs a separate helper for Push 3. Before this fix, Live and the helper
-saw each other's MIDI connection as a device, and one of them opened the
-other's output as an input. Live's own pad lights then came back as notes on
-channel 1, so pads stuck and repeated at full speed.
+Live once mistook Push 3's own pad-light messages for notes. The update stops
+that loop.
 
-If you cannot update yet, cut the loop by hand after each Live start. List
-the MIDI connections:
+If you need the temporary fix, remove the loop after each Live start. List the
+MIDI connections:
 
 ```bash
 aconnect -l
 ```
 
-Find the `WINE ALSA Output` port that shows `Connecting To` a port 0 under a
-second `WINE midi driver` client. Remove that one connection, with your own
-numbers in place of `131:1 129:0`:
+Find `WINE ALSA Output` with `Connecting To` a port 0 beneath another `WINE
+midi driver` client. Remove that connection. Replace `131:1 129:0` with the
+numbers on your system:
 
 ```bash
 aconnect -d 131:1 129:0
