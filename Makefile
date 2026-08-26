@@ -35,7 +35,7 @@ test-glyph-path:              ## assert a built runtime's dwrite glyph path (RUN
 test-d2d-resize:              ## assert an hwnd render target survives Resize (RUNTIME=<root>)
 	./scripts/test-d2d-resize.sh $(RUNTIME)
 
-test-pipewire-pro-audio-ab:   ## exercise reversible PipeWire Pro Audio A/B policy
+test-pipewire-pro-audio-ab:   ## test Pro Audio comparison and profile restoration
 	./scripts/test-pipewire-pro-audio-ab.sh
 
 vendor-cache:                 ## populate vendor/winetricks-cache for offline setup

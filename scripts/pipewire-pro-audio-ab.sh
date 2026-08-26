@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Run one matched benchmark under an exact device's current ALSA profile and
-# once under its transient Pro Audio profile. No WirePlumber/PipeWire config is
-# installed and profile changes use save:false.
+# Compare one audio device with its current profile and Pro Audio profile.
+# Restore the current profile after the comparison.
 set -uo pipefail
 
 umask 077
@@ -20,23 +19,21 @@ Usage:
   scripts/pipewire-pro-audio-ab.sh --device ID --wine-prefix DIR --output DIR -- COMMAND [ARG...]
   scripts/pipewire-pro-audio-ab.sh --device ID --wine-prefix DIR --output DIR --discover
 
-Runs COMMAND first under the exact device's current profile (A), confirms Live
-and the Wine prefix are idle, then runs the same command under a transient
-pro-audio profile (B). The exact original profile is restored and verified on
-success, failure, HUP, INT, and TERM.
+Runs COMMAND with the current profile and then with Pro Audio. The tool checks
+that Live and the Wine prefix are idle. It restores and checks the current
+profile after both runs, including when HUP, INT, or TERM interrupts the run.
 
 Options:
-  --device ID       Exact numeric PipeWire Device global ID; aliases are refused.
-  --wine-prefix DIR Existing prefix whose Wine/Live processes must be stopped.
-  --output DIR      New artifact directory; existing paths are never overwritten.
-  --discover        Read-only discovery. Snapshot and validate without benchmarking.
+  --device ID       Numeric PipeWire device ID.
+  --wine-prefix DIR Existing Wine prefix. Close its Wine and Live processes first.
+  --output DIR      New directory for the report files.
+  --discover        Record and check the device state.
   --dry-run         Alias for --discover.
   -h, --help        Show this help.
 
-The benchmark command must stop every process it starts. There is deliberately
-no active-process override and no automatic or persistent Pro Audio selection.
-Pro Audio can expose extra channels and increase IRQ or idle CPU cost; it is not
-a CPU optimization by definition. See notes/PIPEWIRE-PRO-AUDIO-AB.md.
+The benchmark command must close every process it starts. Pro Audio can add
+channels and use more CPU while idle. Treat each result as specific to the
+tested device. See notes/PIPEWIRE-PRO-AUDIO-AB.md.
 EOF
 }
 
@@ -49,17 +46,17 @@ benchmark_command=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --device)
-            [ "$#" -ge 2 ] || { printf 'Missing value for --device.\n' >&2; exit "$EX_USAGE"; }
+            [ "$#" -ge 2 ] || { printf 'Provide a value for --device.\n' >&2; exit "$EX_USAGE"; }
             device_id="$2"
             shift 2
             ;;
         --wine-prefix)
-            [ "$#" -ge 2 ] || { printf 'Missing value for --wine-prefix.\n' >&2; exit "$EX_USAGE"; }
+            [ "$#" -ge 2 ] || { printf 'Provide a value for --wine-prefix.\n' >&2; exit "$EX_USAGE"; }
             wine_prefix="$2"
             shift 2
             ;;
         --output)
-            [ "$#" -ge 2 ] || { printf 'Missing value for --output.\n' >&2; exit "$EX_USAGE"; }
+            [ "$#" -ge 2 ] || { printf 'Provide a value for --output.\n' >&2; exit "$EX_USAGE"; }
             output_dir="$2"
             shift 2
             ;;
@@ -77,23 +74,23 @@ while [ "$#" -gt 0 ]; do
             break
             ;;
         *)
-            printf 'Unknown option: %s\n' "$1" >&2
+            printf 'Use a supported option. Received: %s\n' "$1" >&2
             usage >&2
             exit "$EX_USAGE"
             ;;
     esac
 done
 
-[ -n "$device_id" ] || { printf 'An exact --device ID is required.\n' >&2; exit "$EX_USAGE"; }
+[ -n "$device_id" ] || { printf 'Provide a numeric --device ID.\n' >&2; exit "$EX_USAGE"; }
 [[ "$device_id" =~ ^(0|[1-9][0-9]*)$ ]] \
     || { printf 'The PipeWire device ID must be an unsigned decimal integer.\n' >&2; exit "$EX_USAGE"; }
 [ "${#device_id}" -lt 11 ] || { printf 'The PipeWire device ID is out of range.\n' >&2; exit "$EX_USAGE"; }
 [ "$device_id" -le 4294967294 ] || { printf 'The PipeWire device ID is out of range.\n' >&2; exit "$EX_USAGE"; }
-[ -n "$wine_prefix" ] || { printf 'An explicit --wine-prefix is required for the activity guard.\n' >&2; exit "$EX_USAGE"; }
-[ -d "$wine_prefix" ] || { printf 'The Wine prefix is not an existing directory: %s\n' "$wine_prefix" >&2; exit "$EX_USAGE"; }
-[ -n "$output_dir" ] || { printf 'A new --output directory is required.\n' >&2; exit "$EX_USAGE"; }
+[ -n "$wine_prefix" ] || { printf 'Provide --wine-prefix for the process check.\n' >&2; exit "$EX_USAGE"; }
+[ -d "$wine_prefix" ] || { printf 'Use an existing Wine prefix directory: %s\n' "$wine_prefix" >&2; exit "$EX_USAGE"; }
+[ -n "$output_dir" ] || { printf 'Provide a new --output directory.\n' >&2; exit "$EX_USAGE"; }
 if [ "$mode" = run ] && [ "${#benchmark_command[@]}" -eq 0 ]; then
-    printf 'A benchmark command is required after --.\n' >&2
+    printf 'Provide a benchmark command after --.\n' >&2
     exit "$EX_USAGE"
 fi
 
@@ -109,23 +106,23 @@ proc_root="${PIPEWIRE_PRO_AUDIO_PROC_ROOT:-/proc}"
 [[ "$verify_attempts" =~ ^[1-9][0-9]*$ ]] && [ "$verify_attempts" -le 100 ] \
     || { printf 'PIPEWIRE_PRO_AUDIO_VERIFY_ATTEMPTS must be an integer from 1 to 100.\n' >&2; exit "$EX_USAGE"; }
 [[ "$verify_delay" =~ ^[0-9]+([.][0-9]+)?$ ]] \
-    || { printf 'PIPEWIRE_PRO_AUDIO_VERIFY_DELAY must be a non-negative number.\n' >&2; exit "$EX_USAGE"; }
+    || { printf 'PIPEWIRE_PRO_AUDIO_VERIFY_DELAY accepts zero or a positive number.\n' >&2; exit "$EX_USAGE"; }
 [[ "$settle_seconds" =~ ^[0-9]+$ ]] && [ "$settle_seconds" -le 30 ] \
     || { printf 'PIPEWIRE_PRO_AUDIO_SETTLE_SECONDS must be an integer from 0 to 30.\n' >&2; exit "$EX_USAGE"; }
 [[ "$signal_wait_timeout" =~ ^[1-9][0-9]*$ ]] && [ "$signal_wait_timeout" -le 60 ] \
     || { printf 'PIPEWIRE_PRO_AUDIO_SIGNAL_WAIT_TIMEOUT must be an integer from 1 to 60.\n' >&2; exit "$EX_USAGE"; }
-[ -d "$proc_root" ] || { printf 'Process information root is unavailable: %s\n' "$proc_root" >&2; exit "$EX_UNAVAILABLE"; }
+[ -d "$proc_root" ] || { printf 'Use an existing process information root: %s\n' "$proc_root" >&2; exit "$EX_UNAVAILABLE"; }
 
 for dependency in cmp date jq pw-cli pw-dump pw-metadata readlink realpath sed sha256sum sleep sort timeout tr wpctl; do
     command -v "$dependency" >/dev/null 2>&1 || {
-        printf 'Required command is unavailable: %s\n' "$dependency" >&2
+        printf 'Install the required command: %s\n' "$dependency" >&2
         exit "$EX_UNAVAILABLE"
     }
 done
 
 wine_prefix="$(realpath -e -- "$wine_prefix")" || exit "$EX_USAGE"
 if ! mkdir -m 700 -- "$output_dir"; then
-    printf 'The artifact path must not already exist: %s\n' "$output_dir" >&2
+    printf 'Choose a new report directory: %s\n' "$output_dir" >&2
     exit "$EX_USAGE"
 fi
 output_dir="$(realpath -e -- "$output_dir")" || exit "$EX_SOFTWARE"
@@ -133,12 +130,12 @@ mkdir -- "$output_dir/events" || exit "$EX_SOFTWARE"
 
 if [ "${#benchmark_command[@]}" -gt 0 ]; then
     {
-        printf 'Command (shell escaped; executed directly, without eval):\n'
+        printf 'Command, shown with shell quoting:\n'
         printf '%q ' "${benchmark_command[@]}"
         printf '\n'
     } > "$output_dir/command.txt"
 else
-    printf 'No command: read-only discovery.\n' > "$output_dir/command.txt"
+    printf 'Discovery mode records the device state.\n' > "$output_dir/command.txt"
 fi
 
 result="initializing"
@@ -525,7 +522,7 @@ verify_profile()
 set_profile_transient()
 {
     local index="$1" label="$2"
-    # wpctl set-profile sends save=true; this direct Profile pod must stay false.
+    # Use save=false here to preserve the saved WirePlumber profile choice.
     probe "$output_dir/events/${label}.pw-cli.stdout" \
         pw-cli set-param "$device_id" Profile "{\"index\":$index,\"save\":false}"
 }
@@ -651,7 +648,7 @@ run_benchmark_leg()
     return "$rc"
 }
 
-# shellcheck disable=SC2329 # Called from the EXIT-trap finalizer.
+# shellcheck disable=SC2329 # The exit handler calls this function.
 compare_restored_state()
 {
     local before="$output_dir/before" after="$output_dir/after-restoration" failed=0
@@ -712,7 +709,7 @@ stage_matches_before()
         && cmp -s "$before/device-identity.json" "$stage/device-identity.json"
 }
 
-# shellcheck disable=SC2329 # Called by signal traps.
+# shellcheck disable=SC2329 # The signal handler calls this function.
 benchmark_child_active()
 {
     local candidate
@@ -722,7 +719,7 @@ benchmark_child_active()
     return 1
 }
 
-# shellcheck disable=SC2329 # Called by signal traps.
+# shellcheck disable=SC2329 # The signal handler calls this function.
 wait_for_signalled_benchmark()
 {
     local attempt limit=$((signal_wait_timeout * 20))
@@ -738,7 +735,7 @@ wait_for_signalled_benchmark()
     return 0
 }
 
-# shellcheck disable=SC2329 # Called by signal traps.
+# shellcheck disable=SC2329 # The signal handler calls this function.
 handle_signal()
 {
     local signal_name="$1" signal_code="$2" finish child_stopped=1 stage
@@ -749,7 +746,7 @@ handle_signal()
         kill -s "$signal_name" "$benchmark_pid" 2>/dev/null || true
         if ! wait_for_signalled_benchmark; then
             child_stopped=0
-            message="$message The exact benchmark child did not stop within ${signal_wait_timeout}s; it was not killed."
+            message="$message The benchmark child remains active after ${signal_wait_timeout}s. Its PID is recorded."
         fi
         finish="$(now_ns)"
         if [ "$benchmark_phase" = baseline ]; then
@@ -769,7 +766,7 @@ handle_signal()
     exit "$signal_code"
 }
 
-# shellcheck disable=SC2329 # Called by the EXIT trap.
+# shellcheck disable=SC2329 # The exit handler calls this function.
 finish()
 {
     local requested_exit="$?" final_exit="$?" snapshot_failed=0 restore_failed=0 drift_failed=0 activity_failed=0
@@ -806,23 +803,23 @@ finish()
 
     if [ "$restore_failed" -eq 1 ]; then
         result="restoration-failed"
-        message="Failed to restore and verify the original profile; use recovery-command.txt after checking the device ID."
+        message="Use recovery-command.txt after you confirm the device ID."
         final_exit="$EX_SOFTWARE"
     elif [ "$snapshot_failed" -eq 1 ] \
         && { [ "$requested_exit" -eq 0 ] || [ "$profile_mutation_started" -eq 1 ]; }; then
         result="restoration-evidence-failed"
-        message="The original profile was restored, but the final evidence snapshot failed."
+        message="The final state record ended early after profile restoration."
         final_exit="$EX_SOFTWARE"
     elif [ "$drift_failed" -eq 1 ] \
         && { [ "$requested_exit" -eq 0 ] || [ "$profile_mutation_started" -eq 1 ]; }; then
         result="restored-state-drift"
-        message="The profile was restored, but defaults, state, routes, the node fingerprint, settings, or identity drifted."
+        message="The final state differs from the recorded baseline after profile restoration."
         final_exit="$EX_SOFTWARE"
     elif { [ "$activity_failed" -eq 1 ] || [ "$target_graph_failed" -eq 1 ]; } \
         && [ "$requested_exit" -eq 0 ] \
         && [ "$profile_mutation_started" -eq 1 ]; then
         result="post-restoration-activity"
-        message="The profile was restored, but guarded process or target-device graph activity invalidated the pair."
+        message="Process or target-device activity appeared after profile restoration."
         final_exit="$EX_ACTIVITY"
     fi
 
@@ -834,11 +831,11 @@ finish()
 }
 
 runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
-[ -d "$runtime_dir" ] || fail "$EX_UNAVAILABLE" runtime-unavailable "Runtime directory is unavailable: $runtime_dir"
+[ -d "$runtime_dir" ] || fail "$EX_UNAVAILABLE" runtime-unavailable "Use an existing runtime directory: $runtime_dir"
 lock_dir="$runtime_dir/ableton-pw-pro-audio-${UID}-${device_id}.lock"
 if ! mkdir -m 700 -- "$lock_dir"; then
     result="concurrent-run"
-    message="Another Pro Audio A/B owns device $device_id."
+    message="Device $device_id already has an active Pro Audio comparison."
     write_status "$EX_ACTIVITY" || true
     printf '!! %s\n' "$message" >&2
     exit "$EX_ACTIVITY"
@@ -850,25 +847,25 @@ trap 'handle_signal INT 130' INT
 trap 'handle_signal TERM 143' TERM
 
 if ! snapshot "$output_dir/before"; then
-    fail "$EX_DATAERR" snapshot-failed 'Could not capture the complete preflight PipeWire snapshot.'
+    fail "$EX_DATAERR" snapshot-failed 'The initial device state record ended early.'
 fi
 validate_alsa_device "$output_dir/before/device.json" \
-    || fail "$EX_DATAERR" invalid-device 'The exact ID is not a single named ALSA PipeWire Device.'
+    || fail "$EX_DATAERR" invalid-device 'Select one named PipeWire audio device by its numeric ID.'
 
 device_name="$(jq -r '.info.props["device.name"]' "$output_dir/before/device.json")"
 original_profile_index="$(profile_index "$output_dir/before/device.json" 2>/dev/null || true)"
 original_profile_name="$(profile_name "$output_dir/before/device.json" 2>/dev/null || true)"
 [ -n "$original_profile_index" ] && [ -n "$original_profile_name" ] \
-    || fail "$EX_DATAERR" invalid-current-profile 'The device does not expose exactly one valid current profile.'
+    || fail "$EX_DATAERR" invalid-current-profile 'Select a device with one current audio profile.'
 [ "$original_profile_name" != off ] \
-    || fail "$EX_DATAERR" inactive-current-profile 'The current profile is off; it cannot be a valid baseline.'
+    || fail "$EX_DATAERR" inactive-current-profile 'Select an active current profile for the first run.'
 
 pro_count="$(jq '[.info.params.EnumProfile[]? | select(.name == "pro-audio")] | length' \
     "$output_dir/before/device.json")"
 case "$pro_count" in
-    0) fail "$EX_DATAERR" pro-audio-missing 'The exact device does not expose a pro-audio profile.' ;;
+    0) fail "$EX_DATAERR" pro-audio-missing 'Select a device that provides a Pro Audio profile.' ;;
     1) ;;
-    *) fail "$EX_DATAERR" pro-audio-ambiguous 'The exact device exposes more than one pro-audio profile.' ;;
+    *) fail "$EX_DATAERR" pro-audio-ambiguous 'Select a device with one Pro Audio profile.' ;;
 esac
 pro_profile_index="$(jq -er '.info.params.EnumProfile[] | select(.name == "pro-audio")
     | .index
@@ -877,44 +874,44 @@ pro_profile_index="$(jq -er '.info.params.EnumProfile[] | select(.name == "pro-a
 pro_profile_available="$(jq -r '.info.params.EnumProfile[] | select(.name == "pro-audio")
     | (.available // "unknown")' "$output_dir/before/device.json")"
 [ -n "$pro_profile_index" ] \
-    || fail "$EX_DATAERR" pro-audio-invalid 'The pro-audio profile has no valid numeric index.'
+    || fail "$EX_DATAERR" pro-audio-invalid 'The Pro Audio profile needs a numeric index.'
 [ "$(jq --arg name "$original_profile_name" --argjson index "$original_profile_index" \
     '[.info.params.EnumProfile[]? | select(.name == $name and .index == $index)] | length' \
     "$output_dir/before/device.json")" -eq 1 ] \
-    || fail "$EX_DATAERR" invalid-current-profile 'The current profile is not one exact enumerated profile.'
+    || fail "$EX_DATAERR" invalid-current-profile 'Select one listed current profile.'
 [ "$pro_profile_available" != no ] \
-    || fail "$EX_DATAERR" pro-audio-unavailable 'The pro-audio profile is currently unavailable.'
+    || fail "$EX_DATAERR" pro-audio-unavailable 'PipeWire must mark the Pro Audio profile as available.'
 [ "$original_profile_index" != "$pro_profile_index" ] \
-    || fail "$EX_DATAERR" already-pro-audio 'The device already uses Pro Audio; there is no original-profile A/B.'
+    || fail "$EX_DATAERR" already-pro-audio 'Select the regular device profile for the first run.'
 
 preflight_complete=1
 target_preflight_activity="$(target_graph_activity_state \
     "$output_dir/before/target-device-activity.json")" \
-    || fail "$EX_DATAERR" target-activity-evidence-invalid 'Could not classify the exact device graph activity evidence.'
+    || fail "$EX_DATAERR" target-activity-evidence-invalid 'The target device activity record needs a recognised state.'
 [ "$target_preflight_activity" = clear ] \
-    || fail "$EX_ACTIVITY" target-device-active 'The exact device has a running node or active link; close its PipeWire clients before continuing.'
+    || fail "$EX_ACTIVITY" target-device-active 'Close each PipeWire client for the target device, then run the comparison again.'
 if scan_activity "$output_dir/before/activity.tsv"; then
     preflight_activity="clear"
 else
     preflight_activity="detected"
-    fail "$EX_ACTIVITY" active-processes 'Live, exact-prefix Wine, or unresolved Wine activity is already running.'
+    fail "$EX_ACTIVITY" active-processes 'Close Live and each Wine process for the selected prefix.'
 fi
 
 if [ "$mode" = discover ]; then
     result="discovery-ok"
-    message="The exact device and one available Pro Audio profile were discovered; nothing was changed or run."
+    message="Discovery recorded the device and one available Pro Audio profile. The profile stayed at its baseline."
     exit 0
 fi
 
 {
-    printf '# PipeWire global IDs are session-scoped. Verify ID %s against before/device-identity.json before recovery.\n' \
+    printf '# PipeWire can assign a new ID after a restart. Confirm ID %s in before/device-identity.json before recovery.\n' \
         "$device_id"
     printf 'pw-cli set-param %q Profile %q\n' "$device_id" \
         "{\"index\":$original_profile_index,\"save\":false}"
 } > "$output_dir/recovery-command.txt"
 
 mkdir -- "$output_dir/A-original" \
-    || fail "$EX_SOFTWARE" artifact-failed 'Could not create the original-profile leg artifact directory.'
+    || fail "$EX_SOFTWARE" artifact-failed 'Create the original-profile report directory.'
 sleep "$settle_seconds"
 if ! verify_profile "$original_profile_index" "$original_profile_name" settle-baseline; then
     fail "$EX_DATAERR" baseline-settle-profile-changed 'The target identity or original profile changed during the baseline settle interval.'
@@ -923,17 +920,17 @@ if scan_activity "$output_dir/A-original/activity-before.tsv"; then
     pre_baseline_activity="clear"
 else
     pre_baseline_activity="detected"
-    fail "$EX_ACTIVITY" baseline-settle-activity 'Live, exact-prefix Wine, or unresolved Wine activity appeared before the baseline leg.'
+    fail "$EX_ACTIVITY" baseline-settle-activity 'Close Live and each Wine process before the first run.'
 fi
 if ! snapshot "$output_dir/A-original/before-state"; then
-    fail "$EX_DATAERR" baseline-before-snapshot-failed 'Could not snapshot the settled state before the baseline command.'
+    fail "$EX_DATAERR" baseline-before-snapshot-failed 'The state record ended early before the first command.'
 fi
 if ! identity_matches_original "$output_dir/A-original/before-state/device.json" \
         "$output_dir/events/baseline-before.device-identity.json" \
     || [ "$(profile_index "$output_dir/A-original/before-state/device.json" 2>/dev/null || true)" != "$original_profile_index" ] \
     || [ "$(profile_name "$output_dir/A-original/before-state/device.json" 2>/dev/null || true)" != "$original_profile_name" ] \
     || ! stage_matches_before "$output_dir/A-original/before-state"; then
-    fail "$EX_DATAERR" baseline-settle-state-changed 'The settled baseline no longer matches the recorded target, profile, routes, defaults, node fingerprint, settings, or saved state.'
+    fail "$EX_DATAERR" baseline-settle-state-changed 'Restore the recorded device, profile, routes, defaults, and settings before the first run.'
 fi
 
 if run_benchmark_leg baseline "$output_dir/A-original"; then
@@ -943,7 +940,7 @@ else
     baseline_exit=$?
     baseline_state="failed"
     result="baseline-benchmark-failed"
-    message="The original-profile benchmark failed; Pro Audio was not selected."
+    message="The first command ended with status $baseline_exit. The profile stayed at its baseline."
     exit "$baseline_exit"
 fi
 
@@ -951,72 +948,72 @@ if scan_activity "$output_dir/A-original/activity-after.tsv"; then
     post_baseline_activity="clear"
 else
     post_baseline_activity="detected"
-    fail "$EX_ACTIVITY" baseline-left-activity 'The baseline command left Live, exact-prefix Wine, or unresolved Wine activity running; Pro Audio was not selected.'
+    fail "$EX_ACTIVITY" baseline-left-activity 'Close each process started by the first command. The profile stayed at its baseline.'
 fi
 if ! snapshot "$output_dir/A-original/after-state"; then
-    fail "$EX_DATAERR" baseline-snapshot-failed 'Could not snapshot the state after the baseline command.'
+    fail "$EX_DATAERR" baseline-snapshot-failed 'The state record ended early after the first command.'
 fi
 if ! identity_matches_original "$output_dir/A-original/after-state/device.json" \
         "$output_dir/events/pre-switch.device-identity.json" \
     || [ "$(profile_index "$output_dir/A-original/after-state/device.json" 2>/dev/null || true)" != "$original_profile_index" ] \
     || [ "$(profile_name "$output_dir/A-original/after-state/device.json" 2>/dev/null || true)" != "$original_profile_name" ] \
     || ! stage_matches_before "$output_dir/A-original/after-state"; then
-    fail "$EX_DATAERR" baseline-state-changed 'The baseline command changed the target, profile, routes, defaults, node fingerprint, settings, or saved state.'
+    fail "$EX_DATAERR" baseline-state-changed 'Return the device, profile, routes, defaults, and settings to the recorded baseline.'
 fi
 target_after_baseline_activity="$(target_graph_activity_state \
     "$output_dir/A-original/after-state/target-device-activity.json")" \
-    || fail "$EX_DATAERR" baseline-target-evidence-invalid 'Could not classify target-device graph activity after the baseline leg.'
+    || fail "$EX_DATAERR" baseline-target-evidence-invalid 'The target device activity record needs a recognised state after the first run.'
 [ "$target_after_baseline_activity" = clear ] \
-    || fail "$EX_ACTIVITY" baseline-target-active 'The baseline left a target node running or target link active; Pro Audio was not selected.'
+    || fail "$EX_ACTIVITY" baseline-target-active 'Close each target device client started by the first command.'
 if ! scan_activity "$output_dir/A-original/activity-pre-switch.tsv"; then
     post_baseline_activity="detected"
-    fail "$EX_ACTIVITY" baseline-pre-switch-activity 'Live, exact-prefix Wine, or unresolved Wine activity appeared before the profile switch.'
+    fail "$EX_ACTIVITY" baseline-pre-switch-activity 'Close Live and each Wine process before profile selection.'
 fi
 if ! capture_target_graph_activity "$output_dir/events/immediately-before-switch"; then
-    fail "$EX_DATAERR" pre-switch-target-evidence-failed 'Could not recheck the exact device graph immediately before the profile switch.'
+    fail "$EX_DATAERR" pre-switch-target-evidence-failed 'The device state record ended early before profile selection.'
 fi
 target_pre_switch_activity="$(target_graph_activity_state \
     "$output_dir/events/immediately-before-switch/target-device-activity.json")" \
-    || fail "$EX_DATAERR" pre-switch-target-evidence-invalid 'Could not classify the immediate pre-switch device graph.'
+    || fail "$EX_DATAERR" pre-switch-target-evidence-invalid 'The device activity record needs a recognised state before profile selection.'
 [ "$target_pre_switch_activity" = clear ] \
-    || fail "$EX_ACTIVITY" pre-switch-target-active 'A target node became running or a target link became active immediately before the profile switch.'
+    || fail "$EX_ACTIVITY" pre-switch-target-active 'Close each target device client before profile selection.'
 
 profile_mutation_started=1
 if ! set_profile_transient "$pro_profile_index" switch-pro-audio; then
     switch_state="failed"
-    fail "$EX_SWITCH" profile-switch-failed 'The transient Pro Audio profile switch command failed.'
+    fail "$EX_SWITCH" profile-switch-failed 'The Pro Audio selection command ended with an error.'
 fi
 if ! verify_profile "$pro_profile_index" pro-audio switch-pro-audio; then
     switch_state="unverified"
-    fail "$EX_SWITCH" profile-switch-unverified 'The exact target did not enter its discovered Pro Audio profile.'
+    fail "$EX_SWITCH" profile-switch-unverified 'The profile check found a different profile after selection.'
 fi
 switch_state="verified"
 
 mkdir -- "$output_dir/B-pro-audio" \
-    || fail "$EX_SOFTWARE" artifact-failed 'Could not create the Pro Audio leg artifact directory.'
+    || fail "$EX_SOFTWARE" artifact-failed 'Create the Pro Audio report directory.'
 sleep "$settle_seconds"
 if ! verify_profile "$pro_profile_index" pro-audio settle-pro-audio; then
-    fail "$EX_SWITCH" pro-audio-settle-profile-changed 'The target identity or Pro Audio profile changed during the Pro Audio settle interval.'
+    fail "$EX_SWITCH" pro-audio-settle-profile-changed 'Restore the recorded device identity and Pro Audio profile before the second run.'
 fi
 if scan_activity "$output_dir/B-pro-audio/activity-before.tsv"; then
     pre_pro_activity="clear"
 else
     pre_pro_activity="detected"
-    fail "$EX_ACTIVITY" pro-audio-settle-activity 'Live, exact-prefix Wine, or unresolved Wine activity appeared before the Pro Audio leg.'
+    fail "$EX_ACTIVITY" pro-audio-settle-activity 'Close Live and each Wine process before the second run.'
 fi
 if ! snapshot "$output_dir/B-pro-audio/before-state"; then
-    fail "$EX_SWITCH" pro-audio-snapshot-failed 'Could not capture the Pro Audio node/device evidence before the B leg.'
+    fail "$EX_SWITCH" pro-audio-snapshot-failed 'The device state record ended early before the second run.'
 fi
 target_before_pro_activity="$(target_graph_activity_state \
     "$output_dir/B-pro-audio/before-state/target-device-activity.json")" \
-    || fail "$EX_SWITCH" pro-audio-target-evidence-invalid 'Could not classify the settled Pro Audio device graph.'
+    || fail "$EX_SWITCH" pro-audio-target-evidence-invalid 'The Pro Audio device activity record needs a recognised state.'
 [ "$target_before_pro_activity" = clear ] \
-    || fail "$EX_ACTIVITY" pro-audio-target-active-before-run 'A Pro Audio target node is running or target link is active before the B command.'
+    || fail "$EX_ACTIVITY" pro-audio-target-active-before-run 'Close each target device client before the second command.'
 if ! identity_matches_original "$output_dir/B-pro-audio/before-state/device.json" \
         "$output_dir/events/pro-audio-before.device-identity.json" \
     || [ "$(profile_index "$output_dir/B-pro-audio/before-state/device.json" 2>/dev/null || true)" != "$pro_profile_index" ] \
     || [ "$(profile_name "$output_dir/B-pro-audio/before-state/device.json" 2>/dev/null || true)" != pro-audio ]; then
-    fail "$EX_SWITCH" pro-audio-state-changed 'The target left Pro Audio before the B command started.'
+    fail "$EX_SWITCH" pro-audio-state-changed 'The profile check found a different profile before the second command.'
 fi
 
 if run_benchmark_leg pro-audio "$output_dir/B-pro-audio"; then
@@ -1035,21 +1032,21 @@ fi
 
 if [ "$pro_state" = failed ]; then
     result="pro-audio-benchmark-failed"
-    message="The Pro Audio benchmark failed; the exact original profile will be restored."
+    message="The second command ended with status $pro_exit. Profile restoration starts now."
     exit "$pro_exit"
 fi
 if ! snapshot "$output_dir/B-pro-audio/after-state"; then
-    fail "$EX_DATAERR" pro-audio-after-snapshot-failed 'Could not capture target-device graph evidence after the Pro Audio leg.'
+    fail "$EX_DATAERR" pro-audio-after-snapshot-failed 'The device state record ended early after the second run.'
 fi
 target_after_pro_activity="$(target_graph_activity_state \
     "$output_dir/B-pro-audio/after-state/target-device-activity.json")" \
-    || fail "$EX_DATAERR" pro-audio-target-evidence-invalid 'Could not classify target-device graph activity after the Pro Audio leg.'
+    || fail "$EX_DATAERR" pro-audio-target-evidence-invalid 'The target device activity record needs a recognised state after the second run.'
 if [ "$post_pro_activity" = detected ]; then
-    fail "$EX_ACTIVITY" pro-audio-left-activity 'The Pro Audio command left Live, exact-prefix Wine, or unresolved Wine activity running; restoring despite this contract violation.'
+    fail "$EX_ACTIVITY" pro-audio-left-activity 'Close each process started by the second command. Profile restoration starts now.'
 fi
 [ "$target_after_pro_activity" = clear ] \
-    || fail "$EX_ACTIVITY" pro-audio-target-active 'The Pro Audio command left a target node running or target link active; restoring immediately.'
+    || fail "$EX_ACTIVITY" pro-audio-target-active 'Close each target device client started by the second command. Profile restoration starts now.'
 
 result="ab-complete"
-message="Both matched legs passed; the exact original profile was restored and verified."
+message="Both profile runs completed. The original profile and state match the baseline."
 exit 0
