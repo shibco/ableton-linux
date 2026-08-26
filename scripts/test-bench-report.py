@@ -58,6 +58,10 @@ def benchmark_profile(gates=None):
             "executables": [{"product_version": "12.4.3", "sha256": "live-a"}],
             "preferences": [{"version": "12.4.3", "options": ["-MaxAudioThreads=4"], "options_hash": {"sha256": "options-a"}, "max_audio_threads": 4}],
         },
+        "fixture_plugins": [
+            {"name": "Dexed.vst3", "path": "/prefix/Dexed.vst3", "exists": True, "identity_hash": "dexed-a"},
+            {"name": "K1v_x64.vst3", "path": "/prefix/K1v_x64.vst3", "exists": True, "identity_hash": "k1v-a"},
+        ],
     }
 
 
@@ -65,6 +69,7 @@ def benchmark_measurement(name, live_cpu=10.0, missing=False, zero=False):
     value = 0 if zero else live_cpu
     timing = {
         "supervision_interval_seconds": 30.0, "output_span_seconds": 29.5, "output_line_count": 30,
+        "first_output_offset_seconds": 0.1, "last_output_offset_seconds": 29.9,
     }
     summary = {
         group: {
@@ -78,6 +83,13 @@ def benchmark_measurement(name, live_cpu=10.0, missing=False, zero=False):
     measurement = {
         "schema": report.SCHEMA, "kind": "set-measurement",
         "set": name, "mode": report.CANONICAL_MODES[name], "duration_seconds": 30,
+        "window": {
+            "requested_duration_seconds": 30,
+            "monotonic_start_ns": 1_000_000_000,
+            "monotonic_deadline_ns": 31_000_000_000,
+            "cpu_before_collection_offsets_seconds": [-0.02, -0.01],
+            "cpu_after_collection_offsets_seconds": [30.0, 30.02],
+        },
         "process": {
             "summary": summary,
             "details": {
@@ -107,6 +119,21 @@ def benchmark_measurement(name, live_cpu=10.0, missing=False, zero=False):
                 "changed_within_window": False,
                 "before": {"available": True, "profile": "performance", "holds_available": True, "holds": "bench"},
                 "after": {"available": True, "profile": "performance", "holds_available": True, "holds": "bench"},
+            },
+            "audio": {
+                "changed_within_window": False,
+                "before": {
+                    "available": True, "component_availability": {"sink": True, "source": True, "links": True, "settings": True},
+                    "default_sink": ["device.name = fixture"], "default_source": ["device.name = fixture"],
+                    "links": ["PipeASIO:output_1 -> fixture:playback_FL"],
+                    "graph_settings": {"clock.rate": "48000", "clock.quantum": "64"},
+                },
+                "after": {
+                    "available": True, "component_availability": {"sink": True, "source": True, "links": True, "settings": True},
+                    "default_sink": ["device.name = fixture"], "default_source": ["device.name = fixture"],
+                    "links": ["PipeASIO:output_1 -> fixture:playback_FL"],
+                    "graph_settings": {"clock.rate": "48000", "clock.quantum": "64"},
+                },
             },
         },
         "capture_commands": {
@@ -272,6 +299,7 @@ class ParserTests(unittest.TestCase):
             command.start()
             assert command.process is not None
             command.process.wait(timeout=2)
+            time.sleep(0.05)
             command.terminate_at_deadline()
             result = command.stop()
             timing = result["timing"]
@@ -279,6 +307,24 @@ class ParserTests(unittest.TestCase):
             self.assertIsNotNone(timing["spawned_offset_seconds"])
             self.assertIsNotNone(timing["deadline_observed_offset_seconds"])
             self.assertGreaterEqual(timing["output_span_seconds"], 0)
+            self.assertTrue(timing["exited_before_deadline"])
+            self.assertLess(timing["supervision_interval_seconds"], timing["deadline_observed_offset_seconds"])
+            self.assertFalse(report.collector_command_usable(result, 30))
+
+    def test_periodic_collector_with_silent_tail_is_unusable_but_metadata_monitor_is_valid(self):
+        command = {
+            "available": True,
+            "timing": {
+                "supervision_interval_seconds": 30.0,
+                "output_line_count": 2,
+                "first_output_offset_seconds": 0.1,
+                "last_output_offset_seconds": 1.1,
+                "reader_alive_after_join": False,
+            },
+        }
+        self.assertFalse(report.collector_command_usable(command, 30, "pw-top"))
+        self.assertFalse(report.collector_command_usable(command, 30, "osc"))
+        self.assertTrue(report.collector_command_usable(command, 30, "pw-metadata"))
 
     def test_udp_preflight_reports_socket_creation_failure(self):
         args = type("Args", (), {"port": 19002})()
@@ -362,6 +408,51 @@ ERR:          5
             snapshot = report.cpu_policy_snapshot(root / "cpufreq")
             self.assertTrue(snapshot["available"])
             self.assertEqual(snapshot["policies"][0]["scaling_governor"], "performance")
+
+    def test_audio_endpoint_snapshot_keeps_stable_profile_links_and_graph_settings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            raw = Path(temporary)
+            payloads = {
+                "sink": 'device.name = "usb-interface"\ndevice.profile.name = "pro-audio"\nobject.serial = 77\n',
+                "source": 'node.name = "alsa_input.usb-interface"\napi.alsa.path = "hw:2"\n',
+                "links": "PipeASIO:output_1\n  |-> alsa_output.usb-interface:playback_FL\n",
+                "settings": (
+                    "update: id:0 key:'clock.rate' value:'48000' type:''\n"
+                    "update: id:0 key:'clock.quantum' value:'64' type:''\n"
+                ),
+            }
+            seen = {}
+
+            def fake_capture(name, argv, raw_dir, timeout=15):
+                component = name.rsplit("-", 1)[1]
+                seen[component] = argv
+                (raw_dir / f"{name}.stdout.txt").write_text(payloads[component])
+                (raw_dir / f"{name}.stderr.txt").write_text("")
+                return {"argv": argv, "available": True, "returncode": 0}
+
+            with mock.patch.object(report, "command_capture", side_effect=fake_capture):
+                value = report.audio_endpoint_snapshot(raw, "before")
+            self.assertTrue(value["available"])
+            self.assertEqual(value["graph_settings"]["clock.quantum"], "64")
+            self.assertIn('device.profile.name = "pro-audio"', value["default_sink"])
+            self.assertNotIn("object.serial = 77", value["default_sink"])
+            self.assertIn("PipeASIO:output_1", value["links"])
+            self.assertEqual(seen["links"], ["pw-link", "-l"])
+
+    def test_fixture_plugin_inventory_hashes_file_and_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary)
+            root = prefix / "drive_c/Program Files/Common Files/VST3"
+            bundle = root / "Dexed.vst3/Contents/x86_64-win"
+            bundle.mkdir(parents=True)
+            (bundle / "Dexed.vst3").write_bytes(b"MZdexed")
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "K1v_x64.vst3").write_bytes(b"MZk1v")
+            with mock.patch.object(report, "embedded_product_version", return_value="1.2.3"):
+                values = report.fixture_plugin_inventory(prefix)
+            self.assertEqual([item["kind"] for item in values], ["bundle", "file"])
+            self.assertTrue(all(item.get("identity_hash") for item in values))
+            self.assertEqual(values[0]["files"][0]["product_version"], "1.2.3")
 
     def test_live_log_identity_includes_runtime_visible_core_topology(self):
         fixture = """\
@@ -467,6 +558,20 @@ ERR:          5
             self.assertEqual(statuses["harness"], "different")
             self.assertTrue(result["sets"][0]["metrics"]["host_cpu_percent"]["confounded"])
 
+    def test_compare_uses_normalized_harness_hash_not_worktree_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            before, after = root / "before", root / "after"
+            write_benchmark_run(before)
+            write_benchmark_run(after)
+            for directory, path in ((before, "/worktree/a/bench-report.py"), (after, "/worktree/b/bench-report.py")):
+                run = json.loads((directory / "run.json").read_text())
+                run["harness"]["files"] = [{"path": path, "sha256": "same", "size": 1}]
+                (directory / "run.json").write_text(json.dumps(run))
+            result = report.comparison_report(report.load_completed_run(before), report.load_completed_run(after))
+            harness = next(item for item in result["identity"] if item["id"] == "harness")
+            self.assertEqual(harness["status"], "match")
+
     def test_compare_marks_missing_metrics_without_inventing_zero(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -510,6 +615,49 @@ ERR:          5
             (bad_schema / "run.json").write_text(json.dumps(value))
             with self.assertRaisesRegex(ValueError, "schema/kind"):
                 report.load_completed_run(bad_schema)
+            bad_window = root / "bad-window"
+            write_benchmark_run(bad_window)
+            path = next((bad_window / "sets").glob("*-Benchmark_Empty/measurement.json"))
+            value = json.loads(path.read_text())
+            value.pop("window")
+            path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, "monotonic window evidence"):
+                report.load_completed_run(bad_window)
+
+    def test_compare_confounders_cover_audio_power_holds_and_fixture_plugins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            before, after = root / "before", root / "after"
+            first_profile, last_profile = benchmark_profile(), benchmark_profile()
+            last_profile["fixture_plugins"][0]["identity_hash"] = "dexed-b"
+            write_benchmark_run(before, profile=first_profile)
+            write_benchmark_run(after, profile=last_profile)
+            path = next((after / "sets").glob("*-Benchmark_Empty/measurement.json"))
+            measurement = json.loads(path.read_text())
+            measurement["endpoint_identity"]["power"]["before"]["holds_available"] = False
+            measurement["endpoint_identity"]["audio"]["before"]["graph_settings"]["clock.quantum"] = "128"
+            path.write_text(json.dumps(measurement))
+            result = report.comparison_report(report.load_completed_run(before), report.load_completed_run(after))
+            self.assertIn("identity:vst_fixtures:different", result["sets"][1]["confounders"])
+            self.assertIn("after:power-holds-before-unavailable", result["sets"][1]["confounders"])
+            self.assertIn("set-identity:audio defaults/profile/graph-before", result["sets"][1]["confounders"])
+            self.assertEqual(result["sets"][1]["metrics"]["graph_quantum_before"]["after"], 128)
+
+    def test_annotate_preserves_unusable_node_identity_as_unknown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary) / "run"
+            write_benchmark_run(run_dir)
+            path = next((run_dir / "sets").glob("*-Benchmark_Empty/measurement.json"))
+            measurement = json.loads(path.read_text())
+            measurement["pipewire"]["pw_top"]["identity_confounded"] = True
+            measurement["logs"] = {"xrun_line_count": 0}
+            path.write_text(json.dumps(measurement))
+            args = type("Args", (), {
+                "run_dir": str(run_dir), "set_name": "Benchmark_Empty", "manual_crackle": "not-heard",
+            })()
+            self.assertEqual(report.annotate(args), 0)
+            updated = json.loads(path.read_text())
+            self.assertEqual(updated["crackle"]["status"], "unknown")
 
     def test_renderer_keeps_canonical_set_order(self):
         with tempfile.TemporaryDirectory() as temporary:

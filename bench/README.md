@@ -23,7 +23,11 @@ CPU snapshots necessarily bracket it by a few milliseconds, while collectors
 start sequentially just after its start; the JSON records a CPU interval
 midpoint estimate plus collection bounds and each collector's observed spawn,
 deadline, reap, and first/last output coverage instead of presenting those as
-exactly 30 seconds. A quick
+exactly 30 seconds. A collector is usable only when its observed process
+lifetime covers at least 29 seconds of a 30-second request and it emitted data;
+periodic `pw-top`/OSC evidence must also emit within the first and last second.
+An early exit or silent tail is retained but cannot support a clean-audio
+claim. A quick
 preflight that launches nothing is:
 
 ```bash
@@ -64,9 +68,15 @@ By default a new ignored directory is created under `bench/reports/`. Use
   snapshots with label/per-CPU deltas and actual rates, plus read-only endpoint
   power-profile/hold and cpufreq-policy governor/min/max/EPP identity. The
   suite profile's power state is explicitly only the ambient pre-launch value.
+- Every set brackets the CPU window with default sink/source profile and device
+  properties, named PipeWire links (including PipeASIO-to-hardware links), and
+  settings-metadata rate/quantum snapshots. Endpoint differences are
+  confounders. A profile or link that changes and restores entirely between the
+  two endpoints remains a documented limitation; settings metadata is also
+  monitored continuously during the window.
 - `sets/NN-SET/raw/`: before/after `/proc` snapshots, `pw-top`, PipeWire
   metadata events, OSC rows, launcher diagnostics, Live log slices, and matched
-  xrun lines.
+  xrun lines, plus raw endpoint `wpctl`, `pw-link`, and settings output.
 
 The prefix identity is a documented composite SHA-256 over its ownership marker
 and Wine registry files; it is not a costly hash of mutable cache content. The
@@ -75,6 +85,8 @@ halves. The effective PipeASIO config path follows the driver's real resolution:
 `$XDG_CONFIG_HOME/pipeasio/config.ini`, then
 `$HOME/.config/pipeasio/config.ini`. Every constituent path, size, and digest
 remains in the raw manifest.
+Dexed and K1v are also inventoried as a file or bundle: every regular file is
+hashed and embedded PE product versions are recorded when present.
 
 ## Crackle observations
 
@@ -131,13 +143,16 @@ python3 scripts/bench-report.py compare \
 # equivalent: make bench-compare BEFORE=... AFTER=... OUTPUT=...
 ```
 
-This refuses incomplete runs, non-canonical sets, and nonmatching or
-non-30-second durations, then writes `comparison.json` plus `comparison.md`.
+This refuses incomplete runs, non-canonical sets, nonmatching or non-30-second
+durations, and measurements without endpoint-backed monotonic 30-second window
+evidence, then writes `comparison.json` plus `comparison.md`.
 It reports identity differences
 as confounders rather than hiding them, including hardware/audio/PipeWire,
 runtime/prefix/Live/config hashes, effective PipeASIO path, graph rate/quantum,
+endpoint default profile/device/link identity, Dexed/K1v hashes and versions,
 performance-affecting launcher variables, and the exact `WINE_APC_FASTPATH`
-gate. Each set carries numeric before/after/delta/percent fields for CPU,
+gate. Missing power-profile hold evidence is a confounder. Each set carries
+numeric before/after/delta/percent fields for CPU,
 scheduler/context-switch, PipeWire/OSC, task-churn, collector-coverage, and
 IRQ/softirq values. Missing values and zero baselines have explicit undefined
 statuses. One pair is descriptive evidence and never a significance claim.

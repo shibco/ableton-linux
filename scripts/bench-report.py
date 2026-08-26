@@ -353,6 +353,70 @@ def power_endpoint_snapshot(raw_dir: Path, endpoint: str) -> dict[str, Any]:
     }
 
 
+def audio_endpoint_snapshot(raw_dir: Path, endpoint: str) -> dict[str, Any]:
+    """Capture stable default-device/profile, graph-setting, and link identity."""
+    begin_ns = time.monotonic_ns()
+    commands = {
+        name: command_capture(f"audio-{endpoint}-{name}", argv, raw_dir, 5)
+        for name, argv in (
+            ("sink", ["wpctl", "inspect", "-a", "@DEFAULT_AUDIO_SINK@"]),
+            ("source", ["wpctl", "inspect", "-a", "@DEFAULT_AUDIO_SOURCE@"]),
+            # -l alone prints only linked ports and their peers; -iol would
+            # also mix every inactive input/output port into "in use" identity.
+            ("links", ["pw-link", "-l"]),
+            ("settings", ["pw-metadata", "-n", "settings"]),
+        )
+    }
+    end_ns = time.monotonic_ns()
+    successful = {
+        name: item.get("available") and item.get("returncode") == 0
+        for name, item in commands.items()
+    }
+    property_pattern = re.compile(
+        r"\b(?:api[.]alsa[.]|device[.](?:name|description|nick|serial|profile)|"
+        r"node[.](?:name|description|nick)|object[.]path|media[.]class|profile[.]|route[.])",
+        re.IGNORECASE,
+    )
+
+    def stable_lines(name: str, pattern: re.Pattern[str] | None = None) -> list[str]:
+        text = read_text(raw_dir / f"audio-{endpoint}-{name}.stdout.txt")
+        lines = (line.strip() for line in text.splitlines())
+        return sorted(set(line for line in lines if line and (pattern is None or pattern.search(line))))
+
+    settings_text = read_text(raw_dir / f"audio-{endpoint}-settings.stdout.txt")
+    graph_settings = parse_metadata(settings_text).get("values", {})
+    return {
+        "available": all(successful.values()) and all(
+            key in graph_settings for key in ("clock.rate", "clock.quantum")
+        ),
+        "component_availability": successful,
+        "default_sink": stable_lines("sink", property_pattern),
+        "default_source": stable_lines("source", property_pattern),
+        # pw-link's batch output is port-name based. Sorting removes discovery
+        # order while retaining the exact active graph and hardware link names.
+        "links": stable_lines("links"),
+        "graph_settings": graph_settings,
+        "commands": commands,
+        "monotonic_begin_ns": begin_ns,
+        "monotonic_end_ns": end_ns,
+        "monotonic_ns": (begin_ns + end_ns) // 2,
+        "collection_seconds": round((end_ns - begin_ns) / 1_000_000_000, 6),
+        "scope": "Read-only endpoint defaults/profile properties, graph settings, and named PipeWire links.",
+    }
+
+
+def audio_endpoint_value(value: dict[str, Any]) -> dict[str, Any]:
+    """Discard collection timing/raw-command paths from audio identity."""
+    return {
+        "available": value.get("available"),
+        "component_availability": value.get("component_availability"),
+        "default_sink": value.get("default_sink"),
+        "default_source": value.get("default_source"),
+        "links": value.get("links"),
+        "graph_settings": value.get("graph_settings"),
+    }
+
+
 def parse_metadata(text: str) -> dict[str, Any]:
     state: dict[tuple[int, str], str] = {}
     seen: set[tuple[int, str]] = set()
@@ -1047,6 +1111,7 @@ class TimedCommand:
         self.last_output_ns: int | None = None
         self.deadline_observed_ns: int | None = None
         self.termination_requested_ns: int | None = None
+        self.exit_observed_ns: int | None = None
         self.reaped_ns: int | None = None
         self.output_line_count = 0
 
@@ -1091,6 +1156,10 @@ class TimedCommand:
                     offset = (observed_ns - self.start_ns) / 1_000_000_000
                     output.write(f"{offset:.6f}\t{line}")
                     output.flush()
+            # EOF is the earliest non-polling observation that this direct
+            # collector closed its output. Keep it separate from the later reap.
+            self.process.wait()
+            self.exit_observed_ns = time.monotonic_ns()
 
         self.thread = threading.Thread(target=reader, name=f"capture-{self.name}", daemon=True)
         self.thread.start()
@@ -1107,7 +1176,12 @@ class TimedCommand:
             self.thread.join(timeout=2)
         if self.process is not None:
             self.reaped_ns = time.monotonic_ns()
-        observed_end_ns = self.termination_requested_ns or self.deadline_observed_ns or self.reaped_ns
+            if self.exit_observed_ns is None and self.process.poll() is not None:
+                self.exit_observed_ns = self.reaped_ns
+        possible_ends = [value for value in (
+            self.exit_observed_ns, self.termination_requested_ns, self.deadline_observed_ns,
+        ) if value is not None]
+        observed_end_ns = min(possible_ends) if possible_ends else self.reaped_ns
         supervision_seconds = None
         if self.spawned_ns is not None and observed_end_ns is not None:
             supervision_seconds = round(max(0, observed_end_ns - self.spawned_ns) / 1_000_000_000, 6)
@@ -1126,12 +1200,18 @@ class TimedCommand:
                 "spawned_offset_seconds": self.offset_seconds(self.spawned_ns),
                 "deadline_observed_offset_seconds": self.offset_seconds(self.deadline_observed_ns),
                 "termination_requested_offset_seconds": self.offset_seconds(self.termination_requested_ns),
+                "exit_observed_offset_seconds": self.offset_seconds(self.exit_observed_ns),
                 "reaped_offset_seconds": self.offset_seconds(self.reaped_ns),
                 "supervision_interval_seconds": supervision_seconds,
+                "exited_before_deadline": bool(
+                    self.exit_observed_ns is not None and self.deadline_observed_ns is not None
+                    and self.exit_observed_ns < self.deadline_observed_ns
+                ),
                 "first_output_offset_seconds": self.offset_seconds(self.first_output_ns),
                 "last_output_offset_seconds": self.offset_seconds(self.last_output_ns),
                 "output_span_seconds": output_span_seconds,
                 "output_line_count": self.output_line_count,
+                "reader_alive_after_join": bool(self.thread and self.thread.is_alive()),
                 "scope": (
                     "Process supervision times are monotonic observations; first/last output bound emitted "
                     "evidence and are not claims about unobserved samples."
@@ -1337,10 +1417,12 @@ def capture(args: argparse.Namespace) -> int:
 
     power_before = power_endpoint_snapshot(raw, "before")
     policy_before = cpu_policy_snapshot()
+    audio_before = audio_endpoint_snapshot(raw, "before")
     before = proc_snapshot(prefix, wine_root, explicit)
     kernel_before = kernel_counter_snapshot()
     dump_json(raw / "power-before.json", power_before)
     dump_json(raw / "cpu-policy-before.json", policy_before)
+    dump_json(raw / "audio-before.json", audio_before)
     dump_json(raw / "proc-before.json", before)
     for name, snapshot in kernel_before.items():
         (raw / f"proc-{name}-before.txt").write_text(snapshot.pop("raw"))
@@ -1378,6 +1460,7 @@ def capture(args: argparse.Namespace) -> int:
         command.terminate_at_deadline()
     after = proc_snapshot(prefix, wine_root, explicit)
     kernel_after = kernel_counter_snapshot()
+    audio_after = audio_endpoint_snapshot(raw, "after")
     policy_after = cpu_policy_snapshot()
     power_after = power_endpoint_snapshot(raw, "after")
     ended_at = utc_now()
@@ -1387,6 +1470,7 @@ def capture(args: argparse.Namespace) -> int:
     dump_json(raw / "proc-after.json", after)
     dump_json(raw / "cpu-policy-after.json", policy_after)
     dump_json(raw / "power-after.json", power_after)
+    dump_json(raw / "audio-after.json", audio_after)
     for name, snapshot in kernel_after.items():
         (raw / f"proc-{name}-after.txt").write_text(snapshot.pop("raw"))
     delta = snapshots_delta(before, after)
@@ -1401,11 +1485,21 @@ def capture(args: argparse.Namespace) -> int:
     metadata = parse_metadata(read_text(raw / "pw-metadata.tsv"))
     osc = parse_osc(read_text(raw / "osc.tsv"))
     logs = capture_log_slices(baselines, raw)
+    pw_top_usable = collector_command_usable(command_results.get("pw-top", {}), args.duration, "pw-top")
     crackle = crackle_status(
-        pw_top["instrumented"] and not pw_top["identity_confounded"],
+        pw_top_usable and pw_top["instrumented"] and not pw_top["identity_confounded"],
         pw_top["err_delta"], logs["xrun_line_count"], args.manual_crackle,
     )
     confounders = []
+    for name in ("pw-top", "pw-metadata", "osc"):
+        intentionally_off = name == "osc" and args.osc == "off"
+        if not intentionally_off and not collector_command_usable(
+            command_results.get(name, {}), args.duration, name,
+        ):
+            confounders.append({
+                "kind": f"{name}-collector-unusable",
+                "effect": "Collector did not emit data across at least 90% of the window with at most one second missing.",
+            })
     accounting = delta["accounting"]
     if accounting["confounded_by_task_churn"]:
         confounders.append({
@@ -1461,6 +1555,7 @@ def capture(args: argparse.Namespace) -> int:
                 for name, first, last in (
                     ("cpu_policy", policy_before, policy_after),
                     ("power", power_before, power_after),
+                    ("audio", audio_before, audio_after),
                 )
             },
             "scope": (
@@ -1485,6 +1580,11 @@ def capture(args: argparse.Namespace) -> int:
                     or power_before.get("holds") != power_after.get("holds")
                 ),
             },
+            "audio": {
+                "before": audio_before,
+                "after": audio_after,
+                "changed_within_window": audio_endpoint_value(audio_before) != audio_endpoint_value(audio_after),
+            },
         },
         "pipewire": {"pw_top": pw_top, "settings": metadata},
         "osc_dsp": osc,
@@ -1507,6 +1607,8 @@ def capture(args: argparse.Namespace) -> int:
             "cpu_policy_after": "raw/cpu-policy-after.json",
             "power_before": "raw/power-before.json",
             "power_after": "raw/power-after.json",
+            "audio_before": "raw/audio-before.json",
+            "audio_after": "raw/audio-after.json",
             "pw_top": "raw/pw-top.tsv",
             "pw_metadata": "raw/pw-metadata.tsv",
             "osc": "raw/osc.tsv",
@@ -1514,6 +1616,53 @@ def capture(args: argparse.Namespace) -> int:
     }
     dump_json(output / "measurement.json", measurement)
     return 0
+
+
+def embedded_product_version(path: Path) -> str | None:
+    try:
+        with path.open("rb") as source:
+            if source.read(2) != b"MZ":
+                return None
+    except OSError:
+        return None
+    helper = Path(__file__).resolve().parent / "lib/live-options.sh"
+    try:
+        completed = subprocess.run(
+            ["bash", "-c", '. "$1"; ableton_live_product_version "$2"',
+             "bench-version", str(helper), str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return completed.stdout.strip() if completed.returncode == 0 else None
+
+
+def fixture_plugin_inventory(prefix: Path) -> list[dict[str, Any]]:
+    roots = (
+        prefix / "drive_c/Program Files/Common Files/VST3",
+        prefix / "drive_c/Program Files/VSTPlugins",
+    )
+    result = []
+    for name in ("Dexed.vst3", "K1v_x64.vst3"):
+        candidates = [root / name for root in roots]
+        selected = next((path for path in candidates if path.exists()), None)
+        record: dict[str, Any] = {"name": name, "path": str(selected) if selected else None, "exists": selected is not None}
+        if selected is not None:
+            files = [selected] if selected.is_file() else sorted(
+                path for path in selected.rglob("*") if path.is_file()
+            )
+            file_records = [sha256_file(path) | {"product_version": embedded_product_version(path)} for path in files]
+            record.update(
+                kind="file" if selected.is_file() else "bundle",
+                files=file_records,
+                identity_hash=manifest_hash(file_records, selected if selected.is_dir() else selected.parent),
+            )
+        result.append(record)
+    return result
 
 
 def live_inventory(prefix: Path) -> dict[str, Any]:
@@ -1545,19 +1694,7 @@ def live_inventory(prefix: Path) -> dict[str, Any]:
         exe_paths = []
     for path in sorted(exe_paths):
         record = sha256_file(path)
-        helper = Path(__file__).resolve().parent / "lib/live-options.sh"
-        try:
-            completed = subprocess.run(
-                ["bash", "-c", '. "$1"; ableton_live_product_version "$2"', "bench-version", str(helper), str(path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-            record["product_version"] = completed.stdout.strip() if completed.returncode == 0 else None
-        except (OSError, subprocess.TimeoutExpired):
-            record["product_version"] = None
+        record["product_version"] = embedded_product_version(path)
         executables.append(record)
     return {"preferences": preferences, "executables": executables}
 
@@ -1674,7 +1811,10 @@ def profile(args: argparse.Namespace) -> int:
                 "phase": "single-profile-snapshot; bench-suite invokes this before its first Live launch",
                 "profiles": "default sink/source and associated objects, with the complete graph retained by pw-dump",
                 "settings": "settings metadata snapshot; every set separately monitors settings changes",
-                "limitation": "WirePlumber profile changes during a set are not continuously monitored.",
+                "limitation": (
+                    "Each set adds endpoint default/profile/link snapshots and continuous settings metadata; "
+                    "a profile or link change that restores between endpoints is not observable."
+                ),
             },
             "availability": {
                 name: {
@@ -1720,6 +1860,7 @@ def profile(args: argparse.Namespace) -> int:
             "benchmark_gates": benchmark_gate_environment(),
         },
         "live": live_inventory(prefix),
+        "fixture_plugins": fixture_plugin_inventory(prefix),
         "commands": results,
     }
     dump_json(output / "profile.json", profile_value)
@@ -1775,8 +1916,8 @@ def markdown_report(report: dict[str, Any]) -> str:
         "",
         "## Results",
         "",
-        "| Set | Mode | Workers | Host CPU | Live CPU/core | Wine CPU/core | IRQ/s | SoftIRQ/s | Power start/end | CPU policy changed | Task churn | PipeWire ERR | DSP avg / peak | Quantum changes | Crackle |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|---:|---|",
+        "| Set | Mode | Workers | Host CPU | Live CPU/core | Wine CPU/core | IRQ/s | SoftIRQ/s | Power start/end | Graph rate/quantum start→end | Audio identity changed | CPU policy changed | Task churn | PipeWire ERR | DSP avg / peak | Quantum changes | Crackle |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---:|---:|---:|---|",
     ]
     for item in report["sets"]:
         process = item.get("process", {}).get("summary", {})
@@ -1789,6 +1930,13 @@ def markdown_report(report: dict[str, Any]) -> str:
         counters = item.get("kernel_counters", {})
         endpoint = item.get("endpoint_identity", {})
         power = endpoint.get("power", {})
+        audio = endpoint.get("audio", {})
+        audio_before = nested(audio, "before", "graph_settings") or {}
+        audio_after = nested(audio, "after", "graph_settings") or {}
+        audio_changed = (
+            "NA" if "changed_within_window" not in audio
+            else ("yes" if audio["changed_within_window"] else "no")
+        )
         power_label = (
             f"{power.get('before', {}).get('profile') or 'NA'} / "
             f"{power.get('after', {}).get('profile') or 'NA'}"
@@ -1806,6 +1954,9 @@ def markdown_report(report: dict[str, Any]) -> str:
             f"{number(host)}% | {number(live)}% | "
             f"{number(wine)}% | {number(counters.get('interrupts', {}).get('total_rate_per_second'))} | "
             f"{number(counters.get('softirqs', {}).get('total_rate_per_second'))} | {power_label} | "
+            f"{audio_before.get('clock.rate', 'NA')}/{audio_before.get('clock.quantum', 'NA')} → "
+            f"{audio_after.get('clock.rate', 'NA')}/{audio_after.get('clock.quantum', 'NA')} | "
+            f"{audio_changed} | "
             f"{'yes' if endpoint.get('cpu_policy', {}).get('changed_within_window') else 'no'} | {churn} | "
             f"{pw.get('err_delta', 'NA')} | {number(dsp.get('average_percent'))} / "
             f"{number(dsp.get('peak_percent'))} | {transitions} | {item.get('crackle', {}).get('status', 'unknown')} |"
@@ -1813,6 +1964,7 @@ def markdown_report(report: dict[str, Any]) -> str:
     runtime = profile_value.get("runtime", {})
     prefix = profile_value.get("prefix", {})
     live_inventory_value = profile_value.get("live", {})
+    fixture_plugins = profile_value.get("fixture_plugins", [])
     system = profile_value.get("system", {})
     cpu = system.get("cpu", {})
     pipewire = profile_value.get("pipewire", {})
@@ -1876,6 +2028,16 @@ def markdown_report(report: dict[str, Any]) -> str:
             f"{workers if workers is not None else 'Live default'}; Options.txt SHA-256 "
             f"`{preference.get('options_hash', {}).get('sha256', 'absent')}`"
         )
+    lines.extend(["", "### Fixture plugins", ""])
+    for plugin in fixture_plugins:
+        versions = sorted(set(
+            item.get("product_version") for item in plugin.get("files", []) if item.get("product_version")
+        ))
+        lines.append(
+            f"- {plugin.get('name')}: `{plugin.get('path') or 'missing'}`; identity SHA-256 "
+            f"`{plugin.get('identity_hash', 'absent')}`; embedded versions "
+            f"`{', '.join(versions) if versions else 'unavailable'}`"
+        )
     lines.extend([
         "",
         "## Crackle status semantics",
@@ -1934,6 +2096,27 @@ def load_completed_run(path: Path) -> dict[str, Any]:
             raise ValueError(f"{matches[0]}: unexpected mode {measurement.get('mode')!r}")
         if measurement.get("duration_seconds") != duration:
             raise ValueError(f"{matches[0]}: measurement duration differs from run duration")
+        window = measurement.get("window")
+        if not isinstance(window, dict):
+            raise ValueError(f"{matches[0]}: missing monotonic window evidence")
+        start_ns, deadline_ns = window.get("monotonic_start_ns"), window.get("monotonic_deadline_ns")
+        before_offsets = window.get("cpu_before_collection_offsets_seconds")
+        after_offsets = window.get("cpu_after_collection_offsets_seconds")
+        elapsed = nested(measurement, "process", "details", "elapsed_seconds")
+        numbers = lambda values: (  # noqa: E731
+            isinstance(values, list) and len(values) == 2
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values)
+        )
+        if (
+            not isinstance(start_ns, int) or isinstance(start_ns, bool)
+            or not isinstance(deadline_ns, int) or isinstance(deadline_ns, bool)
+            or deadline_ns - start_ns != int(duration * 1_000_000_000)
+            or window.get("requested_duration_seconds") != duration
+            or not numbers(before_offsets) or not numbers(after_offsets)
+            or before_offsets[1] > 0 or after_offsets[0] < duration
+            or not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool) or elapsed < duration
+        ):
+            raise ValueError(f"{matches[0]}: invalid or incomplete monotonic {duration}-second window evidence")
         sets.append(measurement)
     return {"directory": str(run_dir), "run": run, "profile": profile_value, "sets": sets}
 
@@ -1977,6 +2160,7 @@ IDENTITY_SPECS = (
     ("runtime_identity", "Runtime build/Wine/root", ("runtime",), False),
     ("prefix_identity", "Wine prefix path/contents", ("prefix",), False),
     ("live_install", "Live version/options/worker setting", ("live",), False),
+    ("vst_fixtures", "Dexed/K1v fixture binaries and versions", ("fixture_plugins",), False),
     ("cpu_description", "CPU description", ("system", "cpu"), False),
     ("cpu_topology", "CPU topology", ("system", "cpu_topology"), False),
     ("cpu_policy_profile", "Ambient CPU sysfs policy", ("system", "cpu_sysfs"), False),
@@ -2042,9 +2226,41 @@ def metric_comparison(
     }
 
 
+def collector_command_usable(
+    command: dict[str, Any], duration: float, name: str | None = None,
+) -> bool:
+    timing = command.get("timing") if isinstance(command, dict) else None
+    if not command.get("available") or not isinstance(timing, dict):
+        return False
+    coverage = timing.get("supervision_interval_seconds")
+    lines = timing.get("output_line_count")
+    # Collector startup is deliberately inside the common window. Permit at
+    # most one second (and never over 10%) of bounded spawn/reap skew, but never
+    # turn a short-lived process with a few early rows into full-window evidence.
+    duration = float(duration)
+    minimum = max(0.0, duration - min(1.0, duration * 0.1))
+    usable = (
+        isinstance(coverage, (int, float)) and not isinstance(coverage, bool)
+        and coverage >= minimum and isinstance(lines, int) and not isinstance(lines, bool) and lines > 0
+        and not timing.get("reader_alive_after_join", False)
+    )
+    if not usable or name not in {"pw-top", "osc"}:
+        return usable
+    first, last = timing.get("first_output_offset_seconds"), timing.get("last_output_offset_seconds")
+    edge_tolerance = min(1.0, duration * 0.1)
+    return (
+        isinstance(first, (int, float)) and not isinstance(first, bool) and first <= edge_tolerance
+        and isinstance(last, (int, float)) and not isinstance(last, bool) and last >= duration - edge_tolerance
+    )
+
+
 def collector_observed(measurement: dict[str, Any], name: str) -> bool:
     command = nested(measurement, "capture_commands", name) or {}
-    return bool(command.get("available") and nested(command, "timing", "output_line_count"))
+    duration = measurement.get("duration_seconds")
+    return bool(
+        isinstance(duration, (int, float)) and not isinstance(duration, bool)
+        and collector_command_usable(command, duration, name)
+    )
 
 
 def quantum_transition_count(measurement: dict[str, Any]) -> int | None:
@@ -2104,7 +2320,7 @@ def measurement_confounders(measurement: dict[str, Any], side: str) -> list[str]
         counter = nested(measurement, "kernel_counters", name)
         if not isinstance(counter, dict) or not counter.get("available") or not counter.get("complete"):
             values.append(f"{side}:{name}-endpoint-accounting-incomplete")
-    for name in ("cpu_policy", "power"):
+    for name in ("cpu_policy", "power", "audio"):
         identity = nested(measurement, "endpoint_identity", name)
         if not isinstance(identity, dict):
             values.append(f"{side}:{name}-endpoint-identity-unavailable")
@@ -2114,6 +2330,8 @@ def measurement_confounders(measurement: dict[str, Any], side: str) -> list[str]
         for endpoint in ("before", "after"):
             if not nested(identity, endpoint, "available"):
                 values.append(f"{side}:{name}-{endpoint}-unavailable")
+            if name == "power" and not nested(identity, endpoint, "holds_available"):
+                values.append(f"{side}:power-holds-{endpoint}-unavailable")
     return list(dict.fromkeys(values))
 
 
@@ -2123,6 +2341,8 @@ def endpoint_identity_value(measurement: dict[str, Any], name: str, endpoint: st
         return None
     if name == "cpu_policy":
         return {"available": value.get("available"), "policies": value.get("policies")}
+    if name == "audio":
+        return audio_endpoint_value(value)
     return {
         "available": value.get("available"), "profile": value.get("profile"),
         "holds_available": value.get("holds_available"), "holds": value.get("holds"),
@@ -2146,6 +2366,21 @@ METRIC_SPECS = (
 
 def set_metric_values(measurement: dict[str, Any]) -> dict[str, tuple[str, str, Any]]:
     values = {identifier: (label, unit, nested(measurement, *path)) for identifier, label, unit, path in METRIC_SPECS}
+    for endpoint in ("before", "after"):
+        for key, label, unit in (
+            ("clock.rate", "Graph rate", "frames/second"),
+            ("clock.quantum", "Graph quantum", "frames"),
+        ):
+            raw_value = nested(
+                measurement, "endpoint_identity", "audio", endpoint, "graph_settings", key,
+            )
+            try:
+                parsed_value = int(raw_value)
+            except (TypeError, ValueError):
+                parsed_value = None
+            values[f"graph_{key.removeprefix('clock.')}_{endpoint}"] = (
+                f"{label} at {endpoint} endpoint", unit, parsed_value,
+            )
     values["quantum_transitions"] = ("Quantum transitions", "transitions", quantum_transition_count(measurement))
     for group, label in (("live", "Live"), ("wine_prefix", "Wine prefix"), ("pipewire", "PipeWire")):
         values[f"{group}_context_switches"] = (
@@ -2192,7 +2427,8 @@ def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str
         )
     identities = [identity_comparison(
         "harness", "Benchmark harness/collector identity",
-        before["run"].get("harness"), after["run"].get("harness"),
+        nested(before["run"], "harness", "identity_hash"),
+        nested(after["run"], "harness", "identity_hash"),
     ), *profile_identity_checks(before, after)]
     global_confounders = [
         f"identity:{item['id']}:{item['status']}" for item in identities if item["confounder"]
@@ -2206,7 +2442,10 @@ def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str
             last, "process", "summary", "live", "audio_worker_count"
         ):
             confounders.append("set-identity:observed-worker-count")
-        for name, label in (("cpu_policy", "CPU policy"), ("power", "power profile/holds")):
+        for name, label in (
+            ("cpu_policy", "CPU policy"), ("power", "power profile/holds"),
+            ("audio", "audio defaults/profile/graph"),
+        ):
             for endpoint in ("before", "after"):
                 if endpoint_identity_value(first, name, endpoint) != endpoint_identity_value(last, name, endpoint):
                     confounders.append(f"set-identity:{label}-{endpoint}")
@@ -2221,7 +2460,10 @@ def comparison_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str
             "Crackle status", "category", nested(first, "crackle", "status"),
             nested(last, "crackle", "status"), confounders, numeric=False,
         )
-        for name, label in (("cpu_policy", "CPU policy"), ("power", "Power profile/holds")):
+        for name, label in (
+            ("cpu_policy", "CPU policy"), ("power", "Power profile/holds"),
+            ("audio", "Audio defaults/profile/graph"),
+        ):
             for endpoint in ("before", "after"):
                 metrics[f"{name}_{endpoint}"] = metric_comparison(
                     f"{label} at {endpoint} endpoint", "category",
@@ -2303,7 +2545,7 @@ def comparison_markdown(report: dict[str, Any]) -> str:
     summary_metrics = (
         "host_cpu_percent", "wine_prefix_cpu_percent", "live_cpu_percent", "pipewire_cpu_percent",
         "interrupt_rate", "softirq_rate", "pipewire_err", "osc_average_percent", "osc_peak_percent",
-        "audio_worker_count", "crackle_status",
+        "graph_rate_before", "graph_quantum_before", "audio_worker_count", "crackle_status",
     )
     lines.extend(["", "## Set summary", "", "| Set | " + " | ".join(
         report["sets"][0]["metrics"][name]["label"] for name in summary_metrics
@@ -2377,7 +2619,9 @@ def annotate(args: argparse.Namespace) -> int:
     pw_top = measurement.get("pipewire", {}).get("pw_top", {})
     logs = measurement.get("logs", {})
     measurement["crackle"] = crackle_status(
-        bool(pw_top.get("instrumented")), int(pw_top.get("err_delta", 0)),
+        collector_observed(measurement, "pw-top")
+        and bool(pw_top.get("instrumented")) and not bool(pw_top.get("identity_confounded")),
+        int(pw_top.get("err_delta", 0)),
         int(logs.get("xrun_line_count", 0)), args.manual_crackle,
     )
     measurement["crackle"]["annotated_at"] = utc_now()
