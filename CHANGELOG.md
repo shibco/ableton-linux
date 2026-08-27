@@ -2,8 +2,6 @@
 
 ## 2026.08.26.2 — in progress
 
-<!-- doc-update tracking: #281 -->
-
 ### Installation and desktop integration
 
 - The installer now treats the Wine runtime, prefix, Live result, and PipeASIO

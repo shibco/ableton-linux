@@ -36,7 +36,7 @@ new_env()
 
 install_fake_desktop_tools()
 {
-    local base="$1"
+    local base="$1" probe
     cat > "$base/fakebin/xdg-mime" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -73,7 +73,13 @@ EOF
 exit 0
 EOF
     done
-    chmod +x "$base/fakebin/"*
+    probe="$base/home/.local/opt/wine-d2d1-nspa-11.13/bin/pipewire-version-probe"
+    mkdir -p -- "$(dirname "$probe")"
+    cat > "$probe" <<'EOF'
+#!/bin/sh
+printf 'client=1.4.2\ndaemon=1.4.2\n'
+EOF
+    chmod +x "$base/fakebin/"* "$probe"
 }
 
 run_isolated()

@@ -731,6 +731,10 @@ cat > "$kit/scripts/install.sh" <<'EOF'
 set -eu
 printf 'component %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
 case " $* " in
+    *' --integration-only '*)
+        [ "${ABLETON_TEST_CONFIG_DIRECTORY:-0}" -eq 0 ] \
+            || mkdir -p -- "${ABLETON_CONFIG_FILE:?}"
+        exit "${ABLETON_TEST_INTEGRATION_EXIT:-0}" ;;
     *' --commit '*) exit "${ABLETON_TEST_COMPONENT_COMMIT_EXIT:-0}" ;;
 esac
 exit 0
@@ -911,6 +915,41 @@ fi
 ! grep -q '^OK:' "$base/out" || fail "missing Live executable reports success"
 ok "Wine exit 0 without the selected Live executable fails and rolls back"
 
+# Desktop integration status 3 is a repair request after the core install has
+# committed. The final warning and summary must preserve that distinction.
+live_exe="$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
+run_payload_install ABLETON_TEST_INTEGRATION_EXIT=3 \
+    || fail "desktop integration retry status rejects a completed install"
+grep -q 'OK: Ableton Live 12 is installed' "$base/out" \
+    || fail "desktop integration retry status hides the completed install"
+[ -x "$base/runtime/bin/wine" ] && [ -f "$base/prefix/system.reg" ] \
+    && [ -f "$live_exe" ] \
+    || fail "desktop integration retry status discards the committed core"
+! grep -q -- '--rollback' "$base/calls.log" \
+    || fail "desktop integration retry status rolls back the committed core"
+grep -qF 'Ableton Live 12 is installed, but some desktop files need another update. Run the installer again to retry them.' \
+    "$base/err" || fail "desktop integration retry status omits its repair warning"
+grep -qF 'desktop shortcuts: retry needed' "$base/out" \
+    || fail "desktop integration retry status is missing from the final summary"
+ok "desktop integration retry status preserves the core and names the remaining repair"
+
+# A settings-path collision can appear after the core commit. Saving those
+# settings remains retryable and the final summary must say so explicitly.
+run_payload_install ABLETON_TEST_CONFIG_DIRECTORY=1 \
+    || fail "saved-settings failure rejects a completed install"
+grep -q 'OK: Ableton Live 12 is installed' "$base/out" \
+    || fail "saved-settings failure hides the completed install"
+[ -x "$base/runtime/bin/wine" ] && [ -f "$base/prefix/system.reg" ] \
+    && [ -f "$live_exe" ] \
+    || fail "saved-settings failure discards the committed core"
+! grep -q -- '--rollback' "$base/calls.log" \
+    || fail "saved-settings failure rolls back the committed core"
+grep -qF 'Ableton Live 12 is installed, but the installer could not save these settings. Run the installer again to retry.' \
+    "$base/err" || fail "saved-settings failure omits its retry warning"
+grep -qF 'saved settings: retry needed' "$base/out" \
+    || fail "saved-settings failure is missing from the final summary"
+ok "saved-settings failure preserves the core and appears in the final summary"
+
 # Link setup runs after the core runtime, prefix, and Live installation commit.
 # Any Link failure keeps that usable core and reports a concrete retry command.
 cat > "$kit/scripts/setup-link.sh" <<'EOF'
@@ -934,7 +973,6 @@ run_failed_link_install()
 link_installer="$base/Downloads/Ableton Installer.run"
 printf -v quoted_link_installer '%q' "$link_installer"
 link_resume_command="sh $quoted_link_installer link enable --mode=always"
-live_exe="$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
 for link_failure in 1 70 75; do
     run_failed_link_install "$link_failure" \
         || fail "full install fails when Link exits $link_failure"

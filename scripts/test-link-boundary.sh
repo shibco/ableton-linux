@@ -19,6 +19,13 @@ ok()
     echo "ok - $*"
 }
 
+linkd_artifact="$root/dist/ableton-linkd"
+if [ ! -f "$linkd_artifact" ]; then
+    echo "!! missing build artifact: dist/ableton-linkd" >&2
+    echo "!! run ./build.sh first" >&2
+    fail "prerequisite build artifacts are valid"
+fi
+
 new_env()
 {
     local name="$1"
@@ -483,7 +490,7 @@ ok "closed progress output cannot reverse completed Link changes"
 # can be found again by its exact executable when that cache cannot be written;
 # stopping it also succeeds even when the stale cache object cannot be removed.
 new_env controller-managed-pid-cache
-cp -- "$root/dist/ableton-linkd" "$base/data/ableton-wine/ableton-linkd"
+cp -- "$linkd_artifact" "$base/data/ableton-wine/ableton-linkd"
 chmod 755 "$base/data/ableton-wine/ableton-linkd"
 printf 'file\t%s\t%s\n' "$base/data/ableton-wine/ableton-linkd" \
     "$(sha256sum -- "$base/data/ableton-wine/ableton-linkd" | awk '{print $1}')" \
@@ -520,7 +527,7 @@ ok "managed Link start and stop follow the process outcome when PID cache writes
 new_env controller-external-pid-record
 external_linkd="$base/external/ableton-linkd"
 mkdir -p -- "$(dirname "$external_linkd")" "$base/run/ableton-wine/linkd.pid"
-cp -- "$root/dist/ableton-linkd" "$external_linkd"
+cp -- "$linkd_artifact" "$external_linkd"
 chmod 755 "$external_linkd"
 if run_link env ABLETON_LINK_MODE=session ABLETON_LINKD="$external_linkd" \
     ABLETON_LINKD_LINGER=30 bash "$here/ableton-linkctl" start \
