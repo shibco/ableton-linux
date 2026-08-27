@@ -55,6 +55,10 @@ case "${1:-}" in
         done ;;
     query)
         [ "${2:-}" = default ] && [ "$#" -eq 3 ]
+        if [ "${ABLETON_TEST_XDG_QUERY_FAIL:-0}" -eq 1 ]; then
+            printf 'fake MIME default query failure\n' >&2
+            exit 93
+        fi
         if [ "${ABLETON_TEST_XDG_STICKY:-0}" -eq 1 ]; then
             printf 'foreign.desktop\n'
         else
@@ -127,22 +131,41 @@ EOF
         >"$base/out" 2>"$base/err"; then
         fail "launcher accepts live-options.sh without $missing_live_options_function"
     fi
-    grep -q 'live-options.sh helper is missing or incomplete' "$base/err" \
-        || fail "launcher does not name its incomplete audio settings helper"
+    grep -q 'support files are incomplete. Run the latest installer again.' "$base/err" \
+        || fail "launcher does not explain how to repair incomplete support files"
 done
-ok "launcher requires every audio thread calculation helper"
+ok "launcher gives one repair instruction for incomplete support files"
 
 base="$(new_env unique-handlers)"
 install_fake_desktop_tools "$base"
-mkdir -p -- "$base/data/applications"
+state="$base/state/ableton-wine"
+legacy_handler="$base/data/applications/wine-protocol-ableton.desktop"
+private_support="$base/data/ableton-wine/setup-realtime.sh"
+mkdir -p -- "$base/data/applications" "$(dirname "$private_support")" \
+    "$state/install-prestate"
+printf 'older generated support bytes\n' > "$private_support"
 cat > "$base/data/applications/wine-protocol-ableton.desktop" <<EOF
 [Desktop Entry]
+Type=Application
+Name=Ableton URL Handler
 Exec=$base/home/.local/bin/ableton-live %u
+NoDisplay=true
+MimeType=x-scheme-handler/ableton;
 EOF
 cat > "$base/data/applications/wine-extension-auz.desktop" <<'EOF'
 [Desktop Entry]
 Exec=env WINEPREFIX=/tmp/foreign wine start %f
 EOF
+# Repair installs must identify the legacy handler from its exact generated
+# shape, not from old uninstall inventory. Deliberately leave both historical
+# state files unusable and make sure neither can veto or redirect the repair.
+printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
+printf 'malformed legacy ownership row\n' > "$state/install-manifest.tsv"
+printf 'present\t%s\t/tmp/untrusted-handler-backup\n' "$legacy_handler" \
+    > "$state/install-prestate.tsv"
+printf 'stale backup sentinel\n' > "$state/install-prestate/not-a-valid-slot"
+chmod 600 "$state/.ableton-linux-state" "$state/install-manifest.tsv" \
+    "$state/install-prestate.tsv"
 if ! run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
     cat "$base/err" >&2
     fail "installer cannot install desktop integration in an isolated home"
@@ -151,10 +174,14 @@ fi
 [ -f "$base/data/applications/$auz_id" ] || fail "installer omits the project AUZ handler"
 [ -f "$base/data/ableton-wine/$protocol_id" ] || fail "installer omits the staged protocol handler"
 [ -f "$base/data/ableton-wine/$auz_id" ] || fail "installer omits the staged AUZ handler"
+cmp -s -- "$here/setup-realtime.sh" "$private_support" \
+    || fail "damaged optional bookkeeping blocked private support-file repair"
 [ ! -e "$base/data/applications/wine-protocol-ableton.desktop" ] \
     || fail "installer keeps its globally named legacy protocol handler"
 [ -f "$base/data/applications/wine-extension-auz.desktop" ] \
     || fail "installer removes a foreign globally named handler"
+grep -qxF 'stale backup sentinel' "$state/install-prestate/not-a-valid-slot" \
+    || fail "legacy handler repair consumed unrelated stale recovery data"
 [ "$(awk -F '\t' '$1 == "x-scheme-handler/ableton" { print $2 }' "$base/mime-defaults.tsv")" = "$protocol_id" ] \
     || fail "installer does not pin the project protocol handler"
 [ "$(awk -F '\t' '$1 == "application/x-wine-extension-auz" { print $2 }' "$base/mime-defaults.tsv")" = "$auz_id" ] \
@@ -221,17 +248,189 @@ if legacy_ntsync_owned; then
 fi
 ok "legacy ownership recognises both project NTSync diagnostic generations"
 
-base="$(new_env registration-failure)"
+base="$(new_env mime-query-ignored)"
 install_fake_desktop_tools "$base"
-if run_isolated "$base" env ABLETON_TEST_XDG_STICKY=1 \
-    bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
-    fail "installer accepts a handler default that did not stick"
+printf 'application/x-unrelated\tforeign.desktop\n' > "$base/mime-defaults.tsv"
+query_status=0
+run_isolated "$base" env ABLETON_TEST_XDG_QUERY_FAIL=1 \
+    ABLETON_INTERNAL_OPTIONAL_STATUS=1 \
+    bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err" \
+    || query_status=$?
+[ "$query_status" -eq 0 ] \
+    || fail "MIME default query failure produced an internal retry status"
+! grep -qF 'fake MIME default query failure' "$base/err" \
+    || fail "installer queried MIME defaults after publishing them"
+! grep -qF 'Some shortcuts or support files could not be updated.' "$base/err" \
+    || fail "MIME default query failure produced an alarming retry warning"
+[ -f "$base/data/applications/$protocol_id" ] \
+    || fail "MIME default query failure blocked the protocol handler"
+[ -x "$base/home/.local/bin/ableton-live" ] \
+    || fail "MIME default query failure blocked the generated launcher"
+grep -qxF $'application/x-unrelated\tforeign.desktop' "$base/mime-defaults.tsv" \
+    || fail "MIME default publication corrupted an unrelated default"
+grep -qxF $'x-scheme-handler/ableton\tio.github.shibco.ableton-linux.protocol.desktop' \
+    "$base/mime-defaults.tsv" || fail "MIME default was not published before verification was skipped"
+ok "MIME defaults are published without a redundant query failure gate"
+
+optional_real_mv="$(command -v mv)"
+
+base="$(new_env optional-version-warning)"
+install_fake_desktop_tools "$base"
+cat > "$base/fakebin/mv" <<EOF
+#!/bin/sh
+last=""
+for argument do last="\$argument"; done
+[ "\$last" != "\${ABLETON_TEST_FAIL_TARGET:-}" ] || exit 88
+exec "$optional_real_mv" "\$@"
+EOF
+chmod 755 "$base/fakebin/mv"
+txn="$base/parent-transaction"
+mkdir -p -- "$txn"
+run_isolated "$base" env \
+    ABLETON_TEST_FAIL_TARGET="$base/data/ableton-wine/VERSION" \
+    bash "$here/install.sh" --integration-only --transaction-dir "$txn" \
+    >"$base/out" 2>"$base/err" \
+    || fail "optional version failure aborted a parent-owned integration phase"
+[ -x "$base/home/.local/bin/ableton-live" ] \
+    || fail "optional version failure rolled back the generated launcher"
+grep -qF 'Ableton was installed, but its support files could not be fully updated.' \
+    "$base/err" || fail "optional version failure was not a plain warning"
+if grep -q '^OK:' "$base/out"; then
+    fail "parent-owned integration phase printed a child success line"
 fi
-grep -q "resolves to 'foreign.desktop'" "$base/err" \
-    || fail "installer does not report the handler that defeated registration"
-[ ! -e "$base/data/applications/$protocol_id" ] \
-    || fail "failed registration leaves the new protocol handler installed"
-ok "installer reports and rolls back a failed MIME default"
+run_isolated "$base" bash "$here/install.sh" --preflight-commit "$txn" \
+    >"$base/preflight.out" 2>"$base/preflight.err" \
+    || fail "optional version failure poisoned the parent commit check"
+ok "optional version failure warns without invalidating parent-owned generated files"
+
+base="$(new_env optional-file-list-warning)"
+install_fake_desktop_tools "$base"
+cat > "$base/fakebin/mv" <<EOF
+#!/bin/sh
+last=""
+for argument do last="\$argument"; done
+[ "\$last" != "\${ABLETON_TEST_FAIL_TARGET:-}" ] || exit 89
+exec "$optional_real_mv" "\$@"
+EOF
+chmod 755 "$base/fakebin/mv"
+run_isolated "$base" env \
+    ABLETON_TEST_FAIL_TARGET="$base/state/ableton-wine/install-manifest.tsv" \
+    bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err" \
+    || fail "installed-file list failure aborted generated integration"
+[ -x "$base/home/.local/bin/ableton-live" ] \
+    || fail "installed-file list failure rolled back the generated launcher"
+grep -qF 'Ableton was installed, but the installed-file list could not be updated.' \
+    "$base/err" || fail "installed-file list failure was not a plain warning"
+grep -qxF 'OK: Installation complete.' "$base/out" \
+    || fail "direct integration did not print its simple outcome"
+ok "installed-file list failure warns without invalidating generated files"
+
+base="$(new_env optional-cache-ignored)"
+install_fake_desktop_tools "$base"
+for tool in update-desktop-database update-mime-database; do
+    printf '#!/bin/sh\nprintf "fake cache refresh failure\\n" >&2\nexit 90\n' \
+        > "$base/fakebin/$tool"
+done
+cat > "$base/fakebin/gtk-update-icon-cache" <<'EOF'
+#!/bin/sh
+: > "${ABLETON_TEST_GTK_CALLED:?}"
+exit 90
+EOF
+chmod 755 "$base/fakebin/"*
+cache_status=0
+run_isolated "$base" env ABLETON_INTERNAL_OPTIONAL_STATUS=1 \
+    ABLETON_TEST_GTK_CALLED="$base/gtk-called" \
+    bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || cache_status=$?
+[ "$cache_status" -eq 0 ] \
+    || fail "desktop refresh failure produced an internal retry status"
+[ -x "$base/home/.local/bin/ableton-live" ] \
+    || fail "desktop refresh failure blocked the generated launcher"
+! grep -qF 'fake cache refresh failure' "$base/err" \
+    || fail "desktop refresh tool leaked alarming output"
+[ ! -e "$base/gtk-called" ] \
+    || fail "desktop integration invoked gtk-update-icon-cache"
+! grep -qF 'Some shortcuts or support files could not be updated.' "$base/err" \
+    || fail "desktop refresh failure produced an alarming retry warning"
+grep -qxF 'OK: Installation complete.' "$base/out" \
+    || fail "desktop refresh failure hid the successful install outcome"
+ok "desktop database refresh is silent best-effort work and GTK cache generation is skipped"
+
+base="$(new_env generated-file-publication-status)"
+install_fake_desktop_tools "$base"
+cat > "$base/fakebin/mv" <<EOF
+#!/bin/sh
+last=""
+for argument do last="\$argument"; done
+[ "\$last" != "\${ABLETON_TEST_FAIL_TARGET:-}" ] || exit 94
+exec "$optional_real_mv" "\$@"
+EOF
+chmod 755 "$base/fakebin/mv"
+publication_status=0
+run_isolated "$base" env \
+    ABLETON_TEST_FAIL_TARGET="$base/home/.local/bin/ableton-live" \
+    ABLETON_INTERNAL_OPTIONAL_STATUS=1 \
+    bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err" \
+    || publication_status=$?
+[ "$publication_status" -eq 3 ] \
+    || fail "generated launcher publication failure lost its internal retry status"
+[ ! -e "$base/home/.local/bin/ableton-live" ] \
+    || fail "failed generated launcher publication reported a usable launcher"
+grep -qF 'Some shortcuts or support files could not be updated. Run the installer again to retry them.' \
+    "$base/err" || fail "generated launcher publication failure omitted its retry warning"
+ok "generated-file publication failures still request a repair run"
+
+optional_real_rm="$(command -v rm)"
+for optional_mode in integration link; do
+    for cleanup_failure in active directory; do
+        base="$(new_env "optional-final-cleanup-$optional_mode-$cleanup_failure")"
+        install_fake_desktop_tools "$base"
+        cat > "$base/fakebin/rm" <<EOF
+#!/bin/sh
+for argument do
+    case "\${ABLETON_TEST_CLEANUP_FAILURE:-}:\$argument" in
+        active:*/tmp/ableton-install-plan.*/active) exit 91 ;;
+        directory:*/tmp/ableton-install-plan.*) exit 92 ;;
+    esac
+done
+exec "$optional_real_rm" "\$@"
+EOF
+        chmod 755 "$base/fakebin/rm"
+        case "$optional_mode" in
+            integration) selection=--integration-only ;;
+            link) selection=--link-assets-only ;;
+        esac
+        run_isolated "$base" env ABLETON_TEST_CLEANUP_FAILURE="$cleanup_failure" \
+            bash "$here/install.sh" "$selection" >"$base/out" 2>"$base/err" \
+            || fail "$optional_mode $cleanup_failure cleanup failure rejected usable generated files"
+        case "$optional_mode" in
+            integration)
+                [ -x "$base/home/.local/bin/ableton-live" ] \
+                    || fail "integration cleanup warning rolled back the generated launcher" ;;
+            link)
+                [ -x "$base/data/ableton-wine/ableton-linkctl" ] \
+                    && [ -x "$base/data/ableton-wine/setup-link.sh" ] \
+                    || fail "Link cleanup warning rolled back generated Link files" ;;
+        esac
+        case "$cleanup_failure" in
+            active)
+                grep -qF "Ableton's files are ready, but the installer could not finish its final housekeeping." \
+                    "$base/err" || fail "$optional_mode active cleanup failure was not a plain warning" ;;
+            directory)
+                grep -qF 'Installed files are ready, but temporary installer data remains at ' \
+                    "$base/err" || fail "$optional_mode directory cleanup failure was not a plain warning" ;;
+        esac
+        grep -qxF 'OK: Installation complete.' "$base/out" \
+            || fail "$optional_mode direct call did not print its simple outcome"
+        if [ -d "$base/state/ableton-wine/transactions" ] \
+           && find "$base/state/ableton-wine/transactions" -mindepth 1 -print -quit \
+                | grep -q .; then
+            fail "$optional_mode direct cleanup left a persistent core-recovery record"
+        fi
+    done
+done
+ok "integration and Link activity/directory cleanup failures warn after generated files are usable"
 
 base="$(new_env callback-discovery)"
 install_fake_desktop_tools "$base"
@@ -290,6 +489,7 @@ EOF
 mkdir -p -- "$base/nix/libexec/lib" "$base/runtime/share/ableton-wine/scripts"
 cp -- "$here/ableton-live" "$base/nix/libexec/ableton-live"
 cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
+    "$here/lib/manifest.sh" \
     "$base/nix/libexec/lib/"
 cat > "$base/runtime/share/ableton-wine/scripts/audio-report.sh" <<'EOF'
 #!/bin/sh
@@ -307,7 +507,10 @@ run_isolated "$base" env USER=test ABLETON_MAX_AUDIO_THREADS=auto ABLETON_POWER=
     ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$base/nix/libexec/ableton-live" \
     'ableton://invalid-ableton-linux-probe' >"$base/nix.out" 2>"$base/nix.err" || true
 grep -qF "Run $base/runtime/share/ableton-wine/scripts/audio-report.sh to review the CPU details" \
-    "$base/nix.err" || fail "The Nix launcher fallback does not name its packaged audio report."
+    "$base/nix.err" || {
+        sed -n '1,80p' "$base/nix.err" >&2
+        fail "The Nix launcher fallback does not name its packaged audio report."
+    }
 cat > "$base/fakebin/nproc" <<'EOF'
 #!/bin/sh
 [ "$#" -eq 0 ] || exit 2

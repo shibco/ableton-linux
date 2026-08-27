@@ -1,48 +1,79 @@
 # Changelog
 
-## Unreleased
+## 2026.08.26.2 — in progress
 
-- Updates replace launchers when their saved checksums differ. The installer
-  saves the most recently replaced file or symlink beside its launcher as
-  `<name>.bak`. This behaviour covers Live, Max, protocol handlers, and
-  PipeASIO.
-- Launcher-name collisions are now replaced instead of preserved, including
-  Wine's `wine-protocol-c74max.desktop`, and the project's associations are made
-  active. Uninstall restores the previous launcher and associations.
-- Adjacent backup paths are managed as part of the installation. Uninstall
-  removes a `.bak` created in an empty path, or restores a `.bak` that existed
-  before installation. Runtime-only updates record replaced PipeASIO launchers
-  and adjacent backup paths for the same uninstall handling.
+<!-- doc-update tracking: #281 -->
 
-Live keeps more audio workers on processors with fewer cores. Audio workers
-divide Set processing among CPU cores. The `auto` setting uses the physical core
-count and half of Live's own worker count. It selects the larger value, up to
-Live's own count.
+### Installation and desktop integration
 
-On the measured 16-core, 32-thread computer, `auto` selects 16 of Live's 31
-workers. An existing user or launcher setting takes priority. Select `auto` to
-calculate the value again.
+- The installer now treats the Wine runtime, prefix, Live result, and PipeASIO
+  registry state as the core install. A warning from desktop integration, Link,
+  saved settings, the installed-file list, or cleanup keeps that working core
+  and reports what still needs attention.
+- The installed-file list now stays outside runtime and prefix recovery.
+  Install and update rebuild a stale list instead of rejecting a valid
+  install. This fixes the false end-of-install failure from issue 280.
+- Generated launchers, protocol handlers, file associations, icons, and panel
+  entries are replaced with the current project versions. Live repairs its own
+  generated desktop entries before launch. Repair failures produce one warning
+  and Live continues (#279).
+- Each shortcut and support file is repaired independently. One blocked path,
+  stale recovery record, or failed status message no longer stops later files
+  from being updated or reverses a valid Wine, prefix, or Live result.
+- Desktop database refreshes are now silent best-effort work, and the installer
+  no longer rebuilds the user-wide GTK icon cache. Unrelated icons or a
+  follow-up default-app query can no longer turn successfully written shortcuts
+  and file associations into a retry result.
+- When a generated launcher replaces an existing file or symlink, the installer
+  keeps that object beside it as `<name>.bak`. Removing the generated launcher
+  restores the displaced object and anything that already occupied the `.bak`
+  path. If the launcher changed again, all recovery copies are preserved and
+  the installer explains what remains (#279).
+- Uninstall clears generated Ableton handler defaults and preserves unrelated
+  desktop associations. Optional desktop and Link cleanup failures keep the
+  completed core removal.
+- Interrupted Link setup keeps Live installed and prints the command that
+  resumes Link setup. This covers issue 258 (#268).
 
-- audio reports now show the CPU layout that Linux gives Live:
-  - the report records the available CPU set, physical layout and Linux
-    processor preferences
+### Live, Wine, and audio
 
-- **Live's dialogs keep their content when the desktop shows them (#263):**
-  - Dialogs such as Separate Stems could open black until you clicked a
-    control. Wine now restores retained dialog content after the desktop
-    exposes the whole client area.
-  - The hardened implementation compiles on both sides of the Wine X11
-    boundary; GNOME, KDE Plasma and NVIDIA runtime confirmation is pending.
-  - Thanks @Sandai64 for the report.
+- Live no longer enters a half-old, half-new DPI session when automatic display
+  scaling changes. The launcher writes `LogPixels` and every applicable Live
+  awareness override as one fenced transaction, stops and waits for only that
+  owned Wine session, then runs `wineboot` before Live. A busy prefix is left
+  untouched. GNOME mixed-monitor detection now follows Xwayland's shared
+  highest scale, and automatic fractional setup requires confirmed native
+  Xwayland scaling. This restores stable window dimensions and the application
+  menu when moving Live across differently scaled monitors.
+- Live dialogs such as Separate Stems retain their content when the desktop
+  first displays them. This addresses the black-dialog report in issue 263;
+  confirmation on the original KDE/NVIDIA setup is still pending (#267).
+- Live 12 uses an automatic audio-worker count based on physical cores and
+  Live's own worker count. Existing user settings still take priority. The
+  troubleshooting guide provides a one-launch comparison with Live's own
+  setting (#278).
+- PipeASIO skips a redundant output publication after Live supplies an audio
+  block. Its fallback still publishes silence when the callback or buffer size
+  requires it (#269).
+- PipeASIO now identifies graph-quantum requests by the PipeWire node bound to
+  each request. It returns Live to the saved buffer size after the other request
+  ends (#274).
+- The NTSync check now proves that the running wineserver opens `/dev/ntsync`.
+  The audio report records the available CPU set, physical layout, and Linux
+  processor preferences (#272, #275).
 
-- installs and updates now finish after interrupted Link setup (#258):
-  - an active firewall makes Link setup ask for your password. The installer
-    now finishes after the prompt expires or you press Ctrl-C. It reports the
-    stopped Link setup. It gives you the command to resume setup. The previous
-    behaviour removed a new Live installation or restored the previous runtime
-  - Live offers Link when you use an ASIO driver. The README shows how to select
-    PipeASIO. The troubleshooting guide shows how to display the Link button
-  - thanks ΦNYX from Discord for the report
+### Experimental measurement tools
+
+- The new CPU and audio benchmark suite runs 5 fixed Live Sets and produces
+  comparable JSON, Markdown, and CSV reports (#271).
+- `PIPEASIO_TELEMETRY=on` records callback timing through a separate reporting
+  worker. The regular driver path keeps telemetry disabled (#273).
+- The PipeWire Pro Audio comparison tool measures one device in its current and
+  Pro Audio profiles, then restores the original profile (#276).
+- `WINE_APC_FASTPATH=1` selects an experimental NTSync wait path for controlled
+  tests. Wine's regular wait path remains the release default (#277).
+- The CPU optimisation research summary records the evidence, rejected ideas,
+  and test gates for future defaults (#270).
 
 ## 2026.08.26.1
 

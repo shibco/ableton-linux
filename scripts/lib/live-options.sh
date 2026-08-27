@@ -827,7 +827,8 @@ ableton_seed_max_audio_threads_in_dir()
     done
 
     if [ "$options_existing" -eq 1 ] \
-       && tr -d '\r' < "$options_io" | grep -Eq '^-MaxAudioThreads([=[:space:]]|$)'; then
+       && tr -d '\r' < "$options_io" \
+            | grep -E '^-MaxAudioThreads([=[:space:]]|$)' >/dev/null; then
         echo "   The launcher found your audio thread setting."
     elif [ "$inherit_policy" -eq 1 ] && [ -z "$inherited_count" ]; then
         echo "   Live continues to select the audio thread count."

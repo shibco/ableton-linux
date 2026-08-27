@@ -16,9 +16,31 @@ framebuffer. These values must describe the same mode:
 | Mutter `xwayland-native-scaling` | enabled | disabled |
 
 Stale values can magnify Live, double the cursor, or make the main window move
-by one or two pixels per configure cycle. `scripts/detect-scale.sh` detects
-GNOME, KDE, sway, Hyprland, COSMIC, and an Xft DPI fallback. The launcher
-updates the registry values but does not change the desktop setting.
+by one or two pixels per configure cycle. An incoherent live Wine session can
+also shrink the window in both dimensions while it is moved and remove Live's
+application menu. `scripts/detect-scale.sh` detects GNOME, KDE, sway,
+Hyprland, COSMIC, and an Xft DPI fallback. The launcher updates the registry
+values but does not change the desktop setting.
+
+On mixed-scale GNOME, Xwayland uses one shared framebuffer derived from the
+highest active logical monitor scale. The detector therefore chooses the
+highest scale, even when the 100% monitor is primary. Automatic fractional
+configuration is applied only when Mutter's `xwayland-native-scaling` feature
+can be confirmed.
+
+## Change the complete DPI block before booting Wine
+
+`reg.exe` itself starts Wine and caches the X11 monitor source from the current
+`LogPixels`. Writing a new `LogPixels` or Live IFEO value after `wineboot` can
+therefore combine an old volatile monitor scale with new persistent registry
+values. Both mismatch directions were observed to resize Live continuously.
+
+For a cold DPI change, the launcher now writes a pending-reseed marker, writes
+`LogPixels` and every installed Live IFEO key, stops and waits for the Wine
+session created by those writes, and only then runs `wineboot`. The marker is
+removed after that coherent boot. If another program is already using the
+prefix—or enters during the transaction—the launcher leaves it running and
+refuses Live until the prefix is idle.
 
 For one comparison launch:
 

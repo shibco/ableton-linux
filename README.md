@@ -49,8 +49,12 @@ performance with:
 - Dozens of nice-to-haves, quality-of-life fixes, and other polish
 - Auditable builds with pinned inputs, checksum verification, and public documentation
 
-We also have a separate, early AArch64 build for Apple Silicon computers that
-run Asahi Linux.
+Experimental AArch64 work for Apple Silicon computers that run Asahi Linux is
+tracked in [draft PR 259](https://github.com/shibco/ableton-linux/pull/259).
+PipeASIO and build auditing are not ready yet. Current test builds require
+clearing Live's saved application state before each launch and removing Demo
+Songs to avoid a crash; Ableton Index still crashes and shows error pop-ups.
+The draft PR tracks the required workarounds while those limits are being fixed.
 
 ## Installation
 
@@ -110,6 +114,11 @@ the installer will try to find one in the same directory.
 Once started, the install is mostly automatic.
 
 Near the end, the installer may name a program still running in the Wine prefix and ask whether to close it. Pressing Enter leaves it running, which is the safe answer if you also have Max or another Wine program open. Live is already installed by that point, so either answer keeps it.
+
+A final warning about desktop shortcuts, Link, saved settings, or old recovery
+files also keeps the installed runtime, Wine prefix, and Live. The final summary
+reports what still needs attention. The [installer warning guide](TROUBLESHOOTING.md#live-installs-and-the-final-summary-asks-for-a-retry)
+explains each result and when an update should be retried.
 
 ### Running Live
 
@@ -395,7 +404,7 @@ think that your problem is too small**.
 Start with the [common troubleshooting steps](TROUBLESHOOTING.md).
 
 If you're still stuck, file an issue [on GitHub](https://github.com/shibco/ableton-linux/issues/new/choose)
-or come visit us in the [Ableton on Linux Discord](https://discord.gg/SZ2cQgV7U). 
+or come visit us in the [Ableton on Linux Discord](https://discord.gg/VyUWk3f2j).
 When you post issues in our `#issues` Discord forum, we sync your posts to GitHub, 
 to keep our knowledge from being locked away inside a hidden Discord server.
 
@@ -409,6 +418,8 @@ Start with:
 - [Build from source](BUILDING.md)
 - [Implementation notes](notes/)
 - [CPU and audio benchmark guide](bench/README.md)
+- [CPU optimisation research summary in PR 270](https://github.com/shibco/ableton-linux/pull/270)
+- [Experimental PipeWire Pro Audio comparison](notes/PIPEWIRE-PRO-AUDIO-AB.md)
 
 Contributors must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 

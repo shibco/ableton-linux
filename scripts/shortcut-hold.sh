@@ -479,7 +479,21 @@ ableton_shortcuts_watch_loop()
             sleep "$delay"
             continue
         fi
-        ableton_shortcuts_restore_if_idle && break
+        # A detached watcher can outlive a failed launch.  Its state-file and
+        # gsettings restoration must not overlap uninstall or another lifecycle
+        # transaction.  Acquire in the same global -> shortcut-operation order
+        # used everywhere else, and retry if an installer currently owns it.
+        if declare -F ableton_install_lock_acquire >/dev/null 2>&1; then
+            if ableton_install_lock_acquire 2>/dev/null; then
+                if ableton_shortcuts_restore_if_idle; then
+                    ableton_install_lock_release || true
+                    break
+                fi
+                ableton_install_lock_release || true
+            fi
+        elif ableton_shortcuts_restore_if_idle; then
+            break
+        fi
         sleep "$delay"
     done
 }

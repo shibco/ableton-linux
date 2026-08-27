@@ -50,7 +50,10 @@ cleanup()
 {
     local rc=$?
     trap - EXIT
-    rm -rf -- "$workdir"
+    rm -rf -- "$workdir" 2>/dev/null || true
+    if [ -e "$workdir" ] || [ -L "$workdir" ]; then
+        echo "!! The installer finished, but temporary files remain at $workdir. You can remove that directory." >&2 || true
+    fi
     exit "$rc"
 }
 trap cleanup EXIT
@@ -58,21 +61,24 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 payload_line="$(awk '/^__PAYLOAD_BELOW__$/{print NR+1; exit}' "$self")"
-[ -n "$payload_line" ] || { echo "!! installer payload marker is missing" >&2; exit 1; }
+[ -n "$payload_line" ] || {
+    echo "!! This installer file is incomplete or damaged. Download it again." >&2
+    exit 1
+}
 header_bytes="$(head -n "$((payload_line-1))" "$self" | wc -c)"
 total_bytes="$(stat -c %s "$self" 2>/dev/null || wc -c < "$self")"
 payload_bytes=$((total_bytes - header_bytes))
-printf '== Ableton-on-Wine installer %s ==\n' "$VERSION"
-printf '%s\n' "-- copying embedded kit ($((payload_bytes / 1024 / 1024)) MiB; progress is bytes copied)"
+printf '== Ableton-on-Wine installer %s ==\n' "$VERSION" || true
+printf '%s\n' "-- copying embedded kit ($((payload_bytes / 1024 / 1024)) MiB; progress is bytes copied)" || true
 payload="$workdir/payload.tar"
-if dd --help 2>&1 | grep -q iflag; then
+if dd --help 2>&1 | grep iflag >/dev/null; then
     bounded dd if="$self" of="$payload" iflag=skip_bytes skip="$header_bytes" bs=4M status=progress
 else
     bounded tail -n +"$payload_line" "$self" > "$payload"
 fi
 
-echo "-- verifying embedded kit (progress is bytes hashed)"
-if dd --help 2>&1 | grep -q status; then
+printf '%s\n' "-- verifying embedded kit (progress is bytes hashed)" || true
+if dd --help 2>&1 | grep status >/dev/null; then
     actual="$(bounded dd if="$payload" bs=4M status=progress | sha256sum | awk '{print $1}')"
 else
     actual="$(bounded sha256sum "$payload" | awk '{print $1}')"
@@ -84,23 +90,24 @@ fi
 
 kit="$workdir/kit"
 mkdir -p -- "$kit"
-echo "-- extracting embedded kit"
-if tar --help 2>&1 | grep -q -- '--checkpoint'; then
+printf '%s\n' "-- extracting embedded kit" || true
+if tar --help 2>&1 | grep -- '--checkpoint' >/dev/null; then
     bounded tar --checkpoint=200 --checkpoint-action=dot -xf "$payload" -C "$kit"
-    printf '\n' >&2
+    printf '\n' >&2 || true
 else
     bounded tar -xf "$payload" -C "$kit"
 fi
-rm -f -- "$payload"
+rm -f -- "$payload" 2>/dev/null || true
 
 if [ -n "$extract_dir" ]; then
     mkdir -p -- "$extract_dir"
     cp -a -- "$kit/." "$extract_dir/"
-    printf 'OK: kit extracted to %s\n' "$extract_dir"
+    printf 'OK: kit extracted to %s\n' "$extract_dir" || true
     exit 0
 fi
 
 export ABLETON_INSTALLER_MEDIA_DIR="$media_dir"
+export ABLETON_INSTALLER_PATH="$self"
 export ABLETON_INSTALLER_VERSION="$VERSION"
 # Delegate without exec: the EXIT trap must still remove $workdir.  The exit
 # keeps bash from reading past the payload marker after a successful install.

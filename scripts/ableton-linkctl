@@ -5,10 +5,23 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 for lib in "$here/lib/config.sh" "$here/config.sh" \
            "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
+    # The first installed/repository helper wins.
+    # shellcheck disable=SC1090
     if [ -r "$lib" ]; then . "$lib"; break; fi
 done
-declare -F ableton_config_init >/dev/null 2>&1 || { echo "ableton-linkctl: config helper is missing" >&2; exit 1; }
-ableton_config_init
+declare -F ableton_config_init >/dev/null 2>&1 || {
+    echo "ableton-linkctl: support files are incomplete. Run the latest installer again." >&2
+    exit 1
+}
+if ! ableton_config_init 2>/dev/null; then
+    echo "ableton-linkctl: installer settings could not be read. Run the latest installer to repair them, then try again." >&2
+    exit 1
+fi
+for lib in "$here/lib/manifest.sh" \
+           "$ABLETON_DATA_HOME/lib/manifest.sh"; do
+    # shellcheck disable=SC1090
+    if [ -r "$lib" ]; then . "$lib"; break; fi
+done
 
 runtime_base="${XDG_RUNTIME_DIR:-$ABLETON_STATE_HOME/run}/ableton-wine"
 pid_file="$runtime_base/linkd.pid"
@@ -39,19 +52,54 @@ owned_pid()
     printf '%s\n' "$pid"
 }
 
+pid_matches_link_binary()
+{
+    local pid="$1" exe want
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || return 1
+    exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    want="$(readlink -f "$ABLETON_LINKD" 2>/dev/null || true)"
+    [ -n "$want" ] && [ "$exe" = "$want" ]
+}
+
+write_pid_file()
+{
+    local pid="$1" tmp
+    tmp="$(mktemp "$runtime_base/.linkd.pid.XXXXXX" 2>/dev/null)" || return 1
+    if ! printf '%s\n' "$pid" > "$tmp" 2>/dev/null \
+       || ! chmod 600 "$tmp" 2>/dev/null \
+       || ! mv -T -f -- "$tmp" "$pid_file" 2>/dev/null; then
+        rm -f -- "$tmp" 2>/dev/null || true
+        return 1
+    fi
+}
+
+stop_spawned_link()
+{
+    local pid="$1"
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in {1..50}; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+}
+
 binary_is_project_owned()
 {
-    local manifest="$ABLETON_STATE_HOME/install-manifest.tsv" kind path digest current
-    if [ -r "$manifest" ]; then
-        while IFS=$'\t' read -r kind path digest; do
-            [ "$kind" = file ] && [ "$path" = "$ABLETON_LINKD" ] || continue
-            current="$(sha256sum -- "$ABLETON_LINKD" 2>/dev/null | awk '{print $1}')"
-            [ -n "$current" ] && [ "$current" = "$digest" ]
-            return
-        done < "$manifest"
+    local manifest="$ABLETON_STATE_HOME/install-manifest.tsv" strings_output
+    if declare -F ableton_validate_ownership_manifest >/dev/null 2>&1 \
+       && ableton_validate_ownership_manifest "$manifest" >/dev/null 2>&1 \
+       && ableton_manifest_path_matches "$ABLETON_LINKD"; then
+        return 0
     fi
     [ "$ABLETON_LINKD" = "$ABLETON_DATA_HOME/ableton-linkd" ] || return 1
-    strings "$ABLETON_LINKD" 2>/dev/null | grep -qF 'ableton-linkd: native Ableton Link session anchor and probe'
+    strings_output="$(strings "$ABLETON_LINKD" 2>/dev/null)" || return 1
+    grep -qF 'ableton-linkd: native Ableton Link session anchor and probe' \
+        <<< "$strings_output"
 }
 
 owned_pids()
@@ -74,52 +122,106 @@ owned_pids()
     return 0
 }
 
+first_owned_pid()
+{
+    local pids
+    pids="$(owned_pids)" || return 1
+    [ -n "$pids" ] || return 0
+    printf '%s\n' "${pids%%$'\n'*}"
+}
+
 start_link()
 {
     case "$ABLETON_LINK_MODE" in
         off|keep) return 0 ;;
         always)
             unit_is_project_owned || {
-                echo "ableton-linkctl: refusing to start missing, modified, or foreign unit $unit_file" >&2
+                echo "ableton-linkctl: Ableton Link was not started because its background-service file is missing or changed: $unit_file" >&2
+                echo "ableton-linkctl: Run Ableton Link setup again to repair it." >&2
                 return 1
             }
             ableton_run_bounded 20 systemctl --user start ableton-linkd.service
             return ;;
     esac
-    [ -x "$ABLETON_LINKD" ] || { echo "ableton-linkctl: Link binary not found at $ABLETON_LINKD" >&2; return 1; }
-    local linger="${ABLETON_LINKD_LINGER:-900}" pid
+    [ -x "$ABLETON_LINKD" ] || {
+        echo "ableton-linkctl: Ableton Link is missing at $ABLETON_LINKD. Run the latest installer again." >&2
+        return 1
+    }
+    local linger="${ABLETON_LINKD_LINGER:-900}" pid link_log=/dev/null
     linger="$(ableton_timeout_value "$linger" ABLETON_LINKD_LINGER 0 604800)" || return 2
-    ableton_mark_state_home
-    mkdir -p -- "$runtime_base" "$log_dir"
-    exec 9>"$lock_file"
-    flock -w 10 9 || { echo "ableton-linkctl: timed out waiting for the Link lifecycle lock" >&2; return 1; }
-    pid="$(owned_pids | head -n 1)"
+    # Logging is diagnostic only. Link can still start when optional persistent
+    # state is unavailable; the per-login directory below holds coordination.
+    if ableton_mark_state_home 2>/dev/null \
+       && mkdir -p -- "$log_dir" 2>/dev/null \
+       && { [ ! -L "$log_dir/ableton-linkd.log" ] \
+            && : >> "$log_dir/ableton-linkd.log" 2>/dev/null; }; then
+        link_log="$log_dir/ableton-linkd.log"
+    fi
+    mkdir -p -- "$runtime_base" || {
+        echo "ableton-linkctl: Ableton Link could not prepare its temporary files at $runtime_base. Check the directory permissions and try again." >&2
+        return 1
+    }
+    if ! exec 9>"$lock_file"; then
+        echo "ableton-linkctl: Ableton Link could not open its temporary lock at $lock_file. Check the directory permissions and try again." >&2
+        return 1
+    fi
+    flock -w 10 9 || {
+        echo "ableton-linkctl: Another Ableton Link start or stop is still running. Try again." >&2
+        return 1
+    }
+    pid="$(first_owned_pid)"
     if [ -n "$pid" ]; then
-        printf '%s\n' "$pid" > "$pid_file"
+        # A discovered exact process is already the requested outcome. Refresh
+        # its optional PID record atomically, but never turn a running Link into
+        # a failed start because that generated record could not be rewritten.
+        write_pid_file "$pid" || true
         return 0
     fi
-    rm -f -- "$pid_file"
     (
-        inherited_lock="${ABLETON_INSTALL_LOCK_FD:-}"
-        case "$inherited_lock" in
-            ''|*[!0-9]*) ;;
-            *) exec {inherited_lock}>&- ;;
-        esac
-        unset ABLETON_INSTALL_LOCK_FD ABLETON_RUNTIME_ONLY_LOCK
+        ableton_install_lock_close_in_child || exit 125
+        unset ABLETON_RUNTIME_ONLY_LOCK
         exec nohup "$ABLETON_LINKD" --linger "$linger"
-    ) >>"$log_dir/ableton-linkd.log" 2>&1 9>&- &
+    ) >>"$link_log" 2>&1 9>&- &
     pid=$!
-    printf '%s\n' "$pid" > "$pid_file"
     sleep 0.1
-    kill -0 "$pid" 2>/dev/null || { rm -f -- "$pid_file"; echo "ableton-linkctl: Link daemon failed to start" >&2; return 1; }
+    kill -0 "$pid" 2>/dev/null || {
+        rm -f -- "$pid_file" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        if [ "$link_log" = /dev/null ]; then
+            echo "ableton-linkctl: Ableton Link did not start. Run the latest installer to repair its files, then try again." >&2
+        else
+            echo "ableton-linkctl: Ableton Link did not start. Check $link_log for details." >&2
+        fi
+        return 1
+    }
+    if ! write_pid_file "$pid"; then
+        # The canonical packaged helper can always be rediscovered by its exact
+        # executable. An external helper has no other safe ownership handle, so
+        # reap only the process just spawned instead of leaving it untracked.
+        if binary_is_project_owned && pid_matches_link_binary "$pid"; then
+            return 0
+        fi
+        stop_spawned_link "$pid"
+        echo "ableton-linkctl: Ableton Link was stopped because its process could not be tracked safely. Check the permissions on $runtime_base and try again." >&2
+        return 1
+    fi
 }
 
 stop_link()
 {
     local pid
-    mkdir -p -- "$runtime_base"
-    exec 9>"$lock_file"
-    flock -w 10 9 || { echo "ableton-linkctl: timed out waiting for the Link lifecycle lock" >&2; return 1; }
+    mkdir -p -- "$runtime_base" || {
+        echo "ableton-linkctl: Ableton Link could not prepare its temporary files at $runtime_base. Check the directory permissions and try again." >&2
+        return 1
+    }
+    if ! exec 9>"$lock_file"; then
+        echo "ableton-linkctl: Ableton Link could not open its temporary lock at $lock_file. Check the directory permissions and try again." >&2
+        return 1
+    fi
+    flock -w 10 9 || {
+        echo "ableton-linkctl: Another Ableton Link start or stop is still running. Try again." >&2
+        return 1
+    }
     while IFS= read -r pid; do
         [ -n "$pid" ] || continue
         kill -TERM "$pid" 2>/dev/null || true
@@ -130,24 +232,40 @@ stop_link()
                 && kill -KILL "$pid" 2>/dev/null || true
         fi
     done < <(owned_pids)
-    rm -f -- "$pid_file"
+    # The exact process outcome is authoritative. A stale generated PID record
+    # is harmless and can be replaced on the next start.
+    rm -f -- "$pid_file" 2>/dev/null || true
 }
 
 status_link()
 {
     local pid
-    printf 'policy: %s\n' "$ABLETON_LINK_MODE"
+    case "$ABLETON_LINK_MODE" in
+        off) echo 'mode: off' ;;
+        session) echo 'mode: session (while Ableton Live is running)' ;;
+        always) echo 'mode: always (background)' ;;
+        keep) echo 'mode: unchanged' ;;
+    esac
     if [ "$ABLETON_LINK_MODE" = always ] && unit_is_project_owned \
        && ableton_run_bounded 20 systemctl --user is-active --quiet ableton-linkd.service 2>/dev/null; then
-        echo 'state: running (systemd)'
-    elif pid="$(owned_pids | head -n 1)" && [ -n "$pid" ]; then
-        printf 'state: running (pid %s)\n' "$pid"
+        echo 'state: running in background'
+    elif pid="$(first_owned_pid)" && [ -n "$pid" ]; then
+        printf 'state: running (process %s)\n' "$pid"
     else
         echo 'state: stopped'
     fi
 }
 
-case "${1:-}" in
+link_action="${1:-}"
+case "$link_action" in
+    start|stop|restart)
+        ableton_install_lock_acquire || {
+            echo "ableton-linkctl: installation work is in progress; retry this command when it finishes" >&2
+            exit 1
+        } ;;
+esac
+
+case "$link_action" in
     start) start_link ;;
     stop) stop_link ;;
     restart) stop_link; start_link ;;

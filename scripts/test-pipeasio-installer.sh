@@ -34,6 +34,11 @@ ABLETON_PIPEWIRE_FLOOR=0.3.56
 [ "$ABLETON_PIPEWIRE_FLOOR" = 1.4.2 ] || fail "environment overrode the hard PipeWire floor"
 declare -F ableton_pipewire_preflight >/dev/null || fail "PipeWire preflight API is missing"
 declare -F ableton_pipeasio_validate_runtime >/dev/null || fail "runtime validation API is missing"
+grep -qF 'Install PipeWire 1.4.2 or newer.' "$here/setup-prefix.sh" \
+    || fail "prefix setup does not report the enforced PipeWire floor"
+if grep -qF '0.3.56 or newer' "$here/setup-prefix.sh"; then
+    fail "prefix setup still reports the obsolete PipeWire floor"
+fi
 ok "PipeWire 1.4.2 is a hard release floor"
 
 new_env()
@@ -134,6 +139,22 @@ if invoke_preflight 1.6.8 1.6.8 9 >/dev/null 2>&1; then
 fi
 ok "native probe gates loaded client and daemon without PipeWire CLI utilities"
 
+# Once the native probe and version comparison have succeeded, their terminal
+# report is presentation only. Optional-tool advice is presentation from the
+# outset. A closed stdout must not turn either into a component/rollback error.
+if ! env PATH="$probe_base/core-path" \
+    PROBE_CLIENT=1.6.8 PROBE_DAEMON=1.6.8 PROBE_EXIT=0 \
+    /bin/bash -c '
+        set -euo pipefail
+        . "$1"
+        ableton_pipewire_preflight "$2" >&-
+        ABLETON_PIPEASIO_DIAGNOSTIC_NOTICE_SHOWN=0
+        ableton_pipeasio_optional_tools_advice >&-
+    ' _ "$here/lib/pipeasio.sh" "$probe" 2>/dev/null; then
+    fail "successful PipeWire proof or optional-tool advice inherited terminal output status"
+fi
+ok "successful compatibility proof and optional-tool advice ignore presentation failures"
+
 base="$(new_env mutation-lock)"
 mkdir -p -- "$base/xdg/state/ableton-wine"
 printf 'format=1\nowner=ableton-linux\n' \
@@ -162,7 +183,7 @@ if run_isolated "$base" env -u ABLETON_INSTALL_LOCK_FD \
     >"$base/setup-link.out" 2>"$base/setup-link.err"; then
     fail "direct setup-link mutator bypassed the held installation lock"
 fi
-grep -qF 'another installer, rollback, or uninstall is already running' \
+grep -qF 'Another Ableton Linux install, repair, or removal is already running. Wait for it to finish and try again.' \
     "$base/setup-link.err" || fail "setup-link lock refusal was not explicit"
 [ ! -e "$base/link-transaction" ] \
     || fail "refused setup-link mutator created a transaction snapshot"
@@ -170,6 +191,36 @@ grep -qF 'another installer, rollback, or uninstall is already running' \
     = "$state_marker_digest" ] || fail "refused setup-link mutator changed installer state"
 exec {held_lock_fd}<&-
 ok "one non-persistent lock serializes installer helpers and direct setup-link mutators"
+
+# A forked Bash child shares the parent's open file description. It may close
+# its duplicate, but must never issue LOCK_UN against the parent's lock. The
+# opener may still release it explicitly, including when the opener itself is a
+# subshell (BASHPID, rather than $$, identifies that owner).
+base="$(new_env mutation-lock-owner)"
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    ableton_install_lock_acquire
+    parent_fd="$ABLETON_INSTALL_LOCK_FD"
+    ( ableton_install_lock_release >/dev/null 2>&1 || true )
+    if (
+        inherited="$parent_fd"
+        exec {inherited}<&-
+        unset ABLETON_INSTALL_LOCK_FD ABLETON_INSTALL_LOCK_OWNER_BASHPID
+        ableton_install_lock_acquire >/dev/null 2>&1
+    ); then
+        echo "forked child unlocked its parent" >&2
+        exit 1
+    fi
+    ableton_install_lock_release
+    (
+        unset ABLETON_INSTALL_LOCK_FD ABLETON_INSTALL_LOCK_OWNER_BASHPID
+        ableton_install_lock_acquire
+        ableton_install_lock_release
+    )
+' _ "$here" || fail "installation lock ownership is not confined to the opening Bash process"
+ok "forked children cannot unlock their parent, while each real lock owner can release"
 
 write_build_info()
 {
@@ -234,12 +285,14 @@ make_runtime()
 
 runtime_validates()
 {
-    ableton_pipeasio_validate_runtime "$1" "$2" >/dev/null 2>&1
+    ableton_pipeasio_validate_runtime "$1" "$2" >/dev/null 2>&1 \
+        && ableton_pipeasio_validate_panel "$1" "$2" >/dev/null 2>&1
 }
 
 runtime_fails_validation()
 {
-    if ableton_pipeasio_validate_runtime "$1" "$2" >/dev/null 2>&1; then
+    if ableton_pipeasio_validate_runtime "$1" "$2" >/dev/null 2>&1 \
+       && ableton_pipeasio_validate_panel "$1" "$2" >/dev/null 2>&1; then
         return 1
     fi
 }
@@ -266,6 +319,8 @@ base="$(new_env artifact-partial)"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
 rm -f -- "$base/runtime/share/icons/hicolor/scalable/apps/pipeasio.svg"
 runtime_fails_validation "$base/runtime" "$base/BUILD-INFO.txt" || fail "partial built-panel payload was accepted"
+ableton_pipeasio_validate_runtime "$base/runtime" "$base/BUILD-INFO.txt" >/dev/null 2>&1 \
+    || fail "partial optional panel invalidated the core PipeASIO runtime"
 ok "partial panel payload is refused"
 
 base="$(new_env artifact-polluted-skip)"
@@ -436,7 +491,7 @@ run_isolated "$base" env \
 [ ! -e "$base/home/.local/bin/pipeasio-settings" ] \
     && [ ! -e "$base/xdg/data/applications/pipeasio-settings.desktop" ] \
     && [ ! -e "$base/xdg/data/icons/hicolor/scalable/apps/pipeasio.svg" ] \
-    || fail "fresh runtime-only install created panel integration"
+    || fail "direct runtime-only reconcile created previously absent panel shortcuts"
 runtime_only_manifest="$base/xdg/state/ableton-wine/install-manifest.tsv"
 if [ -r "$runtime_only_manifest" ] && awk -F '\t' \
     -v command="$base/home/.local/bin/pipeasio-settings" \
@@ -444,9 +499,311 @@ if [ -r "$runtime_only_manifest" ] && awk -F '\t' \
     -v icon="$base/xdg/data/icons/hicolor/scalable/apps/pipeasio.svg" \
     '$2 == command || $2 == desktop || $2 == icon { found=1 } END { exit !found }' \
     "$runtime_only_manifest"; then
-    fail "fresh runtime-only install claimed absent panel integration"
+    fail "direct runtime-only reconcile claimed absent panel shortcuts"
 fi
-ok "fresh runtime-only install leaves optional panel integration absent"
+grep -qxF 'OK: Installation complete.' "$base/out" \
+    || fail "direct runtime-only install did not print its simple outcome"
+ok "direct runtime-only install completes before reconciling optional panel shortcuts"
+
+# Repair-mode parsing keeps safe, unambiguous values from this project's file
+# even when an obsolete field makes the whole generation invalid. CLI values
+# still win, and the malformed regular file is not replaced until Wine is
+# validated and committed.
+base="$(new_env managed-config-repair)"
+make_runtime_only_kit "$base"
+config_path="$base/xdg/config/ableton-wine/config"
+custom_prefix="$base/custom-prefix"
+mkdir -p -- "$(dirname "$config_path")"
+cat > "$config_path" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$base/old-runtime
+prefix=$custom_prefix
+live_major=12
+link_mode=off
+obsolete_field=written-by-an-older-installer
+EOF
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$base/kit/scripts/installer.sh" update --dry-run \
+    >"$base/update.out" 2>"$base/update.err"; then
+    fail "update fixture unexpectedly passed without an existing custom prefix"
+fi
+grep -qF "update needs an existing prefix at $custom_prefix" "$base/update.err" \
+    || fail "repair mode dropped an unambiguous custom prefix and checked the default instead"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/installer.sh" runtime install \
+        --runtime-root "$base/runtime" --yes >"$base/install.out" 2>"$base/install.err" \
+    || fail "runtime install could not repair a project-owned malformed config"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    || fail "managed-config repair did not retain the committed runtime"
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init strict
+    ableton_managed_config_valid "$ABLETON_CONFIG_FILE"
+' _ "$here" || fail "managed-config repair did not publish a strict valid generation"
+grep -qxF "runtime_root=$base/runtime" "$config_path" \
+    && grep -qxF "prefix=$custom_prefix" "$config_path" \
+    && ! grep -q '^obsolete_field=' "$config_path" \
+    || fail "managed-config repair lost salvaged paths or retained obsolete data"
+ok "coordinator repair salvages custom paths and rewrites malformed project settings only after core success"
+
+for config_kind in foreign-regular symlink directory; do
+    base="$(new_env "config-repair-${config_kind}")"
+    make_runtime_only_kit "$base"
+    config_path="$base/xdg/config/ableton-wine/config"
+    mkdir -p -- "$(dirname "$config_path")"
+    case "$config_kind" in
+        foreign-regular)
+            printf 'foreign arbitrary settings\n' > "$config_path" ;;
+        symlink)
+            printf 'foreign symlink referent\n' > "$base/foreign-config"
+            ln -s -- "$base/foreign-config" "$config_path" ;;
+        directory)
+            mkdir -- "$config_path"
+            printf 'foreign directory sentinel\n' > "$config_path/sentinel" ;;
+    esac
+    run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+        PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+        bash "$base/kit/scripts/installer.sh" runtime install \
+            --runtime-root "$base/runtime" --yes >"$base/out" 2>"$base/err" \
+        || fail "$config_kind installer settings invalidated a runtime install"
+    [ -f "$base/runtime/.ableton-linux-runtime" ] \
+        || fail "$config_kind installer settings displaced the committed runtime"
+    case "$config_kind" in
+        foreign-regular)
+            run_isolated "$base" bash -c '
+                set -euo pipefail
+                . "$1/lib/config.sh"
+                ableton_config_init strict
+                ableton_managed_config_valid "$ABLETON_CONFIG_FILE"
+            ' _ "$here" || fail "arbitrary regular settings were not rebuilt"
+            grep -qxF "runtime_root=$base/runtime" "$config_path" \
+                || fail "arbitrary settings repair did not keep the CLI runtime" ;;
+        symlink)
+            [ -L "$config_path" ] \
+                && [ "$(readlink -- "$config_path")" = "$base/foreign-config" ] \
+                && grep -qxF 'foreign symlink referent' "$base/foreign-config" \
+                || fail "config repair replaced a symlink or changed its referent"
+            grep -qF 'Wine is ready, but installer settings could not be saved.' "$base/err" \
+                || fail "symlink config retention was not a saved-settings warning" ;;
+        directory)
+            [ -d "$config_path" ] && [ ! -L "$config_path" ] \
+                && grep -qxF 'foreign directory sentinel' "$config_path/sentinel" \
+                || fail "config repair replaced a foreign settings directory"
+            grep -qF 'Wine is ready, but installer settings could not be saved.' "$base/err" \
+                || fail "directory config retention was not a saved-settings warning" ;;
+    esac
+done
+ok "arbitrary settings cannot gate Wine, while symlink and directory objects stay unchanged"
+
+# Runtime-only work does not use prefix, desktop-data, installer-settings,
+# persistent-state, or launcher roots for its core promotion. Foreign objects
+# at any of those optional paths must survive while Wine still commits; the
+# post-core panel/config repair may warn and skip them.
+for optional_root in prefix data config state bin; do
+    base="$(new_env "runtime-unrelated-${optional_root}-root")"
+    make_runtime_only_kit "$base"
+    foreign_root="$base/foreign-$optional_root-root"
+    printf 'foreign optional root\n' > "$foreign_root"
+    case "$optional_root" in
+        prefix) root_var=ABLETON_WINEPREFIX ;;
+        data) root_var=ABLETON_DATA_HOME ;;
+        config) root_var=ABLETON_CONFIG_HOME ;;
+        state) root_var=ABLETON_STATE_HOME ;;
+        bin) root_var=ABLETON_BIN_HOME ;;
+    esac
+    run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+        "$root_var=$foreign_root" PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+        bash "$base/kit/scripts/installer.sh" runtime install \
+            --runtime-root "$base/runtime" --yes >"$base/out" 2>"$base/err" \
+        || fail "unrelated $optional_root root blocked runtime-only installation"
+    [ -f "$base/runtime/.ableton-linux-runtime" ] \
+        && grep -qxF 'foreign optional root' "$foreign_root" \
+        || fail "runtime-only installation changed the unrelated $optional_root root"
+done
+ok "unrelated optional root objects cannot gate runtime-only installation"
+
+base="$(new_env coordinator-postcore-output)"
+make_runtime_only_kit "$base"
+cat > "$base/postcore-failure.bash" <<'EOF'
+echo()
+{
+    if [ "$*" = 'OK: the Wine runtime is installed' ]; then
+        return 74
+    fi
+    builtin echo "$@"
+}
+EOF
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    BASH_ENV="$base/postcore-failure.bash" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/installer.sh" runtime install \
+        --runtime-root "$base/runtime" --yes >"$base/out" 2>"$base/err" \
+    || fail "final output failure reported a committed runtime as failed"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    || fail "final output failure rolled back the committed runtime"
+grep -qxF "  runtime: $base/runtime" "$base/out" \
+    || fail "one failed success line stopped the remaining final presentation"
+ok "coordinator continues final presentation after one output fails"
+
+base="$(new_env child-runtime-only-core)"
+make_runtime_only_kit "$base"
+txn="$base/core-transaction"
+mkdir -p -- "$txn"
+run_isolated "$base" env \
+    PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --transaction-dir "$txn" --yes \
+    >"$base/out" 2>"$base/err" || fail "parent-owned runtime core phase failed"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    || fail "parent-owned runtime core phase did not promote Wine"
+[ -s "$txn/runtime.tsv" ] \
+    || fail "parent-owned runtime core phase omitted its directory rollback record"
+[ -f "$txn/files.tsv" ] && [ ! -s "$txn/files.tsv" ] \
+    || fail "parent-owned runtime core phase journalled ancillary files"
+[ ! -e "$base/home/.local/bin/pipeasio-settings" ] \
+    && [ ! -e "$base/xdg/data/applications/pipeasio-settings.desktop" ] \
+    && [ ! -e "$base/xdg/data/icons/hicolor/scalable/apps/pipeasio.svg" ] \
+    || fail "parent-owned runtime core phase changed panel shortcuts"
+if grep -q '^OK:' "$base/out"; then
+    fail "parent-owned runtime core phase printed a child success line"
+fi
+ok "parent-owned runtime core phase records only Wine and leaves panel repair to the parent"
+
+base="$(new_env direct-runtime-panel-warning)"
+make_runtime_only_kit "$base"
+mkdir -p -- "$base/home/.local/bin/pipeasio-settings"
+printf 'foreign directory sentinel\n' > "$base/home/.local/bin/pipeasio-settings/sentinel"
+run_isolated "$base" env \
+    PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    >"$base/out" 2>"$base/err" \
+    || fail "postcommit panel repair failure invalidated a runtime install"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    || fail "panel repair warning displaced the committed runtime"
+grep -qxF 'foreign directory sentinel' "$base/home/.local/bin/pipeasio-settings/sentinel" \
+    || fail "panel repair warning corrupted a foreign directory"
+grep -qF 'Wine was installed, but the PipeASIO settings shortcut could not be updated.' \
+    "$base/err" || fail "postcommit panel repair failure was not a plain warning"
+ok "direct runtime panel repair is postcommit and warning-only"
+
+base="$(new_env optional-panel-payload-warning)"
+make_runtime_only_kit "$base"
+runtime_name=wine-d2d1-nspa-11.13
+version=2026.08.12.999
+rm -f -- "$base/payload/$runtime_name/share/icons/hicolor/scalable/apps/pipeasio.svg"
+tar -C "$base/payload" -I zstd -cf \
+    "$base/kit/dist/$runtime_name-$version.tar.zst" "$runtime_name"
+(
+    cd "$base/kit/dist"
+    sha256sum "$runtime_name-$version.tar.zst" > "$runtime_name-$version.tar.zst.sha256"
+)
+mkdir -p -- "$base/home/.local/bin"
+printf 'foreign panel command\n' > "$base/home/.local/bin/pipeasio-settings"
+run_isolated "$base" env \
+    PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    >"$base/out" 2>"$base/err" \
+    || fail "incomplete optional panel payload invalidated a core runtime install"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    && [ -f "$base/runtime/lib/wine/x86_64-windows/pipeasio64.dll" ] \
+    && [ -f "$base/runtime/lib/wine/x86_64-unix/pipeasio64.dll.so" ] \
+    || fail "optional panel warning did not preserve the promoted core runtime and driver"
+grep -qxF 'foreign panel command' "$base/home/.local/bin/pipeasio-settings" \
+    || fail "invalid optional panel payload changed an existing panel command"
+grep -qF 'Wine and PipeASIO passed their checks, but PipeASIO Settings is incomplete.' \
+    "$base/err" || fail "invalid optional panel payload did not produce its plain warning"
+ok "invalid optional panel payload warns without invalidating Wine or changing panel shortcuts"
+
+base="$(new_env runtime-validator-command-failure)"
+make_runtime_only_kit "$base"
+cat > "$base/fakebin/readelf" <<'EOF'
+#!/bin/sh
+cat <<'OUT'
+  Shared library: [libusb-1.0.so.0]
+  Shared library: [libpipewire-0.3.so.0]
+  Shared library: [libgstreamer-1.0.so.0]
+OUT
+exit 93
+EOF
+chmod 755 "$base/fakebin/readelf"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    >"$base/out" 2>"$base/err"; then
+    fail "runtime install ignored a failed payload validator"
+fi
+[ ! -e "$base/runtime" ] \
+    || fail "failed payload validation promoted a runtime"
+grep -qF 'runtime Push bridge dependency validation failed' "$base/err" \
+    || fail "failed payload validator was replaced by a later misleading error"
+ok "runtime payload validator failures stop before promotion with their original cause"
+
+base="$(new_env runtime-foreign-client-stop)"
+make_runtime_only_kit "$base"
+mkdir -p -- "$base/runtime/bin"
+cp -- /bin/sleep "$base/runtime/bin/wine-client"
+printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$base/runtime/.ableton-linux-runtime"
+printf 'old runtime generation\n' > "$base/runtime/old-generation"
+env WINEPREFIX="$base/foreign-prefix" "$base/runtime/bin/wine-client" 60 &
+foreign_runtime_pid=$!
+sleep 0.1
+runtime_update_succeeded=0
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    >"$base/out" 2>"$base/err"; then
+    runtime_update_succeeded=1
+fi
+kill -0 "$foreign_runtime_pid" 2>/dev/null \
+    || fail "runtime refusal killed a foreign-prefix process"
+kill "$foreign_runtime_pid" 2>/dev/null || true
+wait "$foreign_runtime_pid" 2>/dev/null || true
+[ "$runtime_update_succeeded" -eq 0 ] \
+    || fail "runtime promotion continued after refusing a foreign-prefix client"
+[ -f "$base/runtime/old-generation" ] \
+    || fail "foreign-prefix refusal replaced the live runtime anyway"
+grep -qF 'runtime is used by another Wine prefix' "$base/err" \
+    || fail "foreign-prefix runtime refusal lost its original cause"
+ok "runtime-client refusal cannot be ignored by a later promotion"
+
+base="$(new_env runtime-scratch-cleanup-warning)"
+make_runtime_only_kit "$base"
+real_rm="$(command -v rm)"
+cat > "$base/fakebin/rm" <<EOF
+#!/bin/sh
+for argument do
+    case "\$argument" in */.ableton-runtime-stage.*) exit 94 ;; esac
+done
+exec "$real_rm" "\$@"
+EOF
+chmod 755 "$base/fakebin/rm"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    >"$base/out" 2>"$base/err" \
+    || fail "runtime scratch cleanup failure rolled back a valid installation"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    || fail "scratch cleanup warning displaced the promoted runtime"
+grep -qF 'Wine was installed, but temporary files remain at' "$base/err" \
+    || fail "retained runtime scratch was not reported"
+find "$base" -mindepth 1 -maxdepth 1 -type d -name '.ableton-runtime-stage.*' \
+    -print -quit | grep -q . \
+    || fail "runtime scratch failure fixture did not retain its target"
+ok "post-success scratch cleanup cannot manufacture an installation rollback"
 
 prepare_runtime_metadata_fixture()
 {
@@ -480,6 +837,456 @@ EOF
         > "$base/xdg/config/pipeasio/config.ini"
 }
 
+prepare_mixed_component_kit()
+{
+    local base="$1" repo_root
+    repo_root="$(cd "$here/.." && pwd)"
+    cp -- "$here/ableton-live" "$here/max9" "$here/detect-scale.sh" \
+        "$here/detect-theme.sh" "$here/shortcut-hold.sh" \
+        "$here/setup-realtime.sh" "$here/audio-report.sh" \
+        "$here/check-ntsync.sh" "$here/rollback.sh" "$base/kit/scripts/"
+    mkdir -p -- "$base/kit/desktop/icons" \
+        "$base/kit/beta/tester-kit/probes/windows"
+    cp -- "$repo_root/desktop/ableton-live.desktop.in" \
+        "$repo_root/desktop/ableton-linux-protocol.desktop.in" \
+        "$repo_root/desktop/ableton-linux-auz.desktop.in" \
+        "$repo_root/desktop/x-wine-extension-auz.xml" \
+        "$repo_root/desktop/max9.desktop.in" \
+        "$repo_root/desktop/wine-protocol-c74max.desktop.in" \
+        "$base/kit/desktop/"
+    cp -- "$repo_root/desktop/icons/application-ableton-live.xml" \
+        "$base/kit/desktop/icons/"
+    cp -- "$repo_root/beta/tester-kit/probes/windows/ntsyncprobe.exe" \
+        "$base/kit/beta/tester-kit/probes/windows/"
+}
+
+# Exercise the EXIT trap itself by injecting an otherwise unhandled command
+# failure immediately after the direct runtime's private transaction has been
+# retired. The promoted tree is authoritative and no active recovery marker may
+# remain for a launcher to mistake for an incomplete core install.
+base="$(new_env direct-runtime-core-ready-exit)"
+prepare_runtime_metadata_fixture "$base"
+sed -i "/        finish_direct_runtime_transaction/a\\
+        : > \"$base/core-tail-failure-fired\"\\
+        false # injected verified-core tail failure" "$base/kit/scripts/install.sh"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    >"$base/out" 2>"$base/err" \
+    || fail "verified-core EXIT catch-all reported the promoted runtime as failed"
+[ -e "$base/core-tail-failure-fired" ] \
+    || fail "verified-core EXIT fixture did not reach the injected tail failure"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    && [ ! -e "$base/runtime/.ableton-linux-rollback/old-sentinel" ] \
+    || fail "verified-core EXIT catch-all restored the previous runtime"
+catchall_saved=""
+for candidate in "$base"/runtime-rollback-*; do
+    [ -d "$candidate" ] || continue
+    catchall_saved="$candidate"
+    break
+done
+[ -n "$catchall_saved" ] \
+    && grep -qxF 'old metadata generation' \
+        "$catchall_saved/.ableton-linux-rollback/old-sentinel" \
+    || fail "verified-core EXIT catch-all lost the saved previous runtime"
+if find "$base/tmp" "$base/xdg/state/ableton-wine/transactions" \
+    -type f -name active -print -quit 2>/dev/null | grep -q .; then
+    fail "verified-core EXIT catch-all left a launcher-blocking active transaction"
+fi
+grep -qF 'Wine is ready. Run the installer again to retry shortcuts or Ableton Link files.' \
+    "$base/err" || fail "verified-core EXIT catch-all did not report optional retry"
+grep -qxF 'OK: Installation complete.' "$base/out" \
+    || fail "verified-core EXIT catch-all omitted the direct success outcome"
+ok "the EXIT catch-all cannot fail or roll back a finally validated runtime"
+
+# A direct mixed invocation must close its runtime transaction before generated
+# desktop work starts. Inject a failure in the first optional file publication:
+# Wine stays live, the previous generation stays available for rollback, and no
+# active core marker is left for launchers to reject.
+base="$(new_env direct-mixed-optional-failure)"
+prepare_runtime_metadata_fixture "$base"
+prepare_mixed_component_kit "$base"
+foreign_optional="$base/xdg/data/ableton-wine/lib/config.sh"
+mkdir -p -- "$(dirname "$foreign_optional")"
+printf 'foreign optional config helper\n' > "$foreign_optional"
+cp -a -- "$foreign_optional" "$base/foreign-optional.before"
+real_install="$(command -v install)"
+cat > "$base/fakebin/install" <<EOF
+#!/bin/sh
+for argument do
+    case "\$argument" in
+        */.ableton-install.*)
+            if [ -f "$base/runtime/.ableton-linux-runtime" ] \
+               && [ ! -e "$base/mixed-optional-failure-fired" ]; then
+                : > "$base/mixed-optional-failure-fired"
+                exit 74
+            fi ;;
+    esac
+done
+exec "$real_install" "\$@"
+EOF
+chmod 755 "$base/fakebin/install"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --integration-only --yes \
+    >"$base/out" 2>"$base/err" \
+    || fail "optional mixed-mode failure invalidated a committed runtime"
+[ -e "$base/mixed-optional-failure-fired" ] \
+    || fail "mixed-mode fixture did not reach optional file publication"
+cmp -s -- "$base/foreign-optional.before" "$foreign_optional" \
+    || fail "failed optional publication changed the existing support file"
+cmp -s -- "$base/kit/scripts/lib/lifecycle.sh" \
+    "$base/xdg/data/ableton-wine/lib/lifecycle.sh" \
+    || fail "one failed support file blocked a later independent repair"
+prestate_index="$base/xdg/state/ableton-wine/install-prestate.tsv"
+prestate_dir="$base/xdg/state/ableton-wine/install-prestate"
+[ ! -e "$prestate_index" ] && [ ! -L "$prestate_index" ] \
+    || fail "mixed-mode optional rollback left an unindexed prestate inventory"
+if [ -d "$prestate_dir" ] \
+   && find "$prestate_dir" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    fail "mixed-mode optional rollback stranded a saved foreign object"
+fi
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    && [ ! -e "$base/runtime/.ableton-linux-rollback/old-sentinel" ] \
+    || fail "mixed-mode optional failure restored the previous runtime"
+mixed_saved=""
+for candidate in "$base"/runtime-rollback-*; do
+    [ -d "$candidate" ] || continue
+    mixed_saved="$candidate"
+    break
+done
+[ -n "$mixed_saved" ] \
+    && grep -qxF 'old metadata generation' \
+        "$mixed_saved/.ableton-linux-rollback/old-sentinel" \
+    || fail "mixed-mode optional failure lost the saved previous runtime"
+if find "$base/tmp" "$base/xdg/state/ableton-wine/transactions" \
+    -type f -name active -print -quit 2>/dev/null | grep -q .; then
+    fail "mixed-mode optional failure left an active core transaction"
+fi
+run_isolated "$base" env \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        ableton_config_init
+        . "$1/lib/manifest.sh"
+        ! ableton_install_state_has_active_transaction
+    ' _ "$here" || fail "mixed-mode optional failure left the launcher recovery gate closed"
+[ "$(grep -cF 'Some shortcuts or support files could not be updated. Run the installer again to retry them.' \
+        "$base/err")" -eq 1 ] \
+    || fail "mixed-mode optional failure did not produce one plain retry warning"
+grep -qxF 'OK: Installation complete.' "$base/out" \
+    || fail "mixed-mode optional failure omitted the direct success outcome"
+ok "direct mixed mode commits Wine before warning-only generated-file work"
+
+# The public wrapper needs an internal advisory result so its final summary can
+# say that desktop repair needs a retry without treating the installed core as
+# failed. Direct component use above still exits successfully.
+rm -f -- "$base/mixed-optional-failure-fired"
+advisory_status=0
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    ABLETON_INTERNAL_OPTIONAL_STATUS=1 \
+    bash "$base/kit/scripts/install.sh" --integration-only \
+    >"$base/advisory.out" 2>"$base/advisory.err" \
+    || advisory_status=$?
+[ "$advisory_status" -eq 3 ] \
+    || fail "internal desktop repair result did not distinguish a retry warning"
+[ -e "$base/mixed-optional-failure-fired" ] \
+    || fail "internal desktop repair fixture did not reach its injected warning"
+! grep -qF 'OK: Installation complete.' "$base/advisory.out" \
+    || fail "internal retry result also printed a complete result"
+ok "desktop repair warnings have an internal advisory result for the final summary"
+
+# Each completed generated-file repair is final. Break stderr and fail after
+# the first repair; later failure handling must leave that valid repair in
+# place and must not strand obsolete recovery data.
+base="$(new_env component-recovery-broken-stderr)"
+make_runtime_only_kit "$base"
+prepare_mixed_component_kit "$base"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+foreign_optional="$base/xdg/data/ableton-wine/lib/config.sh"
+mkdir -p -- "$(dirname "$foreign_optional")"
+printf 'foreign helper before failed component\n' > "$foreign_optional"
+cp -a -- "$foreign_optional" "$base/foreign-helper.before"
+sed -i '/ableton_try_publish_file 644 "$here\/lib\/$tool" "$data\/lib\/$tool" file replace-generated/a\
+        if [ "$tool" = config.sh ]; then exec 2>/dev/full; false; fi' \
+    "$base/kit/scripts/install.sh"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    bash "$base/kit/scripts/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err"; then
+    fail "injected component failure unexpectedly reported success"
+fi
+cmp -s -- "$base/kit/scripts/lib/config.sh" "$foreign_optional" \
+    || fail "a later optional failure undid an earlier generated-file repair"
+prestate_index="$base/xdg/state/ableton-wine/install-prestate.tsv"
+prestate_dir="$base/xdg/state/ableton-wine/install-prestate"
+[ ! -e "$prestate_index" ] && [ ! -L "$prestate_index" ] \
+    || fail "broken recovery diagnostics left a prestate index behind"
+if [ -d "$prestate_dir" ] \
+   && find "$prestate_dir" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    fail "broken recovery diagnostics left an unindexed foreign backup"
+fi
+if find "$base/tmp" -type f -name active -print -quit 2>/dev/null | grep -q .; then
+    fail "broken component diagnostics left its private transaction active"
+fi
+ok "later optional failures retain earlier generated-file repairs even when stderr is broken"
+
+# The coordinator has the same requirement across its runtime and prefix
+# domains. Its first rollback message is deliberately sent to /dev/full; both
+# child restorations must still run before the trap returns the original error.
+base="$(new_env coordinator-recovery-broken-stderr)"
+mkdir -p -- "$base/kit/scripts/lib" "$base/kit/bin"
+cp -- "$here/installer.sh" "$base/kit/scripts/"
+cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
+    "$here/lib/live-options.sh" "$here/lib/manifest.sh" \
+    "$here/lib/pipeasio.sh" "$base/kit/scripts/lib/"
+cp -- "$here/../VERSION" "$base/kit/VERSION"
+cat > "$base/kit/bin/pipewire-version-probe" <<'EOF'
+#!/bin/sh
+printf 'client=1.6.8\ndaemon=1.6.8\n'
+EOF
+cat > "$base/kit/scripts/install.sh" <<'EOF'
+#!/bin/sh
+set -eu
+case " $* " in
+    *' --preflight-rollback '*) exit 0 ;;
+    *' --rollback '*)
+        printf 'old runtime state\n' > "${TEST_RUNTIME_STATE:?}"
+        : > "${TEST_RUNTIME_ROLLBACK_CALLED:?}"
+        exit 0 ;;
+    *' --preflight-commit '*|*' --commit '*) exit 0 ;;
+esac
+txn=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = --transaction-dir ]; then txn="$2"; shift; fi
+    shift
+done
+[ -z "$txn" ] || : > "$txn/active"
+printf 'new runtime state\n' > "${TEST_RUNTIME_STATE:?}"
+EOF
+cat > "$base/kit/scripts/setup-prefix.sh" <<'EOF'
+#!/bin/sh
+set -eu
+case " $* " in
+    *' --validate '*) exit 0 ;;
+    *' --preflight-rollback '*) exit 0 ;;
+    *' --rollback '*)
+        printf 'old prefix state\n' > "${TEST_PREFIX_STATE:?}"
+        : > "${TEST_PREFIX_ROLLBACK_CALLED:?}"
+        exit 0 ;;
+    *' --preflight-commit '*|*' --commit '*) exit 0 ;;
+esac
+printf 'new prefix state\n' > "${TEST_PREFIX_STATE:?}"
+exit 71
+EOF
+chmod 755 "$base/kit/bin/pipewire-version-probe" \
+    "$base/kit/scripts/install.sh" "$base/kit/scripts/setup-prefix.sh"
+printf 'old runtime state\n' > "$base/runtime.state"
+printf 'old prefix state\n' > "$base/prefix.state"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    TEST_RUNTIME_STATE="$base/runtime.state" \
+    TEST_PREFIX_STATE="$base/prefix.state" \
+    TEST_RUNTIME_ROLLBACK_CALLED="$base/runtime.rollback-called" \
+    TEST_PREFIX_ROLLBACK_CALLED="$base/prefix.rollback-called" \
+    bash "$base/kit/scripts/installer.sh" install --skip-live-install --yes \
+        --link=off --runtime-root "$base/runtime" --prefix "$base/prefix" \
+        >"$base/out" 2>/dev/full; then
+    fail "coordinator failure fixture unexpectedly reported success"
+fi
+grep -qxF 'old runtime state' "$base/runtime.state" \
+    && grep -qxF 'old prefix state' "$base/prefix.state" \
+    && [ -e "$base/runtime.rollback-called" ] \
+    && [ -e "$base/prefix.rollback-called" ] \
+    || fail "broken coordinator diagnostics skipped runtime or prefix restoration"
+ok "coordinator recovery restores every core domain even when stderr is broken"
+
+# Once the Live executable has been found in the selected prefix, every
+# terminal message, helper-stop narrative, and timeout explanation is
+# presentation only. Break both output streams at that exact boundary and make
+# wineserver report a timeout: the coordinator must still commit both core
+# domains and must never call either rollback child.
+base="$(new_env live-valid-postcore-broken-output)"
+mkdir -p -- "$base/kit/scripts/lib" "$base/kit/bin" "$base/runtime/bin"
+cp -- "$here/installer.sh" "$base/kit/scripts/"
+cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
+    "$here/lib/live-options.sh" "$here/lib/manifest.sh" \
+    "$here/lib/pipeasio.sh" "$base/kit/scripts/lib/"
+cp -- "$here/../VERSION" "$base/kit/VERSION"
+cat > "$base/kit/bin/pipewire-version-probe" <<'EOF'
+#!/bin/sh
+printf 'client=1.6.8\ndaemon=1.6.8\n'
+EOF
+cat > "$base/kit/scripts/install.sh" <<'EOF'
+#!/bin/sh
+set -eu
+case " $* " in
+    *' --preflight-rollback '*) exit 0 ;;
+    *' --rollback '*) : > "${TEST_RUNTIME_ROLLBACK_CALLED:?}"; exit 0 ;;
+    *' --preflight-commit '*) exit 0 ;;
+    *' --commit '*) : > "${TEST_RUNTIME_COMMIT_CALLED:?}"; exit 0 ;;
+esac
+txn=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = --transaction-dir ]; then txn="$2"; shift; fi
+    shift
+done
+[ -z "$txn" ] || : > "$txn/active"
+exit 0
+EOF
+cat > "$base/kit/scripts/setup-prefix.sh" <<'EOF'
+#!/bin/sh
+set -eu
+case " $* " in
+    *' --validate '*) exit 0 ;;
+    *' --preflight-rollback '*) exit 0 ;;
+    *' --rollback '*) : > "${TEST_PREFIX_ROLLBACK_CALLED:?}"; exit 0 ;;
+    *' --preflight-commit '*) exit 0 ;;
+    *' --commit '*) : > "${TEST_PREFIX_COMMIT_CALLED:?}"; exit 0 ;;
+esac
+mkdir -p -- "${ABLETON_WINEPREFIX:?}"
+: > "$ABLETON_WINEPREFIX/system.reg"
+exit 0
+EOF
+cat > "$base/kit/scripts/setup-link.sh" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+cat > "$base/runtime/bin/wine" <<'EOF'
+#!/bin/sh
+case " $* " in
+    *' ./Ableton Live 12 Installer.exe '*)
+        target="${WINEPREFIX:?}/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
+        mkdir -p -- "$(dirname "$target")"
+        printf 'installed Live fixture\n' > "$target" ;;
+esac
+exit 0
+EOF
+cat > "$base/runtime/bin/wineserver" <<'EOF'
+#!/bin/sh
+[ "${1:-}" != -w ] || exit 124
+exit 0
+EOF
+chmod 755 "$base/kit/bin/pipewire-version-probe" \
+    "$base/kit/scripts/install.sh" "$base/kit/scripts/setup-prefix.sh" \
+    "$base/kit/scripts/setup-link.sh" "$base/runtime/bin/wine" \
+    "$base/runtime/bin/wineserver"
+printf 'Inno Setup fixture\n' > "$base/Ableton Live 12 Installer.exe"
+sed -i '/live_install_result_valid "$ABLETON_LIVE_VERSION" || return 1/a\
+    exec 1>/dev/full 2>/dev/full # injected post-Live output failure' \
+    "$base/kit/scripts/installer.sh"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    TEST_RUNTIME_ROLLBACK_CALLED="$base/runtime.rollback-called" \
+    TEST_PREFIX_ROLLBACK_CALLED="$base/prefix.rollback-called" \
+    TEST_RUNTIME_COMMIT_CALLED="$base/runtime.commit-called" \
+    TEST_PREFIX_COMMIT_CALLED="$base/prefix.commit-called" \
+    bash "$base/kit/scripts/installer.sh" install --yes --link=off \
+        --live-installer "$base/Ableton Live 12 Installer.exe" \
+        --runtime-root "$base/runtime" --prefix "$base/prefix" \
+        >"$base/out" 2>"$base/err" \
+    || fail "closed post-Live output reported a valid core installation as failed"
+[ -f "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe" ] \
+    || fail "post-Live output fixture did not cross the Live executable postcondition"
+[ -e "$base/runtime.commit-called" ] && [ -e "$base/prefix.commit-called" ] \
+    || fail "closed post-Live output stopped a core commit"
+[ ! -e "$base/runtime.rollback-called" ] && [ ! -e "$base/prefix.rollback-called" ] \
+    || fail "closed post-Live output invoked core rollback"
+if find "$base/xdg/state/ableton-wine/transactions" -type f -name active \
+    -print -quit 2>/dev/null | grep -q .; then
+    fail "closed post-Live output left a launcher-blocking core transaction"
+fi
+ok "valid Live and registry state commit even when every later output fails"
+
+# Direct runtime installation is complete once the promoted tree passes its
+# final validation. Failure to publish the old tree under a public rollback
+# name may retain that private generation, but must not restore it over Wine.
+base="$(new_env direct-runtime-rollback-publication-warning)"
+prepare_runtime_metadata_fixture "$base"
+real_mv="$(command -v mv)"
+cat > "$base/fakebin/mv" <<EOF
+#!/bin/sh
+last=""
+for argument do last="\$argument"; done
+case "\$last" in
+    */runtime-rollback-path)
+        : > "$base/rollback-publication-failed"
+        exit 95
+        ;;
+esac
+exec "$real_mv" "\$@"
+EOF
+chmod 755 "$base/fakebin/mv"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    >"$base/out" 2>"$base/err" \
+    || fail "rollback-name publication failure invalidated a verified runtime"
+[ -e "$base/rollback-publication-failed" ] \
+    || fail "rollback-name publication failure fixture did not reach its boundary"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    && [ ! -e "$base/runtime/.ableton-linux-rollback/old-sentinel" ] \
+    || fail "rollback-name publication warning restored the previous runtime"
+private_saved=""
+for candidate in "$base"/runtime.transaction-*; do
+    [ -d "$candidate" ] || continue
+    private_saved="$candidate"
+    break
+done
+[ -n "$private_saved" ] \
+    && grep -qxF 'old metadata generation' \
+        "$private_saved/.ableton-linux-rollback/old-sentinel" \
+    || fail "rollback-name publication warning lost the private previous runtime"
+if find "$base" -mindepth 1 -maxdepth 1 -type d -name 'runtime-rollback-*' \
+    -print -quit | grep -q .; then
+    fail "failed rollback-name publication exposed a partial public candidate"
+fi
+grep -qF 'Wine is ready, but the installer may not be able to restore the previous Wine version automatically. Temporary recovery files may remain.' \
+    "$base/err" || fail "rollback-name publication failure was not a plain warning"
+grep -qxF 'OK: Installation complete.' "$base/out" \
+    || fail "runtime with a rollback-name warning omitted its simple outcome"
+ok "direct runtime rollback publication is warning-only after final validation"
+
+runtime_cleanup_real_rm="$(command -v rm)"
+for cleanup_failure in active directory; do
+    base="$(new_env "direct-runtime-cleanup-$cleanup_failure")"
+    make_runtime_only_kit "$base"
+    cat > "$base/fakebin/rm" <<EOF
+#!/bin/sh
+for argument do
+    case "\${ABLETON_TEST_CLEANUP_FAILURE:-}:\$argument" in
+        active:*/tmp/ableton-install-plan.*/active) exit 96 ;;
+        directory:*/tmp/ableton-install-plan.*) exit 97 ;;
+    esac
+done
+exec "$runtime_cleanup_real_rm" "\$@"
+EOF
+    chmod 755 "$base/fakebin/rm"
+    run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+        ABLETON_TEST_CLEANUP_FAILURE="$cleanup_failure" \
+        ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+        PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+        bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+        >"$base/out" 2>"$base/err" \
+        || fail "$cleanup_failure cleanup failure invalidated a verified runtime"
+    [ -f "$base/runtime/.ableton-linux-runtime" ] \
+        || fail "$cleanup_failure cleanup warning removed the promoted runtime"
+    case "$cleanup_failure" in
+        active)
+            grep -qF 'Wine is ready, but the installer may not be able to restore the previous Wine version automatically. Temporary recovery files may remain.' \
+                "$base/err" || fail "runtime active cleanup failure was not a plain warning" ;;
+        directory)
+            grep -qF 'Wine is ready, but temporary installer data remains at ' \
+                "$base/err" || fail "runtime directory cleanup failure was not a plain warning" ;;
+    esac
+    grep -qxF 'OK: Installation complete.' "$base/out" \
+        || fail "runtime $cleanup_failure cleanup warning omitted the simple outcome"
+done
+ok "direct runtime activity/directory cleanup is warning-only after final validation"
+
 run_runtime_installer_fixture()
 {
     local base="$1"
@@ -510,7 +1317,7 @@ if ! run_runtime_installer_fixture "$base" >"$base/out" 2>"$base/err"; then
     sed -n '1,120p' "$base/err" >&2
     fail "runtime update failed while replacing rollback metadata"
 fi
-[ "$(grep -c '^== validate runtime payload:' "$base/out")" -eq 1 ] \
+[ "$(grep -c '^== Check the Wine package:' "$base/out")" -eq 1 ] \
     || fail "runtime install validates and extracts its payload more than once"
 saved_runtime="$(find_saved_runtime "$base")" \
     || fail "runtime update did not retain a saved runtime"
@@ -548,11 +1355,15 @@ esac
 exec "$real_cp" "\$@"
 EOF
 chmod 755 "$base/fakebin/cp"
-if run_runtime_installer_fixture "$base" >"$base/out" 2>"$base/err"; then
-    fail "injected rollback snapshot-copy failure reported success"
-fi
+run_runtime_installer_fixture "$base" >"$base/out" 2>"$base/err" \
+    || fail "optional rollback snapshot-copy failure invalidated the installed runtime"
+[ -f "$base/runtime/.ableton-linux-runtime" ] \
+    && [ ! -e "$base/runtime/.ableton-linux-rollback/old-sentinel" ] \
+    || fail "rollback snapshot-copy warning restored the previous runtime"
+grep -qF 'The install is ready, but old recovery files could not be removed.' "$base/err" \
+    || fail "rollback snapshot-copy failure was not reported as a cleanup warning"
 saved_runtime="$(find_saved_runtime "$base")" \
-    || fail "committed runtime update lost its saved runtime after metadata failure"
+    || fail "runtime update lost its saved runtime after optional metadata failure"
 saved_meta="$saved_runtime/.ableton-linux-rollback"
 [ -e "$saved_runtime/.ableton-linux-rollback-incomplete" ] \
     || fail "metadata copy failure published a rollback candidate as complete"
@@ -573,9 +1384,9 @@ if run_isolated "$base" env \
     bash "$here/rollback.sh" >"$base/rollback.out" 2>"$base/rollback.err"; then
     fail "rollback selected a candidate with incomplete metadata"
 fi
-grep -qF 'no completed runtime rollback is available' "$base/rollback.err" \
+grep -qF 'There is no previous Wine version to restore.' "$base/rollback.err" \
     || fail "incomplete metadata candidate refusal was not explicit"
-ok "snapshot-copy failure preserves old metadata and leaves an unselectable incomplete candidate"
+ok "snapshot-copy warning keeps the new runtime and leaves the old candidate safely unselectable"
 
 base="$(new_env rollback-marker-permission-failure)"
 prepare_runtime_metadata_fixture "$base"
@@ -621,6 +1432,12 @@ install_fake_host_tools()
     mkdir -p -- "$base/fakebin"
     cat > "$base/fakebin/systemctl" <<'EOF'
 #!/bin/sh
+# Most fixtures need a reachable user manager but do not create a Link service.
+# Mutating and reload commands succeed; status checks accurately report that
+# the service is neither enabled nor active.
+case " $* " in
+    *' is-enabled '*|*' is-active '*) exit 1 ;;
+esac
 exit 0
 EOF
     cat > "$base/fakebin/xdg-mime" <<'EOF'
@@ -688,6 +1505,46 @@ manifest_has_path()
     awk -F '\t' -v wanted="$wanted" '$2 == wanted { found=1 } END { exit !found }' "$manifest"
 }
 
+# A top-level coordinator owns an explicitly supplied transaction directory.
+# Component success, commit, and rollback may finish their own domain, but may
+# not make unfinished sibling domains look inactive. A standalone invocation,
+# on the other hand, must retire the transaction it created for itself.
+base="$(new_env component-outer-active-owner)"
+install_fake_host_tools "$base"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$base/runtime/.ableton-linux-runtime"
+outer="$base/coordinator-transaction"
+mkdir -p -- "$outer"
+run_component_install "$base" "$base/runtime" --integration-only \
+    --transaction-dir "$outer" >"$base/install.out" 2>"$base/install.err" \
+    || fail "external component transaction could not complete"
+[ -f "$outer/active" ] && [ ! -L "$outer/active" ] \
+    || fail "external component completion retired the coordinator active marker"
+run_component_install "$base" "$base/runtime" --commit "$outer" \
+    >"$base/commit.out" 2>"$base/commit.err" \
+    || fail "external component transaction could not commit"
+[ -f "$outer/active" ] && [ ! -L "$outer/active" ] \
+    || fail "component --commit retired the coordinator active marker"
+run_component_install "$base" "$base/runtime" --rollback "$outer" \
+    >"$base/rollback.out" 2>"$base/rollback.err" \
+    || fail "external component transaction could not roll back"
+[ -f "$outer/active" ] && [ ! -L "$outer/active" ] \
+    || fail "component --rollback retired the coordinator active marker"
+
+base="$(new_env component-own-active-owner)"
+install_fake_host_tools "$base"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$base/runtime/.ableton-linux-runtime"
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/install.out" 2>"$base/install.err" \
+    || fail "standalone component transaction could not complete"
+transactions="$base/xdg/state/ableton-wine/transactions"
+if [ -d "$transactions" ] \
+   && find "$transactions" -mindepth 1 -print -quit | grep -q .; then
+    fail "standalone component completion retained its own transaction or active marker"
+fi
+ok "only the coordinator retires external active markers; standalone components retire their own transaction"
+
 base="$(new_env panel-lifecycle)"
 install_fake_host_tools "$base"
 make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
@@ -741,12 +1598,8 @@ run_component_install "$base" "$base/runtime" --integration-only \
     || fail "integration left drift in the panel desktop entry"
 grep -qF '# local panel launcher drift' "${panel_desktop}.bak" \
     || fail "panel desktop backup does not contain the displaced entry"
-grep -qF "The installer replaced a launcher because its saved checksum differed: $panel_command" \
-    "$base/install-drift.out" \
-    || fail "panel command replacement was not reported"
-grep -qF "The installer replaced a launcher because its saved checksum differed: $panel_desktop" \
-    "$base/install-drift.out" \
-    || fail "panel desktop replacement was not reported"
+! grep -qF 'saved checksum differed' "$base/install-drift.out" \
+    || fail "ordinary panel repair printed internal checksum details"
 for launcher in "$panel_command" "$panel_desktop"; do
     recorded="$(awk -F '\t' -v wanted="$launcher" '$2 == wanted { print $3; exit }' "$manifest")"
     current="$(
@@ -769,7 +1622,7 @@ grep -qF "Audio report: $base/xdg/data/ableton-wine/audio-report.sh" "$base/inst
     || fail "install did not print the durable audio-report path"
 grep -qF "Realtime setup: $base/xdg/data/ableton-wine/setup-realtime.sh" "$base/install-built.out" \
     || fail "install did not print the durable realtime-setup path"
-grep -qF "Runtime rollback: $base/xdg/data/ableton-wine/rollback.sh" "$base/install-built.out" \
+grep -qF "Restore previous Wine version: $base/xdg/data/ableton-wine/rollback.sh" "$base/install-built.out" \
     || fail "install did not print the durable rollback path"
 ok "integration persists and reports durable diagnostic and recovery tools"
 
@@ -811,9 +1664,12 @@ mkdir -p -- "$txn"
 run_component_install "$base" "$base/runtime" --integration-only --transaction-dir "$txn" \
     >"$base/install-skipped-txn.out" 2>"$base/install-skipped-txn.err" \
     || { sed -n '1,120p' "$base/install-skipped-txn.err" >&2; fail "built-to-skipped transactional transition failed"; }
-[ ! -e "$panel_command" ] && [ ! -L "$panel_command" ] \
-    && [ ! -e "$panel_desktop" ] && [ ! -e "$panel_icon" ] \
-    || fail "skipped panel left managed host artifacts"
+[ -L "$panel_command" ] && [ "$(readlink -- "$panel_command")" = "$user_panel_target" ] \
+    && grep -qF '# local panel launcher drift' "$panel_desktop" \
+    && [ ! -e "${panel_command}.bak" ] && [ ! -L "${panel_command}.bak" ] \
+    && [ ! -e "${panel_desktop}.bak" ] && [ ! -L "${panel_desktop}.bak" ] \
+    && [ ! -e "$panel_icon" ] \
+    || fail "skipped panel did not restore and consume displaced foreign launchers"
 ! manifest_has_path "$manifest" "$panel_command" || fail "skipped panel retained command ownership"
 
 # Put the runtime payload back before restoring its host projections. Runtime
@@ -822,22 +1678,29 @@ write_build_info "$base/runtime" "$base/BUILD-INFO.txt" built
 run_component_install "$base" "$base/runtime" --rollback "$txn" \
     >"$base/rollback.out" 2>"$base/rollback.err" \
     || fail "panel integration rollback failed"
-[ -L "$panel_command" ] && [ -f "$panel_desktop" ] && [ -f "$panel_icon" ] \
+[ -L "$panel_command" ] && [ "$(readlink -- "$panel_command")" = "$base/runtime/bin/pipeasio-settings" ] \
+    && [ -f "$panel_desktop" ] && [ -f "$panel_icon" ] \
+    && [ -L "${panel_command}.bak" ] \
+    && [ "$(readlink -- "${panel_command}.bak")" = "$user_panel_target" ] \
+    && grep -qF '# local panel launcher drift' "${panel_desktop}.bak" \
     || fail "rollback did not restore panel host projections"
-manifest_has_path "$manifest" "$panel_command" || fail "rollback did not restore panel ownership"
-ok "panel transition participates in component rollback lifecycle"
+! manifest_has_path "$manifest" "$panel_command" \
+    || fail "component rollback rewound disposable installed-file inventory"
+ok "panel files participate in component rollback without rewinding uninstall inventory"
 
 write_build_info "$base/runtime" "$base/BUILD-INFO.txt" skipped
 run_component_install "$base" "$base/runtime" --integration-only \
     >"$base/install-skipped.out" 2>"$base/install-skipped.err" \
     || fail "committed built-to-skipped transition failed"
 [ ! -e "$panel_command" ] && [ ! -L "$panel_command" ] \
-    && [ ! -e "$panel_desktop" ] && [ ! -e "$panel_icon" ] \
-    || fail "committed skipped panel left managed artifacts"
+    && [ ! -e "$panel_desktop" ] && [ -f "$panel_icon" ] \
+    || fail "committed skipped panel did not remove recognised launchers and preserve its unverified icon"
+grep -qF "preserved your existing $panel_icon" "$base/install-skipped.out" \
+    || fail "unverified panel icon preservation was not reported"
 ! manifest_has_path "$manifest" "$panel_command" || fail "built-to-skipped transition left stale command ownership"
 ! manifest_has_path "$manifest" "$panel_desktop" || fail "built-to-skipped transition left stale desktop ownership"
 ! manifest_has_path "$manifest" "$panel_icon" || fail "built-to-skipped transition left stale icon ownership"
-ok "built-to-skipped transition removes and de-owns all panel projections"
+ok "built-to-skipped transition removes recognised launchers and preserves an unverified icon"
 
 base="$(new_env panel-desktop-escaping)"
 install_fake_host_tools "$base"
@@ -1058,9 +1921,12 @@ foreign_manifest="$base/xdg/state/ableton-wine/install-manifest.tsv"
 manifest_has_path "$foreign_manifest" "$base/home/.local/bin/pipeasio-settings" \
     || fail "installed pipeasio-settings command was not claimed in the manifest"
 foreign_id="$(printf '%s' "$base/home/.local/bin/pipeasio-settings" | sha256sum | awk '{print $1}')"
-grep -qxF 'echo foreign-settings-command' \
-    "$base/xdg/state/ableton-wine/install-prestate/$foreign_id" \
-    || fail "foreign panel command was not retained as uninstall prestate"
+[ ! -e "$base/xdg/state/ableton-wine/install-prestate/$foreign_id" ] \
+    && { [ ! -r "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
+         || ! awk -F '\t' -v p="$base/home/.local/bin/pipeasio-settings" \
+                '$2==p { found=1 } END { exit !found }' \
+                "$base/xdg/state/ableton-wine/install-prestate.tsv"; } \
+    || fail "fresh panel repair duplicated its adjacent backup in legacy prestate"
 write_build_info "$base/runtime" "$base/BUILD-INFO.txt" skipped
 run_component_install "$base" "$base/runtime" --integration-only \
     >"$base/skipped.out" 2>"$base/skipped.err" \
@@ -1070,7 +1936,103 @@ run_component_install "$base" "$base/runtime" --integration-only \
     || fail "skipped-panel transition did not restore the displaced command"
 ! manifest_has_path "$foreign_manifest" "$base/home/.local/bin/pipeasio-settings" \
     || fail "restored panel command remained claimed in the manifest"
-ok "foreign pipeasio-settings command is backed up, replaced, and restored"
+! manifest_has_path "$foreign_manifest" "$base/home/.local/bin/pipeasio-settings.bak" \
+    || fail "consumed adjacent panel backup remained claimed in the manifest"
+[ ! -e "$base/home/.local/bin/pipeasio-settings.bak" ] \
+    && [ ! -L "$base/home/.local/bin/pipeasio-settings.bak" ] \
+    || fail "skipped-panel transition retained its consumed adjacent backup"
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/retry.out" 2>"$base/retry.err" \
+    || fail "repeated skipped-panel repair rejected the already-restored command"
+[ ! -L "$base/home/.local/bin/pipeasio-settings" ] \
+    && [ "$(sha256sum -- "$base/home/.local/bin/pipeasio-settings" | awk '{print $1}')" = "$foreign_digest" ] \
+    && [ ! -e "$base/home/.local/bin/pipeasio-settings.bak" ] \
+    || fail "repeated skipped-panel repair changed the restored foreign command"
+ok "foreign pipeasio-settings command is backed up, restored once, and remains stable on retry"
+
+base="$(new_env modified-panel-command-with-backup)"
+install_fake_host_tools "$base"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+panel_command="$base/home/.local/bin/pipeasio-settings"
+mkdir -p -- "$(dirname "$panel_command")"
+printf 'foreign panel bytes\n' > "$panel_command"
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/install.out" 2>"$base/install.err" \
+    || fail "modified-panel fixture could not install its managed projection"
+rm -f -- "$panel_command"
+printf 'user modified panel bytes\n' > "$panel_command"
+write_build_info "$base/runtime" "$base/BUILD-INFO.txt" skipped
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/skipped.out" 2>"$base/skipped.err" \
+    || fail "modified panel command made skipped-panel repair fatal"
+grep -qxF 'user modified panel bytes' "$panel_command" \
+    && grep -qxF 'foreign panel bytes' "$panel_command.bak" \
+    || fail "skipped-panel repair changed a modified command or its saved foreign copy"
+[ "$(grep -cF "Kept both $panel_command and $panel_command.bak because the current shortcut was changed." \
+        "$base/skipped.err")" -eq 1 ] \
+    || fail "modified command and saved copy did not produce exactly one plain warning"
+ok "skipped-panel repair preserves a modified command and its saved foreign copy with one warning"
+
+base="$(new_env panel-command-missing-backup)"
+install_fake_host_tools "$base"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+panel_command="$base/home/.local/bin/pipeasio-settings"
+mkdir -p -- "$(dirname "$panel_command")"
+printf 'foreign panel bytes\n' > "$panel_command"
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/install.out" 2>"$base/install.err" \
+    || fail "missing-backup fixture could not install its managed projection"
+rm -f -- "$panel_command.bak"
+write_build_info "$base/runtime" "$base/BUILD-INFO.txt" skipped
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/skipped.out" 2>"$base/skipped.err" \
+    || fail "missing saved panel command made skipped-panel repair fatal"
+[ -L "$panel_command" ] \
+    && [ "$(readlink -- "$panel_command")" = "$base/runtime/bin/pipeasio-settings" ] \
+    && [ ! -e "$panel_command.bak" ] && [ ! -L "$panel_command.bak" ] \
+    || fail "skipped-panel repair changed the live command after its saved copy disappeared"
+[ "$(grep -cF "Kept $panel_command because its saved earlier shortcut is missing." \
+        "$base/skipped.err")" -eq 1 ] \
+    || fail "missing saved panel command did not produce one accurate warning"
+if manifest_has_path "$base/xdg/state/ableton-wine/install-manifest.tsv" "$panel_command" \
+   || manifest_has_path "$base/xdg/state/ableton-wine/install-manifest.tsv" "$panel_command.bak"; then
+    fail "missing saved panel command left an unsafe adjacent ownership claim"
+fi
+ok "skipped-panel repair keeps the live command and accurately reports a missing saved copy"
+
+base="$(new_env panel-adjacent-stale-prestate)"
+install_fake_host_tools "$base"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+panel_command="$base/home/.local/bin/pipeasio-settings"
+mkdir -p -- "$(dirname "$panel_command")"
+printf 'foreign panel bytes\n' > "$panel_command"
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/install.out" 2>"$base/install.err" \
+    || fail "stale-prestate fixture could not install its managed projection"
+cp -a -- "$panel_command" "$base/current.before"
+cp -a -- "$panel_command.bak" "$base/saved.before"
+printf 'present\t%s\t/tmp/untrusted-panel-backup\n' "$base/unrelated-path" \
+    > "$base/xdg/state/ableton-wine/install-prestate.tsv"
+if ! run_isolated "$base" env \
+    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        ableton_config_init
+        . "$1/lib/manifest.sh"
+        . "$1/lib/pipeasio.sh"
+        rc=0
+        ableton_pipeasio_restore_adjacent_backup "$2" || rc=$?
+        [ "$rc" -eq 2 ]
+    ' _ "$here" "$panel_command"; then
+    fail "adjacent panel recovery trusted a pair while legacy prestate was unverifiable"
+fi
+cmp -s -- "$base/current.before" "$panel_command" \
+    && cmp -s -- "$base/saved.before" "$panel_command.bak" \
+    && grep -qxF $'present\t'"$base/unrelated-path"$'\t/tmp/untrusted-panel-backup' \
+        "$base/xdg/state/ableton-wine/install-prestate.tsv" \
+    || fail "refusing ambiguous adjacent recovery changed live or legacy recovery data"
+ok "adjacent panel recovery defers when any legacy prestate inventory is unverifiable"
 
 install_managed_link()
 {
@@ -1087,6 +2049,23 @@ install_managed_link()
         ableton_write_ownership_manifest
         rm -f -- "$ABLETON_TRANSACTION_DIR/active"
     ' _ "$here" "$link_text" "$target"
+}
+
+install_managed_file()
+{
+    local base="$1" source="$2" target="$3" txn="$4"
+    mkdir -p -- "$txn"
+    # shellcheck disable=SC2016
+    run_isolated "$base" env ABLETON_TRANSACTION_DIR="$txn" bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        ableton_config_init
+        . "$1/lib/manifest.sh"
+        ableton_txn_init
+        ableton_install_file 755 "$2" "$3"
+        ableton_write_ownership_manifest
+        rm -f -- "$ABLETON_TRANSACTION_DIR/active"
+    ' _ "$here" "$source" "$target"
 }
 
 run_minimal_uninstall()
@@ -1123,6 +2102,28 @@ run_minimal_uninstall "$base" >"$base/uninstall.out" 2>"$base/uninstall.err" \
     || fail "uninstall did not restore the original relative foreign symlink"
 ok "two managed symlink updates retain and restore relative foreign prestate"
 
+base="$(new_env regular-file-prestate)"
+managed_file="$base/home/.local/bin/pipeasio-settings"
+mkdir -p -- "$(dirname "$managed_file")"
+printf '#!/bin/sh\necho original-foreign-file\n' > "$managed_file"
+printf '#!/bin/sh\necho managed-v1\n' > "$base/managed-file-v1"
+printf '#!/bin/sh\necho managed-v2\n' > "$base/managed-file-v2"
+chmod 755 "$managed_file" "$base/managed-file-v1" "$base/managed-file-v2"
+cp -a -- "$managed_file" "$base/original-foreign-file.before"
+install_managed_file "$base" "$base/managed-file-v1" "$managed_file" "$base/file-txn-v1" \
+    || fail "first managed regular-file update failed"
+cmp -s -- "$base/managed-file-v1" "$managed_file" \
+    || fail "first managed regular-file update did not take effect"
+install_managed_file "$base" "$base/managed-file-v2" "$managed_file" "$base/file-txn-v2" \
+    || fail "second managed regular-file update failed"
+cmp -s -- "$base/managed-file-v2" "$managed_file" \
+    || fail "second managed regular-file update did not take effect"
+run_minimal_uninstall "$base" >"$base/uninstall.out" 2>"$base/uninstall.err" \
+    || fail "uninstall failed while restoring regular-file prestate"
+cmp -s -- "$base/original-foreign-file.before" "$managed_file" \
+    || fail "uninstall did not restore the original foreign regular file"
+ok "two managed regular-file updates retain and restore foreign prestate"
+
 base="$(new_env retargeted-managed-link)"
 managed_link="$base/home/.local/bin/pipeasio-settings"
 install_managed_link "$base" "$base/managed-panel" "$managed_link" "$base/txn" \
@@ -1134,7 +2135,7 @@ run_minimal_uninstall "$base" >"$base/uninstall.out" 2>"$base/uninstall.err" \
 [ -L "$managed_link" ] \
     && [ "$(readlink -- "$managed_link")" = "$base/user-retargeted-panel" ] \
     || fail "uninstall removed a user-retargeted managed link"
-grep -qF "kept user-owned link $managed_link" "$base/uninstall.out" \
+grep -qF "kept a link at $managed_link because it was changed or points somewhere else" "$base/uninstall.err" \
     || fail "preserved retargeted link was not reported"
 ok "uninstall preserves a user-retargeted managed symlink"
 
@@ -1177,7 +2178,7 @@ run_minimal_uninstall "$base" >"$base/out" 2>"$base/err" \
     && [ ! -e "$base/xdg/data/applications/pipeasio-settings.desktop" ] \
     && [ ! -e "$base/xdg/data/icons/hicolor/scalable/apps/pipeasio.svg" ] \
     || fail "uninstall left a recognisable legacy panel projection"
-grep -qF 'removed legacy PipeASIO panel file' "$base/out" \
+grep -qF 'removed a PipeASIO Settings file from an older release:' "$base/out" \
     || fail "legacy panel cleanup was not reported"
 ok "uninstall removes exact pre-manifest PipeASIO panel projections"
 
@@ -1189,8 +2190,8 @@ run_minimal_uninstall "$base" >"$base/out" 2>"$base/err" \
     && [ "$(readlink -- "$base/home/.local/bin/pipeasio-settings")" \
         = "$base/foreign-panel-command" ] \
     || fail "uninstall removed a foreign panel symlink"
-grep -qF "kept independently installed PipeASIO panel file $base/home/.local/bin/pipeasio-settings" \
-    "$base/out" || fail "foreign legacy panel symlink preservation was not reported"
+grep -qF "kept an independently installed PipeASIO panel file at $base/home/.local/bin/pipeasio-settings" \
+    "$base/err" || fail "foreign legacy panel symlink preservation was not reported"
 ok "legacy cleanup preserves an independently targeted panel symlink"
 
 base="$(new_env unsafe-uninstall-no-state)"
@@ -1208,7 +2209,7 @@ fi
     || fail "unsafe uninstall refusal created an installer state marker"
 [ -f "$base/unrecognised-runtime/foreign" ] \
     || fail "unsafe uninstall refusal changed the unrecognised runtime"
-grep -qF 'refusing to delete unrecognised custom runtime' "$base/err" \
+grep -qF 'The Wine runtime was not deleted because the installer could not confirm that it created it:' "$base/err" \
     || fail "unsafe uninstall refusal was not explicit"
 ok "unsafe uninstall refuses before creating or claiming installer state"
 
@@ -1228,18 +2229,6 @@ make_registry_runtime()
     cat > "$runtime/bin/wine" <<'EOF'
 #!/bin/bash
 printf '%s\t%s\n' "${WINEPREFIX:-}" "$*" >> "${ABLETON_TEST_REGISTRY_LOG:?}"
-corrupt_rollback_snapshots()
-{
-    local txn
-    [ "${ABLETON_TEST_CORRUPT_ROLLBACK_SNAPSHOTS:-0}" -eq 1 ] || return 0
-    [ ! -e "${ABLETON_TEST_CORRUPTION_MARKER:?}" ] || return 0
-    for txn in "${XDG_STATE_HOME:?}"/ableton-wine/transactions/rollback.*; do
-        [ -r "$txn/files.tsv" ] || continue
-        /bin/rm -rf -- "$txn/files"
-        : > "${ABLETON_TEST_CORRUPTION_MARKER:?}"
-        return 0
-    done
-}
 case "${1:-}" in
     reg)
         case "${2:-}" in
@@ -1255,7 +2244,6 @@ case "${1:-}" in
                 ;;
             delete)
                 if [ "${ABLETON_TEST_REGISTRY_STICKY:-0}" -ne 0 ]; then
-                    corrupt_rollback_snapshots
                     exit 1
                 fi
                 /bin/rm -f -- "${ABLETON_TEST_REGISTRY_STATE:?}"
@@ -1365,7 +2353,6 @@ run_user_rollback()
         ABLETON_LINK_MODE=off \
         ABLETON_TEST_REGISTRY_LOG="$base/registry.log" \
         ABLETON_TEST_REGISTRY_STATE="$base/registry-present" \
-        ABLETON_TEST_CORRUPTION_MARKER="$base/corruption-fired" \
         PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
         "$@" bash "$here/rollback.sh"
 }
@@ -1447,6 +2434,135 @@ registered_clsids="$(grep -Eo '\{[0-9A-Fa-f-]{36}\}' "$base/registry.log" | sort
     || fail "registration lifecycle touched an unexpected CLSID"
 ok "registration deletes, registers, and queries only PipeASIO in the selected prefix"
 
+base="$(new_env rollback-stale-host-probe)"
+make_rollback_fixture "$base"
+mkdir -p -- "$base/xdg/data/ableton-wine"
+cat > "$base/xdg/data/ableton-wine/pipewire-version-probe" <<'EOF'
+#!/bin/sh
+echo 'stale generated host probe must not run' >&2
+exit 99
+EOF
+chmod 755 "$base/xdg/data/ableton-wine/pipewire-version-probe"
+run_user_rollback "$base" env ABLETON_TEST_REGISTRY_STICKY=0 \
+    >"$base/out" 2>"$base/err" \
+    || fail "stale generated host probe rejected valid current and restored runtimes"
+[ -f "$base/runtime/previous-generation" ] \
+    || fail "stale generated host probe prevented runtime rollback"
+! grep -qF 'stale generated host probe must not run' "$base/err" \
+    || fail "rollback executed the stale generated host probe"
+ok "rollback uses each sealed runtime probe instead of stale generated host copies"
+
+base="$(new_env rollback-postcore-output)"
+make_rollback_fixture "$base"
+cat > "$base/postcore-failure.bash" <<'EOF'
+echo()
+{
+    if [ "$*" = '== Restore saved settings ==' ]; then
+        return 74
+    fi
+    builtin echo "$@"
+}
+EOF
+run_user_rollback "$base" env BASH_ENV="$base/postcore-failure.bash" \
+    ABLETON_TEST_REGISTRY_STICKY=0 >"$base/out" 2>"$base/err" \
+    || fail "post-core output failure reported a committed rollback as failed"
+[ -f "$base/runtime/previous-generation" ] \
+    || fail "post-core output failure reversed a committed runtime rollback"
+grep -qxF 'live_major=11' "$ROLLBACK_INSTALLER_CONFIG" \
+    && grep -qxF 'buffer_size = 883' "$ROLLBACK_PIPEASIO_CONFIG" \
+    || fail "post-core output failure stopped recorded settings restoration"
+[ -L "$base/home/.local/bin/pipeasio-settings" ] \
+    && [ "$(readlink -- "$base/home/.local/bin/pipeasio-settings")" \
+        = "$base/runtime/bin/pipeasio-settings" ] \
+    || fail "post-core output failure stopped panel repair"
+if find "$base/xdg/state/ableton-wine/transactions" -type f -name active \
+    -print -quit 2>/dev/null | grep -q .; then
+    fail "post-core output failure stopped rollback cleanup"
+fi
+ok "runtime rollback continues optional repair and cleanup after output fails"
+
+# The runtime swap has no host-file mutations to put in manifest.sh's file
+# journal. Neither that empty journal nor a failed progress write may become a
+# prerequisite for restoring the previous Wine version.
+base="$(new_env rollback-no-empty-file-journal)"
+make_rollback_fixture "$base"
+real_mkdir="$(command -v mkdir)"
+cat > "$base/fakebin/mkdir" <<EOF
+#!/bin/bash
+for argument do
+    case "\$argument" in
+        */transactions/rollback.*/files)
+            : > "\${ABLETON_TEST_EMPTY_JOURNAL_ATTEMPT:?}"
+            exit 79
+            ;;
+    esac
+done
+exec "$real_mkdir" "\$@"
+EOF
+chmod 755 "$base/fakebin/mkdir"
+cat > "$base/precore-output-failure.bash" <<'EOF'
+echo()
+{
+    if [ "$*" = '== Restore the previous Wine version ==' ]; then
+        return 74
+    fi
+    builtin echo "$@"
+}
+EOF
+run_user_rollback "$base" env BASH_ENV="$base/precore-output-failure.bash" \
+    ABLETON_TEST_EMPTY_JOURNAL_ATTEMPT="$base/empty-journal-attempt" \
+    ABLETON_TEST_REGISTRY_STICKY=0 >"$base/out" 2>"$base/err" \
+    || fail "progress output or an unused file journal blocked runtime restore"
+[ -f "$base/runtime/previous-generation" ] \
+    || fail "progress output failure prevented the runtime swap"
+[ ! -e "$base/empty-journal-attempt" ] \
+    || fail "runtime restore initialized an unused host-file journal"
+if find "$base/xdg/state/ableton-wine/transactions" -type f \
+    \( -name active -o -name files.tsv \) -print -quit 2>/dev/null | grep -q .; then
+    fail "runtime restore left an empty host-file transaction"
+fi
+ok "runtime restore has no empty file-journal or progress-output gate"
+
+# Persistent recovery metadata is optional to the runtime/registry operation.
+# If its state directory cannot be created, rollback uses private scratch and
+# still completes the validated swap.
+base="$(new_env rollback-state-scratch-unavailable)"
+make_rollback_fixture "$base"
+real_mkdir="$(command -v mkdir)"
+real_mktemp="$(command -v mktemp)"
+cat > "$base/fakebin/mkdir" <<EOF
+#!/bin/bash
+for argument do
+    if [ "\$argument" = "\${XDG_STATE_HOME:?}/ableton-wine/transactions" ]; then
+        : > "\${ABLETON_TEST_STATE_SCRATCH_REFUSED:?}"
+        exit 80
+    fi
+done
+exec "$real_mkdir" "\$@"
+EOF
+cat > "$base/fakebin/mktemp" <<EOF
+#!/bin/bash
+for argument do
+    case "\$argument" in
+        */ableton-runtime-restore.XXXXXX)
+            : > "\${ABLETON_TEST_TEMP_SCRATCH_USED:?}"
+            ;;
+    esac
+done
+exec "$real_mktemp" "\$@"
+EOF
+chmod 755 "$base/fakebin/mkdir" "$base/fakebin/mktemp"
+run_user_rollback "$base" env \
+    ABLETON_TEST_STATE_SCRATCH_REFUSED="$base/state-scratch-refused" \
+    ABLETON_TEST_TEMP_SCRATCH_USED="$base/temp-scratch-used" \
+    ABLETON_TEST_REGISTRY_STICKY=0 >"$base/out" 2>"$base/err" \
+    || fail "unavailable persistent recovery scratch blocked runtime restore"
+[ -e "$base/state-scratch-refused" ] && [ -e "$base/temp-scratch-used" ] \
+    || fail "unavailable persistent recovery scratch did not exercise the temporary fallback"
+[ -f "$base/runtime/previous-generation" ] \
+    || fail "unavailable persistent recovery scratch prevented the runtime swap"
+ok "persistent failure-record scratch is not a runtime restore gate"
+
 base="$(new_env rollback-saved-runtime-busy)"
 make_rollback_fixture "$base"
 cp -- /bin/sleep "$ROLLBACK_SAVED/bin/rollback-busy-client"
@@ -1463,7 +2579,7 @@ kill "$saved_busy_pid" 2>/dev/null || true
 wait "$saved_busy_pid" 2>/dev/null || true
 [ -f "$base/runtime/current-generation" ] && [ -f "$ROLLBACK_SAVED/previous-generation" ] \
     || fail "saved-runtime busy refusal changed the runtime layout"
-grep -Eq 'Wine client is running|another Wine prefix is using this runtime' "$base/err" \
+grep -Eq 'Close Live, Max|Close the listed program using this Wine runtime' "$base/err" \
     || fail "saved-runtime busy refusal was not explicit"
 # "close Live" is unactionable when the holder is a windowless agent, so the
 # refusal names what it found rather than guessing at it.
@@ -1489,6 +2605,9 @@ case "${1:-}" in
 esac
 EOF
 chmod 755 "$base/runtime/bin/pipewire-version-probe"
+probe_hash="$(sha256sum -- "$base/runtime/bin/pipewire-version-probe" | awk '{print $1}')"
+sed -i "s/^pipewire-version-probe: .*/pipewire-version-probe: $probe_hash/" \
+    "$base/runtime/ABLETON-WINE-BUILD-INFO.txt"
 if run_user_rollback "$base" env \
     ABLETON_TEST_REGISTRY_STICKY=0 \
     ABLETON_TEST_LATE_CLIENT="$base/runtime/bin/late-runtime-client" \
@@ -1502,7 +2621,7 @@ kill "$late_runtime_pid" 2>/dev/null || true
 wait "$late_runtime_pid" 2>/dev/null || true
 [ -f "$base/runtime/current-generation" ] && [ -f "$ROLLBACK_SAVED/previous-generation" ] \
     || fail "late-runtime recheck occurred after the runtime swap"
-grep -Eq 'Wine client is running|another Wine prefix is using this runtime' "$base/err" \
+grep -Eq 'Close Live, Max|Close the listed program using this Wine runtime' "$base/err" \
     || fail "late-runtime recheck refusal was not explicit"
 ok "rollback rechecks current and saved runtime users immediately before swap"
 
@@ -1622,6 +2741,8 @@ manifest_has_path "$rollback_manifest" "$rollback_panel" \
     || fail "user-facing rollback did not update panel ownership"
 grep -Fq "$base/prefix"$'\tregsvr32 /s pipeasio64.dll' "$base/registry.log" \
     || fail "user-facing rollback did not register the restored driver in its prefix"
+! grep -qF 'rerun the installer to finish optional setup' "$base/rollback.err" \
+    || fail "successful rollback printed a false optional-setup warning"
 ok "user-facing rollback restores marked runtime, config, panel, and registration under custom XDG"
 
 cp -a -- "$base/runtime/.ableton-linux-rollback" "$base/active-rollback-metadata.before"
@@ -1652,6 +2773,9 @@ failed_record="$(find "$base/xdg/state/ableton-wine/transactions" -mindepth 2 \
     -maxdepth 2 -type f -name FAILURE -print | head -n 1)"
 [ -n "$failed_record" ] \
     || fail "failed original registration did not retain a failure record"
+failed_txn="$(dirname "$failed_record")"
+[ ! -e "$failed_txn/files.tsv" ] && [ ! -e "$failed_txn/active" ] \
+    || fail "pre-commit registration failure created an empty host-file transaction"
 grep -qxF 'runtime_restored=yes' "$failed_record" \
     || fail "failed original registration obscured the restored runtime layout"
 if ! grep -qxF 'restoration_complete=no' "$failed_record"; then
@@ -1659,36 +2783,120 @@ if ! grep -qxF 'restoration_complete=no' "$failed_record"; then
     sed -n '1,120p' "$base/failed-rollback.err" >&2
     fail "failed original registration was not recorded as incomplete restoration"
 fi
-grep -qF 'automatic runtime restoration is incomplete: original PipeASIO registration could not be restored' \
+grep -qF 'The previous Wine version could not be restored automatically: original PipeASIO registration could not be restored' \
     "$base/failed-rollback.err" \
     || fail "failed original registration was not reported as incomplete restoration"
-! grep -qF 'previous runtime and files were restored' "$base/failed-rollback.err" \
+! grep -qF 'Wine version from before this attempt is back in place' "$base/failed-rollback.err" \
     || fail "failed original registration printed a false restored claim"
-ok "post-swap failure restores files atomically and records failed re-registration"
+ok "post-swap failure restores the runtime layout and records failed re-registration"
 
-base="$(new_env rollback-host-restore-failure)"
+# Change optional installer settings during the final desktop refresh, after
+# the runtime swap and PipeASIO registration have committed. The concurrent
+# settings generation must be preserved and must not turn a valid runtime
+# rollback into a failure or start a second restoration pass.
+base="$(new_env rollback-post-core-config-drift)"
 make_rollback_fixture "$base"
-if run_user_rollback "$base" env \
-    ABLETON_TEST_REGISTRY_STICKY=1 \
-    ABLETON_TEST_CORRUPT_ROLLBACK_SNAPSHOTS=1 \
-    >"$base/out" 2>"$base/err"; then
-    fail "rollback succeeded after injected host-file restoration failure"
+cp -- "$ROLLBACK_INSTALLER_CONFIG" "$base/installer-config.before"
+cp -- "$ROLLBACK_PIPEASIO_CONFIG" "$base/pipeasio-config.before"
+printf '0\n' > "$base/update-desktop-count"
+cat > "$base/fakebin/update-desktop-database" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+count="$(cat "${ABLETON_TEST_UPDATE_COUNT:?}")"
+count=$((count + 1))
+printf '%s\n' "$count" > "$ABLETON_TEST_UPDATE_COUNT"
+if [ "$count" -ge 2 ] && [ ! -e "${ABLETON_TEST_COMMIT_DRIFT_FIRED:?}" ]; then
+    cp -- "${ABLETON_TEST_COMMIT_DRIFT_SOURCE:?}" \
+        "${ABLETON_TEST_COMMIT_DRIFT_TARGET:?}"
+    : > "$ABLETON_TEST_COMMIT_DRIFT_FIRED"
 fi
-[ -e "$base/corruption-fired" ] \
-    || fail "host-file restoration failure fixture did not corrupt its snapshots"
-failed_record="$(find "$base/xdg/state/ableton-wine/transactions" -mindepth 2 \
-    -maxdepth 2 -type f -name FAILURE -print | head -n 1)"
-[ -n "$failed_record" ] \
-    || fail "host-file restoration failure did not retain a failure record"
-grep -qxF 'runtime_restored=yes' "$failed_record" \
-    || fail "host-file restoration failure obscured the restored runtime layout"
-grep -qxF 'restoration_complete=no' "$failed_record" \
-    || fail "host-file restoration failure was not recorded as incomplete"
-grep -qF 'automatic runtime restoration is incomplete: host file restoration failed' "$base/err" \
-    || fail "host-file restoration failure was not reported as incomplete"
-! grep -qF 'previous runtime and files were restored' "$base/err" \
-    || fail "host-file restoration failure printed a false restored claim"
-ok "host-file rollback failure records incomplete restoration without a false success claim"
+exit 0
+EOF
+chmod 755 "$base/fakebin/update-desktop-database"
+run_user_rollback "$base" env \
+    ABLETON_TEST_REGISTRY_STICKY=0 \
+    ABLETON_TEST_UPDATE_COUNT="$base/update-desktop-count" \
+    ABLETON_TEST_COMMIT_DRIFT_FIRED="$base/commit-drift-fired" \
+    ABLETON_TEST_COMMIT_DRIFT_SOURCE="$base/installer-config.before" \
+    ABLETON_TEST_COMMIT_DRIFT_TARGET="$ROLLBACK_INSTALLER_CONFIG" \
+    >"$base/out" 2>"$base/err" \
+    || fail "post-core installer-settings drift invalidated a restored runtime"
+[ -e "$base/commit-drift-fired" ] \
+    || fail "post-core installer-settings drift fixture did not mutate its destination"
+[ -f "$base/runtime/previous-generation" ] \
+    && [ ! -e "$ROLLBACK_SAVED" ] && [ ! -L "$ROLLBACK_SAVED" ] \
+    && [ -e "$base/registry-present" ] \
+    && cmp -s -- "$ROLLBACK_INSTALLER_CONFIG" "$base/installer-config.before" \
+    && grep -qF 'buffer_size = 883' "$ROLLBACK_PIPEASIO_CONFIG" \
+    || fail "post-core installer-settings drift reversed Wine or changed the concurrent settings generation"
+! find "$base/xdg/state/ableton-wine/transactions" -mindepth 2 \
+    -maxdepth 2 -type f -name FAILURE -print -quit | grep -q . \
+    || fail "post-core installer-settings drift invented a rollback failure"
+! find "$base/xdg/state/ableton-wine/transactions" -mindepth 2 \
+    -maxdepth 2 -type f -name active -print -quit | grep -q . \
+    || fail "post-core installer-settings drift retained an active rollback"
+grep -qxF 'OK: The previous Wine version is restored.' "$base/out" \
+    || fail "post-core installer-settings drift hid the restored runtime outcome"
+ok "post-core installer-settings drift is preserved without invalidating the restored runtime"
+
+# Once the runtime swap and PipeASIO registration have committed, cleanup
+# errors are not rollback errors.
+# Fail each cleanup boundary independently: the restored runtime/configuration
+# must stay committed and the command must remain successful. The retained
+# transaction preserves the cleanup evidence; no extra failure record or
+# restoration pass should be invented after the core result commits.
+real_rm="$(command -v rm)"
+for cleanup_failure in directory; do
+    base="$(new_env "rollback-committed-cleanup-$cleanup_failure")"
+    make_rollback_fixture "$base"
+    cat > "$base/fakebin/rm" <<EOF
+#!/bin/bash
+set -euo pipefail
+transaction_root="\${XDG_STATE_HOME:?}/ableton-wine/transactions"
+for argument do
+    if [ "\${ABLETON_TEST_CLEANUP_FAILURE:?}" = directory ]; then
+        case "\$argument" in
+            "\$transaction_root"/rollback.*)
+                if [ "\${argument%/*}" = "\$transaction_root" ]; then
+                    printf 'directory\n' > "\${ABLETON_TEST_CLEANUP_ATTEMPT:?}"
+                    exit 89
+                fi
+                ;;
+        esac
+    fi
+done
+exec "$real_rm" "\$@"
+EOF
+    chmod 755 "$base/fakebin/rm"
+    run_user_rollback "$base" env \
+        ABLETON_TEST_REGISTRY_STICKY=0 \
+        ABLETON_TEST_CLEANUP_FAILURE="$cleanup_failure" \
+        ABLETON_TEST_CLEANUP_ATTEMPT="$base/cleanup-attempt" \
+        >"$base/out" 2>"$base/err" \
+        || fail "committed $cleanup_failure cleanup failure invalidated the restored runtime"
+    grep -qxF "$cleanup_failure" "$base/cleanup-attempt" \
+        || fail "committed $cleanup_failure cleanup fixture did not reach its boundary"
+    cleanup_txn="$(find "$base/xdg/state/ableton-wine/transactions" -mindepth 1 \
+        -maxdepth 1 -type d -name 'rollback.*' -print | head -n 1)"
+    [ -n "$cleanup_txn" ] \
+        || fail "committed $cleanup_failure cleanup did not retain its recovery directory"
+    [ ! -e "$cleanup_txn/COMMITTED_CLEANUP_FAILURE" ] \
+        || fail "committed $cleanup_failure cleanup invented a failure record"
+    [ ! -e "$cleanup_txn/active" ] && [ ! -e "$cleanup_txn/files.tsv" ] \
+        || fail "cleanup-only directory contains an unused host-file transaction"
+    [ ! -e "$cleanup_txn/FAILURE" ] \
+        || fail "committed $cleanup_failure cleanup incorrectly entered restoration recovery"
+    [ -f "$base/runtime/previous-generation" ] \
+        && [ ! -e "$ROLLBACK_SAVED" ] && [ ! -L "$ROLLBACK_SAVED" ] \
+        && grep -qF 'live_major=11' "$ROLLBACK_INSTALLER_CONFIG" \
+        && grep -qF 'buffer_size = 883' "$ROLLBACK_PIPEASIO_CONFIG" \
+        || fail "committed $cleanup_failure cleanup failure reversed successful state"
+    grep -qF "The previous Wine version is restored, but temporary files remain at $cleanup_txn." "$base/err" \
+        || fail "committed $cleanup_failure cleanup was not reported as cleanup-only"
+    ! grep -Eq 'could not be restored automatically|Wine version from before this attempt is back in place' "$base/err" \
+        || fail "committed $cleanup_failure cleanup printed a restoration claim"
+done
+ok "postcommit recovery-directory cleanup failures preserve committed state and never claim restoration"
 
 base="$(new_env retained-prefix-unregister)"
 make_registry_runtime "$base"
@@ -1739,17 +2947,16 @@ install_managed_link "$base" "$base/managed-panel" "$managed_link" "$base/txn" \
 prestate_id="$(printf '%s' "$managed_link" | sha256sum | awk '{print $1}')"
 prestate_backup="$base/xdg/state/ableton-wine/install-prestate/$prestate_id"
 rm -f -- "$prestate_backup"
-if run_minimal_uninstall "$base" >"$base/out" 2>"$base/err"; then
-    fail "uninstall succeeded with a missing recorded pre-install backup"
-fi
+run_minimal_uninstall "$base" >"$base/out" 2>"$base/err" \
+    || fail "a missing optional pre-install backup made uninstall fail"
 [ -L "$managed_link" ] && [ "$(readlink -- "$managed_link")" = "$base/managed-panel" ] \
-    || fail "missing prestate validation occurred after managed target removal"
+    || fail "missing optional prestate did not preserve the managed target"
 [ -r "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
     && [ -r "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "missing prestate failure discarded ownership or prestate records"
-grep -Eq 'cannot safely restore the recorded pre-install file|pre-install backup is missing or misplaced' "$base/err" \
-    || fail "missing prestate refusal was not explicit"
-ok "uninstall validates recorded prestate before removing a managed path"
+    || fail "missing optional prestate discarded the records needed for inspection"
+grep -qF "Desktop shortcuts, file-opening settings, and older Wine runtimes were left unchanged because the installer's file list could not be trusted" \
+    "$base/err" || fail "missing optional prestate warning was not explicit"
+ok "missing optional prestate preserves integration records without failing uninstall"
 
 base="$(new_env literal-runtime-sibling)"
 literal_runtime="$base/runtime[1]"
@@ -1929,7 +3136,7 @@ ok "file and symlink directory refusals leave transaction and prestate journals 
 
 run_guarded_file_install()
 {
-    local base="$1" txn="$2" target="$3"
+    local base="$1" txn="$2" target="$3" policy="${4:-preserve-local}"
     mkdir -p -- "$txn"
     mkdir -p -- "$txn"
     # shellcheck disable=SC2016
@@ -1939,8 +3146,8 @@ run_guarded_file_install()
         ableton_config_init
         . "$1/lib/manifest.sh"
         ableton_txn_init
-        ableton_install_file 600 "$2" "$3"
-    ' _ "$here" "$base/replacement" "$target"
+        ableton_install_file 600 "$2" "$3" file "$4"
+    ' _ "$here" "$base/replacement" "$target" "$policy"
 }
 
 for journal in manifest prestate; do
@@ -1950,9 +3157,15 @@ for journal in manifest prestate; do
         txn="$base/txn"
         target="$base/xdg/data/ableton-wine/setup-realtime.sh"
         mkdir -p -- "$state" "$(dirname "$target")"
+        printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
         printf 'foreign live bytes\n' > "$target"
         printf 'replacement bytes\n' > "$base/replacement"
         printf 'external journal bytes\n' > "$base/external-journal"
+        if [ "$journal" = prestate ]; then
+            printf 'file\t%s\t%s\n' "$target" \
+                "$(sha256sum -- "$target" | awk '{print $1}')" \
+                > "$state/install-manifest.tsv"
+        fi
         path="$state/install-$journal.tsv"
         case "$corrupt_kind" in
             symlink) ln -s -- "$base/external-journal" "$path" ;;
@@ -1960,21 +3173,101 @@ for journal in manifest prestate; do
             malformed) printf 'not-a-valid-record\n' > "$path" ;;
             nul) printf '\0' > "$path" ;;
         esac
-        if run_guarded_file_install "$base" "$txn" "$target" \
-            >"$base/out" 2>"$base/err"; then
-            chmod 600 "$path" 2>/dev/null || true
-            fail "install accepted a $corrupt_kind $journal journal"
-        fi
+        run_guarded_file_install "$base" "$txn" "$target" \
+            >"$base/out" 2>"$base/err" \
+            || { chmod 600 "$path" 2>/dev/null || true; \
+                 fail "repair install consulted a $corrupt_kind legacy $journal journal"; }
         chmod 600 "$path" 2>/dev/null || true
-        grep -qxF 'foreign live bytes' "$target" \
-            || fail "$corrupt_kind $journal refusal overwrote a foreign target"
+        grep -qxF 'replacement bytes' "$target" \
+            || fail "$corrupt_kind legacy $journal journal blocked canonical repair"
         grep -qxF 'external journal bytes' "$base/external-journal" \
-            || fail "$corrupt_kind $journal refusal changed a symlink referent"
-        [ -f "$txn/files.tsv" ] && [ ! -s "$txn/files.tsv" ] \
-            || fail "$corrupt_kind $journal refusal mutated its transaction journal"
+            || fail "$corrupt_kind legacy $journal journal changed a symlink referent"
     done
 done
-ok "install refuses unsafe manifest and prestate journals without touching foreign data"
+ok "repair installs ignore malformed legacy inventory and prestate without touching external data"
+
+# Both optional bookkeeping files can be damaged at once. Files published from
+# the current installer payload are still authoritative; their immediate
+# transaction copy is sufficient to restore this attempt if a later step fails.
+base="$(new_env generated-repair-both-journals-damaged)"
+state="$base/xdg/state/ableton-wine"
+txn="$base/txn"
+target="$base/xdg/data/ableton-wine/setup-realtime.sh"
+mkdir -p -- "$state/install-prestate" "$(dirname "$target")"
+printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
+printf 'older generated bytes\n' > "$target"
+printf 'replacement bytes\n' > "$base/replacement"
+printf 'not-a-valid-installed-file-list\n' > "$state/install-manifest.tsv"
+printf 'not-a-valid-saved-copy-list\n' > "$state/install-prestate.tsv"
+printf 'stale saved-copy sentinel\n' > "$state/install-prestate/not-a-valid-slot"
+cp -a -- "$state/install-manifest.tsv" "$base/manifest.before"
+cp -a -- "$state/install-prestate.tsv" "$base/prestate.before"
+run_guarded_file_install "$base" "$txn" "$target" replace-generated \
+    >"$base/out" 2>"$base/err" \
+    || fail "damaged optional bookkeeping blocked generated-file repair"
+grep -qxF 'replacement bytes' "$target" \
+    || fail "generated-file repair retained its old bytes"
+cmp -s -- "$state/install-manifest.tsv" "$base/manifest.before" \
+    && cmp -s -- "$state/install-prestate.tsv" "$base/prestate.before" \
+    && grep -qxF 'stale saved-copy sentinel' \
+        "$state/install-prestate/not-a-valid-slot" \
+    || fail "generated-file repair consumed damaged optional bookkeeping"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$txn" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_rollback_files "$2"
+' _ "$here" "$txn" \
+    || fail "generated-file repair lost same-run rollback"
+grep -qxF 'older generated bytes' "$target" \
+    || fail "same-run rollback did not restore the replaced generated file"
+ok "generated files ignore damaged optional bookkeeping and keep same-run rollback"
+
+# The authoritative overwrite policy is deliberately narrow. Shared desktop
+# names still preserve unrelated local files and cannot opt into private-file
+# replacement through a future call-site mistake.
+base="$(new_env replace-generated-shared-path)"
+target="$base/xdg/data/icons/hicolor/scalable/apps/live-suite.svg"
+mkdir -p -- "$(dirname "$target")"
+printf 'foreign shared icon\n' > "$target"
+printf 'replacement bytes\n' > "$base/replacement"
+if run_guarded_file_install "$base" "$base/txn" "$target" replace-generated \
+    >"$base/out" 2>"$base/err"; then
+    fail "private-file overwrite policy accepted a shared desktop path"
+fi
+grep -qxF 'foreign shared icon' "$target" \
+    || fail "rejected private-file policy changed a shared desktop path"
+[ -f "$base/txn/files.tsv" ] && [ ! -s "$base/txn/files.tsv" ] \
+    || fail "rejected private-file policy changed transaction recovery data"
+ok "private generated-file replacement is enforced by an exact path allowlist"
+
+# Once a generated file has reached its final path, optional recovery metadata
+# cannot turn that valid repair into a failure or block the next independent
+# repair. Force the post-publication check to fail after the first atomic move.
+base="$(new_env publication-checkpoint-warning)"
+mkdir -p -- "$base/txn" "$base/xdg/data/ableton-wine/lib"
+printf 'first replacement\n' > "$base/first"
+printf 'second replacement\n' > "$base/second"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$base/txn" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_init
+    ableton_txn_preflight_commit_files() { return 1; }
+    ableton_publish_file 644 "$2" "$4/lib/config.sh" file replace-generated
+    [ "$ABLETON_PUBLICATION_JOURNAL_BROKEN" -eq 1 ]
+    ableton_publish_file 644 "$3" "$4/lib/lifecycle.sh" file replace-generated
+' _ "$here" "$base/first" "$base/second" "$base/xdg/data/ableton-wine" \
+    >"$base/out" 2>"$base/err" \
+    || fail "recovery bookkeeping failure became a generated-file gate"
+grep -qxF 'first replacement' "$base/xdg/data/ableton-wine/lib/config.sh" \
+    && grep -qxF 'second replacement' "$base/xdg/data/ableton-wine/lib/lifecycle.sh" \
+    || fail "recovery bookkeeping failure blocked an independent repair"
+grep -qF 'Continuing with the installed file.' "$base/err" \
+    || fail "post-publication recovery warning was not plain"
+ok "post-publication bookkeeping cannot invalidate or block generated-file repairs"
 
 base="$(new_env manifest-external-path)"
 state="$base/xdg/state/ableton-wine"
@@ -1983,13 +3276,16 @@ external_target="$base/external-valid-digest"
 printf 'external valid digest bytes\n' > "$external_target"
 printf 'file\t%s\t%s\n' "$external_target" \
     "$(sha256sum -- "$external_target" | awk '{print $1}')" > "$state/install-manifest.tsv"
-if run_guarded_file_install "$base" "$base/txn" \
-    "$base/xdg/data/ableton-wine/setup-realtime.sh" >"$base/out" 2>"$base/err"; then
-    fail "install accepted a valid-digest arbitrary external manifest path"
-fi
+repair_target="$base/xdg/data/ableton-wine/setup-realtime.sh"
+printf 'replacement bytes\n' > "$base/replacement"
+run_guarded_file_install "$base" "$base/txn" "$repair_target" \
+    >"$base/out" 2>"$base/err" \
+    || fail "arbitrary legacy inventory row vetoed canonical generated-file repair"
+grep -qxF 'replacement bytes' "$repair_target" \
+    || fail "arbitrary legacy inventory row blocked canonical repair"
 grep -qxF 'external valid digest bytes' "$external_target" \
-    || fail "external manifest-path refusal changed the external file"
-ok "valid digest cannot authorize an arbitrary external manifest path"
+    || fail "repair followed an arbitrary path from legacy inventory"
+ok "legacy inventory never authorizes or vetoes generated-file repair targets"
 
 run_direct_uninstall()
 {
@@ -1999,7 +3295,10 @@ run_direct_uninstall()
     fi
     run_isolated "$base" env PATH="$base/fakebin:$PATH" \
         ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
-        ABLETON_LINK_MODE=off bash "$here/uninstall.sh" "$mode" --yes
+        ABLETON_LINK_MODE=off \
+        ABLETON_TEST_REGISTRY_LOG="$base/registry.log" \
+        ABLETON_TEST_REGISTRY_STATE="$base/registry-present" \
+        bash "$here/uninstall.sh" "$mode" --yes
 }
 
 for marker_kind in runtime prefix state; do
@@ -2014,16 +3313,28 @@ for marker_kind in runtime prefix state; do
         prefix) printf '\0' >> "$base/prefix/.ableton-linux-prefix"; mode=--delete-prefix ;;
         state) printf '\0' >> "$base/xdg/state/ableton-wine/.ableton-linux-state" ;;
     esac
-    if run_direct_uninstall "$base" "$mode" >"$base/out" 2>"$base/err"; then
-        fail "uninstall accepted a runtime/prefix/state $marker_kind marker with trailing NUL"
-    fi
-    if ! grep -qxF 'runtime sentinel' "$base/runtime/sentinel" \
-       || ! grep -qxF 'prefix sentinel' "$base/prefix/sentinel" \
-       || ! grep -qxF 'state sentinel' "$base/xdg/state/ableton-wine/sentinel"; then
-        fail "$marker_kind marker refusal changed an owned tree"
+    if [ "$marker_kind" = state ]; then
+        run_direct_uninstall "$base" "$mode" >"$base/out" 2>"$base/err" \
+            || fail "damaged optional state marker blocked exact runtime removal"
+        [ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
+            || fail "damaged optional state marker retained the configured runtime"
+        grep -qxF 'prefix sentinel' "$base/prefix/sentinel" \
+            && grep -qxF 'state sentinel' "$base/xdg/state/ableton-wine/sentinel" \
+            || fail "damaged optional state marker changed retained prefix or support data"
+        grep -qF 'Ableton Linux support files were left unchanged because their directory is not recognised:' \
+            "$base/err" || fail "damaged optional state marker did not produce its warning"
+    else
+        if run_direct_uninstall "$base" "$mode" >"$base/out" 2>"$base/err"; then
+            fail "uninstall accepted a $marker_kind marker with trailing NUL"
+        fi
+        if ! grep -qxF 'runtime sentinel' "$base/runtime/sentinel" \
+           || ! grep -qxF 'prefix sentinel' "$base/prefix/sentinel" \
+           || ! grep -qxF 'state sentinel' "$base/xdg/state/ableton-wine/sentinel"; then
+            fail "$marker_kind marker refusal changed an owned tree"
+        fi
     fi
 done
-ok "trailing NUL bytes invalidate every recursive-deletion ownership marker"
+ok "runtime and prefix markers remain fatal while damaged optional state is retained with a warning"
 
 for journal in manifest prestate mime; do
     for corrupt_kind in symlink unreadable nul; do
@@ -2046,17 +3357,17 @@ for journal in manifest prestate mime; do
             unreadable) printf 'unreadable\n' > "$path"; chmod 000 "$path" ;;
             nul) printf '\0' >> "$path" ;;
         esac
-        if run_direct_uninstall "$base" >"$base/out" 2>"$base/err"; then
-            chmod 600 "$path" 2>/dev/null || true
-            fail "uninstall accepted a $corrupt_kind $journal journal"
-        fi
+        run_direct_uninstall "$base" >"$base/out" 2>"$base/err" \
+            || { chmod 600 "$path" 2>/dev/null || true; \
+                 fail "$corrupt_kind optional $journal journal blocked runtime removal"; }
         chmod 600 "$path" 2>/dev/null || true
-        grep -qxF 'runtime sentinel' "$base/runtime/sentinel" \
+        [ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
             && grep -qxF 'prefix sentinel' "$base/prefix/sentinel" \
-            && [ -e "$base/registry-present" ] \
-            || fail "$corrupt_kind $journal refusal mutated runtime, prefix, or registry"
+            || fail "$corrupt_kind $journal state blocked runtime removal or changed the kept prefix"
         grep -qxF 'external uninstall journal' "$base/external-journal" \
-            || fail "$corrupt_kind $journal refusal changed an external referent"
+            || fail "$corrupt_kind $journal warning changed an external referent"
+        grep -qF '!! warning:' "$base/err" \
+            || fail "$corrupt_kind $journal state did not produce an optional-cleanup warning"
     done
 done
 
@@ -2069,12 +3380,15 @@ printf 'invalid runtime prestate\n' > "$state/install-prestate/$runtime_id"
 printf 'present\t%s\t%s\n' "$base/runtime" "$state/install-prestate/$runtime_id" \
     > "$state/install-prestate.tsv"
 printf 'runtime sentinel\n' > "$base/runtime/sentinel"
-if run_direct_uninstall "$base" >"$base/out" 2>"$base/err"; then
-    fail "uninstall accepted file prestate claimed for a runtime record"
-fi
-[ -f "$base/runtime/sentinel" ] && [ -e "$base/registry-present" ] \
-    || fail "runtime prestate claim was rejected after mutation"
-ok "uninstall preflights unsafe journals and rejects prestate attached to runtime ownership"
+run_direct_uninstall "$base" >"$base/out" 2>"$base/err" \
+    || fail "invalid optional prestate attached to a runtime blocked runtime removal"
+[ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
+    && [ -f "$state/install-prestate/$runtime_id" ] \
+    && [ -f "$state/install-prestate.tsv" ] \
+    || fail "runtime removal did not preserve the invalid optional prestate for inspection"
+grep -qF '!! warning:' "$base/err" \
+    || fail "invalid runtime prestate did not produce an optional-cleanup warning"
+ok "uninstall leaves unsafe optional journals untouched while removing the exact configured runtime"
 
 base="$(new_env uninstall-late-missing-prestate)"
 make_registry_runtime "$base"
@@ -2096,15 +3410,16 @@ printf 'present\t%s\t%s\npresent\t%s\t%s\n' \
     "$first" "$state/install-prestate/$first_id" \
     "$second" "$state/install-prestate/$second_id" > "$state/install-prestate.tsv"
 printf 'runtime sentinel\n' > "$base/runtime/sentinel"
-if run_direct_uninstall "$base" >"$base/out" 2>"$base/err"; then
-    fail "uninstall accepted a later missing prestate backup"
-fi
+run_direct_uninstall "$base" >"$base/out" 2>"$base/err" \
+    || fail "later missing optional prestate blocked runtime removal"
 if ! grep -qxF 'first managed bytes' "$first" \
    || ! grep -qxF 'second managed bytes' "$second" \
-   || ! grep -qxF 'runtime sentinel' "$base/runtime/sentinel"; then
-    fail "late prestate failure occurred after an earlier managed target changed"
+   || { [ -e "$base/runtime" ] || [ -L "$base/runtime" ]; }; then
+    fail "late missing prestate changed optional files or retained the configured runtime"
 fi
-ok "uninstall fully preflights later prestate failures before files or runtime change"
+grep -qF '!! warning:' "$base/err" \
+    || fail "late missing prestate did not produce an optional-cleanup warning"
+ok "late missing prestate leaves optional files untouched without blocking runtime removal"
 
 make_mime_failure_fixture()
 {
@@ -2131,12 +3446,15 @@ case "${1:-}" in
 esac
 EOF
 chmod 755 "$base/fakebin/xdg-mime"
-if run_direct_uninstall "$base" >"$base/out" 2>"$base/err"; then
-    fail "MIME default restoration failure reported uninstall success"
-fi
+run_direct_uninstall "$base" >"$base/out" 2>"$base/err" \
+    || fail "MIME default restoration failure blocked runtime removal"
+[ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
+    || fail "MIME default restoration failure retained the configured runtime"
 [ -r "$base/xdg/state/ableton-wine/mime-prestate.tsv" ] \
     && [ -r "$base/xdg/state/ableton-wine/.ableton-linux-state" ] \
     || fail "MIME default restoration failure discarded retry state"
+grep -qF '!! warning:' "$base/err" \
+    || fail "MIME default restoration failure did not produce a retry warning"
 
 base="$(new_env mime-clear-failure)"
 make_mime_failure_fixture "$base" ''
@@ -2164,13 +3482,16 @@ done
 exec "$real_awk" "\$@"
 EOF
 chmod 755 "$base/fakebin/xdg-mime" "$base/fakebin/awk"
-if run_direct_uninstall "$base" >"$base/out" 2>"$base/err"; then
-    fail "MIME clear failure reported uninstall success"
-fi
+run_direct_uninstall "$base" >"$base/out" 2>"$base/err" \
+    || fail "MIME clear failure blocked runtime removal"
+[ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
+    || fail "MIME clear failure retained the configured runtime"
 [ -r "$base/xdg/state/ableton-wine/mime-prestate.tsv" ] \
     && [ -r "$base/xdg/state/ableton-wine/.ableton-linux-state" ] \
     || fail "MIME clear failure discarded retry state"
-ok "MIME command and mimeapps restoration failures return nonzero with retry state retained"
+grep -qF '!! warning:' "$base/err" \
+    || fail "MIME clear failure did not produce a retry warning"
+ok "MIME command and mimeapps restoration failures warn while runtime removal succeeds"
 
 base="$(new_env mime-post-lock-mutation)"
 make_mime_failure_fixture "$base" foreign.desktop
@@ -2187,18 +3508,20 @@ if [ ! -e "$base/mime-mutated" ]; then
 fi
 EOF
 chmod 755 "$base/fakebin/flock"
-if run_direct_uninstall "$base" >"$base/out" 2>"$base/err"; then
-    fail "uninstall accepted MIME restoration state changed while waiting for its lock"
-fi
-[ -e "$base/mime-mutated" ] && [ -f "$base/runtime/sentinel" ] \
+run_direct_uninstall "$base" >"$base/out" 2>"$base/err" \
+    || fail "post-lock MIME mutation blocked runtime removal"
+[ -e "$base/mime-mutated" ] && [ ! -e "$base/runtime" ] \
     && [ -f "$state/.ableton-linux-state" ] \
-    || fail "post-lock MIME mutation fixture did not fire before a no-mutation refusal"
-grep -qF 'MIME restoration state changed; retry uninstall' "$base/err" \
-    || fail "post-lock MIME mutation refusal was not explicit"
-ok "uninstall hashes and fully revalidates MIME restoration state after locking"
+    || fail "post-lock MIME mutation did not preserve support state while removing runtime"
+grep -qF 'File-opening defaults were left unchanged because their saved settings changed while uninstall was starting' \
+    "$base/err" || fail "post-lock MIME mutation warning was not explicit"
+ok "uninstall revalidates changed MIME state, retains it, and still removes the runtime"
 
 base="$(new_env partial-uninstall-retry)"
 mkdir -p -- "$base/runtime" "$base/xdg/state/ableton-wine/install-prestate"
+install_fake_host_tools "$base"
+mkdir -p -- "$base/xdg/config/ableton-wine"
+printf 'unrelated user settings\n' > "$base/xdg/config/ableton-wine/user-notes"
 printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$base/runtime/.ableton-linux-runtime"
 printf 'format=1\nowner=ableton-linux\n' \
     > "$base/xdg/state/ableton-wine/.ableton-linux-state"
@@ -2223,13 +3546,15 @@ printf 'present\t%s\t%s\npresent\t%s\t%s\n' \
     "$first" "$base/xdg/state/ableton-wine/install-prestate/$first_id" \
     "$second" "$base/xdg/state/ableton-wine/install-prestate/$second_id" \
     > "$base/xdg/state/ableton-wine/install-prestate.tsv"
-if run_direct_uninstall "$base" >"$base/first.out" 2>"$base/first.err"; then
-    fail "partial uninstall fixture unexpectedly succeeded before conflict resolution"
-fi
+run_direct_uninstall "$base" >"$base/first.out" 2>"$base/first.err" \
+    || fail "optional file conflict blocked configured runtime removal"
 grep -qxF 'first previous bytes' "$first" \
     && grep -qxF 'user conflict bytes' "$second" \
-    && [ -d "$base/runtime" ] && [ -d "$base/xdg/state/ableton-wine" ] \
-    || fail "partial uninstall did not retain restored file, conflict, runtime, and state"
+    && [ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
+    && [ -d "$base/xdg/state/ableton-wine" ] \
+    || fail "partial uninstall did not remove Wine while retaining the file conflict and retry state"
+grep -qF 'kept an unrecognised or user-modified file at' "$base/first.err" \
+    || fail "optional file conflict was not reported"
 cp -- "$second_managed" "$second"
 if ! run_direct_uninstall "$base" >"$base/retry.out" 2>"$base/retry.err"; then
     sed -n '1,120p' "$base/retry.err" >&2
@@ -2240,10 +3565,12 @@ if ! grep -qxF 'first previous bytes' "$first" \
     fail "partial uninstall retry did not preserve/restore exact prestate"
 fi
 [ ! -e "$base/runtime" ] && [ ! -e "$base/xdg/state/ableton-wine" ] \
+    && grep -qxF 'unrelated user settings' \
+        "$base/xdg/config/ableton-wine/user-notes" \
     || fail "successful partial-uninstall retry retained runtime or ownership state"
-grep -qF "kept already-restored pre-install file $first" "$base/retry.out" \
+grep -qF "kept your already-restored earlier file at $first" "$base/retry.out" \
     || fail "partial uninstall retry did not recognize its already-restored file"
-ok "partial uninstall retry accepts exact already-restored prestate and completes"
+ok "optional uninstall conflicts preserve retry state without retaining the runtime"
 
 for snapshot in installer-config pipeasio-config.ini; do
     base="$(new_env "rollback-directory-${snapshot//./-}")"
@@ -2252,16 +3579,19 @@ for snapshot in installer-config pipeasio-config.ini; do
     mkdir -p -- "$ROLLBACK_SAVED/.ableton-linux-rollback/$snapshot"
     printf 'directory snapshot sentinel\n' \
         > "$ROLLBACK_SAVED/.ableton-linux-rollback/$snapshot/sentinel"
-    if run_user_rollback "$base" env ABLETON_TEST_REGISTRY_STICKY=0 \
-        >"$base/out" 2>"$base/err"; then
-        fail "rollback accepted a directory $snapshot snapshot"
-    fi
-    [ -f "$base/runtime/current-generation" ] \
-        && [ -f "$ROLLBACK_SAVED/previous-generation" ] \
-        && [ -f "$ROLLBACK_SAVED/.ableton-linux-rollback/$snapshot/sentinel" ] \
-        || fail "directory $snapshot refusal occurred after runtime mutation"
+    run_user_rollback "$base" env ABLETON_TEST_REGISTRY_STICKY=0 \
+        >"$base/out" 2>"$base/err" \
+        || fail "unavailable saved $snapshot settings blocked runtime rollback"
+    [ -f "$base/runtime/previous-generation" ] \
+        && [ ! -e "$ROLLBACK_SAVED" ] && [ ! -L "$ROLLBACK_SAVED" ] \
+        && [ -f "$base/runtime/.ableton-linux-rollback/$snapshot/sentinel" ] \
+        && grep -qF 'live_major=12' "$ROLLBACK_INSTALLER_CONFIG" \
+        && grep -qF 'buffer_size = 512' "$ROLLBACK_PIPEASIO_CONFIG" \
+        || fail "unavailable saved $snapshot settings changed current settings or blocked Wine"
+    grep -qF 'The saved runtime is usable, but its saved settings are unavailable. Current settings will stay in place.' \
+        "$base/err" || fail "unavailable saved $snapshot settings warning was not explicit"
 done
-ok "rollback rejects directory configuration snapshots before the runtime swap"
+ok "unavailable saved settings warn without blocking runtime rollback"
 
 run_txn_init_only()
 {
@@ -2379,7 +3709,7 @@ run_isolated "$base" env ABLETON_TRANSACTION_DIR="$txn" bash -c '
 if run_txn_commit_preflight_only "$base" "$txn" >"$base/out" 2>"$base/err"; then
     fail "commit preflight accepted a pending transaction row"
 fi
-grep -qF "file transaction has an unfinished mutation: $target" "$base/err" \
+grep -qF "A file update stopped before it finished: $target" "$base/err" \
     || fail "pending commit refusal was not explicit"
 grep -qxF 'live pending bytes' "$target" \
     || fail "pending commit refusal changed the live target"
@@ -2404,7 +3734,7 @@ printf 'third-party bytes\n' > "$target"
 if run_txn_commit_preflight_only "$base" "$txn" >"$base/out" 2>"$base/err"; then
     fail "commit preflight accepted a present target replaced by a third party"
 fi
-grep -qF "file transaction destination no longer matches its committed object: $target" "$base/err" \
+grep -qF "A file changed while the installer was updating it: $target" "$base/err" \
     || fail "present changed commit refusal was not explicit"
 grep -qxF 'third-party bytes' "$target" \
     || fail "present changed commit refusal rewrote the live target"
@@ -2426,11 +3756,281 @@ printf 'third-party appeared\n' > "$target"
 if run_txn_commit_preflight_only "$base" "$txn" >"$base/out" 2>"$base/err"; then
     fail "commit preflight accepted an absent target recreated by a third party"
 fi
-grep -qF "file transaction destination no longer matches its committed object: $target" "$base/err" \
+grep -qF "A file changed while the installer was updating it: $target" "$base/err" \
     || fail "absent changed commit refusal was not explicit"
 grep -qxF 'third-party appeared' "$target" \
     || fail "absent changed commit refusal rewrote the recreated target"
 ok "commit preflight requires exact committed post-operation objects and rejects pending or third-party rows"
+
+# A journal row can be rebound more than once before the outer transaction
+# closes.  The immediately preceding installer generation is rollback-safe
+# while a new atomic publication is pending; only the last token may commit.
+base="$(new_env txn-generation-chain)"
+txn="$base/txn"
+target="$base/xdg/data/ableton-wine/detect-theme.sh"
+mkdir -p -- "$txn" "$(dirname "$target")"
+printf 'original generation\n' > "$target"
+printf 'installer generation A\n' > "$base/generation-a"
+printf 'installer generation B\n' > "$base/generation-b"
+printf 'installer generation C\n' > "$base/generation-c"
+printf 'third-party generation\n' > "$base/third-party"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$txn" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_init
+    target="$2"
+    token_a="$(ableton_regular_source_token "$3")"
+    token_b="$(ableton_regular_source_token "$4")"
+    token_c="$(ableton_regular_source_token "$5")"
+    ableton_txn_snapshot "$target"
+    ableton_txn_expect "$target" "$token_a"
+    ableton_atomic_restore_object "$3" "$target"
+    ableton_txn_expect "$target" "$token_b"
+    [ "$(cut -f4 "$6/files.tsv")" = "$token_a,$token_b" ]
+    ableton_txn_preflight_rollback_files "$6"
+    if ableton_txn_preflight_commit_files "$6" >/dev/null 2>&1; then exit 81; fi
+    ableton_atomic_restore_object "$4" "$target"
+    ableton_txn_preflight_commit_files "$6"
+    ableton_txn_expect "$target" "$token_c"
+    [ "$(cut -f4 "$6/files.tsv")" = "$token_b,$token_c" ]
+    ableton_txn_preflight_rollback_files "$6"
+    if ableton_txn_preflight_commit_files "$6" >/dev/null 2>&1; then exit 82; fi
+    ableton_atomic_restore_object "$5" "$target"
+    ableton_txn_preflight_commit_files "$6"
+    ableton_atomic_restore_object "$7" "$target"
+    if ableton_txn_preflight_commit_files "$6" >/dev/null 2>&1; then exit 83; fi
+    if ableton_txn_preflight_rollback_files "$6" >/dev/null 2>&1; then exit 84; fi
+    ableton_atomic_restore_object "$5" "$target"
+    ableton_txn_rollback_files "$6"
+' _ "$here" "$target" "$base/generation-a" "$base/generation-b" \
+    "$base/generation-c" "$txn" "$base/third-party" \
+    || fail "two-generation transaction chain rejected an installer-owned transition"
+grep -qxF 'original generation' "$target" \
+    || fail "two-generation transaction rollback did not restore the original object"
+
+base="$(new_env txn-generation-schema)"
+txn="$base/txn"
+target="$base/xdg/data/ableton-wine/detect-scale.sh"
+mkdir -p -- "$txn" "$(dirname "$target")"
+token_a="file:$(printf 'schema A\n' | sha256sum | awk '{print $1}')"
+token_b="file:$(printf 'schema B\n' | sha256sum | awk '{print $1}')"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$txn" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_init
+    target="$2"
+    token_a="$3"
+    token_b="$4"
+    good=(pending absent "$token_a" "absent,$token_a" "$token_a,$token_b")
+    bad=(",$token_a" "$token_a," "$token_a,,$token_b" \
+        "$token_a,$token_a" "$token_a,$token_b,absent" \
+        "pending,$token_a" file:abc arbitrary)
+    for post in "${good[@]}"; do
+        printf "absent\\t%s\\t-\\t%s\\n" "$target" "$post" > "$5/files.tsv"
+        ableton_txn_validate_files "$5"
+    done
+    for post in "${bad[@]}"; do
+        printf "absent\\t%s\\t-\\t%s\\n" "$target" "$post" > "$5/files.tsv"
+        if ableton_txn_validate_files "$5" >/dev/null 2>&1; then exit 85; fi
+    done
+' _ "$here" "$target" "$token_a" "$token_b" "$txn" \
+    || fail "transaction generation-token schema accepted an ambiguous chain"
+ok "transaction generations keep one rollback-safe predecessor, commit only the final token, and reject ambiguous chains"
+
+# The in-process snapshot cache must include the journal identity.  Component
+# and prefix phases can switch transaction directories without starting a new
+# shell; the same target still needs an independent prestate row in each one.
+base="$(new_env txn-snapshot-cache-journal-scope)"
+first_txn="$base/first-transaction"
+second_txn="$base/second-transaction"
+target="$base/xdg/data/ableton-wine/detect-theme.sh"
+mkdir -p -- "$first_txn" "$second_txn" "$(dirname "$target")"
+printf 'shared original bytes\n' > "$target"
+# shellcheck disable=SC2016
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ABLETON_TRANSACTION_DIR="$3"
+    export ABLETON_TRANSACTION_DIR
+    ableton_txn_init
+    ableton_txn_snapshot "$2"
+    ABLETON_TRANSACTION_DIR="$4"
+    export ABLETON_TRANSACTION_DIR
+    ableton_txn_init
+    ableton_txn_snapshot "$2"
+' _ "$here" "$target" "$first_txn" "$second_txn" \
+    || fail "same-shell snapshot could not switch transaction journals"
+for txn in "$first_txn" "$second_txn"; do
+    [ "$(wc -l < "$txn/files.tsv")" -eq 1 ] \
+        || fail "same-shell snapshot omitted or duplicated the target in $txn"
+    backup="$(awk -F '\t' -v p="$target" '$2==p { print $3 }' "$txn/files.tsv")"
+    if [ -z "$backup" ] || ! cmp -s -- "$backup" "$target"; then
+        fail "same-shell snapshot did not preserve exact prestate in $txn"
+    fi
+done
+ok "snapshot caching is scoped by transaction directory as well as target path"
+
+# The installed-file list is disposable uninstall inventory, not integrity
+# state. Component and prefix phases may rewrite it sequentially, but neither
+# the outer core journal nor the prefix-host journal may claim it (issue #280).
+base="$(new_env shared-ownership-manifest)"
+outer="$base/outer-transaction"
+prefix_host="$outer/prefix-host"
+version_source="$base/version-source"
+pipeasio_source="$base/pipeasio-source"
+mkdir -p -- "$outer" "$prefix_host"
+printf 'component version\n' > "$version_source"
+printf '[pipeasio]\nbuffer_size = 256\n' > "$pipeasio_source"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$outer" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_mark_state_home
+    ableton_txn_init
+    ableton_install_file 644 "$2" "$ABLETON_DATA_HOME/VERSION"
+    ableton_write_ownership_manifest
+' _ "$here" "$version_source" \
+    || fail "component phase could not create the shared-manifest fixture"
+manifest="$base/xdg/state/ableton-wine/install-manifest.tsv"
+manifest_before="file:$(sha256sum -- "$manifest" | awk '{print $1}')"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$prefix_host" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_init
+    ableton_install_file 600 "$2" "$XDG_CONFIG_HOME/pipeasio/config.ini" config
+    ableton_write_ownership_manifest "$3"
+' _ "$here" "$pipeasio_source" "$outer" \
+    || fail "prefix phase could not extend the shared ownership manifest"
+manifest_after="file:$(sha256sum -- "$manifest" | awk '{print $1}')"
+[ "$manifest_before" != "$manifest_after" ] \
+    || fail "prefix fixture did not exercise a real installed-file-list rewrite"
+version_target="$base/xdg/data/ableton-wine/VERSION"
+pipeasio_target="$base/xdg/config/pipeasio/config.ini"
+version_digest="$(sha256sum -- "$version_target" | awk '{print $1}')"
+pipeasio_digest="$(sha256sum -- "$pipeasio_target" | awk '{print $1}')"
+awk -F '\t' -v p="$version_target" -v d="$version_digest" \
+    '$1=="file" && $2==p && $3==d { n++ } END { exit n != 1 }' "$manifest" \
+    || fail "installed-file list lost the component VERSION row"
+awk -F '\t' -v p="$pipeasio_target" -v d="$pipeasio_digest" \
+    '$1=="config" && $2==p && $3==d { n++ } END { exit n != 1 }' "$manifest" \
+    || fail "installed-file list lost the prefix PipeASIO row"
+for journal in "$outer/files.tsv" "$prefix_host/files.tsv"; do
+    ! awk -F '\t' -v p="$manifest" '$2==p { found=1 } END { exit !found }' "$journal" \
+        || fail "installed-file list was recorded in $journal"
+done
+run_txn_commit_preflight_only "$base" "$prefix_host" \
+    || fail "prefix-host preflight rejected its own completed work"
+run_txn_commit_preflight_only "$base" "$outer" \
+    || fail "outer preflight inspected the installed-file list"
+for txn in "$prefix_host" "$outer"; do
+    run_isolated "$base" env ABLETON_TRANSACTION_DIR="$txn" bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        ableton_config_init
+        . "$1/lib/manifest.sh"
+        ableton_txn_preflight_rollback_files "$2"
+    ' _ "$here" "$txn" \
+        || fail "rollback preflight inspected installed-file inventory in $txn"
+done
+run_isolated "$base" bash "$here/setup-prefix.sh" --rollback "$outer" \
+    || fail "prefix rollback rejected the independent-inventory fixture"
+run_isolated "$base" bash "$here/install.sh" --rollback "$outer" \
+    || fail "component rollback rejected the independent-inventory fixture"
+[ ! -e "$pipeasio_target" ] && [ ! -e "$version_target" ] \
+    || fail "ordered prefix/component rollback did not restore generated-file prestate"
+[ "file:$(sha256sum -- "$manifest" | awk '{print $1}')" = "$manifest_after" ] \
+    || fail "core rollback rewound disposable installed-file inventory"
+ok "component and prefix phases share current uninstall inventory outside both journals"
+
+# A failed second inventory publication leaves the prior inventory generation
+# intact. Because neither journal owns it, that warning cannot poison core
+# commit or rollback checks.
+base="$(new_env shared-manifest-publish-failure)"
+outer="$base/outer-transaction"
+prefix_host="$outer/prefix-host"
+version_source="$base/version-source"
+pipeasio_source="$base/pipeasio-source"
+mkdir -p -- "$outer" "$prefix_host"
+printf 'component version\n' > "$version_source"
+printf '[pipeasio]\nbuffer_size = 256\n' > "$pipeasio_source"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$outer" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_mark_state_home
+    ableton_txn_init
+    ableton_install_file 644 "$2" "$ABLETON_DATA_HOME/VERSION"
+    ableton_write_ownership_manifest
+' _ "$here" "$version_source" \
+    || fail "component phase could not create the failed-manifest fixture"
+manifest="$base/xdg/state/ableton-wine/install-manifest.tsv"
+manifest_before="file:$(sha256sum -- "$manifest" | awk '{print $1}')"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$prefix_host" \
+    INJECT_MANIFEST="$manifest" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_init
+    ableton_install_file 600 "$2" "$XDG_CONFIG_HOME/pipeasio/config.ini" config
+    mv()
+    {
+        [ "${@: -1}" != "$INJECT_MANIFEST" ] || return 88
+        command mv "$@"
+    }
+    set +e
+    ableton_write_ownership_manifest "$3"
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ]
+' _ "$here" "$pipeasio_source" "$outer" \
+    || fail "manifest publication failure fixture did not stop at the injected rename"
+[ "file:$(sha256sum -- "$manifest" | awk '{print $1}')" = "$manifest_before" ] \
+    || fail "failed second manifest publication changed the first generation"
+for journal in "$outer/files.tsv" "$prefix_host/files.tsv"; do
+    ! awk -F '\t' -v p="$manifest" '$2==p { found=1 } END { exit !found }' "$journal" \
+        || fail "failed inventory publication added the list to $journal"
+done
+run_txn_commit_preflight_only "$base" "$prefix_host" \
+    || fail "prefix-host commit preflight rejected work completed before manifest failure"
+run_txn_commit_preflight_only "$base" "$outer" \
+    || fail "outer commit preflight was poisoned by optional inventory failure"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$prefix_host" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_preflight_rollback_files "$2"
+' _ "$here" "$prefix_host" \
+    || fail "prefix-host rollback preflight rejected completed config work"
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$outer" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_preflight_rollback_files "$2"
+' _ "$here" "$outer" \
+    || fail "outer rollback preflight was poisoned by optional inventory failure"
+run_isolated "$base" bash "$here/setup-prefix.sh" --rollback "$outer" \
+    || fail "prefix rollback failed after interrupted manifest publication"
+run_isolated "$base" bash "$here/install.sh" --rollback "$outer" \
+    || fail "component rollback failed after interrupted manifest publication"
+[ ! -e "$base/xdg/config/pipeasio/config.ini" ] \
+    && [ ! -e "$base/xdg/data/ableton-wine/VERSION" ] \
+    || fail "inventory warning prevented exact generated-file rollback"
+[ "file:$(sha256sum -- "$manifest" | awk '{print $1}')" = "$manifest_before" ] \
+    || fail "rollback changed the prior installed-file inventory generation"
+ok "failed installed-file-list publication leaves prior inventory and cannot poison core checks"
 
 for corrupt_kind in symlink-dir orphan-slot; do
     base="$(new_env "persistent-prestate-$corrupt_kind")"
@@ -2438,7 +4038,8 @@ for corrupt_kind in symlink-dir orphan-slot; do
     txn="$base/txn"
     target="$base/xdg/data/ableton-wine/detect-scale.sh"
     mkdir -p -- "$state" "$txn" "$(dirname "$target")"
-    printf 'foreign target sentinel\n' > "$target"
+    printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
+    cp -- "$here/detect-scale.sh" "$target"
     printf 'replacement bytes\n' > "$base/replacement"
     if [ "$corrupt_kind" = symlink-dir ]; then
         mkdir -p -- "$base/external-prestate-dir"
@@ -2451,38 +4052,47 @@ for corrupt_kind in symlink-dir orphan-slot; do
         printf 'external orphan sentinel\n' > "$base/external-orphan"
         ln -s -- "$base/external-orphan" "$state/install-prestate/$id"
     fi
-    if run_guarded_file_install "$base" "$txn" "$target" \
-        >"$base/out" 2>"$base/err"; then
-        fail "file install accepted persistent prestate $corrupt_kind"
-    fi
-    grep -qxF 'foreign target sentinel' "$target" \
-        || fail "persistent prestate $corrupt_kind refusal overwrote the live target"
+    run_guarded_file_install "$base" "$txn" "$target" \
+        >"$base/out" 2>"$base/err" \
+        || fail "repair install consulted stale persistent prestate $corrupt_kind"
+    grep -qxF 'replacement bytes' "$target" \
+        || fail "stale persistent prestate $corrupt_kind blocked the canonical replacement"
+    run_txn_commit_preflight_only "$base" "$txn" \
+        || fail "stale persistent prestate $corrupt_kind poisoned commit preflight"
     if [ "$corrupt_kind" = symlink-dir ]; then
         grep -qxF 'external prestate directory sentinel' \
             "$base/external-prestate-dir/sentinel" \
-            || fail "persistent prestate symlink-directory refusal changed its referent"
+            || fail "repair install changed a stale prestate symlink referent"
     else
         grep -qxF 'external orphan sentinel' "$base/external-orphan" \
-            || fail "persistent orphan-slot refusal changed its referent"
+            || fail "repair install changed a stale orphan backup referent"
     fi
 done
-ok "persistent prestate rejects symlink directories and unindexed exact backup slots"
+ok "repair installs ignore stale persistent prestate while leaving legacy recovery objects untouched"
 
 base="$(new_env atomic-install-failure)"
 txn="$base/txn"
-target="$base/xdg/data/ableton-wine/install-target"
-mkdir -p -- "$txn" "$base/fakebin" "$(dirname "$target")"
+state="$base/xdg/state/ableton-wine"
+target="$base/xdg/data/ableton-wine/detect-scale.sh"
+mkdir -p -- "$txn" "$base/fakebin" "$state" "$(dirname "$target")"
+printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
 printf 'stable original bytes\n' > "$base/source"
 cp -- "$base/source" "$target"
+printf 'file\t%s\t%s\n' "$target" \
+    "$(sha256sum -- "$target" | awk '{print $1}')" \
+    > "$state/install-manifest.tsv"
 cat > "$base/fakebin/install" <<'EOF'
 #!/bin/bash
 target="${@: -1}"
+: > "${ABLETON_TEST_INSTALL_CALLED:?}"
 printf 'partial replacement\n' > "$target"
 exit 99
 EOF
 chmod 755 "$base/fakebin/"*
 # shellcheck disable=SC2016
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_TRANSACTION_DIR="$txn" bash -c '
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_TRANSACTION_DIR="$txn" \
+    ABLETON_TEST_INSTALL_CALLED="$base/install-called" bash -c '
     set -euo pipefail
     . "$1/lib/config.sh"
     ableton_config_init
@@ -2492,24 +4102,158 @@ if run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_TRANSACTION_DIR="
 ' _ "$here" "$base/source" "$target" >"$base/out" 2>"$base/err"; then
     fail "install helper unexpectedly succeeded after its staged writer failed"
 fi
+[ -e "$base/install-called" ] \
+    || fail "atomic install failure fixture never reached the staged writer"
 grep -qxF 'stable original bytes' "$target" \
     || fail "install helper destroyed the original target after a staged write failure"
 ok "atomic file installers keep the original target when a staged write fails"
+
+# Refreshing already-owned generated files does not create new persistent
+# prestate. Faults aimed at that legacy path therefore never fire, and ordinary
+# transaction rollback still restores both prior managed generations.
+for failure in backup-copy index-publish; do
+    base="$(new_env "prestate-second-generation-$failure")"
+    txn="$base/txn"
+    state="$base/xdg/state/ableton-wine"
+    prestate_dir="$state/install-prestate"
+    first="$base/xdg/data/ableton-wine/detect-theme.sh"
+    second="$base/xdg/data/ableton-wine/detect-scale.sh"
+    mkdir -p -- "$txn" "$state" "$(dirname "$first")"
+    printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
+    printf 'first user original\n' > "$first"
+    printf 'second user original\n' > "$second"
+    cp -- "$first" "$base/first.original"
+    cp -- "$second" "$base/second.original"
+    printf 'file\t%s\t%s\nfile\t%s\t%s\n' \
+        "$first" "$(sha256sum -- "$first" | awk '{print $1}')" \
+        "$second" "$(sha256sum -- "$second" | awk '{print $1}')" \
+        > "$state/install-manifest.tsv"
+    printf 'first installer replacement\n' > "$base/first.replacement"
+    printf 'second installer replacement\n' > "$base/second.replacement"
+    # shellcheck disable=SC2016
+    run_isolated "$base" env ABLETON_TRANSACTION_DIR="$txn" \
+        INJECT_PRESTATE_FAILURE="$failure" bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        ableton_config_init
+        . "$1/lib/manifest.sh"
+        ableton_txn_init
+        ableton_install_file 644 "$4" "$2"
+        injection_marker="$7"
+        cp()
+        {
+            if [ "$INJECT_PRESTATE_FAILURE" = backup-copy ]; then
+                case "${@: -1}" in
+                    "$ABLETON_STATE_HOME/install-prestate/.ableton-restore."*)
+                        : > "$injection_marker"
+                        return 88 ;;
+                esac
+            fi
+            command cp "$@"
+        }
+        mv()
+        {
+            if [ "$INJECT_PRESTATE_FAILURE" = index-publish ] \
+               && [ "${@: -1}" = "$ABLETON_STATE_HOME/install-prestate.tsv" ]; then
+                : > "$injection_marker"
+                return 88
+            fi
+            command mv "$@"
+        }
+        ableton_install_file 644 "$5" "$3"
+        [ ! -e "$injection_marker" ]
+        ableton_txn_preflight_commit_files "$6"
+        ableton_txn_preflight_rollback_files "$6"
+    ' _ "$here" "$first" "$second" "$base/first.replacement" \
+        "$base/second.replacement" "$txn" "$base/prestate-injection-fired" \
+        || fail "repair install reached obsolete prestate $failure publication"
+    index="$state/install-prestate.tsv"
+    [ ! -e "$index" ] && [ ! -L "$index" ] \
+        || fail "repair install created a legacy prestate index during $failure fixture"
+    [ ! -e "$prestate_dir" ] && [ ! -L "$prestate_dir" ] \
+        || fail "repair install created a legacy prestate directory during $failure fixture"
+    grep -qxF 'first installer replacement' "$first" \
+        && grep -qxF 'second installer replacement' "$second" \
+        || fail "repair install did not publish both canonical generations during $failure fixture"
+    run_txn_file_rollback "$base" "$txn" \
+        || fail "full rollback failed after ignored prestate $failure injection"
+    if ! cmp -s -- "$first" "$base/first.original" \
+       || ! cmp -s -- "$second" "$base/second.original"; then
+        fail "full rollback after ignored prestate $failure injection changed an original target"
+    fi
+done
+ok "repair installs bypass obsolete prestate publication and remain transaction-rollback-safe"
+
+# Restoring a user's saved object must be one atomic replacement. A failed
+# restore may not delete the managed live object and thereby invalidate the
+# rollback token recorded immediately beforehand.
+base="$(new_env managed-removal-restore-failure)"
+txn="$base/txn"
+state="$base/xdg/state/ableton-wine"
+target="$base/xdg/data/ableton-wine/detect-theme.sh"
+id="$(printf '%s' "$target" | sha256sum | awk '{print $1}')"
+backup="$state/install-prestate/$id"
+index="$state/install-prestate.tsv"
+mkdir -p -- "$txn" "$(dirname "$target")" "$(dirname "$backup")"
+printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
+printf 'managed live generation\n' > "$target"
+printf 'saved user generation\n' > "$backup"
+printf 'present\t%s\t%s\n' "$target" "$backup" > "$index"
+cp -- "$target" "$base/target.before"
+cp -- "$backup" "$base/backup.before"
+cp -- "$index" "$base/index.before"
+# shellcheck disable=SC2016
+run_isolated "$base" env ABLETON_TRANSACTION_DIR="$txn" \
+    INJECT_RESTORE_SOURCE="$backup" INJECT_RESTORE_TARGET="$target" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    eval "$(declare -f ableton_atomic_restore_object \
+        | sed "1s/^ableton_atomic_restore_object/ableton_atomic_restore_object_real/")"
+    ableton_atomic_restore_object()
+    {
+        if [ "$1" = "$INJECT_RESTORE_SOURCE" ] \
+           && [ "$2" = "$INJECT_RESTORE_TARGET" ]; then
+            return 88
+        fi
+        ableton_atomic_restore_object_real "$@"
+    }
+    ableton_txn_init
+    set +e
+    ableton_remove_managed_file "$2"
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ]
+    cmp -s -- "$2" "$3"
+    ableton_txn_preflight_rollback_files "$4"
+' _ "$here" "$target" "$base/target.before" "$txn" \
+    || fail "failed managed restore deleted its live object or poisoned rollback"
+run_txn_file_rollback "$base" "$txn" \
+    || fail "full rollback failed after the managed restore injection"
+if ! cmp -s -- "$target" "$base/target.before" \
+   || ! cmp -s -- "$backup" "$base/backup.before" \
+   || ! cmp -s -- "$index" "$base/index.before"; then
+    fail "managed restore failure rollback did not restore exact target and prestate"
+fi
+ok "failed managed-file restoration leaves the live object intact and fully rollback-safe"
 
 base="$(new_env rollback-current-config-directory)"
 make_rollback_fixture "$base"
 rm -f -- "$ROLLBACK_INSTALLER_CONFIG"
 mkdir -p -- "$ROLLBACK_INSTALLER_CONFIG"
 printf 'current config directory sentinel\n' > "$ROLLBACK_INSTALLER_CONFIG/sentinel"
-if run_user_rollback "$base" env ABLETON_TEST_REGISTRY_STICKY=0 \
-    >"$base/out" 2>"$base/err"; then
-    fail "rollback accepted a directory current installer configuration target"
-fi
-[ -f "$base/runtime/current-generation" ] \
-    && [ -f "$ROLLBACK_SAVED/previous-generation" ] \
+run_user_rollback "$base" env ABLETON_TEST_REGISTRY_STICKY=0 \
+    >"$base/out" 2>"$base/err" \
+    || fail "current installer-settings directory blocked runtime rollback"
+[ -f "$base/runtime/previous-generation" ] \
+    && [ ! -e "$ROLLBACK_SAVED" ] && [ ! -L "$ROLLBACK_SAVED" ] \
     && [ -f "$ROLLBACK_INSTALLER_CONFIG/sentinel" ] \
-    || fail "current configuration directory refusal occurred after mutation"
-ok "rollback refuses a current configuration directory without swapping the runtime"
+    && grep -qF 'buffer_size = 883' "$ROLLBACK_PIPEASIO_CONFIG" \
+    || fail "current installer-settings directory was changed or blocked the restored runtime"
+grep -qF 'The previous Wine version is restored, but its installer settings could not be restored.' \
+    "$base/err" || fail "current installer-settings directory warning was not explicit"
+ok "current installer-settings conflicts warn without blocking runtime rollback"
 
 make_legacy_project_evidence()
 {
@@ -2586,14 +4330,71 @@ if [ -z "$legacy_saved" ] || ! cmp -s -- "$legacy_saved/.ableton-linux-runtime" 
     fail "runtime update did not retain its adopted legacy generation safely"
 fi
 
+# Canonical legacy-runtime adoption is a committed safety migration, not an
+# ancillary host-file mutation. Runtime-only promotion therefore keeps its file
+# journal empty; rollback restores every original runtime object and retains the
+# newly valid ownership marker.
+base="$(new_env legacy-runtime-promotion-rollback)"
+make_legacy_default_runtime "$base"
+make_runtime_only_kit "$base"
+legacy_runtime="$base/home/.local/opt/wine-d2d1-nspa-11.13"
+cp -a -- "$legacy_runtime" "$base/legacy-runtime.before"
+txn="$base/runtime-transaction"
+private_backup="$legacy_runtime.transaction-${txn##*/}"
+mkdir -p -- "$txn"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$legacy_runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/install.sh" --runtime-only \
+        --transaction-dir "$txn" --yes >"$base/install.out" 2>"$base/install.err" \
+    || fail "external legacy runtime promotion fixture failed"
+[ ! -e "$legacy_runtime/legacy-sentinel" ] \
+    && [ -f "$private_backup/legacy-sentinel" ] \
+    && [ -f "$private_backup/.ableton-linux-runtime" ] \
+    && [ -f "$txn/runtime.tsv" ] && [ -f "$txn/files.tsv" ] \
+    && [ ! -s "$txn/files.tsv" ] && [ -f "$txn/active" ] \
+    || fail "legacy runtime promotion did not preserve its adopted private generation"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$legacy_runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    bash "$base/kit/scripts/install.sh" --preflight-rollback "$txn" \
+    >"$base/preflight.out" 2>"$base/preflight.err" \
+    || fail "legacy runtime promotion was rejected by aggregate rollback preflight"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_WINE_ROOT="$legacy_runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    bash "$base/kit/scripts/install.sh" --rollback "$txn" \
+    >"$base/rollback.out" 2>"$base/rollback.err" \
+    || fail "legacy runtime promotion could not fully roll back"
+cmp -s -- "$legacy_runtime/.ableton-linux-runtime" \
+    <(printf 'format=1\nname=wine-d2d1-nspa-11.13\n') \
+    || fail "legacy runtime rollback lost its committed ownership migration"
+diff -qr --no-dereference --exclude=.ableton-linux-runtime \
+    "$base/legacy-runtime.before" "$legacy_runtime" \
+    >"$base/runtime.diff" \
+    || fail "runtime rollback changed legacy content beyond the committed marker migration"
+[ ! -e "$private_backup" ] && [ ! -L "$private_backup" ] \
+    && [ ! -e "$txn/runtime.tsv" ] && [ -f "$txn/active" ] \
+    || fail "legacy runtime rollback retained promotion state or retired the outer marker"
+ok "runtime promotion rollback preserves committed legacy adoption and restores every other runtime object"
+
 base="$(new_env legacy-runtime-uninstall)"
 make_legacy_default_runtime "$base"
 install_fake_host_tools "$base"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_LINK_MODE=off \
     bash "$here/uninstall.sh" --keep-prefix --yes >"$base/out" 2>"$base/err" \
-    || fail "uninstall did not adopt a canonical legacy runtime"
+    || fail "optional support-state cleanup reported failure after removing a canonical legacy runtime"
 [ ! -e "$base/home/.local/opt/wine-d2d1-nspa-11.13" ] \
     || fail "uninstall retained the adopted canonical legacy runtime"
+legacy_uninstall_state="$base/xdg/state/ableton-wine"
+if [ -e "$legacy_uninstall_state" ] || [ -L "$legacy_uninstall_state" ]; then
+    [ -d "$legacy_uninstall_state" ] && [ ! -L "$legacy_uninstall_state" ] \
+        && cmp -s -- "$legacy_uninstall_state/.ableton-linux-state" \
+            <(printf 'format=1\nowner=ableton-linux\n') \
+        || fail "optional legacy-uninstall cleanup retained unsafe unmarked state"
+    grep -Eq 'Ableton Linux support (files|state).*(remain|retained)|support directory changed.*retained' \
+        "$base/out" "$base/err" \
+        || fail "retained optional legacy-uninstall state was not reported"
+fi
+ok "canonical legacy-runtime removal succeeds even when optional support-state cleanup remains"
 
 base="$(new_env legacy-partial-uninstall-retry)"
 make_legacy_default_runtime "$base"
@@ -2608,25 +4409,28 @@ printf 'file\t%s\t%s\n' "$conflict" \
     "$(sha256sum -- "$base/managed-reference" | awk '{print $1}')" \
     > "$state/install-manifest.tsv"
 install_fake_host_tools "$base"
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_LINK_MODE=off \
-    bash "$here/uninstall.sh" --keep-prefix --yes >"$base/first.out" 2>"$base/first.err"; then
-    fail "legacy partial-uninstall fixture unexpectedly succeeded with a conflict"
-fi
-if ! cmp -s -- "$legacy_runtime/.ableton-linux-runtime" \
-        <(printf 'format=1\nname=wine-d2d1-nspa-11.13\n') \
-   || [ ! -f "$legacy_runtime/legacy-sentinel" ] \
-   || [ ! -f "$state/.ableton-linux-state" ]; then
+run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_LINK_MODE=off \
+    bash "$here/uninstall.sh" --keep-prefix --yes >"$base/first.out" 2>"$base/first.err" \
+    || fail "a preserved modified integration file made core legacy uninstall report failure"
+if [ -e "$legacy_runtime" ] || [ -L "$legacy_runtime" ] \
+   || ! grep -qxF 'user conflict bytes' "$conflict" \
+   || ! cmp -s -- "$state/.ableton-linux-state" \
+        <(printf 'format=1\nowner=ableton-linux\n') \
+   || [ ! -f "$state/install-manifest.tsv" ]; then
     sed -n '1,160p' "$base/first.out" >&2
     sed -n '1,160p' "$base/first.err" >&2
     find "$base" -maxdepth 6 -printf '%y %p -> %l\n' >&2
-    fail "partial legacy uninstall did not retain committed marker, runtime, and state"
+    fail "core legacy uninstall did not remove Wine while preserving the conflict and safe retry state"
 fi
+grep -qF "kept an unrecognised or user-modified file at $conflict" "$base/first.err" \
+    || fail "preserved modified integration file was not reported"
 cp -- "$base/managed-reference" "$conflict"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_LINK_MODE=off \
     bash "$here/uninstall.sh" --keep-prefix --yes >"$base/retry.out" 2>"$base/retry.err" \
     || fail "legacy partial uninstall did not complete on retry without legacy evidence"
-[ ! -e "$legacy_runtime" ] && [ ! -e "$state" ] \
-    || fail "legacy partial-uninstall retry retained runtime or ownership state"
+[ ! -e "$conflict" ] && [ ! -e "$legacy_runtime" ] && [ ! -e "$state" ] \
+    || fail "legacy partial-uninstall retry retained the resolved conflict or ownership state"
+ok "legacy uninstall removes core Wine, preserves modified integration, and supports optional cleanup retry"
 
 base="$(new_env legacy-prefix-adopt)"
 make_legacy_default_prefix "$base"
@@ -2682,15 +4486,22 @@ external_digest="$(sha256sum -- "$external_linkd" | awk '{print $1}')"
 printf 'file\t%s\t%s\nruntime\t%s\twine-d2d1-nspa-11.13\n' \
     "$external_linkd" "$external_digest" "$base/runtime" \
     > "$base/xdg/state/ableton-wine/install-manifest.tsv"
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
     ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
     ABLETON_LINKD="$external_linkd" ABLETON_LINK_MODE=off \
-    bash "$here/uninstall.sh" --keep-prefix --yes >"$base/out" 2>"$base/err"; then
-    fail "forged manifest claimed an external configured Link daemon"
-fi
+    ABLETON_TEST_REGISTRY_LOG="$base/registry.log" \
+    ABLETON_TEST_REGISTRY_STATE="$base/registry-present" \
+    bash "$here/uninstall.sh" --keep-prefix --yes >"$base/out" 2>"$base/err" \
+    || fail "forged optional inventory blocked configured runtime removal"
 grep -qxF 'external Link daemon' "$external_linkd" \
-    || fail "external Link daemon refusal happened after deletion"
-ok "configured external Link daemon can be executed but never claimed or removed"
+    || fail "forged optional inventory changed the external Link daemon"
+[ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
+    && [ -f "$base/prefix/system.reg" ] && [ ! -e "$base/registry-present" ] \
+    && [ -r "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
+    || fail "forged optional inventory retained Wine or discarded its inspection record"
+grep -qF "Desktop shortcuts, file-opening settings, and older Wine runtimes were left unchanged because the installer's file list could not be trusted" \
+    "$base/err" || fail "forged optional inventory warning was not explicit"
+ok "external Link helpers are never claimed, while invalid inventory cannot retain Wine"
 
 base="$(new_env transaction-external-target)"
 txn="$base/txn"
@@ -2758,32 +4569,6 @@ grep -qxF 'new prefix' "$base/prefix/generation" \
     || fail "prefix rollback mutated layout before full preflight"
 ok "runtime and prefix rollback preflight every journal before layout mutation"
 
-base="$(new_env link-external-snapshot)"
-txn="$base/txn"
-snap="$txn/link"
-mkdir -p -- "$snap"
-printf 'off\n' > "$snap/policy"
-: > "$snap/ready"; : > "$snap/firewall.absent"; : > "$snap/unit.absent"
-: > "$snap/prestate.absent"; : > "$snap/prestate-dir.absent"
-for label in 0 1 2 3; do
-    case "$label" in
-        0) path="$base/xdg/data/ableton-wine/ableton-linkd" ;;
-        1) path="$base/xdg/data/ableton-wine/ableton-linkd.service" ;;
-        2) path="$base/xdg/data/ableton-wine/ableton-linkctl" ;;
-        3) path="$base/external/victim" ;;
-    esac
-    printf '%s\n' "$path" > "$snap/asset-$label.path"
-done
-mkdir -p -- "$base/external"
-printf 'external snapshot victim\n' > "$base/external/victim"
-if run_isolated "$base" bash "$here/setup-link.sh" preflight-rollback "$txn" \
-    >"$base/out" 2>"$base/err"; then
-    fail "Link rollback accepted an external asset snapshot path"
-fi
-grep -qxF 'external snapshot victim' "$base/external/victim" \
-    || fail "Link snapshot refusal changed its external target"
-ok "Link rollback preflights the complete canonical asset snapshot set"
-
 run_link_transaction_action()
 {
     local base="$1" action="$2" txn="$3"
@@ -2797,74 +4582,86 @@ run_link_transaction_action()
 
 base="$(new_env link-valid-snapshot)"
 txn="$base/txn"
-mkdir -p -- "$txn" "$base/runtime" "$base/prefix" "$base/xdg/data/ableton-wine"
-printf 'owned asset bytes\n' > "$base/xdg/data/ableton-wine/setup-link.sh"
+data="$base/xdg/data/ableton-wine"
+state="$base/xdg/state/ableton-wine"
+mkdir -p -- "$txn" "$base/runtime" "$base/prefix" "$data" "$state" "$base/fakebin"
+# A manager that is unavailable both before and during rollback is exact state:
+# no service command can have changed it. This keeps this fixture focused on
+# policy-file ownership rather than service-manager behavior.
+printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/systemctl"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/xdg-mime"
+chmod 755 "$base/fakebin/systemctl" "$base/fakebin/xdg-mime"
+printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
+printf 'configured\n' > "$data/link-configured"
+printf 'component asset before\n' > "$data/setup-link.sh"
+printf 'file\t%s\t%s\n' "$data/setup-link.sh" \
+    "$(sha256sum -- "$data/setup-link.sh" | awk '{print $1}')" \
+    > "$state/install-manifest.tsv"
 run_link_transaction_action "$base" snapshot "$txn" >"$base/snapshot.out" 2>"$base/snapshot.err" \
     || fail "valid Link snapshot fixture could not capture a complete snapshot"
 run_link_transaction_action "$base" preflight-rollback "$txn" >"$base/preflight.out" 2>"$base/preflight.err" \
     || fail "valid complete Link snapshot was rejected by preflight"
 find "$txn/link" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort > "$base/link.members"
-[ "$(wc -l < "$base/link.members")" -eq 20 ] \
+[ "$(wc -l < "$base/link.members")" -eq 10 ] \
     || fail "valid Link snapshot did not record the full inventory"
-printf '%s\n' "$base/external/other" > "$txn/link/asset-3.path"
-if run_link_transaction_action "$base" preflight-rollback "$txn" >"$base/path.out" 2>"$base/path.err"; then
-    fail "Link preflight accepted a valid snapshot after an external asset path was forged"
+! grep -Eq '^(asset-|manifest|prestate)' "$base/link.members" \
+    || fail "Link policy snapshot duplicated component transaction state"
+! grep -Eq '^link-configured([.]absent)?$' "$base/link.members" \
+    || fail "Link policy snapshot turned disposable legacy metadata into a rollback gate"
+# Component files may advance after the policy snapshot. Link preflight must not
+# reject or later restore those generic-transaction-owned objects.
+printf 'component asset after\n' > "$data/setup-link.sh"
+printf 'file\t%s\t%s\n' "$data/setup-link.sh" \
+    "$(sha256sum -- "$data/setup-link.sh" | awk '{print $1}')" \
+    > "$state/install-manifest.tsv"
+rm -f -- "$data/link-configured"
+run_link_transaction_action "$base" preflight-rollback "$txn" \
+    >"$base/changed-preflight.out" 2>"$base/changed-preflight.err" \
+    || fail "Link policy preflight inspected component-owned files"
+run_link_transaction_action "$base" rollback "$txn" >"$base/rollback.out" 2>"$base/rollback.err" \
+    || { sed -n '1,80p' "$base/rollback.err" >&2; fail "Link policy rollback failed"; }
+[ ! -e "$data/link-configured" ] && [ ! -L "$data/link-configured" ] \
+    || fail "Link rollback recreated disposable legacy policy metadata"
+grep -qxF 'component asset after' "$data/setup-link.sh" \
+    && grep -qF "$(sha256sum -- "$data/setup-link.sh" | awk '{print $1}')" \
+        "$state/install-manifest.tsv" \
+    || fail "Link rollback rewound generic component state"
+ok "Link snapshot owns external system state without gating on disposable legacy metadata"
+
+base="$(new_env link-snapshot-inventory-tamper)"
+txn="$base/txn"
+mkdir -p -- "$txn" "$base/runtime" "$base/prefix" "$base/fakebin"
+printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/systemctl"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/xdg-mime"
+chmod 755 "$base/fakebin/systemctl" "$base/fakebin/xdg-mime"
+run_link_transaction_action "$base" snapshot "$txn" >"$base/snapshot.out" 2>"$base/snapshot.err" \
+    || fail "Link inventory-tamper fixture could not capture its snapshot"
+: > "$txn/link/asset-0.path"
+if run_link_transaction_action "$base" preflight-rollback "$txn" >"$base/out" 2>"$base/err"; then
+    fail "Link preflight accepted a component-asset member in its policy snapshot"
 fi
-grep -qF 'Link asset snapshot path is invalid' "$base/path.err" \
-    || fail "forged Link asset snapshot path refusal was not explicit"
-ok "valid Link snapshots pass preflight and still reject forged external asset paths"
+grep -qF 'Link transaction snapshot has an unknown member: asset-0.path' "$base/err" \
+    || fail "Link policy inventory tamper refusal was not explicit"
+ok "Link policy snapshot inventory rejects component-owned members"
 
-for kind in regular symlink directory; do
-    base="$(new_env "link-live-${kind}-changed")"
-    txn="$base/txn"
-    asset="$base/xdg/data/ableton-wine/setup-link.sh"
-    mkdir -p -- "$txn" "$base/runtime" "$base/prefix" "$(dirname "$asset")"
-    printf 'owned asset bytes\n' > "$asset"
-    run_link_transaction_action "$base" snapshot "$txn" >"$base/snapshot.out" 2>"$base/snapshot.err" \
-        || fail "Link live-$kind fixture could not capture its snapshot"
-    case "$kind" in
-        regular) printf 'user edit bytes\n' > "$asset" ;;
-        symlink)
-            printf 'external asset bytes\n' > "$base/external-asset"
-            rm -f -- "$asset"
-            ln -s -- "$base/external-asset" "$asset"
-            ;;
-        directory)
-            rm -f -- "$asset"
-            mkdir -p -- "$asset"
-            printf 'directory sentinel\n' > "$asset/sentinel"
-            ;;
-    esac
-    if run_link_transaction_action "$base" preflight-rollback "$txn" >"$base/out" 2>"$base/err"; then
-        fail "Link preflight accepted a $kind current asset change"
-    fi
-    case "$kind" in
-        directory)
-            grep -qF "Link rollback destination is unsafe: $asset" "$base/err" \
-                || fail "directory Link asset refusal was not explicit"
-            grep -qxF 'directory sentinel' "$asset/sentinel" \
-                || fail "directory Link asset refusal changed the live directory"
-            ;;
-        *)
-            grep -qF "Link asset changed while rollback was pending: $asset" "$base/err" \
-                || fail "$kind Link asset refusal was not explicit"
-            ;;
-    esac
-done
-ok "Link rollback preflight rejects regular, symlink, and directory asset changes after a valid snapshot"
-
-for corrupt_kind in symlink multiline; do
+for corrupt_kind in symlink multiline valid-unmarked; do
     base="$(new_env "link-firewall-${corrupt_kind}")"
     txn="$base/txn"
     mkdir -p -- "$txn" "$base/runtime" "$base/prefix" "$base/xdg/state/ableton-wine"
     case "$corrupt_kind" in
         symlink)
+            printf 'format=1\nowner=ableton-linux\n' \
+                > "$base/xdg/state/ableton-wine/.ableton-linux-state"
             printf 'external firewall sentinel\n' > "$base/external-firewall"
             ln -s -- "$base/external-firewall" "$base/xdg/state/ableton-wine/link-firewall"
             ;;
         multiline)
+            printf 'format=1\nowner=ableton-linux\n' \
+                > "$base/xdg/state/ableton-wine/.ableton-linux-state"
             printf 'ufw-added\nextra\n' > "$base/xdg/state/ableton-wine/link-firewall"
             ;;
+        valid-unmarked)
+            printf 'ufw-added\n' > "$base/xdg/state/ableton-wine/link-firewall" ;;
     esac
     if run_link_transaction_action "$base" snapshot "$txn" >"$base/out" 2>"$base/err"; then
         fail "Link snapshot accepted a $corrupt_kind firewall state record"
@@ -2879,14 +4676,54 @@ unit_file="$base/xdg/config/systemd/user/ableton-linkd.service"
 mkdir -p -- "$txn" "$base/runtime" "$base/prefix" "$(dirname "$unit_file")"
 printf 'external unit sentinel\n' > "$base/external-unit"
 ln -s -- "$base/external-unit" "$unit_file"
-if run_link_transaction_action "$base" snapshot "$txn" >"$base/out" 2>"$base/err"; then
-    fail "Link snapshot accepted a symlinked unit file"
-fi
-grep -qF "unsafe or foreign Link unit cannot be snapshotted: $unit_file" "$base/err" \
-    || fail "unit symlink snapshot refusal was not explicit"
+run_link_transaction_action "$base" snapshot "$txn" >"$base/out" 2>"$base/err" \
+    || fail "a generated user-service collision became a Link snapshot gate"
 grep -qxF 'external unit sentinel' "$base/external-unit" \
-    || fail "unit symlink snapshot refusal changed the foreign referent"
-ok "Link snapshot rejects unsafe firewall records and foreign unit symlinks"
+    || fail "Link snapshot followed or changed a generated-path symlink"
+ok "Link snapshot rejects unsafe firewall authority without gating on generated unit files"
+
+base="$(new_env mime-postpublish-query-not-used)"
+install_fake_host_tools "$base"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$base/runtime/.ableton-linux-runtime"
+mkdir -p -- "$base/xdg/config"
+printf '[Default Applications]\nx-scheme-handler/ableton=foreign.desktop\napplication/x-unrelated=foreign-other.desktop\n' \
+    > "$base/xdg/config/mimeapps.list"
+cat > "$base/fakebin/xdg-mime" <<'EOF'
+#!/bin/sh
+set -eu
+state="${XDG_CONFIG_HOME:?}/mimeapps.list"
+case "${1:-}" in
+    query) : > "$state.query-called"; exit 91 ;;
+    default)
+        [ "$#" -ge 3 ]
+        application="$2"
+        shift 2
+        mkdir -p -- "$(dirname "$state")"
+        touch "$state"
+        for type in "$@"; do
+            awk -F '=' -v type="$type" '$1 != type' "$state" > "$state.tmp"
+            printf '%s=%s\n' "$type" "$application" >> "$state.tmp"
+            mv -- "$state.tmp" "$state"
+        done ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod 755 "$base/fakebin/xdg-mime"
+run_component_install "$base" "$base/runtime" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || fail "MIME default publication aborted generated integration"
+[ ! -e "$base/xdg/config/mimeapps.list.query-called" ] \
+    || fail "MIME defaults were redundantly queried after publication"
+[ -x "$base/home/.local/bin/ableton-live" ] \
+    || fail "MIME default publication did not keep the generated launcher"
+grep -qxF 'application/x-unrelated=foreign-other.desktop' \
+    "$base/xdg/config/mimeapps.list" \
+    || fail "MIME default publication corrupted an unrelated live default"
+grep -qxF 'x-scheme-handler/ableton=io.github.shibco.ableton-linux.protocol.desktop' \
+    "$base/xdg/config/mimeapps.list" \
+    || fail "MIME default publication discarded the staged Ableton default"
+ok "MIME defaults are published once without a redundant live query"
 
 base="$(new_env mime-stage-partial-failure)"
 install_fake_host_tools "$base"
@@ -2912,14 +4749,110 @@ case "${1:-}" in
 esac
 EOF
 chmod 755 "$base/fakebin/xdg-mime"
-if run_component_install "$base" "$base/runtime" --integration-only >"$base/out" 2>"$base/err"; then
-    fail "integration succeeded after staged MIME mutation failed"
-fi
-grep -qF 'MIME association staging failed; existing associations were unchanged' "$base/err" \
-    || fail "staged MIME failure was not explicit"
+run_component_install "$base" "$base/runtime" --integration-only >"$base/out" 2>"$base/err" \
+    || fail "staged MIME failure aborted generated integration"
+grep -qF 'Could not set Ableton as the default app for Live files. Ableton itself can still be used normally.' \
+    "$base/err" || fail "staged MIME failure did not produce its plain warning"
 cmp -s -- "$base/xdg/config/mimeapps.list" <(printf '[Default Applications]\nx-scheme-handler/ableton=foreign.desktop\n') \
     || fail "staged MIME failure mutated the live mimeapps file"
-ok "MIME staging can mutate its temp copy and still leaves live associations unchanged on failure"
+[ -x "$base/home/.local/bin/ableton-live" ] \
+    || fail "staged MIME failure rolled back the generated launcher"
+ok "MIME staging failure warns, preserves live associations, and keeps generated integration"
+
+# Model an xdg-mime backend with process-external side effects: every default
+# command consumes a global serial and records it in the selected mimeapps
+# file. Defaults are prepared against one temporary copy and published once as
+# optional live state, outside the generated-file transaction journal.
+base="$(new_env mime-single-publication)"
+install_fake_host_tools "$base"
+make_runtime "$base/runtime" "$base/BUILD-INFO.txt" built
+printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$base/runtime/.ableton-linux-runtime"
+mkdir -p -- "$base/xdg/config"
+printf '[Default Applications]\nx-scheme-handler/ableton=foreign.desktop\napplication/x-unrelated=foreign-other.desktop\n' \
+    > "$base/xdg/config/mimeapps.list"
+cp -- "$base/xdg/config/mimeapps.list" "$base/mimeapps.before"
+printf '0\n' > "$base/mime-backend-count"
+: > "$base/mime-call-log"
+cat > "$base/fakebin/xdg-mime" <<'EOF'
+#!/bin/sh
+set -eu
+state="${XDG_CONFIG_HOME:?}/mimeapps.list"
+global="${MIME_GLOBAL_STATE:?}"
+log="${MIME_CALL_LOG:?}"
+case "${1:-}" in
+    query)
+        [ "${2:-}" = default ] && [ "$#" -eq 3 ]
+        printf 'query\t%s\t%s\n' "$XDG_CONFIG_HOME" "$3" >> "$log"
+        awk -F '=' -v type="$3" '$1 == type { value=$2 } END { print value }' \
+            "$state" 2>/dev/null || true
+        ;;
+    default)
+        [ "$#" -ge 3 ]
+        application="$2"
+        shift 2
+        serial="$(cat "$global")"
+        serial=$((serial + 1))
+        printf '%s\n' "$serial" > "$global"
+        printf 'default\t%s\t%s\n' "$XDG_CONFIG_HOME" "$application" >> "$log"
+        mkdir -p -- "$(dirname "$state")"
+        touch "$state"
+        awk '$0 !~ /^# backend-serial=/' "$state" > "$state.clean"
+        mv -- "$state.clean" "$state"
+        for type in "$@"; do
+            awk -F '=' -v type="$type" '$1 != type' "$state" > "$state.tmp"
+            printf '%s=%s\n' "$type" "$application" >> "$state.tmp"
+            mv -- "$state.tmp" "$state"
+        done
+        printf '# backend-serial=%s\n' "$serial" >> "$state"
+        ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod 755 "$base/fakebin/xdg-mime"
+txn="$base/mime-transaction"
+mkdir -p -- "$txn"
+export MIME_GLOBAL_STATE="$base/mime-backend-count"
+export MIME_CALL_LOG="$base/mime-call-log"
+run_component_install "$base" "$base/runtime" --integration-only \
+    --transaction-dir "$txn" >"$base/install.out" 2>"$base/install.err" \
+    || fail "transactional MIME integration failed with a serializing backend"
+unset MIME_GLOBAL_STATE MIME_CALL_LOG
+[ "$(cat "$base/mime-backend-count")" -eq 3 ] \
+    || fail "MIME integration replayed default mutations after staged publication"
+[ "$(awk -F '\t' '$1=="default" { n++ } END { print n+0 }' "$base/mime-call-log")" -eq 3 ] \
+    || fail "MIME backend saw an unexpected number of default mutations"
+awk -F '\t' -v prefix="$base/tmp/ableton-mimeapps." '
+    $1=="default" && index($2, prefix) != 1 { bad=1 }
+    END { exit bad }
+' "$base/mime-call-log" \
+    || fail "a MIME default mutation targeted the live configuration home"
+grep -qxF '# backend-serial=3' "$base/xdg/config/mimeapps.list" \
+    || fail "the staged MIME generation was not the single published live object"
+! awk -F '\t' -v p="$base/xdg/config/mimeapps.list" \
+    '$2==p { found=1 } END { exit !found }' "$txn/files.tsv" \
+    || fail "optional MIME defaults were recorded in the generated-file journal"
+run_component_install "$base" "$base/runtime" --preflight-commit "$txn" \
+    >"$base/commit-preflight.out" 2>"$base/commit-preflight.err" \
+    || fail "MIME integration rejected its own final generation at commit preflight"
+run_component_install "$base" "$base/runtime" --preflight-rollback "$txn" \
+    >"$base/rollback-preflight.out" 2>"$base/rollback-preflight.err" \
+    || fail "MIME integration rejected its own final generation at rollback preflight"
+run_component_install "$base" "$base/runtime" --rollback "$txn" \
+    >"$base/rollback.out" 2>"$base/rollback.err" \
+    || fail "generated integration could not roll back with optional MIME state present"
+grep -qxF 'application/x-unrelated=foreign-other.desktop' \
+    "$base/xdg/config/mimeapps.list" \
+    || fail "optional MIME publication or generated-file rollback corrupted an unrelated default"
+grep -qxF 'x-scheme-handler/ableton=io.github.shibco.ableton-linux.protocol.desktop' \
+    "$base/xdg/config/mimeapps.list" \
+    || fail "generated-file rollback rewound the independently published Ableton default"
+grep -qxF '# backend-serial=3' "$base/xdg/config/mimeapps.list" \
+    || fail "generated-file rollback changed the optional MIME generation"
+[ -x "$base/home/.local/bin/ableton-live" ] \
+    || fail "component rollback removed an independently completed launcher repair"
+[ -f "$txn/active" ] \
+    || fail "MIME component rollback retired its coordinator-owned active marker"
+ok "MIME defaults and completed generated files stay published across later component recovery"
 
 write_valid_managed_config()
 {
@@ -2960,6 +4893,44 @@ fi
 grep -qF 'installation configuration changed; retry the command' "$base/err" \
     || fail "configuration race refusal was not explicit"
 ok "config lock revalidates the captured configuration token before mutating anything"
+
+base="$(new_env config-mid-read-race)"
+config_path="$base/xdg/config/ableton-wine/config"
+replacement="$base/config.replacement"
+write_valid_managed_config "$config_path" "$base/runtime-a" "$base/prefix-a" \
+    "$base/xdg/data/ableton-wine/linkd-a"
+write_valid_managed_config "$replacement" "$base/runtime-b" "$base/prefix-b" \
+    "$base/xdg/data/ableton-wine/linkd-b"
+if run_isolated "$base" env \
+    ABLETON_TEST_CONFIG_TARGET="$config_path" \
+    ABLETON_TEST_CONFIG_REPLACEMENT="$replacement" \
+    ABLETON_TEST_CONFIG_TRIGGER="$base/config-replaced" \
+    bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        original_definition="$(declare -f ableton_config_file_value)"
+        eval "${original_definition/ableton_config_file_value/ableton_config_file_value_original}"
+        ableton_config_file_value()
+        {
+            local wanted="$1" value status=0
+            value="$(ableton_config_file_value_original "$wanted")" || status=$?
+            if [ "$wanted" = runtime_root ] && [ ! -e "${ABLETON_TEST_CONFIG_TRIGGER:?}" ]; then
+                mv -T -- "${ABLETON_TEST_CONFIG_REPLACEMENT:?}" \
+                    "${ABLETON_TEST_CONFIG_TARGET:?}"
+                : > "${ABLETON_TEST_CONFIG_TRIGGER:?}"
+            fi
+            printf "%s\n" "$value"
+            return "$status"
+        }
+        ableton_config_init
+    ' _ "$here" >"$base/out" 2>"$base/err"; then
+    fail "config init accepted values mixed across two atomic file generations"
+fi
+[ -e "$base/config-replaced" ] \
+    || fail "mid-read configuration replacement fixture did not fire"
+grep -qF 'installation configuration changed while it was being read; retry the command' \
+    "$base/err" || fail "mid-read configuration race refusal was not explicit"
+ok "config parsing binds every resolved field to one file generation"
 
 for corrupt_kind in truncated duplicate symlink; do
     base="$(new_env "config-${corrupt_kind}")"
@@ -3011,6 +4982,59 @@ EOF
 done
 ok "strict managed-config validation rejects truncated, duplicate, and symlinked configs"
 
+base="$(new_env link-defaultable-config-repair)"
+install_fake_host_tools "$base"
+config_path="$base/xdg/config/ableton-wine/config"
+mkdir -p -- "$(dirname "$config_path")"
+cat > "$config_path" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$base/runtime
+prefix=$base/prefix
+link_mode=session
+EOF
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/setup-link.sh" disable >"$base/out" 2>"$base/err" \
+    || fail "missing defaultable installer settings blocked Link disable"
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init strict
+    ableton_managed_config_valid "$ABLETON_CONFIG_FILE"
+' _ "$here" || fail "Link disable did not rebuild a valid installer configuration"
+grep -qxF 'link_mode=off' "$config_path" \
+    && grep -qxF "linkd=$base/xdg/data/ableton-wine/ableton-linkd" "$config_path" \
+    || fail "Link disable did not default and save the missing installer settings"
+ok "missing defaultable settings cannot gate a direct Link change"
+
+base="$(new_env prefix-defaultable-config-repair)"
+config_path="$base/xdg/config/ableton-wine/config"
+mkdir -p -- "$(dirname "$config_path")" "$base/prefix"
+cat > "$config_path" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$base/runtime
+prefix=$base/prefix
+link_mode=off
+EOF
+printf 'WINE REGISTRY Version 2\n' > "$base/prefix/system.reg"
+cat > "$base/hide-cabextract.bash" <<'EOF'
+command()
+{
+    if [ "${1:-}" = -v ] && [ "${2:-}" = cabextract ]; then return 1; fi
+    builtin command "$@"
+}
+EOF
+run_isolated "$base" env BASH_ENV="$base/hide-cabextract.bash" \
+    ABLETON_RUNTIME_PENDING=1 \
+    bash "$here/setup-prefix.sh" --refresh --validate >"$base/out" 2>"$base/err" \
+    || fail "unused cabextract or missing default settings blocked prefix refresh validation"
+grep -qF -- '-- Wine prefix settings are valid' "$base/out" \
+    || fail "direct prefix validation did not reach its successful result"
+grep -qxF "runtime_root=$base/runtime" "$config_path" \
+    || fail "prefix validation changed the project settings it only needed to read"
+ok "unused cabextract and missing default settings cannot gate prefix refresh validation"
+
 base="$(new_env legacy-shortcut-state)"
 state="$base/xdg/state/ableton-wine"
 mkdir -p -- "$state"
@@ -3043,7 +5067,7 @@ run_isolated "$base" env PATH="$base/fakebin:$PATH" \
     bash "$base/kit/scripts/installer.sh" plan runtime install \
     --runtime-root "$base/runtime" --yes >"$base/out" 2>"$base/err" \
     || fail "public runtime plan failed"
-[ "$(grep -c '^== validate runtime payload:' "$base/out")" -eq 1 ] \
+[ "$(grep -c '^== Check the Wine package:' "$base/out")" -eq 1 ] \
     || fail "public runtime plan validates and extracts its payload more than once"
 if find "$base/tmp" -mindepth 1 -maxdepth 1 \
     \( -name 'ableton-install-plan.*' -o -name 'ableton-runtime-validate.*' \) \
@@ -3053,6 +5077,79 @@ fi
 [ ! -e "$base/xdg/state" ] \
     || fail "public runtime plan created persistent installer state"
 ok "public runtime plans retire validation transactions and extracted payloads"
+
+base="$(new_env plan-temp-cleanup-warning)"
+make_runtime_only_kit "$base"
+cat > "$base/refuse-preview-cleanup.bash" <<'EOF'
+rm()
+{
+    local argument
+    for argument in "$@"; do
+        case "$argument" in
+            */ableton-install-plan.*|*/ableton-runtime-validate.*) return 73 ;;
+        esac
+    done
+    command rm "$@"
+}
+EOF
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    BASH_ENV="$base/refuse-preview-cleanup.bash" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    bash "$base/kit/scripts/installer.sh" plan runtime install \
+        --runtime-root "$base/runtime" --yes >"$base/out" 2>"$base/err" \
+    || fail "private scratch cleanup failure changed a successful runtime plan"
+grep -qF 'Checks finished, but temporary files remain at' "$base/err" \
+    || fail "runtime plan scratch residue was not reported"
+if ! find "$base/tmp" -mindepth 1 -maxdepth 1 \
+    \( -name 'ableton-install-plan.*' -o -name 'ableton-runtime-validate.*' \) \
+    -print -quit | grep -q .; then
+    fail "runtime plan cleanup failure fixture did not retain its injected scratch path"
+fi
+ok "runtime plan success is independent of private scratch cleanup"
+
+# A failed check is still only a check: it has no installed files to restore
+# and must not manufacture a recovery record or rollback report.
+for preview_kind in public-plan direct-validate; do
+    base="$(new_env "failed-preview-${preview_kind}")"
+    make_runtime_only_kit "$base"
+    cat > "$base/fakebin/readelf" <<'EOF'
+#!/bin/sh
+cat <<'OUT'
+  Shared library: [libusb-1.0.so.0]
+  Shared library: [libpipewire-0.3.so.0]
+  Shared library: [libgstreamer-1.0.so.0]
+OUT
+exit 93
+EOF
+    chmod 755 "$base/fakebin/readelf"
+    if [ "$preview_kind" = public-plan ]; then
+        preview_command=(bash "$base/kit/scripts/installer.sh" plan runtime install
+            --runtime-root "$base/runtime" --yes)
+    else
+        preview_command=(bash "$base/kit/scripts/install.sh" --runtime-only --validate)
+    fi
+    if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+        ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+        PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+        "${preview_command[@]}" > "$base/out" 2> "$base/err"; then
+        fail "$preview_kind ignored a failed runtime check"
+    fi
+    grep -qF 'runtime Push bridge dependency validation failed' "$base/err" \
+        || fail "$preview_kind replaced the failed check's original cause"
+    if grep -qF 'Earlier files were restored' "$base/err" \
+       || grep -qF 'Restoring the files from before this attempt' "$base/err"; then
+        fail "$preview_kind reported rollback for a check that changed no installed files"
+    fi
+    if find "$base" -name FAILURE -print -quit | grep -q .; then
+        fail "$preview_kind wrote an installation failure record for a check"
+    fi
+    if find "$base/tmp" -mindepth 1 -maxdepth 1 \
+        \( -name 'ableton-install-plan.*' -o -name 'ableton-runtime-validate.*' \) \
+        -print -quit | grep -q .; then
+        fail "$preview_kind leaked its failed-check scratch files"
+    fi
+done
+ok "failed runtime checks preserve their cause without fake rollback or recovery state"
 
 base="$(new_env rollback-literal-pipeasio-symlink)"
 make_rollback_fixture "$base"
@@ -3128,6 +5225,43 @@ for race_kind in public-runtime direct-link; do
 done
 ok "public and direct mutators refuse a configuration changed before lock acquisition"
 
+base="$(new_env config-repair-race)"
+config_path="$base/xdg/config/ableton-wine/config"
+mkdir -p -- "$(dirname "$config_path")"
+cat > "$config_path" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$base/old-runtime
+prefix=$base/custom-prefix
+obsolete=first-generation
+EOF
+replacement="$base/config.replacement"
+cat > "$replacement" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$base/replaced-runtime
+prefix=$base/replaced-prefix
+obsolete=second-generation
+EOF
+install_config_race_flock "$base"
+make_runtime_only_kit "$base"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
+    ABLETON_TEST_FLOCK_MUTATED="$base/flock-mutated" \
+    ABLETON_TEST_CONFIG_REPLACEMENT="$replacement" \
+    ABLETON_TEST_CONFIG_TARGET="$config_path" \
+    bash "$base/kit/scripts/installer.sh" runtime install \
+        --runtime-root "$base/runtime" --yes >"$base/out" 2>"$base/err"; then
+    fail "repair mode accepted a malformed config replaced before lock acquisition"
+fi
+[ -e "$base/flock-mutated" ] \
+    || fail "malformed-config lock-race fixture did not replace its generation"
+grep -qF 'installation configuration changed; retry the command' "$base/err" \
+    || fail "malformed-config generation race did not report an exact retry"
+[ ! -e "$base/runtime" ] \
+    || fail "malformed-config generation race reached runtime promotion"
+ok "repair mode binds salvaged values to one generation before any core mutation"
+
 base="$(new_env inherited-lock-daemon)"
 linkd="$base/xdg/data/ableton-wine/ableton-linkd"
 mkdir -p -- "$(dirname "$linkd")"
@@ -3199,6 +5333,16 @@ case "${1:-}" in
         : > "$2/component-backup"
         : > "$2/prefix-backup"
         ;;
+    enable)
+        if [ "${ABLETON_TEST_WRITE_LINK_CONFIG:-0}" -eq 1 ]; then
+            mkdir -p -- "$(dirname "${ABLETON_CONFIG_FILE:?}")"
+            printf '# ableton-linux installer configuration; managed by the installer\nformat=1\nruntime_root=%s\nprefix=%s\nlive_major=%s\nlink_mode=%s\nlinkd=%s\n' \
+                "${ABLETON_WINE_ROOT:?}" "${ABLETON_WINEPREFIX:?}" \
+                "${ABLETON_LIVE_VERSION:-}" "${ABLETON_LINK_MODE:?}" \
+                "${ABLETON_LINKD:?}" > "$ABLETON_CONFIG_FILE"
+            : > "${ABLETON_TEST_CONFIG_RECHECK_MARKER:?}"
+        fi
+        ;;
     preflight-commit)
         if [ "${ABLETON_TEST_FAIL_COMMIT_DOMAIN:-}" = link ]; then
             echo '!! injected Link commit preflight failure' >&2
@@ -3242,11 +5386,59 @@ for fail_domain in prefix link; do
 done
 ok "outer commit preflights every domain before retiring any rollback material"
 
+# The Link helper owns the write and postcondition for its saved setting. The
+# parent must not add another checksum/read gate after the requested Link action
+# has already succeeded.
+base="$(new_env link-parent-config-recheck)"
+make_commit_preflight_kit "$base"
+call_log="$base/calls.log"
+: > "$call_log"
+mkdir -p -- "$base/fakebin"
+real_sha256sum="$(command -v sha256sum)"
+cat > "$base/fakebin/sha256sum" <<EOF
+#!/bin/sh
+if [ -e "\${ABLETON_TEST_CONFIG_RECHECK_MARKER:-}" ]; then
+    case "\${1:-}" in
+        --) checked="\${2:-}" ;;
+        *) checked="\${1:-}" ;;
+    esac
+    if [ "\$checked" = "\${ABLETON_CONFIG_FILE:-}" ]; then
+        /bin/rm -f -- "\$ABLETON_TEST_CONFIG_RECHECK_MARKER"
+        exit 73
+    fi
+fi
+exec "$real_sha256sum" "\$@"
+EOF
+chmod 755 "$base/fakebin/sha256sum"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_TEST_CALL_LOG="$call_log" \
+    ABLETON_TEST_WRITE_LINK_CONFIG=1 \
+    ABLETON_TEST_CONFIG_RECHECK_MARKER="$base/recheck-ready" \
+    bash "$base/commit-kit/scripts/installer.sh" link enable --mode=session \
+    > "$base/out" 2> "$base/err" \
+    || fail "parent settings handling invented a failure after Link succeeded"
+grep -qxF 'link_mode=session' "$base/xdg/config/ableton-wine/config" \
+    || fail "Link helper did not publish the selected saved setting"
+[ -e "$base/recheck-ready" ] \
+    || fail "parent redundantly re-read the Link helper's generated setting"
+! grep -qF 'saved setting could not be rechecked' "$base/err" \
+    || fail "parent printed a redundant saved-setting diagnostic"
+grep -qxF 'OK: Ableton Link is enabled (session)' "$base/out" \
+    || fail "parent settings handling hid the successful Link outcome"
+if grep -Eq -- '--rollback |^link rollback ' "$call_log"; then
+    fail "parent settings handling rolled back a successful Link action"
+fi
+ok "the parent adds no generated-setting gate after successful Link setup"
+
 make_pr182_custom_link_fixture()
 {
     local base="$1" mode="$2" data state config custom digest id backup
     make_runtime_only_kit "$base"
     install_fake_host_tools "$base"
+    # Model an unavailable user manager; Link disable must still complete from
+    # its file/config state.
+    printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/systemctl"
+    chmod 755 "$base/fakebin/systemctl"
     cp -- "$here/setup-link.sh" "$here/ableton-linkctl" \
         "$here/ableton-linkd.service" "$base/kit/scripts/"
     cat > "$base/kit/bin/ableton-linkd" <<'EOF'
@@ -3289,6 +5481,16 @@ EOF
             printf 'present\t%s\t%s\n' "$custom" "$backup" \
                 > "$state/install-prestate.tsv"
             ;;
+        owned-stale-prestate)
+            # Recognition is still backed by the exact PR182 release evidence,
+            # but the old restoration journal is deliberately unusable. The
+            # helper must stay live while canonical Link support is repaired.
+            printf 'file\t%s\t%s\n' "$custom" "$digest" > "$state/install-manifest.tsv"
+            mkdir -p -- "$state/install-prestate"
+            printf 'stale recovery sentinel\n' > "$state/install-prestate/not-a-valid-slot"
+            printf 'present\t%s\t/tmp/untrusted-pr182-backup\n' "$custom" \
+                > "$state/install-prestate.tsv"
+            ;;
         modified)
             printf 'file\t%s\t%s\n' "$custom" "$digest" > "$state/install-manifest.tsv"
             printf 'user modified former PR182 Link binary\n' > "$custom"
@@ -3309,7 +5511,78 @@ EOF
     PR182_CONFIG="$config"
 }
 
-for migration_mode in owned-prestate modified unowned-off; do
+# Publishing generated Link support files does not need to stop or restart a
+# running daemon. The following controller deliberately fails if invoked: the
+# file update must still succeed, leaving lifecycle changes to setup-link.sh.
+base="$(new_env link-assets-ignore-running-state)"
+make_pr182_custom_link_fixture "$base" unowned-off
+canonical="$base/xdg/data/ableton-wine/ableton-linkd"
+cp -- "$base/kit/bin/ableton-linkd" "$canonical"
+chmod 755 "$canonical"
+cat > "$base/kit/scripts/ableton-linkctl" <<'EOF'
+#!/bin/sh
+: > "${ABLETON_TEST_LINKCTL_CALLED:?}"
+exit 73
+EOF
+chmod 755 "$base/kit/scripts/ableton-linkctl"
+txn="$base/link-assets-transaction"
+mkdir -p -- "$txn"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_LINKD="$canonical" \
+    ABLETON_TEST_LINKCTL_CALLED="$base/link-controller-called" \
+    bash "$base/kit/scripts/install.sh" --link-assets-only \
+        --transaction-dir "$txn" >"$base/out" 2>"$base/err" \
+    || fail "running Link state became a generated-file update gate"
+[ ! -e "$base/link-controller-called" ] \
+    || fail "Link asset publication invoked the lifecycle controller"
+[ -x "$canonical" ] \
+    && [ -x "$base/xdg/data/ableton-wine/ableton-linkctl" ] \
+    && [ -x "$base/xdg/data/ableton-wine/setup-link.sh" ] \
+    && [ -f "$base/xdg/data/ableton-wine/ableton-linkd.service" ] \
+    || fail "Link asset publication did not replace its generated files"
+ok "Link support files are replaced without a lifecycle failure gate"
+
+# A repair that still needs Link support enters install.sh with the narrowly
+# proven historical custom path already canonicalized by the coordinator. Bad
+# legacy restoration data may prevent retirement, but must not block canonical
+# support or mutate the custom helper.
+base="$(new_env pr182-custom-link-stale-repair)"
+make_pr182_custom_link_fixture "$base" owned-stale-prestate
+custom="$PR182_CUSTOM_LINK"
+canonical="$base/xdg/data/ableton-wine/ableton-linkd"
+txn="$base/link-repair-transaction"
+mkdir -p -- "$txn"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_PR182_CUSTOM_LINKD="$custom" ABLETON_LINKD="$canonical" \
+    bash "$base/kit/scripts/install.sh" --link-assets-only \
+        --transaction-dir "$txn" >"$base/out" 2>"$base/err" \
+    || fail "stale PR182 recovery data aborted canonical Link repair"
+grep -qxF 'historical PR182 Link binary' "$custom" \
+    || fail "stale PR182 recovery data changed the custom helper"
+grep -qF 'Kept the older custom Link helper because its saved recovery data could not be used safely.' \
+    "$base/err" || fail "stale PR182 recovery data did not produce its plain warning"
+grep -qxF 'stale recovery sentinel' \
+    "$(dirname "$PR182_PRESTATE_INDEX")/install-prestate/not-a-valid-slot" \
+    || fail "PR182 repair consumed an unverifiable recovery object"
+[ -x "$canonical" ] \
+    && [ -x "$base/xdg/data/ableton-wine/ableton-linkctl" ] \
+    && [ -x "$base/xdg/data/ableton-wine/setup-link.sh" ] \
+    && [ -f "$base/xdg/data/ableton-wine/ableton-linkd.service" ] \
+    || fail "stale PR182 recovery data prevented canonical Link support repair"
+if awk -F '\t' -v p="$custom" '$2==p { found=1 } END { exit !found }' \
+    "$PR182_MANIFEST"; then
+    fail "stale PR182 helper retained an obsolete ownership row after repair"
+fi
+run_component_install "$base" "$base/runtime" --preflight-commit "$txn" \
+    >"$base/preflight.out" 2>"$base/preflight.err" \
+    || fail "stale PR182 recovery data poisoned canonical Link commit preflight"
+ok "stale PR182 recovery data keeps the custom helper while canonical Link support is repaired"
+
+# Disabling Link no longer stages support files just to delete them. It keeps
+# every external custom helper and its historical recovery object untouched,
+# while pruning obsolete ownership rows and saving the canonical disabled
+# configuration for a proven PR182 release.
+for migration_mode in owned-prestate owned-stale-prestate modified unowned-off; do
     base="$(new_env "pr182-custom-link-${migration_mode}")"
     make_pr182_custom_link_fixture "$base" "$migration_mode"
     custom="$PR182_CUSTOM_LINK"
@@ -3322,21 +5595,22 @@ for migration_mode in owned-prestate modified unowned-off; do
     fi
     case "$migration_mode" in
         owned-prestate)
-            grep -qxF 'foreign pre-PR182 Link binary' "$custom" \
-                || fail "PR182 custom-Link migration did not restore the foreign prestate"
-            if [ -e "$PR182_PRESTATE_INDEX" ] \
-               && awk -F '\t' -v p="$custom" '$2==p { found=1 } END { exit !found }' \
-                    "$PR182_PRESTATE_INDEX"; then
-                fail "PR182 custom-Link migration retained consumed prestate authority"
-            fi
-            grep -qF 'retired the PR #182 custom Link binary ownership' "$base/out" \
-                || fail "owned PR182 custom-Link path did not use the verified retirement path"
+            grep -qxF 'historical PR182 Link binary' "$custom" \
+                || fail "Link disable changed the historical custom helper"
+            awk -F '\t' -v p="$custom" '$2==p { found=1 } END { exit !found }' \
+                "$PR182_PRESTATE_INDEX" \
+                || fail "Link disable consumed the custom helper's historical recovery row"
+            ;;
+        owned-stale-prestate)
+            grep -qxF 'historical PR182 Link binary' "$custom" \
+                || fail "Link disable changed the helper with stale PR182 recovery data"
+            grep -qxF 'stale recovery sentinel' \
+                "$(dirname "$PR182_PRESTATE_INDEX")/install-prestate/not-a-valid-slot" \
+                || fail "Link disable consumed an unverifiable custom recovery object"
             ;;
         modified)
             grep -qxF 'user modified former PR182 Link binary' "$custom" \
-                || fail "PR182 custom-Link migration overwrote a user-modified object"
-            grep -qF 'kept and de-owned the modified former PR #182 Link binary' "$base/out" \
-                || fail "modified PR182 custom-Link path did not use the de-ownership path"
+                || fail "Link disable overwrote a user-modified PR182 helper"
             ;;
         unowned-off)
             grep -qxF 'external Link sentinel from --link=off' "$custom" \
@@ -3351,11 +5625,16 @@ for migration_mode in owned-prestate modified unowned-off; do
     fi
     grep -qxF 'link_mode=off' "$PR182_CONFIG" \
         || fail "PR182 custom-Link mode $migration_mode did not finish disabled"
+    for generated_link_file in ableton-linkd ableton-linkctl setup-link.sh ableton-linkd.service; do
+        [ ! -e "$base/xdg/data/ableton-wine/$generated_link_file" ] \
+            && [ ! -L "$base/xdg/data/ableton-wine/$generated_link_file" ] \
+            || fail "Link disable retained canonical support file $generated_link_file"
+    done
     if [ "$migration_mode" != unowned-off ]; then
         grep -qxF "linkd=$base/xdg/data/ableton-wine/ableton-linkd" "$PR182_CONFIG" \
             || fail "verified PR182 custom-Link ownership was not migrated to the canonical path"
     fi
 done
-ok "PR182 custom-Link migration restores owned prestate, de-owns edits, and preserves --link=off paths"
+ok "Link disable preserves PR182 custom helpers while removing canonical support and stale ownership rows"
 
 printf 'PASS: %s focused PipeASIO installer checks\n' "$pass"

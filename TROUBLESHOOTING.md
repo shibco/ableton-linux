@@ -16,6 +16,7 @@ have already fixed your issue.
 
 - [Installation and updates](#installation-and-updates)
   - [The installer does not finish after Live installs](#the-installer-does-not-finish-after-live-installs)
+  - [Live installs and the final summary asks for a retry](#live-installs-and-the-final-summary-asks-for-a-retry)
   - [The Ableton installer window never progresses or shows graphical corruption on Hyprland](#the-ableton-installer-window-never-progresses-or-shows-graphical-corruption-on-hyprland)
   - [The installer asks for an explicit display scale](#the-installer-asks-for-an-explicit-display-scale)
   - [The installer says PipeWire is too old](#the-installer-says-pipewire-is-too-old)
@@ -33,6 +34,7 @@ have already fixed your issue.
 - [Performance, visuals and the Live interface](#performance-visuals-and-the-live-interface)
   - [Live overloads after an update](#live-overloads-after-an-update)
   - [Live uses high CPU while idle](#live-uses-high-cpu-while-idle)
+  - [A dialog opens black until you click it](#a-dialog-opens-black-until-you-click-it)
   - [Live is the wrong size, or looks blurry](#live-is-the-wrong-size-or-looks-blurry)
 - [Plugins and Max for Live devices](#plugins-and-max-for-live-devices)
   - [A plugin's installer won't start](#a-plugins-installer-wont-start)
@@ -75,6 +77,36 @@ and run:
 ```bash
 sh ~/Downloads/install-ableton-latest.run update
 ```
+
+### Live installs and the final summary asks for a retry
+
+The installer keeps a working runtime, Wine prefix, and Live installation when
+a desktop shortcut, file association, Link setting, saved setting, or cleanup
+step needs another try. It also keeps every shortcut or support file that was
+updated successfully; one failed path does not undo the other repairs.
+
+Check the final `OK` summary. It shows which optional item needs repair:
+
+- `desktop shortcuts: retry needed` means the core installation is intact, but
+  the launchers and application-menu entries need another update
+- `Link: unchanged; setup can be retried` means Live remains installed with the
+  previous Link setting
+- `saved settings: retry needed` means the current install works and the next
+  command needs the same custom path options
+- `old recovery files: remain at ...` means the core install completed and the
+  installer kept files that it could not remove
+
+Follow the instruction printed with the warning. For desktop shortcuts, run:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run update
+```
+
+Release `2026.08.26.1` could instead report that
+`install-manifest.tsv` changed after Live had installed. The current installer
+keeps that installed-file list outside runtime and prefix recovery. It rebuilds
+the list when required. This covers
+[issue 280](https://github.com/shibco/ableton-linux/issues/280).
 
 ### The Ableton installer window never progresses or shows graphical corruption on Hyprland
 
@@ -557,19 +589,37 @@ If the switch stays greyed out, or an empty Set still uses high CPU, open a
 your graphics card. If processor use rises only while the pointer moves, see
 [CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse).
 
+### A dialog opens black until you click it
+
+Older releases could lose the first frame of an offscreen dialog before the
+desktop displayed the window. Separate Stems was one affected dialog.
+
+Install the latest release and run an update:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run update
+```
+
+The current Wine patch redraws the saved dialog content when the desktop shows
+the window. Report the desktop environment and graphics card if the problem
+continues. See [issue 263](https://github.com/shibco/ableton-linux/issues/263)
+for the original report.
+
 ### Live is the wrong size, or looks blurry
 
-If Live opens much bigger or smaller than everything else on your desktop, or
-if its text is blurry, Live is trying to display at a resolution that isn't
-aligned with your desktop.
+If Live opens much bigger or smaller than everything else on your desktop,
+resizes itself while you move it, loses its File/Edit/View menu, or has blurry
+text, Live is trying to display at a resolution that isn't aligned with your
+desktop.
 
 The launcher reads your display scale every time Live starts, so this normally
 takes care of itself. When it gets it wrong, tell Live your scale yourself:
 
 1. Close Live.
 2. Open your computer's Display settings and note the scale your screen is set
-   to, such as 125%. If your screens use different scales, use the monitor you
-   plan to use Live with.
+   to, such as 125%. On GNOME with differently scaled screens, use the highest
+   active scale because Xwayland shares that framebuffer across the screens.
+   On another desktop, use the monitor where you plan to use Live.
 3. Confirm your desktop type. In a terminal window, run this command:
 
    ```bash

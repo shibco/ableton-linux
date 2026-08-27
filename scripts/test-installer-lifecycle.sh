@@ -282,6 +282,29 @@ grep -qF 'Max preferences moved aside' "$base/out" \
     || fail "public Live 11 repair created persistent state solely to lock"
 ok "public Live 11 repair honors the selected prefix without Wine or PipeWire"
 
+# Progress output is presentation, not part of the repair. GNU mv -v reports to
+# stdout after each successful move; a closed consumer used to turn that into a
+# false failure and stop before repairing the next user's preference file.
+base="$(new_env live11-repair-closed-output)"
+for repair_user in one two; do
+    max_settings="$base/prefix/drive_c/users/$repair_user/AppData/Roaming/Cycling '74/Max 8/Settings"
+    mkdir -p -- "$max_settings"
+    printf 'stale preferences for %s\n' "$repair_user" \
+        > "$max_settings/maxpreferences.maxpref"
+done
+printf 'WINE REGISTRY Version 2\n' > "$base/prefix/system.reg"
+printf 'format=1\nprefix=%s\n' "$base/prefix" > "$base/prefix/.ableton-linux-prefix"
+run_isolated "$base" bash "$here/installer.sh" prefix repair-live11 \
+    --prefix "$base/prefix" > /dev/full 2> "$base/err" \
+    || fail "closed progress output changed a completed Live 11 repair into failure"
+for repair_user in one two; do
+    max_settings="$base/prefix/drive_c/users/$repair_user/AppData/Roaming/Cycling '74/Max 8/Settings"
+    [ ! -e "$max_settings/maxpreferences.maxpref" ] \
+        && compgen -G "$max_settings/maxpreferences.maxpref.bak-*" >/dev/null \
+        || fail "closed output stopped Live 11 repair before every preference file was moved"
+done
+ok "Live 11 repair completes every safe move when progress output is closed"
+
 base="$(new_env maintenance-architecture)"
 mkdir -p "$base/fakebin"
 cat > "$base/fakebin/uname" <<'EOF'
@@ -351,20 +374,96 @@ ok "resolved XDG roots use real target directories without replacing parent syml
 base="$(new_env run-header)"
 kit="$base/kit"
 mkdir -p "$kit/scripts"
-printf '#!/bin/sh\nexit "${STUB_EXIT:-0}"\n' > "$kit/scripts/installer.sh"
+printf '#!/bin/sh\nprintf "%%s\\n" "${ABLETON_INSTALLER_PATH:-}" > "${STUB_PATH_FILE:?}"\nexit "${STUB_EXIT:-0}"\n' \
+    > "$kit/scripts/installer.sh"
 tar -cf "$base/payload.tar" -C "$kit" .
 sed -e 's/@VERSION@/suite-check/g' \
     -e "s/@PAYLOAD_SHA@/$(sha256sum "$base/payload.tar" | awk '{print $1}')/g" \
     "$here/setup-run-header.sh" > "$base/kit.run"
 cat "$base/payload.tar" >> "$base/kit.run"
-run_isolated "$base" env STUB_EXIT=0 sh "$base/kit.run" >"$base/out" 2>"$base/err" \
+run_isolated "$base" env STUB_EXIT=0 STUB_PATH_FILE="$base/installer-path" \
+    sh "$base/kit.run" >"$base/out" 2>"$base/err" \
     || fail "a successful delegated install exits zero through the .run header"
 status=0
-run_isolated "$base" env STUB_EXIT=42 sh "$base/kit.run" >>"$base/out" 2>>"$base/err" || status=$?
+run_isolated "$base" env STUB_EXIT=42 STUB_PATH_FILE="$base/installer-path" \
+    sh "$base/kit.run" >>"$base/out" 2>>"$base/err" || status=$?
 [ "$status" -eq 42 ] || fail "a delegated install failure code passes through the .run header"
+[ "$(cat "$base/installer-path")" = "$(readlink -f -- "$base/kit.run")" ] \
+    || fail "the .run header does not pass its reusable path to the installer"
 ! find "$base/tmp" -mindepth 1 -maxdepth 1 -name 'ableton-installer.*' 2>/dev/null | grep -q . \
     || fail "the .run header removes its work directory"
 ok "the .run header propagates the delegated installer exit code"
+
+# Extraction has completed once the files are copied. A closed output stream
+# must not reverse that result or prevent any of the transport work that precedes
+# the final success line.
+base="$(new_env run-header-extract-output)"
+run_isolated "$base" sh "$work/run-header/kit.run" extract "$base/extracted" \
+    > /dev/full 2> "$base/err" \
+    || fail "closed output changed a completed .run extraction into failure"
+[ -f "$base/extracted/scripts/installer.sh" ] \
+    || fail "closed output prevented the .run kit from being extracted"
+ok "the .run header preserves a successful extraction when output is closed"
+
+# GNU tar's progress dots go to stderr. Once tar has succeeded, even the
+# separating newline is presentation: a broken diagnostic consumer must not
+# stop extract before the verified kit is copied to its destination.
+base="$(new_env run-header-extract-stderr)"
+mkdir -p "$base/fakebin"
+cat > "$base/fakebin/dd" <<'EOF'
+#!/bin/sh
+[ "${1:-}" != --help ] || exit 0
+exec /usr/bin/dd "$@"
+EOF
+cat > "$base/fakebin/tar" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = --help ]; then
+    echo --checkpoint
+    exit 0
+fi
+[ "${1:-}" != --checkpoint=200 ] || shift
+[ "${1:-}" != --checkpoint-action=dot ] || shift
+exec /usr/bin/tar "$@"
+EOF
+chmod +x "$base/fakebin/dd" "$base/fakebin/tar"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    sh "$work/run-header/kit.run" extract "$base/extracted" \
+    > "$base/out" 2> /dev/full \
+    || fail "closed diagnostic output changed a completed .run extraction into failure"
+[ -f "$base/extracted/scripts/installer.sh" ] \
+    || fail "closed diagnostic output stopped the .run kit before its destination copy"
+ok "the .run header preserves extraction after checkpoint output closes"
+
+# A completed install stays successful even when temporary-file cleanup cannot
+# remove its work directory and the warning cannot be written.  Keep the
+# transport quiet until that cleanup path so /dev/full tests the final warning,
+# not extraction progress from dd or tar.
+base="$(new_env run-header-cleanup-output)"
+mkdir -p "$base/fakebin"
+cat > "$base/fakebin/dd" <<'EOF'
+#!/bin/sh
+[ "${1:-}" != --help ] || exit 0
+exec /usr/bin/dd "$@"
+EOF
+cat > "$base/fakebin/tar" <<'EOF'
+#!/bin/sh
+[ "${1:-}" != --help ] || exit 0
+exec /usr/bin/tar "$@"
+EOF
+cat > "$base/fakebin/rm" <<'EOF'
+#!/bin/sh
+[ "${1:-}" != -rf ] || exit 1
+exec /usr/bin/rm "$@"
+EOF
+chmod +x "$base/fakebin/dd" "$base/fakebin/tar" "$base/fakebin/rm"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" STUB_EXIT=0 \
+    STUB_PATH_FILE="$base/installer-path" sh "$work/run-header/kit.run" \
+    >"$base/out" 2>/dev/full \
+    || fail "cleanup output failure changed a successful .run result"
+find "$base/tmp" -mindepth 1 -maxdepth 1 -name 'ableton-installer.*' \
+    -type d -print -quit | grep -q . \
+    || fail "the cleanup-output fixture did not leave its temporary directory"
+ok "the .run header preserves success when cleanup output fails"
 
 base="$(new_env noninteractive)"
 if run_isolated "$base" bash "$here/installer.sh" >"$base/out" 2>"$base/err"; then
@@ -390,23 +489,24 @@ fi
 [ ! -e "$base/config" ] && [ ! -e "$base/state" ] || fail "duplicate-option failure mutates state"
 run_isolated "$base" bash "$here/installer.sh" --prefix --uninstall --dry-run \
     >"$base/legacy.out" 2>"$base/legacy.err"
-grep -q 'delete validated prefix' "$base/legacy.out" \
+grep -q 'delete the Wine prefix, including Live and its authorisation' "$base/legacy.out" \
     || fail "legacy uninstall prefix alias depends on argument order"
 ok "immutable options reject duplicates and legacy parsing is order-independent"
 
-base="$(new_env early-transaction-cleanup)"
+base="$(new_env unrelated-config-path)"
 mkdir -p "$base/config/pipeasio/config.ini"
-if run_isolated "$base" bash "$here/installer.sh" link disable \
-    >"$base/out" 2>"$base/err"; then
-    fail "unsafe pre-transaction configuration is accepted"
-fi
+run_isolated "$base" bash "$here/installer.sh" link disable \
+    >"$base/out" 2>"$base/err" \
+    || fail "an unrelated PipeASIO configuration path blocks Link disable"
 if find "$base/state/ableton-wine/transactions" -mindepth 1 -maxdepth 1 \
     -name 'installer.*' -print -quit 2>/dev/null | grep -q .; then
-    fail "a failure before transaction handlers are installed leaks its directory"
+    fail "successful Link disable leaks its temporary recovery directory"
 fi
-grep -qF 'current PipeASIO configuration is unsafe' "$base/err" \
-    || fail "early transaction refusal does not name the unsafe configuration"
-ok "failures during initial snapshots retire the unstarted transaction"
+[ -d "$base/config/pipeasio/config.ini" ] \
+    || fail "Link disable changed an unrelated PipeASIO configuration path"
+grep -qF 'OK: Ableton Link is off' "$base/out" \
+    || fail "successful Link disable does not report its outcome"
+ok "Link disable preserves unrelated configuration and retires temporary recovery data"
 
 base="$(new_env link-snapshot-cleanup)"
 mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine" \
@@ -448,10 +548,10 @@ ok "failed Link snapshots never publish or retain incomplete recovery state"
 
 base="$(new_env runtime-plan)"
 run_isolated "$base" bash "$here/installer.sh" --runtime-only --runtime-root "$base/runtime" --dry-run >"$base/out" 2>"$base/err"
-grep -q 'replace runtime tree atomically' "$base/out" || fail "runtime plan contains runtime"
-! grep -q 'write launcher:' "$base/out" || fail "runtime plan excludes integration"
-! grep -q 'write Link binary:' "$base/out" || fail "runtime plan excludes Link"
-grep -q 'apply the runtime PipeASIO panel record to existing launchers' "$base/out" \
+grep -q 'install or update Wine' "$base/out" || fail "runtime plan contains runtime"
+! grep -q 'install or update launchers' "$base/out" || fail "runtime plan excludes integration"
+! grep -q 'Ableton Link support' "$base/out" || fail "runtime plan excludes Link"
+grep -q 'update PipeASIO Settings shortcuts to match this Wine build' "$base/out" \
     || fail "runtime plan describes PipeASIO launcher reconciliation"
 [ ! -e "$base/runtime" ] && [ ! -e "$base/config" ] && [ ! -e "$base/state" ] || fail "runtime plan mutates no target"
 ok "runtime-only plan contains only the runtime component"
@@ -485,9 +585,9 @@ ok "runtime-only rejects unrelated Link options before mutation"
 
 base="$(new_env compat-plan)"
 run_isolated "$base" bash "$here/installer.sh" --no-launch --dry-run >"$base/out" 2>"$base/err"
-grep -q 'write launcher:' "$base/out" || fail "no-launch still means skip Live payload only"
-grep -q 'final Link policy: off' "$base/out" || fail "no-launch defaults Link off"
-! grep -Eq 'write Link binary:|write Link controller/setup/unit assets:' "$base/out" \
+grep -q 'install or update launchers' "$base/out" || fail "no-launch still means skip Live payload only"
+grep -q 'set Ableton Link mode: off' "$base/out" || fail "no-launch defaults Link off"
+! grep -Eq 'install or update Ableton Link support|use the configured Ableton Link helper' "$base/out" \
     || fail "no-launch unexpectedly stages Link assets"
 ! grep -Eq 'write ownership-marked user unit|launchers start session daemon|enable/start the owned user unit' "$base/out" \
     || fail "no-launch plans a Link service action"
@@ -507,8 +607,8 @@ link_mode=off
 linkd=$base/data/ableton-wine/ableton-linkd
 EOF
 run_isolated "$base" env ABLETON_DPI_MODE=preserve bash "$here/installer.sh" update --dry-run >"$base/out" 2>"$base/err"
-grep -q 'final Link policy: off' "$base/out" || fail "update preserves Link opt-out"
-! grep -q 'write Link binary:' "$base/out" || fail "opted-out update excludes Link assets"
+grep -q 'set Ableton Link mode: off' "$base/out" || fail "update preserves Link opt-out"
+! grep -q 'Ableton Link support' "$base/out" || fail "opted-out update excludes Link assets"
 ok "update preserves the persistent Link opt-out"
 
 base="$(new_env update-no-prefix)"
@@ -630,6 +730,9 @@ cat > "$kit/scripts/install.sh" <<'EOF'
 #!/bin/sh
 set -eu
 printf 'component %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+case " $* " in
+    *' --commit '*) exit "${ABLETON_TEST_COMPONENT_COMMIT_EXIT:-0}" ;;
+esac
 exit 0
 EOF
 cat > "$kit/scripts/setup-prefix.sh" <<'EOF'
@@ -637,7 +740,9 @@ cat > "$kit/scripts/setup-prefix.sh" <<'EOF'
 set -eu
 printf 'prefix %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
 case " $* " in
-    *' --preflight-commit '*|*' --commit '*|*' --preflight-rollback '*|*' --rollback '*) exit 0 ;;
+    *' --preflight-commit '*|*' --preflight-rollback '*) exit 0 ;;
+    *' --commit '*) exit "${ABLETON_TEST_PREFIX_COMMIT_EXIT:-0}" ;;
+    *' --rollback '*) rm -rf -- "${ABLETON_WINEPREFIX:?}"; exit 0 ;;
 esac
 mkdir -p -- "${ABLETON_WINEPREFIX:?}"
 printf 'registry\n' > "${ABLETON_WINEPREFIX}/system.reg"
@@ -650,6 +755,15 @@ EOF
 cat > "$base/runtime/bin/wine" <<'EOF'
 #!/bin/sh
 printf 'wine %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+case "$*" in
+    *'Ableton Live 12 Suite Installer.exe'*)
+        if [ "${ABLETON_TEST_SKIP_LIVE_EXE:-0}" -eq 0 ]; then
+            live_dir="${WINEPREFIX:?}/drive_c/ProgramData/Ableton/Live 12 Suite/Program"
+            mkdir -p -- "$live_dir"
+            printf 'exe\n' > "$live_dir/Ableton Live 12 Suite.exe"
+        fi ;;
+esac
+exit 0
 EOF
 cat > "$base/runtime/bin/wineserver" <<'EOF'
 #!/bin/sh
@@ -663,25 +777,43 @@ printf 'Ableton Live 12 Suite Installer\n' > "$base/Ableton Live 12 Suite Instal
 
 run_payload_install()
 {
+    local payload="$base/Ableton Live 12 Suite Installer.exe"
+    if [ "${1:-}" = --payload ]; then
+        payload="$2"
+        shift 2
+    fi
     : > "$base/calls.log"
     rm -rf -- "$base/prefix" "$base/config" "$base/state" "$base/data"
     run_isolated "$base" env ABLETON_TEST_CALL_LOG="$base/calls.log" "$@" \
         bash "$kit/scripts/installer.sh" install \
-            --live-installer "$base/Ableton Live 12 Suite Installer.exe" \
+            --live-installer "$payload" \
             --link=off --runtime-root "$base/runtime" --prefix "$base/prefix" --yes \
         >"$base/out" 2>"$base/err"
 }
 
 # 124 is timeout's TERM verdict: the wait ran out with a process still in the prefix.
 run_payload_install ABLETON_TEST_WAIT_EXIT=124 || fail "an expired payload wait fails the install"
-grep -q 'OK: install completed' "$base/out" || fail "an expired payload wait leaves the install incomplete"
+grep -q 'OK: Ableton Live 12 is installed' "$base/out" \
+    || fail "an expired payload wait leaves the install incomplete"
 ! grep -q 'wineserver -k' "$base/calls.log" || fail "the payload step stops the promoted prefix"
-grep -q 'the install is complete' "$base/out" || fail "an expired payload wait goes unreported"
+grep -q 'The Live installer finished; a background program is still using its Wine prefix' "$base/out" \
+    || fail "an expired payload wait goes unreported"
 grep -qF -- "$base/runtime/bin/wineserver -k" "$base/out" \
     || fail "the report withholds the command that ends the prefix"
 ! grep -q 'End every program' "$base/out" "$base/err" \
     || fail "a non-interactive install offers to end the prefix"
 ok "an expired payload wait reports the straggler, stops nothing, and still completes"
+
+run_payload_install ABLETON_TEST_WAIT_EXIT=127 \
+    || fail "an unavailable post-install Wine check fails a validated Live install"
+grep -q 'OK: Ableton Live 12 is installed' "$base/out" \
+    || fail "an unavailable post-install Wine check hides the completed install"
+grep -q 'Live is installed, but Wine could not be checked afterward (exit 127)' "$base/err" \
+    || fail "an unavailable post-install Wine check was not reported as advisory"
+if grep -Eq -- '--rollback |^component --rollback |^prefix --rollback ' "$base/calls.log"; then
+    fail "an unavailable post-install Wine check rolled back validated Live files"
+fi
+ok "every post-install Wine wait failure is advisory after Live validation"
 
 for image in AbletonPushCpl.exe tusbaudiocplapp.exe AbletonAudioCpl.exe MicrosoftEdgeUpdate.exe; do
     grep -qF "/im $image" "$base/calls.log" \
@@ -710,62 +842,160 @@ grep -q 'some-daw.exe (pid' "$base/out" || fail "the payload step does not name 
 ok "a program in the prefix is named at the end of an install, and --yes does not end it"
 
 run_payload_install || fail "a quiet payload wait fails the install"
-! grep -q 'the install is complete\.' "$base/out" || fail "a quiet prefix is reported as busy"
+! grep -q 'The Live installer finished' "$base/out" || fail "a quiet prefix is reported as busy"
 ok "a quiet prefix after the payload reports nothing"
 
-# Link setup runs after the Live payload. An expired sudo prompt stops the
-# firewall step. The installer must preserve Live. It must show the command that
-# resumes Link setup. Ctrl-C sends SIGINT while the installer waits. The Link
-# process then exits with status 130.
+# The coordinator does not extract Visual C++ cabinets itself. The prefix path
+# that actually needs cabextract owns that dependency check; another selected
+# prefix implementation must not be rejected by a redundant parent preflight.
+cat > "$base/no-cabextract.bash" <<'EOF'
+command()
+{
+    if [ "${1:-}" = -v ] && [ "${2:-}" = cabextract ]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+EOF
+run_payload_install BASH_ENV="$base/no-cabextract.bash" \
+    || fail "the coordinator required cabextract before reaching the selected prefix path"
+grep -q 'OK: Ableton Live 12 is installed' "$base/out" \
+    || fail "the redundant cabextract preflight hid the completed install"
+ok "cabextract is checked only by the prefix extraction path that uses it"
+
+# Progress text and archive member listings are presentation, not install
+# postconditions. A failed progress write must not roll back the extracted and
+# validated Live payload.
+(
+    cd "$base"
+    python3 -m zipfile -c 'Ableton Live 12 Suite.zip' \
+        'Ableton Live 12 Suite Installer.exe'
+)
+cat > "$base/payload-progress-failure.bash" <<'EOF'
+echo()
+{
+    case "$*" in
+        --\ Extracting\ the\ Live\ installer\ \(*|--\ Running\ the\ Live\ installer\ \(*) return 74 ;;
+    esac
+    builtin echo "$@"
+}
+EOF
+run_payload_install --payload "$base/Ableton Live 12 Suite.zip" \
+    BASH_ENV="$base/payload-progress-failure.bash" \
+    || fail "failed Live progress output rolled back a valid ZIP installation"
+grep -q 'OK: Ableton Live 12 is installed' "$base/out" \
+    || fail "failed Live progress output hid the completed installation"
+if grep -Eq '(^|[[:space:]])(inflating:|extracting:|creating:)' "$base/out"; then
+    fail "Live ZIP extraction printed its archive member list"
+fi
+if grep -Eq -- '--rollback |^component --rollback |^prefix --rollback ' "$base/calls.log"; then
+    fail "failed Live progress output started core rollback"
+fi
+ok "Live ZIP extraction is quiet and progress output cannot gate valid work"
+
+# A successful Wine process is not proof that Live was installed. The selected
+# major must leave a regular executable in the promoted prefix before the core
+# work can commit.
+if run_payload_install ABLETON_TEST_SKIP_LIVE_EXE=1; then
+    fail "Wine exit 0 without a Live executable succeeds"
+fi
+grep -q 'exited without installing Ableton Live 12 in the selected prefix' "$base/err" \
+    || fail "missing Live executable failure does not name the unmet postcondition"
+if ! grep -q 'prefix --preflight-rollback ' "$base/calls.log" \
+   || ! grep -q 'component --preflight-rollback ' "$base/calls.log" \
+   || ! grep -q 'prefix --rollback ' "$base/calls.log" \
+   || ! grep -q 'component --rollback ' "$base/calls.log"; then
+    fail "missing Live executable does not roll back the core install"
+fi
+[ ! -e "$base/prefix" ] || fail "missing Live executable leaves the fresh prefix promoted"
+! grep -q '^OK:' "$base/out" || fail "missing Live executable reports success"
+ok "Wine exit 0 without the selected Live executable fails and rolls back"
+
+# Link setup runs after the core runtime, prefix, and Live installation commit.
+# Any Link failure keeps that usable core and reports a concrete retry command.
 cat > "$kit/scripts/setup-link.sh" <<'EOF'
 #!/bin/sh
 set -eu
 printf 'link %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
 [ "${1:-}" = enable ] || exit 0
-case "${ABLETON_TEST_LINK_ENABLE_EXIT:-0}" in
-    int) kill -INT "$PPID"; exit 130 ;;
-    *) exit "${ABLETON_TEST_LINK_ENABLE_EXIT:-0}" ;;
-esac
+exit "${ABLETON_TEST_LINK_ENABLE_EXIT:-0}"
 EOF
 run_failed_link_install()
 {
     : > "$base/calls.log"
     rm -rf -- "$base/prefix" "$base/config" "$base/state" "$base/data"
-    run_isolated "$base" env ABLETON_TEST_CALL_LOG="$base/calls.log" ABLETON_TEST_LINK_ENABLE_EXIT="$1" \
+    run_isolated "$base" env ABLETON_INSTALLER_PATH="$link_installer" \
+        ABLETON_TEST_CALL_LOG="$base/calls.log" ABLETON_TEST_LINK_ENABLE_EXIT="$1" \
         bash "$kit/scripts/installer.sh" install \
             --live-installer "$base/Ableton Live 12 Suite Installer.exe" \
             --link=always --runtime-root "$base/runtime" --prefix "$base/prefix" --yes \
         >"$base/out" 2>"$base/err"
 }
-run_failed_link_install 1 || fail "the install must finish after Link setup failure"
-grep -q 'OK: install completed' "$base/out" || fail "the output must confirm install completion"
-! grep -q 'prefix --rollback' "$base/calls.log" || fail "the installer must preserve the prefix"
-grep -qF 'Run this command to complete Link setup: installer link enable --mode=always' "$base/err" \
-    || fail "the output must include the Link recovery command and mode"
-grep -qF 'Link: setup stopped (run: installer link enable --mode=always)' "$base/out" \
-    || fail "the summary must report the stopped Link setup"
-ok "Link setup failure reports the resume command and preserves the install"
+link_installer="$base/Downloads/Ableton Installer.run"
+printf -v quoted_link_installer '%q' "$link_installer"
+link_resume_command="sh $quoted_link_installer link enable --mode=always"
+live_exe="$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
+for link_failure in 1 70 75; do
+    run_failed_link_install "$link_failure" \
+        || fail "full install fails when Link exits $link_failure"
+    grep -q 'OK: Ableton Live 12 is installed' "$base/out" \
+        || fail "Link failure $link_failure hides the completed Live install"
+    [ -x "$base/runtime/bin/wine" ] && [ -f "$base/prefix/system.reg" ] \
+        && [ -f "$live_exe" ] \
+        || fail "Link failure $link_failure discards the runtime, prefix, or Live executable"
+    ! grep -q -- '--rollback' "$base/calls.log" \
+        || fail "Link failure $link_failure rolls back the completed core install"
+    grep -qF "Ableton Live 12 is installed, but Link could not be set up. Retry with: $link_resume_command" "$base/err" \
+        || fail "Link failure $link_failure omits the retry command and completed outcome"
+    grep -qF 'Link: unchanged; setup can be retried' "$base/out" \
+        || fail "Link failure $link_failure summary does not report retryable Link state"
+done
+ok "all Link failure statuses preserve a completed install with retry wording"
 
-run_failed_link_install int || fail "the install must finish after Ctrl-C stops Link setup"
-grep -q 'OK: install completed' "$base/out" || fail "the output must confirm install completion after Ctrl-C"
-! grep -q 'prefix --rollback' "$base/calls.log" || fail "the installer must preserve the prefix after Ctrl-C"
-grep -qF 'Run this command to complete Link setup: installer link enable --mode=always' "$base/err" \
-    || fail "the output must include the Link recovery command after Ctrl-C"
-ok "Ctrl-C stops Link setup and preserves the install"
+# Updates use the same boundary: Link remains retryable after the updated core
+# has committed, regardless of the helper's failure classification.
+for link_failure in 1 70 75; do
+    : > "$base/calls.log"
+    run_isolated "$base" env ABLETON_INSTALLER_PATH="$link_installer" \
+        ABLETON_TEST_CALL_LOG="$base/calls.log" ABLETON_TEST_LINK_ENABLE_EXIT="$link_failure" \
+        bash "$kit/scripts/installer.sh" update --link=always --yes \
+        >"$base/out" 2>"$base/err" \
+        || fail "full update fails when Link exits $link_failure"
+    grep -q 'OK: Ableton is updated' "$base/out" \
+        || fail "Link failure $link_failure hides the completed update"
+    [ -x "$base/runtime/bin/wine" ] && [ -f "$base/prefix/system.reg" ] \
+        && [ -f "$live_exe" ] \
+        || fail "Link failure $link_failure discards the updated runtime, prefix, or Live executable"
+    ! grep -q -- '--rollback' "$base/calls.log" \
+        || fail "Link failure $link_failure rolls back the completed update"
+    grep -qF "Ableton is updated, but Link could not be set up. Retry with: $link_resume_command" "$base/err" \
+        || fail "update Link failure $link_failure omits the retry command and outcome"
+    grep -qF 'Link: unchanged; setup can be retried' "$base/out" \
+        || fail "update Link failure $link_failure summary does not report retryable Link state"
+done
+ok "all Link failure statuses preserve a completed update with retry wording"
 
-# An update preserves the prefix and commits the new runtime after the same
-# Link setup failure.
-: > "$base/calls.log"
-run_isolated "$base" env ABLETON_TEST_CALL_LOG="$base/calls.log" ABLETON_TEST_LINK_ENABLE_EXIT=1 \
-    bash "$kit/scripts/installer.sh" update --yes >"$base/out" 2>"$base/err" \
-    || fail "the update must finish after Link setup failure"
-grep -q 'OK: update completed' "$base/out" || fail "the output must confirm update completion"
-! grep -q -- '--rollback' "$base/calls.log" || fail "the installer must preserve the update"
-grep -q 'Link setup stopped; the update continues' "$base/err" \
-    || fail "the output must report the stopped Link setup"
-grep -qF 'Link: setup stopped (run: installer link enable --mode=always)' "$base/out" \
-    || fail "the update summary must report the stopped Link setup"
-ok "Link setup failure reports the resume action and preserves the update"
+# Cleanup happens only after the usable core is committed. A cleanup failure
+# retains recovery files and warns, but must not turn that install into failure.
+for cleanup_failure in component prefix; do
+    cleanup_env=()
+    case "$cleanup_failure" in
+        component) cleanup_env+=(ABLETON_TEST_COMPONENT_COMMIT_EXIT=9) ;;
+        prefix) cleanup_env+=(ABLETON_TEST_PREFIX_COMMIT_EXIT=9) ;;
+    esac
+    run_payload_install "${cleanup_env[@]}" \
+        || fail "$cleanup_failure cleanup failure rejects a completed install"
+    grep -q 'OK: Ableton Live 12 is installed' "$base/out" \
+        || fail "$cleanup_failure cleanup failure hides the completed install"
+    grep -q 'old recovery files could not be removed' "$base/err" \
+        || fail "$cleanup_failure cleanup failure omits its warning"
+    [ -x "$base/runtime/bin/wine" ] && [ -f "$base/prefix/system.reg" ] \
+        && [ -f "$live_exe" ] \
+        || fail "$cleanup_failure cleanup failure discards the committed core"
+    ! grep -q -- '--rollback' "$base/calls.log" \
+        || fail "$cleanup_failure cleanup failure rolls back the committed core"
+done
+ok "cleanup failures warn and preserve a successful install"
 
 base="$(new_env launcher-preflight)"
 mkdir -p "$base/runtime/bin" "$base/prefix"
@@ -1080,8 +1310,8 @@ live_holder='C:\\ProgramData\\Ableton\\Live 12 Suite\\Program\\Ableton Live 12 S
 other_holder='C:\\some-daw.exe'
 refusal_leaves_busy_prefix_alone refusal-max-absent  max9         'no Max 9 installation'      "$live_holder"
 refusal_leaves_busy_prefix_alone refusal-live-absent ableton-live 'no Ableton Live installation' "$other_holder"
-refusal_leaves_busy_prefix_alone refusal-max-lock    max9         'bringing this prefix up'    "$live_holder" max  1
-refusal_leaves_busy_prefix_alone refusal-live-lock   ableton-live 'bringing this prefix up'    "$other_holder" live 1
+refusal_leaves_busy_prefix_alone refusal-max-lock    max9         'another Live or Max launch is starting' "$live_holder" max  1
+refusal_leaves_busy_prefix_alone refusal-live-lock   ableton-live 'another Live or Max launch is starting' "$other_holder" live 1
 ok "a launcher that refuses to start leaves a busy prefix alone, at every stage"
 
 base="$(new_env foreign-runtime)"
@@ -1128,7 +1358,10 @@ run_isolated "$base" env ABLETON_TRANSACTION_DIR="$base/txn" bash -c '
     && [ ! -e "$base/data/ableton-wine/detect-scale.sh" ] || fail "file transaction rolls back"
 ok "file transaction restores overwritten files and removes new files"
 
-base="$(new_env prefix-host-transaction)"
+# Retained transactions from older releases can still contain a host-file
+# journal. Recovery keeps understanding that format even though new prefix
+# setup runs no longer create an empty one.
+base="$(new_env legacy-prefix-host-transaction)"
 mkdir -p "$base/txn/prefix-host" "$base/config/pipeasio"
 printf 'before\n' > "$base/config/pipeasio/config.ini"
 run_isolated "$base" env ABLETON_TRANSACTION_DIR="$base/txn/prefix-host" bash -c '
@@ -1146,7 +1379,227 @@ run_isolated "$base" bash "$here/setup-prefix.sh" --rollback "$base/txn"
     || fail "prefix rollback leaves a pre-promotion host mutation behind"
 ok "prefix rollback restores host files even before prefix promotion"
 
-base="$(new_env uninstall-prestate)"
+# A current prefix transaction contains only the prefix layout record. It must
+# not need a fabricated empty host-file journal in order to recover.
+base="$(new_env prefix-layout-only-transaction)"
+prefix="$base/prefix"
+txn="$base/txn"
+backup="$prefix.transaction-${txn##*/}"
+mkdir -p -- "$prefix" "$backup" "$txn"
+printf 'format=1\nprefix=%s\n' "$prefix" > "$prefix/.ableton-linux-prefix"
+printf 'format=1\nprefix=%s\n' "$prefix" > "$backup/.ableton-linux-prefix"
+printf 'new prefix\n' > "$prefix/generation"
+printf 'old prefix\n' > "$backup/generation"
+printf '%s\t%s\n' "$prefix" "$backup" > "$txn/prefix.tsv"
+run_isolated "$base" env ABLETON_WINEPREFIX="$prefix" \
+    bash "$here/setup-prefix.sh" --preflight-rollback "$txn" \
+    || fail "prefix recovery required an empty host-file journal"
+run_isolated "$base" env ABLETON_WINEPREFIX="$prefix" \
+    bash "$here/setup-prefix.sh" --rollback "$txn" \
+    || fail "prefix-only recovery failed without a host-file journal"
+grep -qxF 'old prefix' "$prefix/generation" \
+    && [ ! -e "$backup" ] && [ ! -e "$txn/prefix.tsv" ] \
+    || fail "prefix-only recovery did not restore the saved prefix"
+ok "prefix recovery needs no empty host-file journal"
+
+# The EXIT handler has enough state to decide whether a late failure happened
+# before or after the prefix became usable. Diagnostic output is not part of
+# that decision, and a ready prefix must not also be reported as rolled back.
+base="$(new_env prefix-cleanup-output)"
+extract_setup_prefix_function()
+{
+    awk -v signature="$1()" \
+        '$0 == signature { copy=1 } copy { print } copy && /^}$/ { exit }' \
+        "$here/setup-prefix.sh" > "$2"
+}
+extract_setup_prefix_function prefix_cleanup "$base/prefix-cleanup.function"
+grep -q '^prefix_cleanup()$' "$base/prefix-cleanup.function" \
+    || fail "prefix cleanup test could not load the production handler"
+mkdir -p "$base/core-txn" "$base/commit-txn"
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1"
+    prefix_core_ready=1
+    prefix_commit_started=0
+    prefix_promoted=1
+    transaction_dir="$2"
+    final_prefix="$3"
+    stage_prefix="$4"
+    prefix_transaction_rollback() { return 0; }
+    trap prefix_cleanup EXIT
+    false
+' cleanup "$base/prefix-cleanup.function" "$base/core-txn" \
+    "$base/prefix" "$base/stage" > "$base/core.out" 2> /dev/full \
+    || fail "closed diagnostics changed a ready prefix into failure"
+[ ! -e "$base/core-txn/prefix-failure" ] \
+    || fail "a ready prefix was also recorded as a rolled-back failure"
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1"
+    prefix_core_ready=0
+    prefix_commit_started=1
+    prefix_promoted=1
+    transaction_dir="$2"
+    final_prefix="$3"
+    stage_prefix="$4"
+    prefix_transaction_rollback() { return 0; }
+    trap prefix_cleanup EXIT
+    false
+' cleanup "$base/prefix-cleanup.function" "$base/commit-txn" \
+    "$base/prefix" "$base/stage" > "$base/commit.out" 2> /dev/full \
+    || fail "closed diagnostics changed a committed prefix into failure"
+[ -f "$base/commit-txn/COMMITTED_CLEANUP_FAILURE" ] \
+    || fail "committed prefix cleanup did not retain its recovery record"
+ok "prefix cleanup follows the prefix state when diagnostic output is closed"
+
+# These helpers run after their durable outcome is known: writing defaults is
+# optional, an extracted Live payload is disposable, and the legacy prefix
+# marker has already been published before its informational report.
+extract_setup_prefix_function write_default_pipeasio_settings \
+    "$base/pipeasio-defaults.function"
+extract_setup_prefix_function remove_extracted_live_installer \
+    "$base/live-cleanup.function"
+extract_setup_prefix_function report_existing_prefix \
+    "$base/prefix-report.function"
+extract_setup_prefix_function prefix_note "$base/prefix-note.function"
+extract_setup_prefix_function prefix_warn "$base/prefix-warn.function"
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1"
+    . "$2"
+    prefix_note "progress" > /dev/full
+    prefix_warn "warning" 2> /dev/full
+' output "$base/prefix-note.function" "$base/prefix-warn.function" \
+    || fail "closed output made Wine setup progress fail"
+run_isolated "$base" env XDG_CONFIG_HOME="$base/defaults" bash -c '
+    set -euo pipefail
+    . "$1"
+    write_default_pipeasio_settings > /dev/full
+' defaults "$base/pipeasio-defaults.function" \
+    || fail "closed output made default PipeASIO settings fail"
+[ -f "$base/defaults/pipeasio/config.ini" ] \
+    || fail "closed output stopped default PipeASIO settings from being written"
+mkdir -p "$base/blocked"
+printf 'not a directory\n' > "$base/blocked/pipeasio"
+run_isolated "$base" env XDG_CONFIG_HOME="$base/blocked" bash -c '
+    set -euo pipefail
+    . "$1"
+    write_default_pipeasio_settings
+' defaults "$base/pipeasio-defaults.function" \
+    > "$base/defaults.out" 2> /dev/full \
+    || fail "an unwritable optional PipeASIO settings path failed prefix setup"
+mkdir -p "$base/unpack" "$base/fakebin"
+printf 'payload\n' > "$base/unpack/file"
+cat > "$base/fakebin/rm" <<'EOF'
+#!/bin/sh
+exit "${TEST_RM_RC:-1}"
+EOF
+chmod +x "$base/fakebin/rm"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash -c '
+    set -euo pipefail
+    . "$1"
+    remove_extracted_live_installer "$2"
+' cleanup "$base/live-cleanup.function" "$base/unpack" \
+    > "$base/cleanup.out" 2> /dev/full \
+    || fail "an extracted Live payload cleanup warning failed prefix setup"
+[ -f "$base/unpack/file" ] \
+    || fail "the cleanup warning fixture did not preserve its failed target"
+ln -s -- "$base/missing-live-installer" "$base/unpack-link"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" TEST_RM_RC=0 bash -c '
+    set -euo pipefail
+    . "$1"
+    remove_extracted_live_installer "$2"
+' cleanup "$base/live-cleanup.function" "$base/unpack-link" \
+    > "$base/cleanup-link.out" 2> "$base/cleanup-link.err" \
+    || fail "a disposable Live installer cleanup report failed prefix setup"
+[ -L "$base/unpack-link" ] \
+    || fail "the successful-rm residue fixture did not retain its dangling link"
+grep -qF 'Temporary Ableton Live installer files remain at' "$base/cleanup-link.err" \
+    || fail "Live installer cleanup trusted rm status instead of its postcondition"
+if grep -qF 'Live is installed' "$base/cleanup-link.err"; then
+    fail "temporary Live installer cleanup claimed that Live was installed"
+fi
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1"
+    report_existing_prefix "$2" > /dev/full
+' report "$base/prefix-report.function" "$base/prefix" \
+    || fail "closed output failed after a legacy prefix was adopted"
+ok "optional prefix reports cannot reverse completed or nonessential work"
+
+# Automatic display detection is advisory. A missing detector, a scale outside
+# the calibrated range, or an unverifiable GNOME native-scaling feature must
+# choose a safe fresh-prefix default instead of refusing Wine setup; explicitly
+# invalid input remains an input error.
+base="$(new_env automatic-dpi-fallback)"
+sed -n '/^case "$dpi_mode" in$/,/^esac$/p' "$here/setup-prefix.sh" \
+    > "$base/dpi-selection.bash"
+grep -q '^case "$dpi_mode" in$' "$base/dpi-selection.bash" \
+    || fail "DPI fallback test could not load the production selection logic"
+for detector in unavailable out-of-range; do
+    run_isolated "$base" bash -c '
+        set -euo pipefail
+        fresh_prefix=1
+        dpi_mode=auto
+        dpi_block=preserve
+        dpi_family=""
+        prefix_note() { :; }
+        prefix_warn() { :; }
+        current_dpi_block() { printf "custom\n"; }
+        if [ "$2" = unavailable ]; then
+            ableton_detect_scale_ex() { return 1; }
+        else
+            ableton_detect_scale_ex() { printf "3.00 gnome\n"; }
+        fi
+        block_for_scale() { return 1; }
+        ableton_dpi_block_values() { return 1; }
+        . "$1"
+        [ "$dpi_block" = 100 ]
+    ' dpi "$base/dpi-selection.bash" "$detector" \
+        || fail "$detector automatic display detection refused a fresh prefix"
+done
+for native_state in active unavailable; do
+    run_isolated "$base" bash -c '
+        set -euo pipefail
+        fresh_prefix=1
+        dpi_mode=auto
+        dpi_block=preserve
+        dpi_family=""
+        prefix_note() { :; }
+        prefix_warn() { :; }
+        current_dpi_block() { printf "custom\n"; }
+        ableton_detect_scale_ex() { printf "1.33333 gnome\n"; }
+        block_for_scale() { printf "fractional\n"; }
+        ableton_dpi_block_values() { return 1; }
+        if [ "$2" = active ]; then
+            gnome_native_scaling_active() { return 0; }
+        else
+            gnome_native_scaling_active() { return 1; }
+        fi
+        . "$1"
+        if [ "$2" = active ]; then
+            [ "$dpi_block" = fractional ]
+        else
+            [ "$dpi_block" = 100 ]
+        fi
+    ' dpi "$base/dpi-selection.bash" "$native_state" \
+        || fail "$native_state GNOME native-scaling state selected an unsafe fresh-prefix DPI block"
+done
+if run_isolated "$base" bash -c '
+    set -euo pipefail
+    fresh_prefix=1
+    dpi_mode=not-a-mode
+    dpi_block=preserve
+    dpi_family=""
+    prefix_note() { :; }
+    prefix_warn() { :; }
+    . "$1"
+' dpi "$base/dpi-selection.bash"; then
+    fail "an explicitly invalid display mode was accepted"
+fi
+ok "fresh Wine setup falls back to 100% only for automatic display detection"
+
+base="$(new_env uninstall-authoritative-icon)"
 foreign_icon="$base/data/icons/hicolor/scalable/apps/live-suite.svg"
 mkdir -p "$(dirname "$foreign_icon")" "$base/fakebin"
 printf 'foreign icon\n' > "$foreign_icon"
@@ -1158,8 +1611,11 @@ chmod +x "$base/fakebin/systemctl"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only >"$base/install.out" 2>"$base/install.err"
 grep -q '<svg' "$foreign_icon" || fail "integration did not replace the collision fixture"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" --keep-prefix --yes >"$base/out" 2>"$base/err"
-[ "$(cat "$foreign_icon")" = 'foreign icon' ] || fail "uninstall did not restore overwritten pre-install file"
-ok "uninstall restores a pre-existing file overwritten by integration"
+[ "$(cat "$foreign_icon")" = 'foreign icon' ] \
+    || fail "uninstall did not restore the icon that preceded installation"
+grep -qF "restored your earlier file at $foreign_icon" "$base/out" \
+    || fail "uninstall did not report restoration of the earlier icon"
+ok "canonical project icons are updated authoritatively and earlier files return on uninstall"
 
 base="$(new_env user-config)"
 user_config="$base/config/pipeasio/config.ini"
@@ -1175,35 +1631,30 @@ run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
     --keep-prefix --yes >"$base/out" 2>"$base/err"
 [ "$(cat "$user_config")" = 'user buffer setting' ] \
     || fail "uninstall removes user-modified seeded configuration"
-grep -q 'kept user-modified configuration' "$base/out" \
+grep -q 'kept user-modified configuration' "$base/err" \
     || fail "preserved user configuration is not reported"
 ok "uninstall preserves and de-owns user-modified seeded configuration"
 
-base="$(new_env modified-owned)"
+base="$(new_env authoritative-support-file)"
 run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/first.out" 2>"$base/first.err"
 printf '\n# user change\n' >> "$base/data/ableton-wine/detect-scale.sh"
-if run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
-    fail "integration overwrites a modified managed file"
-fi
-grep -qF '# user change' "$base/data/ableton-wine/detect-scale.sh" || fail "failed update lost managed-file modification"
-grep -q 'The installer kept the managed path because its saved checksum differs' "$base/err" \
-    || fail "changed managed file refusal gives the reason"
-ok "update refuses to overwrite a locally modified managed file"
+run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err" \
+    || fail "integration could not repair a modified canonical support file"
+cmp -s -- "$here/detect-scale.sh" "$base/data/ableton-wine/detect-scale.sh" \
+    || fail "integration did not replace drift in a canonical support file"
+ok "update repairs a modified canonical support file authoritatively"
 
 # install.sh installs the version stamp inside an "if !" condition, which
 # suppresses set -e, so ableton_install_file must return non-zero for the
 # refusal to stop the run.
-base="$(new_env modified-version-stamp)"
+base="$(new_env authoritative-version-stamp)"
 run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/first.out" 2>"$base/first.err"
 printf 'tampered\n' > "$base/data/ableton-wine/VERSION"
-if run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
-    fail "integration overwrites a modified version stamp"
-fi
-grep -qxF tampered "$base/data/ableton-wine/VERSION" \
-    || fail "failed update lost the version stamp modification"
-grep -q 'The installer kept the managed path because its saved checksum differs' "$base/err" \
-    || fail "changed version stamp refusal gives the reason"
-ok "update refuses to overwrite a locally modified version stamp"
+run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err" \
+    || fail "integration could not repair a modified canonical version stamp"
+cmp -s -- "$root/VERSION" "$base/data/ableton-wine/VERSION" \
+    || fail "integration did not replace drift in the canonical version stamp"
+ok "update repairs a modified canonical version stamp authoritatively"
 
 # Issues #211 and #251 showed that launcher checksum drift triggered rollback.
 # Cover every primary launcher, including Max and the handler copies used by
@@ -1256,8 +1707,6 @@ for launcher in "${launcher_paths[@]}"; do
     current="$(sha256sum "$launcher" | awk '{print $1}')"
     [ "$recorded" = "$current" ] \
         || fail "update saved an incorrect launcher checksum for $launcher"
-    grep -qF "The installer replaced a launcher because its saved checksum differed: $launcher" "$base/out" \
-        || fail "update omitted the launcher replacement message for $launcher"
 done
 [ -L "${launcher_paths[0]}.bak" ] \
     && [ "$(readlink -- "${launcher_paths[0]}.bak")" = "$launcher_copy" ] \
@@ -1285,7 +1734,7 @@ grep -qF 'Ableton Live launcher for the patched Wine stack' "$launcher_copy" \
 ok "update replaces every primary launcher after checksum drift"
 
 rollback_launcher="$base/data/applications/max9.desktop"
-printf '\n# launcher before genuine failure\n' >> "$rollback_launcher"
+printf '\n# launcher before refresh failure\n' >> "$rollback_launcher"
 printf 'previous adjacent backup\n' > "${rollback_launcher}.bak"
 mkdir -p "$base/fakebin"
 cat > "$base/fakebin/update-desktop-database" <<'EOF'
@@ -1293,17 +1742,16 @@ cat > "$base/fakebin/update-desktop-database" <<'EOF'
 exit 1
 EOF
 chmod +x "$base/fakebin/update-desktop-database"
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
-    bash "$here/install.sh" --integration-only >"$base/failure.out" 2>"$base/failure.err"; then
-    fail "desktop database failure unexpectedly succeeded"
-fi
-grep -qF '# launcher before genuine failure' "$rollback_launcher" \
-    || fail "genuine failure did not restore the displaced launcher"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/install.sh" --integration-only >"$base/failure.out" 2>"$base/failure.err" \
+    || fail "desktop database refresh failure rejects installed shortcuts"
+! grep -qF '# launcher before refresh failure' "$rollback_launcher" \
+    || fail "desktop refresh failure left launcher drift in place"
 grep -qxF 'previous adjacent backup' "${rollback_launcher}.bak" \
-    || fail "genuine failure did not restore the previous launcher backup"
-grep -qF 'failed to update the desktop application database' "$base/failure.err" \
-    || fail "genuine failure did not report its actual cause"
-ok "genuine failure restores both the launcher and its previous adjacent backup"
+    || fail "desktop refresh failure replaced the existing saved launcher"
+! grep -qF 'Some shortcuts or support files could not be updated.' "$base/failure.err" \
+    || fail "desktop database refresh failure produced a retry warning"
+ok "desktop database refresh failure is silent and does not roll back installed shortcuts"
 
 # When the custom data root matches the XDG applications root, one invocation
 # reaches the handler twice. The second projection recognises the installed
@@ -1359,8 +1807,6 @@ recorded="$(awk -F '\t' -v p="$live_desktop" '$1=="file" && $2==p { print $3 }' 
 current="$(sha256sum "$live_desktop" | awk '{print $1}')"
 [ "$recorded" = "$current" ] \
     || fail "update did not refresh the Live desktop ownership digest"
-grep -qF "The installer replaced a launcher because its saved checksum differed: $live_desktop" "$base/out" \
-    || fail "update omitted the desktop entry refresh message"
 grep -qF 'StartupWMClass=ableton live 12 suite.exe' "${live_desktop}.bak" \
     || fail "Live desktop backup does not contain the displaced entry"
 ok "update refreshes a launcher-updated Live desktop entry"
@@ -1397,14 +1843,13 @@ live_desktop="$base/data/applications/ableton-live.desktop"
 orig_exec="$(grep '^Exec=' "$live_desktop")"
 sed -i 's|^Exec=.*|Exec=/usr/bin/other-app %f|' "$live_desktop"
 printf '# was: %s\n' "$orig_exec" >> "$live_desktop"
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
-    --keep-prefix --yes >"$base/out" 2>"$base/err"; then
-    fail "uninstall removed a desktop entry re-pointed away from the launcher"
-fi
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/out" 2>"$base/err" \
+    || fail "a preserved user-repointed desktop entry makes uninstall fail"
 [ -e "$live_desktop" ] || fail "uninstall removed the re-pointed desktop entry"
-grep -qF "kept modified file $live_desktop" "$base/err" \
+grep -qF "kept an unrecognised or user-modified file at $live_desktop" "$base/err" \
     || fail "kept re-pointed desktop entry is not reported"
-ok "uninstall keeps a desktop entry re-pointed away from the launcher"
+ok "uninstall warns and keeps a desktop entry re-pointed away from the launcher"
 
 # The transaction snapshots a launcher symlink before replacement and leaves
 # its referent unchanged.
@@ -1424,26 +1869,31 @@ run_isolated "$base" bash "$here/install.sh" --integration-only \
 [ -L "${live_desktop}.bak" ] \
     && [ "$(readlink -- "${live_desktop}.bak")" = "$base/home/live-entry-copy.desktop" ] \
     || fail "Live desktop backup is not the displaced symlink"
-grep -qF "The installer replaced a launcher because its saved checksum differed: $live_desktop" "$base/out" \
-    || fail "symlinked desktop entry replacement was not reported"
 ok "update replaces a symlinked managed Live desktop entry"
 
-base="$(new_env link-prestate)"
+base="$(new_env authoritative-link-binary)"
 foreign_linkd="$base/data/ableton-wine/ableton-linkd"
 mkdir -p "$(dirname "$foreign_linkd")" "$base/fakebin"
 printf '#!/bin/sh\necho foreign\n' > "$foreign_linkd"
 chmod +x "$foreign_linkd"
 cat > "$base/fakebin/systemctl" <<'EOF'
 #!/bin/sh
-exit 0
+case "$*" in
+    *'show -p Version --value'*) echo 255 ;;
+    *'show -p FragmentPath --value ableton-linkd.service'*) : ;;
+    *'is-enabled --quiet ableton-linkd.service'*) exit 1 ;;
+    *'is-active --quiet ableton-linkd.service'*) exit 1 ;;
+    *) exit 0 ;;
+esac
 EOF
 chmod +x "$base/fakebin/systemctl"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --link-assets-only >"$base/install.out" 2>"$base/install.err"
 grep -qF 'native Ableton Link session anchor' < <(strings "$foreign_linkd") \
     || fail "Link asset install did not replace the collision fixture"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/setup-link.sh" disable >"$base/out" 2>"$base/err"
-grep -qF 'echo foreign' "$foreign_linkd" || fail "Link disable did not restore overwritten pre-install binary"
-ok "Link disable restores a pre-existing binary overwritten by Link assets"
+[ ! -e "$foreign_linkd" ] && [ ! -L "$foreign_linkd" ] \
+    || fail "Link disable kept the managed canonical Link binary"
+ok "canonical Link assets are replaced authoritatively and removed on disable"
 
 base="$(new_env uninstall-safety)"
 if run_isolated "$base" env ABLETON_WINEPREFIX=/ ABLETON_WINE_ROOT="$base/runtime" \
@@ -1566,9 +2016,14 @@ exec "$@"
 EOF
 cat > "$base/fakebin/systemctl" <<'EOF'
 #!/bin/sh
+unit="${XDG_CONFIG_HOME:?}/systemd/user/ableton-linkd.service"
 case "$*" in
     *daemon-reload*) exit "${ABLETON_TEST_SYSTEMCTL_RELOAD_STATUS:-1}" ;;
-    *show*) exit 0 ;;
+    *'show -p Version --value'*) echo 255 ;;
+    *'show -p FragmentPath --value ableton-linkd.service'*)
+        [ ! -f "$unit" ] || printf '%s\n' "$unit" ;;
+    *'is-enabled --quiet ableton-linkd.service'*) exit 1 ;;
+    *'is-active --quiet ableton-linkd.service'*) exit 1 ;;
     *) exit 0 ;;
 esac
 EOF
@@ -1587,14 +2042,17 @@ if ! grep -qF 'could not inspect the active ufw rules' "$base/query.err"; then
 fi
 ok "Link enable refuses when it cannot inspect the active ufw rules"
 
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_TEST_UFW="$base/ufw-rule" \
-    bash "$here/setup-link.sh" enable --mode=session >"$base/out" 2>"$base/err"; then
-    fail "Link enable succeeds after its systemd registration fails"
-fi
-[ ! -e "$base/ufw-rule" ] || fail "failed Link enable leaves its new firewall rule"
-[ "$(cat "$base/state/ableton-wine/link-firewall")" = none ] \
-    || fail "failed Link enable does not restore the prior firewall record"
-ok "Link enable failure restores firewall ownership and host state"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_TEST_UFW="$base/ufw-rule" \
+    bash "$here/setup-link.sh" enable --mode=session >"$base/out" 2>"$base/err" \
+    || fail "session Link depends on optional systemd registration"
+[ -e "$base/ufw-rule" ] || fail "successful session Link lost its firewall rule"
+[ "$(cat "$base/state/ableton-wine/link-firewall")" = ufw-added ] \
+    || fail "successful session Link lost its firewall tracking"
+grep -qF 'Link user service could not be refreshed yet' "$base/err" \
+    || fail "optional systemd refresh warning did not explain the actual effect"
+grep -qxF 'link_mode=session' "$base/config/ableton-wine/config" \
+    || fail "optional systemd refresh prevented Link mode from being saved"
+ok "session Link succeeds when only optional systemd registration fails"
 
 printf 'ufw-added\n' > "$base/state/ableton-wine/link-firewall"
 rm -f -- "$base/ufw-rule"
@@ -1607,9 +2065,136 @@ run_isolated "$base" env PATH="$base/fakebin:$PATH" \
     || fail "Link enable trusts stale ufw ownership without restoring the rule"
 [ "$(cat "$base/state/ableton-wine/link-firewall")" = ufw-added ] \
     || fail "Link enable loses ownership while repairing its ufw rule"
-grep -qF 'restoring the recorded ufw allowance' "$base/reconcile.out" \
+grep -qF 'Restoring the missing ufw rule for Link' "$base/reconcile.out" \
     || fail "Link enable does not report stale firewall reconciliation"
 ok "Link enable verifies and repairs its recorded firewall rule"
+
+# A failed enable/disable command may already have changed systemd state. Link
+# recovery must restore enabled and active separately and return a dedicated
+# status only after verifying them. This fake persists every systemctl change.
+base="$(new_env link-service-recovery-contract)"
+mkdir -p -- "$base/data/ableton-wine" "$base/state/ableton-wine" "$base/fakebin" \
+    "$base/service-state"
+printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
+printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkctl"
+printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkd"
+chmod +x "$base/data/ableton-wine/ableton-linkctl" "$base/data/ableton-wine/ableton-linkd"
+cat > "$base/fakebin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+state="${ABLETON_TEST_SERVICE_STATE:?}"
+unit="${XDG_CONFIG_HOME:?}/systemd/user/ableton-linkd.service"
+case "$*" in
+    *'show -p Version --value'*) echo 255 ;;
+    *'show -p FragmentPath --value ableton-linkd.service'*)
+        [ ! -f "$unit" ] || printf '%s\n' "$unit" ;;
+    *'show -p ExecStart --value ableton-linkd.service'*)
+        printf '{ path=%s ; argv[]=%s ; }\n' \
+            "${ABLETON_LINKD:?}" "${ABLETON_LINKD:?}" ;;
+    *'is-enabled --quiet ableton-linkd.service'*) [ -e "$state/enabled" ] ;;
+    *'is-active --quiet ableton-linkd.service'*) [ -e "$state/active" ] ;;
+    *'daemon-reload'*) : ;;
+    *'enable --now ableton-linkd.service'*)
+        [ ! -e "$state/fail-enable-before" ] || exit 88
+        : > "$state/enabled"
+        if [ -e "$state/partial-enable" ]; then
+            : > "$state/refuse-disable"
+            exit 88
+        fi
+        : > "$state/active"
+        if [ -e "$state/signal-enable" ]; then
+            timeout_parent="$PPID"
+            setup_parent="$(ps -o ppid= -p "$timeout_parent" | tr -d ' ')"
+            kill -TERM "$setup_parent"
+        fi
+        [ ! -e "$state/fail-enable-after" ] || exit 88 ;;
+    *'disable --now ableton-linkd.service'*)
+        [ ! -e "$state/refuse-disable" ] || exit 89
+        rm -f -- "$state/enabled" "$state/active" ;;
+    *'enable ableton-linkd.service'*) : > "$state/enabled" ;;
+    *'disable ableton-linkd.service'*) rm -f -- "$state/enabled" ;;
+    *'start ableton-linkd.service'*) : > "$state/active" ;;
+    *'stop ableton-linkd.service'*) rm -f -- "$state/active" ;;
+    *) echo "unexpected systemctl invocation: $*" >&2; exit 97 ;;
+esac
+EOF
+cat > "$base/fakebin/grep" <<'EOF'
+#!/bin/sh
+for argument do
+    [ "$argument" != /etc/ufw/ufw.conf ] || exit 1
+done
+exec /usr/bin/grep "$@"
+EOF
+printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/firewall-cmd"
+printf '#!/bin/sh\nexec "$@"\n' > "$base/fakebin/sudo"
+chmod +x "$base/fakebin/systemctl" "$base/fakebin/grep" \
+    "$base/fakebin/firewall-cmd" "$base/fakebin/sudo"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_TEST_SERVICE_STATE="$base/service-state" \
+    bash "$here/setup-link.sh" enable --mode=always >"$base/initial.out" 2>"$base/initial.err" \
+    || { sed -n '1,80p' "$base/initial.err" >&2; fail "stateful Link fixture could not enable its initial service"; }
+: > "$base/service-state/fail-enable-after"
+status=0
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_TEST_SERVICE_STATE="$base/service-state" \
+    bash "$here/setup-link.sh" enable --mode=always >"$base/command-error.out" 2>"$base/command-error.err" \
+    || status=$?
+[ "$status" -eq 0 ] || fail "a systemctl command error gated an already-achieved Link state (got $status)"
+[ -e "$base/service-state/enabled" ] && [ -e "$base/service-state/active" ] \
+    || fail "Link rejected an enable command whose requested state was achieved"
+grep -qF 'OK: Ableton Link is enabled in the background' "$base/command-error.out" \
+    || fail "Link did not report the achieved background state"
+ok "Link accepts an achieved service state despite a command error"
+
+rm -f -- "$base/service-state/fail-enable-after"
+: > "$base/service-state/fail-enable-before"
+status=0
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_TEST_SERVICE_STATE="$base/service-state" \
+    bash "$here/setup-link.sh" enable --mode=always >"$base/recovered.out" 2>"$base/recovered.err" \
+    || status=$?
+[ "$status" -eq 75 ] || fail "verified Link recovery did not return its dedicated status (got $status)"
+[ -e "$base/service-state/enabled" ] && [ -e "$base/service-state/active" ] \
+    || fail "Link recovery lost the prior enabled/active service state"
+grep -qxF 'link_mode=always' "$base/config/ableton-wine/config" \
+    || fail "Link recovery changed the last successfully saved setting"
+! find "$base/state/ableton-wine" -mindepth 1 -maxdepth 1 -name '.link-enable.*' \
+    -print -quit | grep -q . \
+    || fail "verified Link recovery retained a completed local snapshot"
+grep -qF 'previous firewall and service settings were restored' "$base/recovered.err" \
+    || fail "verified Link recovery did not identify its outcome"
+ok "Link enable failure restores the prior service state without gating on generated files"
+
+# Deliver TERM to setup-link after the fake enable command changes both flags.
+rm -f -- "$base/service-state/fail-enable-before"
+: > "$base/service-state/signal-enable"
+status=0
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_TEST_SERVICE_STATE="$base/service-state" \
+    bash "$here/setup-link.sh" enable --mode=always >"$base/signal.out" 2>"$base/signal.err" \
+    || status=$?
+[ "$status" -eq 75 ] || fail "signal recovery did not return verified-recovered status (got $status)"
+[ -e "$base/service-state/enabled" ] && [ -e "$base/service-state/active" ] \
+    || fail "signal recovery lost the prior service state"
+ok "TERM during service mutation completes verified Link recovery"
+
+# A failure while quiescing the partially changed service is incomplete and
+# must retain durable evidence rather than returning the recovered status.
+rm -f -- "$base/service-state/signal-enable"
+: > "$base/service-state/partial-enable"
+status=0
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_TEST_SERVICE_STATE="$base/service-state" \
+    bash "$here/setup-link.sh" enable --mode=always >"$base/incomplete.out" 2>"$base/incomplete.err" \
+    || status=$?
+[ "$status" -eq 70 ] || fail "incomplete Link recovery did not return its dedicated status (got $status)"
+recovery_snapshot="$(find "$base/state/ableton-wine" -mindepth 1 -maxdepth 1 \
+    -type d -name '.link-enable.*' -print -quit)"
+[ -n "$recovery_snapshot" ] && [ -f "$recovery_snapshot/FAILURE" ] \
+    || fail "incomplete Link recovery discarded its durable failure snapshot"
+grep -qxF 'restoration_complete=no' "$recovery_snapshot/FAILURE" \
+    || fail "incomplete Link recovery did not record its classification"
+ok "incomplete Link service recovery is distinct and keeps authoritative evidence"
 
 for legacy_args in '' ' --linger 0'; do
     case "$legacy_args" in
@@ -1635,9 +2220,28 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 EOF
-    printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
-    printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/sudo"
-    chmod +x "$base/fakebin/systemctl" "$base/fakebin/sudo"
+    cat > "$base/fakebin/systemctl" <<'EOF'
+#!/bin/sh
+unit="${XDG_CONFIG_HOME:?}/systemd/user/ableton-linkd.service"
+case "$*" in
+    *'show -p Version --value'*) echo 255 ;;
+    *'show -p FragmentPath --value ableton-linkd.service'*) printf '%s\n' "$unit" ;;
+    *'is-enabled --quiet ableton-linkd.service'*) exit 1 ;;
+    *'is-active --quiet ableton-linkd.service'*) exit 1 ;;
+    *) exit 0 ;;
+esac
+EOF
+    cat > "$base/fakebin/grep" <<'EOF'
+#!/bin/sh
+for argument do
+    [ "$argument" != /etc/ufw/ufw.conf ] || exit 1
+done
+exec /usr/bin/grep "$@"
+EOF
+    printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/firewall-cmd"
+    printf '#!/bin/sh\nexec "$@"\n' > "$base/fakebin/sudo"
+    chmod +x "$base/fakebin/systemctl" "$base/fakebin/grep" \
+        "$base/fakebin/firewall-cmd" "$base/fakebin/sudo"
     if ! run_isolated "$base" env PATH="$base/fakebin:$PATH" \
         bash "$here/setup-link.sh" enable --mode=session >"$base/out" 2>"$base/err"; then
         sed -n '1,80p' "$base/err" >&2
@@ -1670,18 +2274,36 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 EOF
-cp "$unit" "$base/unit.before"
-printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
-printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/sudo"
-chmod +x "$base/fakebin/systemctl" "$base/fakebin/sudo"
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
-    bash "$here/setup-link.sh" enable --mode=session >"$base/out" 2>"$base/err"; then
-    fail "Link setup replaces a modified legacy-shaped unit"
-fi
-cmp -s "$base/unit.before" "$unit" || fail "Link setup changes a refused unit"
-grep -q 'refusing to replace foreign systemd unit' "$base/err" \
-    || fail "Link setup does not explain the modified unit refusal"
-ok "Link setup keeps modified legacy-shaped units"
+cat > "$base/fakebin/systemctl" <<'EOF'
+#!/bin/sh
+unit="${XDG_CONFIG_HOME:?}/systemd/user/ableton-linkd.service"
+case "$*" in
+    *'show -p Version --value'*) echo 255 ;;
+    *'show -p FragmentPath --value ableton-linkd.service'*) printf '%s\n' "$unit" ;;
+    *'is-enabled --quiet ableton-linkd.service'*) exit 1 ;;
+    *'is-active --quiet ableton-linkd.service'*) exit 1 ;;
+    *) exit 0 ;;
+esac
+EOF
+cat > "$base/fakebin/grep" <<'EOF'
+#!/bin/sh
+for argument do
+    [ "$argument" != /etc/ufw/ufw.conf ] || exit 1
+done
+exec /usr/bin/grep "$@"
+EOF
+printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/firewall-cmd"
+printf '#!/bin/sh\nexec "$@"\n' > "$base/fakebin/sudo"
+chmod +x "$base/fakebin/systemctl" "$base/fakebin/grep" \
+    "$base/fakebin/firewall-cmd" "$base/fakebin/sudo"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/setup-link.sh" enable --mode=session >"$base/out" 2>"$base/err" \
+    || fail "a modified generated Link unit blocks repair"
+grep -qxF 'X-AbletonLinuxOwned=true' "$unit" \
+    || fail "Link setup did not replace the modified generated unit"
+! grep -qF 'Environment=FOREIGN_SETTING=1' "$unit" \
+    || fail "Link setup retained foreign bytes at its canonical unit path"
+ok "Link setup overwrites its generated unit authoritatively"
 
 base="$(new_env link-unit-ownership)"
 unit="$base/config/systemd/user/ableton-linkd.service"
@@ -1715,24 +2337,77 @@ grep -q -- '--user start ableton-linkd.service' "$base/systemctl.log" \
     || fail "exact owned Link unit is not started"
 ok "Link controller starts only the exact ownership-marked unit"
 
+# Direct controller mutations participate in the same lifecycle lock as the
+# installer. A child already inside that transaction may reuse the descriptor,
+# but the detached daemon must close it before exec so the next command is not
+# locked out for the daemon's whole linger period.
+base="$(new_env link-controller-global-lock)"
+managed_linkd="$base/data/ableton-wine/ableton-linkd"
+mkdir -p -- "$(dirname "$managed_linkd")" "$base/run/ableton-wine"
+if [ -f "$root/dist/ableton-linkd" ]; then
+    cp -- "$root/dist/ableton-linkd" "$managed_linkd"
+else
+    cp -- "$root/bin/ableton-linkd" "$managed_linkd"
+fi
+chmod 755 "$managed_linkd"
+printf '999999\n' > "$base/run/ableton-wine/linkd.pid"
+exec {controller_lock}< "$base/home"
+flock -n "$controller_lock" || fail "could not create Link controller lock fixture"
+for controller_action in start stop; do
+    if run_isolated "$base" env -u ABLETON_INSTALL_LOCK_FD \
+        ABLETON_LINKD="$managed_linkd" ABLETON_LINK_MODE=session \
+        bash "$here/ableton-linkctl" "$controller_action" \
+        >"$base/$controller_action.out" 2>"$base/$controller_action.err"; then
+        fail "direct Link $controller_action bypassed an independent installer lock"
+    fi
+    grep -qF 'installation work is in progress' "$base/$controller_action.err" \
+        || fail "locked Link $controller_action refusal did not identify lifecycle work"
+    [ "$(cat "$base/run/ableton-wine/linkd.pid")" = 999999 ] \
+        || fail "locked Link $controller_action mutated the PID record"
+done
+[ ! -e "$base/state" ] && [ ! -e "$base/data/ableton-wine/logs" ] \
+    || fail "locked Link controller mutated persistent state before refusal"
+run_isolated "$base" env ABLETON_INSTALL_LOCK_FD="$controller_lock" \
+    ABLETON_LINKD="$managed_linkd" ABLETON_LINK_MODE=session ABLETON_LINKD_LINGER=5 \
+    bash "$here/ableton-linkctl" start >"$base/inherited.out" 2>"$base/inherited.err" \
+    || { sed -n '1,40p' "$base/inherited.err" >&2; fail "inherited installer Link start did not reuse its lock"; }
+link_controller_pid="$(cat "$base/run/ableton-wine/linkd.pid")"
+kill -0 "$link_controller_pid" 2>/dev/null \
+    || fail "inherited Link start did not leave its detached daemon running"
+exec {controller_lock}<&-
+run_isolated "$base" env -u ABLETON_INSTALL_LOCK_FD \
+    ABLETON_LINKD="$managed_linkd" ABLETON_LINK_MODE=session \
+    bash "$here/ableton-linkctl" stop >"$base/stop-after.out" 2>"$base/stop-after.err" \
+    || { sed -n '1,40p' "$base/stop-after.err" >&2; fail "detached Link daemon retained the global lock"; }
+kill -0 "$link_controller_pid" 2>/dev/null \
+    && fail "unlocked Link stop left the detached daemon running"
+[ ! -e "$base/run/ableton-wine/linkd.pid" ] \
+    || fail "unlocked Link stop retained its PID record"
+ok "Link controller serializes direct mutations without leaking the installer lock to its daemon"
+
 base="$(new_env legacy-ownership)"
 foreign_desktop="$base/data/applications/ableton-live.desktop"
 mkdir -p "$(dirname "$foreign_desktop")" "$base/fakebin"
 printf '[Desktop Entry]\nName=Foreign application\n' > "$foreign_desktop"
 printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
 chmod +x "$base/fakebin/systemctl"
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
-    --keep-prefix --yes >"$base/out" 2>"$base/err"; then
-    fail "manifest-free uninstall reports full success with a foreign canonical file"
-fi
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/out" 2>"$base/err" \
+    || fail "preserving a foreign manifest-free desktop entry makes uninstall fail"
 [ -f "$foreign_desktop" ] || fail "legacy uninstall removes an unrecognised canonical desktop file"
-grep -q 'kept unrecognised or modified legacy file' "$base/err" \
+grep -qF "kept an unrecognised or modified file at $foreign_desktop" "$base/err" \
     || fail "legacy ownership refusal is not reported"
-[ -f "$base/config/ableton-wine/config" ] \
-    || fail "partial legacy uninstall discards the configuration needed to retry"
-grep -q 'run uninstall' "$base/err" \
+# This legacy fixture had no installer settings before uninstall. Defaults are
+# enough for a retry, so optional cleanup must not invent a configuration file.
+# If a future path does retain one, it still has to be a valid installer file.
+legacy_config="$base/config/ableton-wine/config"
+if [ -e "$legacy_config" ] || [ -L "$legacy_config" ]; then
+    ableton_managed_config_valid "$legacy_config" \
+        || fail "partial legacy uninstall retained invalid installer settings"
+fi
+grep -Eq 'Retry: .*uninstall\.sh --keep-prefix --yes' "$base/err" \
     || fail "legacy ownership rejection does not say how to finish the uninstall"
-ok "legacy uninstall retains unrecognised canonical files"
+ok "legacy uninstall warns and retains unrecognised canonical files"
 
 # Uninstall used to restore the MIME defaults after deleting its own desktop
 # entries.  xdg-mime reports no default once the entry file is gone, so the
@@ -1758,8 +2433,12 @@ run_isolated "$base" update-desktop-database "$base/data/applications" >/dev/nul
 mkdir -p "$base/config"
 run_isolated "$base" xdg-mime default third-party.desktop x-scheme-handler/ableton \
     || fail "test fixture could not set an explicit pre-install default"
+run_isolated "$base" xdg-mime default third-party.desktop text/plain \
+    || fail "test fixture could not set an unrelated MIME default"
 grep -qxF 'x-scheme-handler/ableton=third-party.desktop' "$base/config/mimeapps.list" \
     || fail "test fixture did not record an explicit pre-install default"
+grep -qxF 'text/plain=third-party.desktop' "$base/config/mimeapps.list" \
+    || fail "test fixture did not record its unrelated MIME default"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
     >"$base/install.out" 2>"$base/install.err" \
     || { sed -n '1,40p' "$base/install.err" >&2; fail "integration install failed before MIME restoration"; }
@@ -1772,15 +2451,18 @@ if grep -Eq "=($ABLETON_PROTOCOL_DESKTOP_ID|$ABLETON_AUZ_DESKTOP_ID|ableton-live
     "$base/config/mimeapps.list"; then
     fail "uninstall leaves a MIME default naming an entry it removed"
 fi
-grep -qxF 'x-scheme-handler/ableton=third-party.desktop' "$base/config/mimeapps.list" \
-    || fail "uninstall does not restore an explicit pre-install default"
+! grep -q '^x-scheme-handler/ableton=' "$base/config/mimeapps.list" \
+    || fail "uninstall reconstructed an unknowable previous scheme default"
 ! grep -q '^application/x-wine-extension-auz=' "$base/config/mimeapps.list" \
     || fail "uninstall writes out a default the user never set explicitly"
-ok "uninstall clears its own MIME defaults and restores exactly what it found"
+grep -qxF 'text/plain=third-party.desktop' "$base/config/mimeapps.list" \
+    || fail "uninstall changed an unrelated MIME default"
+ok "uninstall clears project MIME defaults and preserves unrelated entries"
 
-# The installer saves a pre-existing launcher before writing the canonical
-# launcher. Uninstall restores the exact pre-install object.
-base="$(new_env foreign-live-entry)"
+# The canonical Live entry and its adjacent backup are installer-managed paths,
+# but either may contain an unrelated file before installation. Updates may
+# replace both while active; uninstall must return both originals exactly.
+base="$(new_env authoritative-live-entry)"
 mkdir -p "$base/data/applications" "$base/fakebin"
 printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
 chmod +x "$base/fakebin/systemctl"
@@ -1789,7 +2471,7 @@ printf '[Desktop Entry]\nType=Application\nName=Foreign Live\nExec=/usr/bin/true
 cp "$base/data/applications/ableton-live.desktop" "$base/foreign-live.before"
 printf 'personal adjacent backup\n' > "$base/data/applications/ableton-live.desktop.bak"
 chmod 600 "$base/data/applications/ableton-live.desktop.bak"
-cp -a "$base/data/applications/ableton-live.desktop.bak" "$base/foreign-live-backup.before"
+cp "$base/data/applications/ableton-live.desktop.bak" "$base/foreign-live-backup.before"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
     >"$base/out" 2>"$base/err" \
     || { sed -n '1,40p' "$base/err" >&2; fail "integration install failed with a foreign Live entry"; }
@@ -1798,25 +2480,26 @@ grep -qxF 'Name=Ableton Live' "$base/data/applications/ableton-live.desktop" \
 grep -Eq '^application/x-ableton-live-(set|clip|pack)=ableton-live\.desktop$' \
     "$base/config/mimeapps.list" \
     || fail "integration did not assign Live file types to its installed entry"
-prestate_id="$(printf '%s' "$base/data/applications/ableton-live.desktop" | sha256sum | awk '{print $1}')"
-backup_prestate_id="$(printf '%s' "$base/data/applications/ableton-live.desktop.bak" | sha256sum | awk '{print $1}')"
 cmp -s "$base/foreign-live.before" "$base/data/applications/ableton-live.desktop.bak" \
     || fail "integration did not create ableton-live.desktop.bak"
-cmp -s "$base/foreign-live.before" "$base/state/ableton-wine/install-prestate/$prestate_id" \
-    || fail "integration did not back up the foreign Live desktop entry"
-cmp -s "$base/foreign-live-backup.before" "$base/state/ableton-wine/install-prestate/$backup_prestate_id" \
-    || fail "integration did not preserve the pre-existing adjacent backup"
+# Force another launcher generation. The first install's saved originals must
+# remain authoritative instead of being replaced by this intermediate state.
+printf '\n# later generated-entry drift\n' >> "$base/data/applications/ableton-live.desktop"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
+    >"$base/update.out" 2>"$base/update.err" \
+    || { sed -n '1,40p' "$base/update.err" >&2; fail "launcher update failed after preserving both collisions"; }
+grep -qxF 'Name=Ableton Live' "$base/data/applications/ableton-live.desktop" \
+    || fail "launcher update did not repair the generated Live entry"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
     --keep-prefix --yes >"$base/uninstall.out" 2>"$base/uninstall.err" \
     || { sed -n '1,40p' "$base/uninstall.err" >&2; fail "uninstall failed after replacing a foreign Live entry"; }
 cmp -s "$base/foreign-live.before" "$base/data/applications/ableton-live.desktop" \
     || fail "uninstall did not restore the foreign Live desktop entry"
 cmp -s "$base/foreign-live-backup.before" "$base/data/applications/ableton-live.desktop.bak" \
-    && [ "$(stat -c '%a' "$base/data/applications/ableton-live.desktop.bak")" = 600 ] \
     || fail "uninstall did not restore the pre-existing adjacent backup"
-ok "integration restores a foreign launcher and its pre-existing adjacent backup"
+ok "launcher updates preserve and uninstall restores both pre-existing desktop files"
 
-base="$(new_env dangling-launcher-backup)"
+base="$(new_env authoritative-dangling-launcher-backup)"
 dangling_launcher="$base/data/applications/ableton-live.desktop"
 dangling_backup="${dangling_launcher}.bak"
 dangling_target=personal-missing-backup-target
@@ -1825,24 +2508,21 @@ printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
 chmod +x "$base/fakebin/systemctl"
 printf '[Desktop Entry]\nType=Application\nName=Foreign Live\nExec=/usr/bin/true %%f\n' \
     > "$dangling_launcher"
+cp "$dangling_launcher" "$base/foreign-live.before"
 ln -s "$dangling_target" "$dangling_backup"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
     >"$base/install.out" 2>"$base/install.err" \
     || fail "integration install failed with a dangling adjacent backup"
-dangling_prestate_id="$(printf '%s' "$dangling_backup" | sha256sum | awk '{print $1}')"
-dangling_prestate="$base/state/ableton-wine/install-prestate/$dangling_prestate_id"
-[ -L "$dangling_prestate" ] && [ ! -e "$dangling_prestate" ] \
-    && [ "$(readlink -- "$dangling_prestate")" = "$dangling_target" ] \
-    || fail "integration did not preserve the dangling adjacent backup"
+grep -qxF 'Name=Foreign Live' "$dangling_backup" \
+    || fail "integration did not replace the dangling backup with the displaced launcher"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
     --keep-prefix --yes >"$base/uninstall.out" 2>"$base/uninstall.err" \
-    || { sed -n '1,40p' "$base/uninstall.err" >&2; fail "uninstall failed with dangling launcher backup prestate"; }
-grep -qxF 'Name=Foreign Live' "$dangling_launcher" \
-    || fail "uninstall did not restore the launcher beside a dangling backup"
-[ -L "$dangling_backup" ] && [ ! -e "$dangling_backup" ] \
-    && [ "$(readlink -- "$dangling_backup")" = "$dangling_target" ] \
-    || fail "uninstall did not restore the dangling adjacent backup"
-ok "integration restores dangling adjacent launcher backup prestate"
+    || { sed -n '1,40p' "$base/uninstall.err" >&2; fail "uninstall failed after replacing a dangling launcher backup"; }
+cmp -s "$base/foreign-live.before" "$dangling_launcher" \
+    || fail "uninstall did not restore the launcher displaced before a dangling collision"
+[ -L "$dangling_backup" ] && [ "$(readlink -- "$dangling_backup")" = "$dangling_target" ] \
+    || fail "uninstall did not restore the pre-existing dangling adjacent backup"
+ok "launcher replacement preserves and restores a dangling adjacent backup"
 
 base="$(new_env identical-foreign-launcher)"
 identical_launcher="$base/home/.local/bin/ableton-live"
@@ -1870,35 +2550,37 @@ ok "byte-identical pre-existing launchers receive managed adjacent backups"
 base="$(new_env launcher-directory-collision)"
 directory_launcher="$base/data/applications/ableton-live.desktop"
 mkdir -p "$directory_launcher"
-if run_isolated "$base" bash "$here/install.sh" --integration-only \
-    >"$base/out" 2>"$base/err"; then
-    fail "integration replaced a directory at a launcher path"
-fi
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || fail "one launcher directory collision blocked the rest of integration"
 [ -d "$directory_launcher" ] && [ ! -L "$directory_launcher" ] \
     || fail "launcher directory refusal changed the collision"
 [ ! -e "${directory_launcher}.bak" ] && [ ! -L "${directory_launcher}.bak" ] \
     || fail "launcher directory refusal created an adjacent backup"
 grep -qF "launcher path points to a directory: $directory_launcher" "$base/err" \
     || fail "launcher directory refusal did not report the actual cause"
-ok "launcher directory collisions fail with an explicit reason"
+grep -qF 'Some shortcuts or support files could not be updated. Run the installer again to retry them.' \
+    "$base/err" || fail "launcher directory refusal omitted the plain retry warning"
+ok "launcher directory collisions are preserved and warn without blocking other repairs"
 
 base="$(new_env launcher-fifo-collision)"
 fifo_launcher="$base/home/.local/bin/ableton-live"
 mkdir -p "$(dirname "$fifo_launcher")"
 mkfifo "$fifo_launcher"
-if run_isolated "$base" bash "$here/install.sh" --integration-only \
-    >"$base/out" 2>"$base/err"; then
-    fail "integration replaced a FIFO at a launcher path"
-fi
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || fail "one launcher FIFO collision blocked the rest of integration"
 [ -p "$fifo_launcher" ] \
     || fail "launcher FIFO refusal changed the collision"
 [ ! -e "${fifo_launcher}.bak" ] && [ ! -L "${fifo_launcher}.bak" ] \
     || fail "launcher FIFO refusal created an adjacent backup"
 grep -qF "launcher path is not a regular file or symlink: $fifo_launcher" "$base/err" \
     || fail "launcher FIFO refusal did not report the actual path"
-ok "launcher special-file collisions fail with an explicit reason"
+grep -qF 'Some shortcuts or support files could not be updated. Run the installer again to retry them.' \
+    "$base/err" || fail "launcher FIFO refusal omitted the plain retry warning"
+ok "launcher special-file collisions are preserved and warn without blocking other repairs"
 
-# Session Link policy writes the unit for later but never runs it, so it must
+# Session Link mode writes the unit for later but never runs it, so it must
 # not need a user manager that answers.  Only always-on policy does.
 base="$(new_env link-no-user-manager)"
 mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine" "$base/fakebin"
@@ -1933,7 +2615,7 @@ if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
     bash "$here/setup-link.sh" enable --mode=always >"$base/always.out" 2>"$base/always.err"; then
     fail "always-on Link enable succeeded with no systemd user manager"
 fi
-ok "session Link policy does not depend on a reachable systemd user manager"
+ok "session Link mode does not depend on a reachable systemd user manager"
 
 # setup-link.sh sources the ownership helper, so a Link-only install has to ship
 # it: TROUBLESHOOTING tells people to run the installed copy.
@@ -1944,7 +2626,7 @@ run_isolated "$base" bash "$here/install.sh" --link-assets-only \
 run_isolated "$base" bash "$base/data/ableton-wine/setup-link.sh" status \
     >"$base/status.out" 2>"$base/status.err" \
     || { sed -n '1,20p' "$base/status.err" >&2; fail "the installed setup-link.sh cannot run"; }
-grep -q '^policy:' "$base/status.out" || fail "installed Link status reported no policy"
+grep -q '^mode:' "$base/status.out" || fail "installed Link status reported no mode"
 ok "a link-only install ships every library its setup-link.sh needs"
 
 # Status only reads.  It has to answer while a lifecycle command holds the
@@ -1957,7 +2639,7 @@ run_isolated "$base" bash -c '
     flock -n "$held" || exit 9
     bash "$1" status' locked "$here/setup-link.sh" >"$base/out" 2>"$base/err" \
     || { sed -n '1,20p' "$base/err" >&2; fail "Link status fails while the installation lock is held"; }
-grep -q '^policy:' "$base/out" || fail "locked Link status reported no policy"
+grep -q '^mode:' "$base/out" || fail "locked Link status reported no mode"
 ok "Link status answers while the installation lock is held"
 
 # A missing prefix or runtime names itself.  Both used to arrive as an audio
