@@ -21,12 +21,16 @@ uninstall:                    ## remove installed Wine tree + launcher
 test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-tsan-policy.sh
 	./scripts/test-release-policy.sh
+	./scripts/test-config-boundary.sh
 	./scripts/test-check-ntsync.sh
 	./scripts/test-shortcut-hold.sh
 	./scripts/test-cpu-topology.sh
 	./scripts/test-live-options.sh
 	./scripts/test-pipewire-pro-audio-ab.sh
 	./scripts/test-desktop-integration.sh
+	./scripts/test-launcher-transactions.sh
+	./scripts/test-link-boundary.sh
+	./scripts/test-uninstall-boundary.sh
 	./scripts/test-nix-packaging.sh
 	./scripts/test-installer-lifecycle.sh
 	./scripts/test-pipeasio-installer.sh

@@ -141,9 +141,23 @@ values[$down]="['<Primary><Alt>Down']"
 ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
 rm -f -- "$ableton_shortcuts_state_dir"/lease.*
 export ABLETON_SHORTCUTS_POLL_SECONDS=0.01
+install_lock_attempts=0
+install_lock_releases=0
+ableton_install_lock_acquire()
+{
+    install_lock_attempts=$((install_lock_attempts + 1))
+    [ "$install_lock_attempts" -ge 3 ]
+}
+ableton_install_lock_release()
+{
+    install_lock_releases=$((install_lock_releases + 1))
+}
 ableton_shortcuts_watch_loop
+check "watcher retries while installer owns the global lock" "$install_lock_attempts" "3"
+check "watcher releases the global lock after restoration" "$install_lock_releases" "1"
 check "watcher restores after last lease exits" "${values[$up]}" "['<Control><Alt>Up']"
 check "watcher removes completed recovery state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+unset -f ableton_install_lock_acquire ableton_install_lock_release
 
 # Recovery still runs when discovery did not find a Live executable. It must
 # not start a new hold in this path, even when the opt-in variable is present.

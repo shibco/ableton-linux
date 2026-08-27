@@ -51,6 +51,7 @@ ableton_state_marker_valid()
 ableton_legacy_shortcut_state_valid()
 {
     local state="$1" expected header schema key original held extra rows=0 nul_count terminal normalized saw_header=0
+    local unexpected=""
     local -A seen=()
     expected="$(ableton_realpath_m "${XDG_STATE_HOME:-$HOME/.local/state}/ableton-wine")" \
         || return 1
@@ -59,8 +60,9 @@ ableton_legacy_shortcut_state_valid()
         && [ "$(stat -c '%a' -- "$state" 2>/dev/null || true)" = 700 ] || return 1
     # The shortcut hold was the sole state object written before ownership
     # markers.  Do not turn a broad basename exception into delete authority.
-    [ "$(find "$state" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" = hold-v2 ] \
+    unexpected="$(find "$state" -mindepth 1 -maxdepth 1 ! -name hold-v2 -print -quit)" \
         || return 1
+    [ -z "$unexpected" ] && [ -e "$state/hold-v2" ] || return 1
     [ -f "$state/hold-v2" ] && [ ! -L "$state/hold-v2" ] \
         && [ -O "$state/hold-v2" ] && [ -r "$state/hold-v2" ] \
         && [ "$(stat -c '%a' -- "$state/hold-v2" 2>/dev/null || true)" = 600 ] || return 1
@@ -214,49 +216,91 @@ ableton_require_home()
 
 ableton_config_object_token()
 {
-    local path="$1" literal referent referent_token
+    local path="$1" literal referent referent_token object_stat digest
     if [ -L "$path" ]; then
         literal="$(readlink -n -- "$path")" || return 1
         referent="$(readlink -f -- "$path" 2>/dev/null || true)"
         if [ -n "$referent" ] && [ -f "$referent" ] && [ ! -L "$referent" ]; then
-            referent_token="file:$(sha256sum -- "$referent" | awk '{print $1}')"
+            digest="$(sha256sum -- "$referent" 2>/dev/null)" || digest=""
+            digest="${digest%% *}"
+            if [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+                referent_token="file:$digest"
+            else
+                object_stat="$(LC_ALL=C stat -c '%d:%i:%f:%s:%Y:%Z' -- "$path")" \
+                    || return 1
+                referent_token="unreadable:$object_stat"
+            fi
         elif [ -z "$referent" ]; then
             referent_token=dangling
         else
-            return 1
+            object_stat="$(LC_ALL=C stat -c '%d:%i:%f:%s:%Y:%Z' -- "$path")" \
+                || return 1
+            referent_token="nonfile:$object_stat"
         fi
         { printf 'symlink\0%s\0%s\n' "$literal" "$referent_token"; } \
             | sha256sum | awk '{print "symlink:"$1}'
     elif [ -f "$path" ]; then
-        sha256sum -- "$path" | awk '{print "file:"$1}'
+        digest="$(sha256sum -- "$path" 2>/dev/null)" || digest=""
+        digest="${digest%% *}"
+        if [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'file:%s\n' "$digest"
+        else
+            object_stat="$(LC_ALL=C stat -c '%d:%i:%f:%s:%Y:%Z' -- "$path")" \
+                || return 1
+            printf 'unreadable-file:%s\n' "$object_stat"
+        fi
     elif [ ! -e "$path" ]; then
         printf 'absent\n'
     else
-        return 1
+        object_stat="$(LC_ALL=C stat -c '%d:%i:%f:%s:%Y:%Z' -- "$path")" \
+            || return 1
+        printf 'nonfile:%s\n' "$object_stat"
     fi
 }
 
 ableton_config_snapshot_capture()
 {
-    ABLETON_CONFIG_SNAPSHOT_PATH="$ABLETON_CONFIG_FILE"
-    ABLETON_CONFIG_SNAPSHOT_TOKEN="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || return 1
-    ABLETON_CONFIG_SNAPSHOT_VALUES="$(printf '%s\n' \
+    local bound_token="${1:-}" values_record snapshot_path snapshot_token snapshot_values
+    snapshot_path="$ABLETON_CONFIG_FILE"
+    if [ -n "$bound_token" ]; then
+        snapshot_token="$bound_token"
+    else
+        snapshot_token="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" \
+            || return 1
+    fi
+    values_record="$(printf '%s\n' \
         "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINKD" "$ABLETON_LINK_MODE" \
         "$ABLETON_DATA_HOME" "$ABLETON_CONFIG_HOME" "$ABLETON_STATE_HOME" \
-        "$ABLETON_CACHE_HOME" "$ABLETON_BIN_HOME" | sha256sum | awk '{print $1}')"
+        "$ABLETON_CACHE_HOME" "$ABLETON_BIN_HOME" | sha256sum)" || return 1
+    snapshot_values="${values_record%% *}"
+    [[ "$snapshot_values" =~ ^[0-9a-f]{64}$ ]] || return 1
+    # Publish the snapshot only after every field is ready. A failed recapture
+    # must leave the prior complete record intact, never a mixed partial one.
+    ABLETON_CONFIG_SNAPSHOT_PATH="$snapshot_path"
+    ABLETON_CONFIG_SNAPSHOT_TOKEN="$snapshot_token"
+    ABLETON_CONFIG_SNAPSHOT_VALUES="$snapshot_values"
     export ABLETON_CONFIG_SNAPSHOT_PATH ABLETON_CONFIG_SNAPSHOT_TOKEN ABLETON_CONFIG_SNAPSHOT_VALUES
 }
 
 ableton_config_snapshot_verify()
 {
-    local token values
-    [ -n "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] || return 0
+    local token values values_record
+    if [ -z "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] \
+       && [ -z "${ABLETON_CONFIG_SNAPSHOT_TOKEN:-}" ] \
+       && [ -z "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ]; then
+        return 0
+    fi
+    [ -n "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] \
+        && [ -n "${ABLETON_CONFIG_SNAPSHOT_TOKEN:-}" ] \
+        && [ -n "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ] || return 1
     [ "$ABLETON_CONFIG_FILE" = "$ABLETON_CONFIG_SNAPSHOT_PATH" ] || return 1
     token="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || return 1
-    values="$(printf '%s\n' \
+    values_record="$(printf '%s\n' \
         "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINKD" "$ABLETON_LINK_MODE" \
         "$ABLETON_DATA_HOME" "$ABLETON_CONFIG_HOME" "$ABLETON_STATE_HOME" \
-        "$ABLETON_CACHE_HOME" "$ABLETON_BIN_HOME" | sha256sum | awk '{print $1}')"
+        "$ABLETON_CACHE_HOME" "$ABLETON_BIN_HOME" | sha256sum)" || return 1
+    values="${values_record%% *}"
+    [[ "$values" =~ ^[0-9a-f]{64}$ ]] || return 1
     [ "$token" = "$ABLETON_CONFIG_SNAPSHOT_TOKEN" ] \
         && [ "$values" = "$ABLETON_CONFIG_SNAPSHOT_VALUES" ]
 }
@@ -312,8 +356,155 @@ ableton_managed_config_valid()
         && [ -n "${seen[linkd]+x}" ]
 }
 
+# A project-written config may become invalid when a newer installer removes a
+# field or an interrupted older writer leaves the tail incomplete.  Repair mode
+# can still recover each unambiguous, syntactically safe known value from a
+# regular file that has this project's exact header and one format=1 field.
+# Unknown, duplicate, or invalid values are ignored independently.
+ableton_config_salvage_values()
+{
+    local file="$1" line key value header="" format_count=0 format_value=""
+    local -A counts=() values=()
+    ABLETON_CONFIG_REPAIR_RUNTIME_ROOT=""
+    ABLETON_CONFIG_REPAIR_PREFIX=""
+    ABLETON_CONFIG_REPAIR_LIVE_MAJOR=""
+    ABLETON_CONFIG_REPAIR_LINK_MODE=""
+    ABLETON_CONFIG_REPAIR_LINKD=""
+    [ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] || return 1
+    [ "$(LC_ALL=C tr -cd '\000' < "$file" 2>/dev/null | wc -c)" -eq 0 ] || return 1
+    IFS= read -r header < "$file" || return 1
+    [ "$header" = '# ableton-linux installer configuration; managed by the installer' ] \
+        || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ "$line" != "$header" ] || continue
+        case "$line" in *=*) ;; *) continue ;; esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            format)
+                format_count=$((format_count + 1))
+                format_value="$value" ;;
+            runtime_root|prefix|live_major|link_mode|linkd)
+                counts["$key"]=$(( ${counts[$key]:-0} + 1 ))
+                values["$key"]="$value" ;;
+        esac
+    done < "$file"
+    [ "$format_count" -eq 1 ] && [ "$format_value" = 1 ] || return 1
+
+    if [ "${counts[runtime_root]:-0}" -eq 1 ]; then
+        value="${values[runtime_root]}"
+        case "$value" in /*) case "$value" in *$'\n'*|*$'\r'*|*$'\t'*) ;; *) ABLETON_CONFIG_REPAIR_RUNTIME_ROOT="$value" ;; esac ;; esac
+    fi
+    if [ "${counts[prefix]:-0}" -eq 1 ]; then
+        value="${values[prefix]}"
+        case "$value" in /*) case "$value" in *$'\n'*|*$'\r'*|*$'\t'*) ;; *) ABLETON_CONFIG_REPAIR_PREFIX="$value" ;; esac ;; esac
+    fi
+    if [ "${counts[live_major]:-0}" -eq 1 ]; then
+        case "${values[live_major]}" in
+            11|12) ABLETON_CONFIG_REPAIR_LIVE_MAJOR="${values[live_major]}" ;;
+        esac
+    fi
+    if [ "${counts[link_mode]:-0}" -eq 1 ]; then
+        case "${values[link_mode]}" in
+            off|session|always) ABLETON_CONFIG_REPAIR_LINK_MODE="${values[link_mode]}" ;;
+        esac
+    fi
+    if [ "${counts[linkd]:-0}" -eq 1 ]; then
+        value="${values[linkd]}"
+        case "$value" in /*) case "$value" in *$'\n'*|*$'\r'*|*$'\t'*) ;; *) ABLETON_CONFIG_REPAIR_LINKD="$value" ;; esac ;; esac
+    fi
+}
+
+ableton_config_validate_layout()
+{
+    local requested="${1:-runtime prefix data config state bin}"
+    local name configured first second i j
+    local -a checked_paths=() independent_paths=()
+    local -A seen=()
+    [ "$requested" != none ] || return 0
+    for name in $requested; do
+        [ -z "${seen[$name]+x}" ] || continue
+        seen["$name"]=1
+        case "$name" in
+            runtime) configured="$ABLETON_WINE_ROOT" ;;
+            prefix) configured="$ABLETON_WINEPREFIX" ;;
+            data) configured="$ABLETON_DATA_HOME" ;;
+            config) configured="$ABLETON_CONFIG_HOME" ;;
+            state) configured="$ABLETON_STATE_HOME" ;;
+            bin) configured="$ABLETON_BIN_HOME" ;;
+            *) ableton_config_error "unknown installation layout root: $name"; return 1 ;;
+        esac
+        checked_paths+=("$configured")
+        [ "$name" = bin ] || independent_paths+=("$configured")
+    done
+    for configured in "${checked_paths[@]}"; do
+        if [ -e "$configured" ] || [ -L "$configured" ]; then
+            [ -d "$configured" ] && [ ! -L "$configured" ] || {
+                ableton_config_error "installation directory path is not a real directory: $configured"
+                return 1
+            }
+        fi
+    done
+    for ((i=0; i<${#independent_paths[@]}; i++)); do
+        first="$(ableton_realpath_m "${independent_paths[i]}")" || return 1
+        for ((j=i+1; j<${#independent_paths[@]}; j++)); do
+            second="$(ableton_realpath_m "${independent_paths[j]}")" || return 1
+            if [ "$first" = "$second" ] || [[ "$first" = "$second/"* ]] \
+               || [[ "$second" = "$first/"* ]]; then
+                ableton_config_error "installation roots overlap: $first and $second"
+                return 1
+            fi
+        done
+    done
+}
+
+ableton_config_paths_overlap()
+{
+    local first="$1" second="$2"
+    [ "$first" = "$second" ] || [[ "$first" = "$second/"* ]] \
+        || [[ "$second" = "$first/"* ]]
+}
+
+ableton_config_validate_write_layout()
+{
+    local protected
+    # The writer uses CONFIG_HOME for its temporary file even when callers
+    # select a custom CONFIG_FILE elsewhere, so both concrete destinations must
+    # stay separate from every independently managed tree. The other roots are
+    # compared as paths only: an unrelated stale object there is not a reason to
+    # withhold otherwise safe installer settings.
+    ableton_config_validate_layout config || return 1
+    for protected in "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" \
+                     "$ABLETON_DATA_HOME" "$ABLETON_STATE_HOME" \
+                     "$ABLETON_CACHE_HOME"; do
+        if ableton_config_paths_overlap "$ABLETON_CONFIG_HOME" "$protected" \
+           || ableton_config_paths_overlap "$ABLETON_CONFIG_FILE" "$protected"; then
+            ableton_config_error "installer configuration path overlaps another installation path: $protected"
+            return 1
+        fi
+    done
+}
+
 ableton_config_init()
 {
+    local requested_mode="${1:-}" repair_mode=0 config_valid=1
+    case "$requested_mode" in
+        repair) repair_mode=1 ;;
+        strict)
+            unset ABLETON_CONFIG_REPAIR_MODE ABLETON_CONFIG_REPAIR_NEEDED ;;
+        '') ;;
+        *) ableton_config_error "unknown installer configuration mode: $requested_mode"; return 1 ;;
+    esac
+    if [ -z "$requested_mode" ] \
+       && [ "${ABLETON_CONFIG_REPAIR_MODE:-0}" = 1 ] \
+       && [ -n "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] \
+       && [ -n "${ABLETON_CONFIG_SNAPSHOT_TOKEN:-}" ] \
+       && [ -n "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ]; then
+        repair_mode=1
+    fi
+    if [ "$repair_mode" -eq 1 ]; then
+        ABLETON_CONFIG_REPAIR_NEEDED=0
+    fi
     ableton_require_home || return 1
 
     : "${ABLETON_DATA_HOME:=${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine}"
@@ -322,27 +513,51 @@ ableton_config_init()
     : "${ABLETON_CACHE_HOME:=${XDG_CACHE_HOME:-$HOME/.cache}/ableton-wine}"
     : "${ABLETON_BIN_HOME:=$HOME/.local/bin}"
     : "${ABLETON_CONFIG_FILE:=$ABLETON_CONFIG_HOME/config}"
-    local config_file_name config_file_parent
+    local config_file_name config_file_parent config_generation_before config_generation_after
     config_file_name="$(basename -- "$ABLETON_CONFIG_FILE")" || return 1
     config_file_parent="$(dirname -- "$ABLETON_CONFIG_FILE")" || return 1
+    config_generation_before="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || {
+        ableton_config_error "cannot read installer configuration $ABLETON_CONFIG_FILE"
+        return 1
+    }
     if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
-        ableton_managed_config_valid "$ABLETON_CONFIG_FILE" || {
-            ableton_config_error "refusing malformed installer configuration $ABLETON_CONFIG_FILE"
-            return 1
-        }
+        if ! ableton_managed_config_valid "$ABLETON_CONFIG_FILE"; then
+            config_valid=0
+            if [ "$repair_mode" -ne 1 ]; then
+                ableton_config_error "refusing malformed installer configuration $ABLETON_CONFIG_FILE"
+                return 1
+            fi
+            ABLETON_CONFIG_REPAIR_NEEDED=1
+            ableton_config_salvage_values "$ABLETON_CONFIG_FILE" 2>/dev/null || true
+        fi
     fi
 
     local configured
     if [ -z "${ABLETON_WINE_ROOT+x}" ]; then
-        configured="$(ableton_config_file_value runtime_root 2>/dev/null || true)"
+        configured=""
+        if [ "$config_valid" -eq 1 ]; then
+            configured="$(ableton_config_file_value runtime_root 2>/dev/null || true)"
+        elif [ "$repair_mode" -eq 1 ]; then
+            configured="${ABLETON_CONFIG_REPAIR_RUNTIME_ROOT:-}"
+        fi
         ABLETON_WINE_ROOT="${configured:-$HOME/.local/opt/$ABLETON_RUNTIME_NAME}"
     fi
     if [ -z "${ABLETON_WINEPREFIX+x}" ]; then
-        configured="$(ableton_config_file_value prefix 2>/dev/null || true)"
+        configured=""
+        if [ "$config_valid" -eq 1 ]; then
+            configured="$(ableton_config_file_value prefix 2>/dev/null || true)"
+        elif [ "$repair_mode" -eq 1 ]; then
+            configured="${ABLETON_CONFIG_REPAIR_PREFIX:-}"
+        fi
         ABLETON_WINEPREFIX="${configured:-$HOME/.wine-ableton}"
     fi
     if [ -z "${ABLETON_LINK_MODE+x}" ]; then
-        configured="$(ableton_config_file_value link_mode 2>/dev/null || true)"
+        configured=""
+        if [ "$config_valid" -eq 1 ]; then
+            configured="$(ableton_config_file_value link_mode 2>/dev/null || true)"
+        elif [ "$repair_mode" -eq 1 ]; then
+            configured="${ABLETON_CONFIG_REPAIR_LINK_MODE:-}"
+        fi
         if [ -z "$configured" ]; then
             case "$(sed -n '1p' "$ABLETON_DATA_HOME/link-configured" 2>/dev/null || true)" in
                 configured) configured=session ;;
@@ -355,12 +570,35 @@ ableton_config_init()
         ABLETON_LINK_MODE="${configured:-off}"
     fi
     if [ -z "${ABLETON_LIVE_VERSION+x}" ]; then
-        configured="$(ableton_config_file_value live_major 2>/dev/null || true)"
+        configured=""
+        if [ "$config_valid" -eq 1 ]; then
+            configured="$(ableton_config_file_value live_major 2>/dev/null || true)"
+        elif [ "$repair_mode" -eq 1 ]; then
+            configured="${ABLETON_CONFIG_REPAIR_LIVE_MAJOR:-}"
+        fi
         [ -z "$configured" ] || ABLETON_LIVE_VERSION="$configured"
     fi
     if [ -z "${ABLETON_LINKD+x}" ]; then
-        configured="$(ableton_config_file_value linkd 2>/dev/null || true)"
+        configured=""
+        if [ "$config_valid" -eq 1 ]; then
+            configured="$(ableton_config_file_value linkd 2>/dev/null || true)"
+        elif [ "$repair_mode" -eq 1 ]; then
+            configured="${ABLETON_CONFIG_REPAIR_LINKD:-}"
+        fi
         ABLETON_LINKD="${configured:-$ABLETON_DATA_HOME/ableton-linkd}"
+    fi
+
+    # The managed file is replaced atomically by compliant writers. Bind every
+    # field read above to the generation that was present before parsing; a
+    # replacement between individual reads must not produce a mixed A/B
+    # configuration whose final B token is then treated as authoritative.
+    config_generation_after="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || {
+        ableton_config_error "cannot reread installer configuration $ABLETON_CONFIG_FILE"
+        return 1
+    }
+    if [ "$config_generation_after" != "$config_generation_before" ]; then
+        ableton_config_error "installation configuration changed while it was being read; retry the command"
+        return 1
     fi
 
     case "$ABLETON_LINK_MODE" in off|session|always) ;;
@@ -389,40 +627,29 @@ ableton_config_init()
     ABLETON_CONFIG_FILE="$config_file_parent/$config_file_name"
     ABLETON_LINKD="$(ableton_realpath_m "$ABLETON_LINKD")" || return 1
 
-    # Paths are canonicalized first, so an intentional XDG/root symlink is a
-    # projection to this resolved directory: lifecycle code mutates only the
-    # resolved child and never removes the user's symlink.  At the concrete
-    # target, however, every directory root must be absent or a real directory.
-    for configured in "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_DATA_HOME" \
-                      "$ABLETON_CONFIG_HOME" "$ABLETON_STATE_HOME" "$ABLETON_CACHE_HOME" \
-                      "$ABLETON_BIN_HOME"; do
-        if [ -e "$configured" ] || [ -L "$configured" ]; then
-            [ -d "$configured" ] && [ ! -L "$configured" ] || {
-                ableton_config_error "installation directory path is not a real directory: $configured"
-                return 1
-            }
-        fi
-    done
-
-    local -a independent_paths=("$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_DATA_HOME" \
-        "$ABLETON_CONFIG_HOME" "$ABLETON_STATE_HOME" "$ABLETON_CACHE_HOME")
-    local i j first second
-    for ((i=0; i<${#independent_paths[@]}; i++)); do
-        first="$(ableton_realpath_m "${independent_paths[i]}")" || return 1
-        for ((j=i+1; j<${#independent_paths[@]}; j++)); do
-            second="$(ableton_realpath_m "${independent_paths[j]}")" || return 1
-            if [ "$first" = "$second" ] || [[ "$first" = "$second/"* ]] || [[ "$second" = "$first/"* ]]; then
-                ableton_config_error "installation roots overlap: $first and $second"
-                return 1
-            fi
-        done
-    done
+    # Callers select only the roots their current operation will actually use.
+    # This keeps destructive-layout checks strict without letting an unrelated
+    # desktop/config/cache location veto core runtime work.
+    ableton_config_validate_layout \
+        "${ABLETON_CONFIG_LAYOUT_ROOTS:-runtime prefix data config state bin}" || return 1
 
     export ABLETON_WINE_ROOT ABLETON_WINEPREFIX ABLETON_LINK_MODE ABLETON_LINKD
     export ABLETON_DATA_HOME ABLETON_CONFIG_HOME ABLETON_STATE_HOME ABLETON_CACHE_HOME
     export ABLETON_BIN_HOME ABLETON_CONFIG_FILE
+    export ABLETON_CONFIG_LAYOUT_ROOTS
     export ABLETON_PROTOCOL_DESKTOP_ID ABLETON_AUZ_DESKTOP_ID
-    [ -n "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] || ableton_config_snapshot_capture
+    if [ "$repair_mode" -eq 1 ]; then
+        ABLETON_CONFIG_REPAIR_MODE=1
+        : "${ABLETON_CONFIG_REPAIR_NEEDED:=0}"
+        export ABLETON_CONFIG_REPAIR_MODE ABLETON_CONFIG_REPAIR_NEEDED
+    fi
+    if [ -z "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] \
+       || [ -z "${ABLETON_CONFIG_SNAPSHOT_TOKEN:-}" ] \
+       || [ -z "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ]; then
+        # Treat the exported snapshot as one record. A partial inherited
+        # environment must be replaced, never trusted or expanded under set -u.
+        ableton_config_snapshot_capture "$config_generation_before"
+    fi
 }
 
 ableton_render_config()
@@ -444,8 +671,16 @@ ableton_expected_config_token()
 
 ableton_write_config()
 {
-    ableton_config_init || return 1
+    if [ "${ABLETON_CONFIG_REPAIR_MODE:-0}" = 1 ]; then
+        ableton_config_init repair || return 1
+    else
+        ableton_config_init || return 1
+    fi
     local tmp
+    # Configuration is optional after the core operation commits, but writing
+    # it must still stay outside every independently managed tree. Callers may
+    # have selected a narrower core-only layout during initialisation.
+    ableton_config_validate_write_layout || return 1
     if [ -d "$ABLETON_CONFIG_FILE" ] && [ ! -L "$ABLETON_CONFIG_FILE" ]; then
         ableton_config_error "refusing to replace configuration directory $ABLETON_CONFIG_FILE"
         return 1
@@ -454,6 +689,14 @@ ableton_write_config()
         ableton_config_error "refusing symlink installer configuration $ABLETON_CONFIG_FILE"
         return 1
     fi
+    if [ -e "$ABLETON_CONFIG_FILE" ] && [ ! -f "$ABLETON_CONFIG_FILE" ]; then
+        ableton_config_error "refusing to replace non-file installer configuration $ABLETON_CONFIG_FILE"
+        return 1
+    fi
+    ableton_config_snapshot_verify || {
+        ableton_config_error "installation configuration changed; retry the command"
+        return 1
+    }
     mkdir -p -- "$ABLETON_CONFIG_HOME" || return 1
     tmp="$(mktemp "$ABLETON_CONFIG_HOME/.config.XXXXXX")" || return 1
     if ! chmod 600 "$tmp" \
@@ -464,12 +707,18 @@ ableton_write_config()
         rm -f -- "$tmp"
         return 1
     fi
+    ABLETON_CONFIG_REPAIR_NEEDED=0
+    export ABLETON_CONFIG_REPAIR_NEEDED
 }
 
 ableton_mark_state_home()
 {
-    local marker marker_tmp
-    ableton_config_init || return 1
+    local marker marker_tmp first_entry=""
+    if [ "${ABLETON_CONFIG_REPAIR_MODE:-0}" = 1 ]; then
+        ableton_config_init repair || return 1
+    else
+        ableton_config_init || return 1
+    fi
     marker="$ABLETON_STATE_HOME/.ableton-linux-state"
     if [ -e "$marker" ] || [ -L "$marker" ]; then
         ableton_state_marker_valid "$ABLETON_STATE_HOME" || {
@@ -478,12 +727,17 @@ ableton_mark_state_home()
         }
         return 0
     fi
-    if [ -d "$ABLETON_STATE_HOME" ] \
-       && find "$ABLETON_STATE_HOME" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
-        ableton_legacy_shortcut_state_valid "$ABLETON_STATE_HOME" || {
-            ableton_config_error "refusing to claim nonempty unmarked state directory $ABLETON_STATE_HOME"
+    if [ -d "$ABLETON_STATE_HOME" ]; then
+        if ! first_entry="$(find "$ABLETON_STATE_HOME" -mindepth 1 -maxdepth 1 -print -quit)"; then
+            ableton_config_error "cannot inspect the existing installation state directory $ABLETON_STATE_HOME"
             return 1
-        }
+        fi
+        if [ -n "$first_entry" ]; then
+            ableton_legacy_shortcut_state_valid "$ABLETON_STATE_HOME" || {
+                ableton_config_error "refusing to claim nonempty unmarked state directory $ABLETON_STATE_HOME"
+                return 1
+            }
+        fi
     fi
     mkdir -p -- "$ABLETON_STATE_HOME"
     marker_tmp="$(mktemp "$ABLETON_STATE_HOME/.state-marker.XXXXXX")" || return 1
@@ -497,6 +751,32 @@ ableton_mark_state_home()
     fi
 }
 
+ableton_prepare_transactions_dir()
+{
+    local transactions="$ABLETON_STATE_HOME/transactions"
+    ableton_mark_state_home || return 1
+    # The exact state marker proves this child belongs to the project. Repair a
+    # stale non-directory left by our own older work, but never follow or replace
+    # a symlink and never act beneath an unproven state root.
+    ableton_state_marker_valid "$ABLETON_STATE_HOME" || return 1
+    if [ -L "$transactions" ]; then
+        ableton_config_error "refusing symlink installer work directory $transactions"
+        return 1
+    fi
+    if [ -e "$transactions" ] && [ ! -d "$transactions" ]; then
+        rm -f -- "$transactions" 2>/dev/null || true
+        if [ -e "$transactions" ] || [ -L "$transactions" ]; then
+            ableton_config_error "cannot replace stale installer work file $transactions"
+            return 1
+        fi
+    fi
+    mkdir -p -- "$transactions" 2>/dev/null || true
+    [ -d "$transactions" ] && [ ! -L "$transactions" ] || {
+        ableton_config_error "cannot prepare installer work directory $transactions"
+        return 1
+    }
+}
+
 # Serialize every lifecycle mutation for this user on one existing directory.
 # Runtime-only work therefore creates no state, yet cannot race a full install.
 # Child helpers validate and reuse the inherited descriptor.
@@ -507,15 +787,20 @@ ableton_install_lock_acquire()
         ableton_config_error "flock is required to change this installation"
         return 1
     }
-    [ ! -L "$ABLETON_CONFIG_FILE" ] || {
-        ableton_config_error "refusing symlink installer configuration $ABLETON_CONFIG_FILE"
-        return 1
-    }
-    if [ -e "$ABLETON_CONFIG_FILE" ]; then
-        ableton_managed_config_valid "$ABLETON_CONFIG_FILE" || {
-            ableton_config_error "refusing malformed installer configuration $ABLETON_CONFIG_FILE"
+    if [ "${ABLETON_CONFIG_REPAIR_MODE:-0}" != 1 ] \
+       || [ -z "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] \
+       || [ -z "${ABLETON_CONFIG_SNAPSHOT_TOKEN:-}" ] \
+       || [ -z "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ]; then
+        [ ! -L "$ABLETON_CONFIG_FILE" ] || {
+            ableton_config_error "refusing symlink installer configuration $ABLETON_CONFIG_FILE"
             return 1
         }
+        if [ -e "$ABLETON_CONFIG_FILE" ]; then
+            ableton_managed_config_valid "$ABLETON_CONFIG_FILE" || {
+                ableton_config_error "refusing malformed installer configuration $ABLETON_CONFIG_FILE"
+                return 1
+            }
+        fi
     fi
     expected="$(ableton_realpath_m "$HOME")" || return 1
     [ -d "$expected" ] && [ ! -L "$expected" ] || {
@@ -525,8 +810,12 @@ ableton_install_lock_acquire()
     case "$inherited" in
         ''|*[!0-9]*) ;;
         *)
-            observed="$(readlink -f -- "/proc/$$/fd/$inherited" 2>/dev/null || true)"
+            observed="$(readlink -f -- "/proc/${BASHPID:-$$}/fd/$inherited" 2>/dev/null || true)"
             if [ "$observed" = "$expected" ] && flock -n "$inherited"; then
+                ableton_config_snapshot_verify || {
+                    ableton_config_error "installation configuration changed; retry the command"
+                    return 1
+                }
                 return 0
             fi
             ;;
@@ -537,15 +826,51 @@ ableton_install_lock_acquire()
     }
     if ! flock -n "$lock_fd"; then
         exec {lock_fd}<&-
-        ableton_config_error "another installer, rollback, or uninstall is already running"
+        ableton_config_error "Another Ableton Linux install, repair, or removal is already running. Wait for it to finish and try again."
         return 1
     fi
     ABLETON_INSTALL_LOCK_FD="$lock_fd"
     export ABLETON_INSTALL_LOCK_FD
+    # Deliberately not exported. An exec'd child may validate and reuse the
+    # inherited descriptor, but only the shell that opened it may issue
+    # LOCK_UN. BASHPID also distinguishes a forked Bash subshell from its parent.
+    ABLETON_INSTALL_LOCK_OWNER_BASHPID="${BASHPID:-$$}"
     ableton_config_snapshot_verify || {
         ableton_config_error "installation configuration changed; retry the command"
+        flock -u "$lock_fd" 2>/dev/null || true
+        exec {lock_fd}<&-
+        unset ABLETON_INSTALL_LOCK_FD ABLETON_INSTALL_LOCK_OWNER_BASHPID
         return 1
     }
+}
+
+# Launchers briefly participate in the lifecycle lock while they repair host
+# integration and bring a Wine prefix up.  A spawned Wine/background process
+# must close its inherited copy while the launcher keeps the lock; otherwise it
+# can retain the installation lock for the whole application session.
+ableton_install_lock_close_in_child()
+{
+    local inherited="${ABLETON_INSTALL_LOCK_FD:-}" observed expected
+    case "$inherited" in ''|*[!0-9]*) return 0 ;; esac
+    observed="$(readlink -f -- "/proc/${BASHPID:-$$}/fd/$inherited" 2>/dev/null || true)"
+    expected="$(ableton_realpath_m "$HOME" 2>/dev/null || true)"
+    [ -n "$expected" ] && [ "$observed" = "$expected" ] || return 1
+    exec {inherited}<&- || return 1
+    unset ABLETON_INSTALL_LOCK_FD ABLETON_INSTALL_LOCK_OWNER_BASHPID
+}
+
+ableton_install_lock_release()
+{
+    local inherited="${ABLETON_INSTALL_LOCK_FD:-}" observed expected rc=0
+    case "$inherited" in ''|*[!0-9]*) return 0 ;; esac
+    [ "${ABLETON_INSTALL_LOCK_OWNER_BASHPID:-}" = "${BASHPID:-$$}" ] || return 1
+    observed="$(readlink -f -- "/proc/${BASHPID:-$$}/fd/$inherited" 2>/dev/null || true)"
+    expected="$(ableton_realpath_m "$HOME" 2>/dev/null || true)"
+    [ -n "$expected" ] && [ "$observed" = "$expected" ] || return 1
+    flock -u "$inherited" || rc=1
+    exec {inherited}<&- || rc=1
+    unset ABLETON_INSTALL_LOCK_FD ABLETON_INSTALL_LOCK_OWNER_BASHPID
+    return "$rc"
 }
 
 ableton_timeout_value()
@@ -561,7 +886,7 @@ ableton_timeout_value()
 
 ableton_run_bounded()
 {
-    local seconds="$1" inherited observed expected; shift
+    local seconds="$1"; shift
     seconds="$(ableton_timeout_value "$seconds" timeout 1 86400)" || return 2
     command -v timeout >/dev/null 2>&1 || {
         ableton_config_error "GNU timeout is required to supervise external processes"
@@ -571,18 +896,7 @@ ableton_run_bounded()
     # commands start. Wine helpers can start background processes that would
     # keep later lifecycle commands locked after this process exits.
     (
-        inherited="${ABLETON_INSTALL_LOCK_FD:-}"
-        case "$inherited" in
-            ''|*[!0-9]*) ;;
-            *)
-                observed="$(readlink -f -- "/proc/${BASHPID:-$$}/fd/$inherited" 2>/dev/null || true)"
-                expected="$(ableton_realpath_m "$HOME" 2>/dev/null || true)"
-                if [ -n "$expected" ] && [ "$observed" = "$expected" ]; then
-                    exec {inherited}<&-
-                    unset ABLETON_INSTALL_LOCK_FD
-                fi
-                ;;
-        esac
+        ableton_install_lock_close_in_child || exit 125
         exec timeout --signal=TERM --kill-after=5s "${seconds}s" "$@"
     )
 }

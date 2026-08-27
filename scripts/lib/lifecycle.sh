@@ -58,6 +58,35 @@ ableton_prefix_pids()
     return 0
 }
 
+# Prefix promotion is different from ordinary session management: moving the
+# directory is unsafe even when the process using it came from stock Wine or a
+# runtime generation that has just been replaced. Match the exact WINEPREFIX
+# environment value first, then accept only resolved Wine executable names.
+# The normal lifecycle walkers remain runtime-scoped so stop/report operations
+# never act on a foreign Wine installation.
+ableton_prefix_wine_processes_any_runtime()
+{
+    local prefix="${1:-$ABLETON_WINEPREFIX}" selected_runtime="${2:-$ABLETON_WINE_ROOT}"
+    local proc pid exe image
+    while IFS= read -r -d '' proc; do
+        pid="${proc#/proc/}"
+        pid="${pid%/environ}"
+        exe="$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)"
+        [ -n "$exe" ] || continue
+        image="${exe##*/}"
+        if ableton_pid_uses_runtime "$pid" "$selected_runtime"; then
+            printf '%s\t%q\n' "$pid" "$exe"
+            continue
+        fi
+        case "$image" in
+            wine|wine64|wine-preloader|wine64-preloader|wineserver|wineserver64|.wine-wrapped)
+                printf '%s\t%q\n' "$pid" "$exe"
+                ;;
+        esac
+    done < <(grep -rzlFx --null "WINEPREFIX=$prefix" /proc/[0-9]*/environ 2>/dev/null)
+    return 0
+}
+
 ableton_runtime_pids()
 {
     local root="${1:-$ABLETON_WINE_ROOT}" proc pid
@@ -98,16 +127,19 @@ ableton_max_pids()
 
 ableton_live_running()
 {
-    local pid
-    pid="$(ableton_live_pids | head -n 1)"
-    [ -n "$pid" ]
+    local pids
+    # Consume the walker completely. `head -n 1` can return while the producer
+    # still owns inherited launcher descriptors, briefly retaining the global or
+    # bring-up lock after the parent has released its copies.
+    pids="$(ableton_live_pids)"
+    [ -n "$pids" ]
 }
 
 ableton_prefix_busy()
 {
-    local pid
-    pid="$(ableton_prefix_pids "${1:-}" "${2:-}" | head -n 1)"
-    [ -n "$pid" ]
+    local pids
+    pids="$(ableton_prefix_pids "${1:-}" "${2:-}")"
+    [ -n "$pids" ]
 }
 
 ableton_lifecycle_runtime_dir()
@@ -248,7 +280,7 @@ ableton_pid_image()
     local image
     # 2>/dev/null first: redirections are applied left to right, so with the input
     # last the open failure is reported before stderr has been silenced.
-    image="$(tr '\0' '\n' 2>/dev/null < "/proc/$1/cmdline" | head -n 1)"
+    image="$(tr '\0' '\n' 2>/dev/null < "/proc/$1/cmdline" | sed -n '1p')"
     image="${image##*\\}"
     image="${image##*/}"
     # A process that exits while it is being reported leaves nothing to read.
@@ -354,7 +386,8 @@ ableton_prefix_wait_progress()
             | cut -f2 | sort -u | tr '\n' ' ')"
         [ -z "${names// /}" ] \
             || printf -- '   still waiting for the prefix to settle (%ss): %s\n' \
-                "$elapsed" "$names"
+                "$elapsed" "$names" \
+            || true
     done
     wait "$waiter" || rc=$?
     return "$rc"
@@ -376,7 +409,7 @@ ableton_prefix_quiesce()
     if [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
         return "$rc"
     fi
-    echo "-- a leftover background program is holding the prefix open; stopping it"
+    echo "-- a leftover background program is holding the prefix open; stopping it" || true
     ableton_run_bounded 20 env WINEPREFIX="$prefix" \
         "$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
     ableton_prefix_wait "$runtime" "$prefix" || return 3

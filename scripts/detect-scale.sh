@@ -1,8 +1,10 @@
-# Sourceable display-scale detection. ableton_detect_scale prints the primary monitor's scale
-# ("1", "1.25", ...) or returns 1 when no probe answers (probes: GNOME, KDE, sway, Hyprland,
-# COSMIC, Xft.dpi). ableton_detect_scale_ex also prints which probe answered (the compositor
-# family), and ableton_dpi_block_for_scale / ableton_dpi_block_values map a detected scale to
-# the calibrated DPI block for that family (see the mapping comment at the bottom).
+# Sourceable display-scale detection. ableton_detect_scale prints the compositor's X11-facing
+# scale ("1", "1.25", ...) or returns 1 when no probe answers (probes: GNOME, KDE, sway,
+# Hyprland, COSMIC, Xft.dpi). On mixed-scale GNOME, Mutter gives Xwayland one framebuffer at
+# the highest monitor's integer scale, so that probe returns the highest active logical scale.
+# ableton_detect_scale_ex also prints which probe answered (the compositor family), and
+# ableton_dpi_block_for_scale / ableton_dpi_block_values map a detected scale to the calibrated
+# DPI block for that family (see the mapping comment at the bottom).
 
 _ads_run() {
     if declare -F ableton_run_bounded >/dev/null 2>&1; then
@@ -13,22 +15,27 @@ _ads_run() {
 }
 
 _ads_gnome() {
-    local state rows all prim
+    local state rows all chosen
     state="$(_ads_run gdbus call --session \
         --dest org.gnome.Mutter.DisplayConfig \
         --object-path /org/gnome/Mutter/DisplayConfig \
         --method org.gnome.Mutter.DisplayConfig.GetCurrentState 2>/dev/null)" || return 1
-    # logical monitors serialise as "(x, y, scale, uint32 transform, primary, ..."
+    # GVariant may print the transform as either "uint32 0" or a bare "0"
+    # within the same state reply. Logical monitors otherwise serialise as
+    # "(x, y, scale, transform, primary, ...".
     rows="$(printf '%s\n' "$state" \
-        | grep -oE '\(-?[0-9]+, -?[0-9]+, [0-9]+(\.[0-9]+)?, uint32 [0-9]+, (true|false)')"
+        | grep -oE '\(-?[0-9]+, -?[0-9]+, [0-9]+(\.[0-9]+)?, (uint32 )?[0-9]+, (true|false)')"
     [ -n "$rows" ] || return 1
     all="$(printf '%s\n' "$rows" | awk -F', ' '{print $3}' | sort -u)"
-    prim="$(printf '%s\n' "$rows" | awk -F', ' '$5=="true"{print $3; exit}')"
-    [ -n "$prim" ] || prim="$(printf '%s\n' "$rows" | awk -F', ' 'NR==1{print $3}')"
+    chosen="$(printf '%s\n' "$rows" | awk -F', ' '
+        NR == 1 || $3 + 0 > highest + 0 { highest = $3 }
+        END { if (NR) print highest }
+    ')"
+    [ -n "$chosen" ] || return 1
     if [ "$(printf '%s\n' "$all" | wc -l)" -gt 1 ]; then
-        echo "note: monitors run mixed scales ($(printf '%s' "$all" | tr '\n' ' ' )): using the primary monitor's $prim" >&2
+        echo "note: monitors run mixed scales ($(printf '%s' "$all" | tr '\n' ' ' )): using GNOME/Xwayland's shared framebuffer scale from $chosen" >&2
     fi
-    printf '%s\n' "$prim"
+    printf '%s\n' "$chosen"
 }
 
 _ads_kde() {

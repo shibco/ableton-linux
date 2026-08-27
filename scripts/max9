@@ -6,12 +6,28 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for lib in "$here/lib/config.sh" "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
     if [ -r "$lib" ]; then . "$lib"; break; fi
 done
-declare -F ableton_config_init >/dev/null 2>&1 || { echo "max9: configuration helper is missing" >&2; exit 1; }
-ableton_config_init
+declare -F ableton_config_init >/dev/null 2>&1 || {
+    echo "max9: support files are incomplete. Run the latest installer again." >&2
+    exit 1
+}
+if ! ableton_config_init 2>/dev/null; then
+    echo "max9: installer settings could not be read. Run the latest installer to repair them, then try again." >&2
+    exit 1
+fi
 for lib in "$here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/lifecycle.sh"; do
     if [ -r "$lib" ]; then . "$lib"; break; fi
 done
-declare -F ableton_max_pids >/dev/null 2>&1 || { echo "max9: lifecycle helper is missing" >&2; exit 1; }
+declare -F ableton_max_pids >/dev/null 2>&1 || {
+    echo "max9: support files are incomplete. Run the latest installer again." >&2
+    exit 1
+}
+for lib in "$here/lib/manifest.sh" "$ABLETON_DATA_HOME/lib/manifest.sh"; do
+    if [ -r "$lib" ]; then . "$lib"; break; fi
+done
+declare -F ableton_install_state_has_active_transaction >/dev/null 2>&1 || {
+    echo "max9: support files are incomplete. Run the latest installer again." >&2
+    exit 1
+}
 
 # Max exits cleanly, but a Max session leaves the same updater behind as a Live
 # one, and it holds the wineserver for the rest of the login session.
@@ -25,7 +41,14 @@ session_teardown()
 {
     local rc=$?
     [ -n "$session_started" ] || return "$rc"
-    ABLETON_SESSION_LABEL="Max" ableton_session_teardown || true
+    if ableton_install_lock_acquire; then
+        ABLETON_SESSION_LABEL="Max" ableton_session_teardown || true
+        # The descriptor closes automatically when this launcher exits. A
+        # failed explicit unlock here has no remaining user-visible effect.
+        ableton_install_lock_release || true
+    else
+        echo "max9: Max closed, but its background Wine processes were left running because installation work started." >&2
+    fi
     return "$rc"
 }
 
@@ -36,6 +59,27 @@ MAX_UNIX="$WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "max9: Wine runtime is missing at $WINE_ROOT" >&2; exit 1; }
 [ -f "$WINEPREFIX/system.reg" ] || { echo "max9: Wine prefix is missing at $WINEPREFIX" >&2; exit 1; }
 [ -f "$MAX_UNIX" ] || { echo "max9: no Max 9 installation in $WINEPREFIX" >&2; exit 1; }
+
+# Serialize launcher-side prefix work with installer, rollback, and uninstall.
+# The launcher releases this lock once Max is observable; its Wine child closes
+# only the inherited descriptor so the parent can hold the handoff safely.
+ableton_install_lock_acquire || {
+    echo "max9: installation work is in progress; retry this launch when it finishes" >&2
+    exit 1
+}
+if ableton_install_state_has_active_transaction; then
+    active_transaction_marker="$(find "$ABLETON_STATE_HOME/transactions" \
+        -mindepth 2 -maxdepth 3 -name active -print -quit 2>/dev/null || true)"
+    active_transaction="${active_transaction_marker%/active}"
+    [ -n "$active_transaction" ] || active_transaction="$ABLETON_STATE_HOME/transactions"
+    echo "max9: an earlier install stopped before it restored the Wine runtime or prefix." >&2
+    echo "max9: keep the recovery files at $active_transaction and report the problem before launching Max." >&2
+    ableton_install_lock_release || true
+    exit 1
+fi
+max_was_running=0
+max_running_pids="$(ableton_max_pids)"
+[ -z "$max_running_pids" ] || max_was_running=1
 
 # Armed after the guards: teardown ends this prefix's agents, and a launch that
 # refused to start has no session to end - Live may be running in this prefix.
@@ -50,14 +94,26 @@ export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 export WINEDLLOVERRIDES="${caller_winedlloverrides:+$caller_winedlloverrides;}mscoree,mshtml="
 
-coordinator_dir="$(ableton_lifecycle_runtime_dir)"
-mkdir -p -- "$coordinator_dir"
-exec 9>"$coordinator_dir/bring-up.lock"
+coordinator_dir="$(ableton_lifecycle_runtime_dir)" || {
+    echo "max9: Max was not started because its launch lock could not be prepared. Try again; if it repeats, report the problem." >&2
+    exit 1
+}
+mkdir -p -- "$coordinator_dir" || {
+    echo "max9: Max was not started because its launch lock directory could not be created at $coordinator_dir. Check the directory permissions and try again." >&2
+    exit 1
+}
+exec 9>"$coordinator_dir/bring-up.lock" || {
+    echo "max9: Max was not started because its launch lock could not be opened. Check the file permissions and try again." >&2
+    exit 1
+}
 if ! flock -n 9; then
-    echo "max9: another Live/Max launcher is bringing this prefix up" >&2
+    echo "max9: another Live or Max launch is starting. Wait a few seconds and try again." >&2
     exit 1
 fi
-printf 'max %s\n' "$$" >&9
+printf 'max %s\n' "$$" >&9 || {
+    echo "max9: Max was not started because its launch lock could not be initialised. Try again; if it repeats, report the problem." >&2
+    exit 1
+}
 # This launcher owns the session from here: every wine invocation is below.
 session_started=1
 
@@ -74,7 +130,10 @@ fi
 args=()
 for arg in "$@"; do
     if [ -f "$arg" ]; then
-        converted="$(ableton_run_bounded 30 "$WINE_ROOT/bin/winepath" -w "$arg" 9>&- 2>/dev/null || true)"
+        converted="$(
+            ableton_install_lock_close_in_child || exit 1
+            ableton_run_bounded 30 "$WINE_ROOT/bin/winepath" -w "$arg" 9>&- 2>/dev/null
+        )" || converted=""
         [ -z "$converted" ] || arg="$converted"
     fi
     args+=("$arg")
@@ -84,28 +143,52 @@ linkctl="$ABLETON_DATA_HOME/ableton-linkctl"
 # Packaged installs (nix) stage it under the runtime root instead of $HOME.
 [ -x "$linkctl" ] || linkctl="$WINE_ROOT/share/ableton-wine/scripts/ableton-linkctl"
 if [ "$ABLETON_LINK_MODE" != off ] && [ -x "$linkctl" ]; then
-    "$linkctl" start || echo "max9: configured Link anchor failed to start" >&2
+    "$linkctl" start || echo "max9: Ableton Link could not start; Max will continue without it." >&2
 fi
 
+launch_timeout="$(ableton_timeout_value "${ABLETON_LAUNCH_TIMEOUT:-90}" ABLETON_LAUNCH_TIMEOUT 5 600)" || exit 2
 process_group=0
+handoff_token="${BASHPID:-$$}-${RANDOM:-0}-$SECONDS"
 if command -v setsid >/dev/null 2>&1; then
-    setsid -- "${run[@]}" "$MAX_EXE" "${args[@]}" 9>&- &
+    ( ableton_install_lock_close_in_child || exit 1
+      export ABLETON_LAUNCH_HANDOFF="$handoff_token"
+      exec setsid -- "${run[@]}" "$MAX_EXE" "${args[@]}" 9>&- ) &
     process_group=1
 else
-    "${run[@]}" "$MAX_EXE" "${args[@]}" 9>&- &
+    ( ableton_install_lock_close_in_child || exit 1
+      export ABLETON_LAUNCH_HANDOFF="$handoff_token"
+      exec "${run[@]}" "$MAX_EXE" "${args[@]}" 9>&- ) &
 fi
 child=$!
 ready=0
-launch_timeout="$(ableton_timeout_value "${ABLETON_LAUNCH_TIMEOUT:-90}" ABLETON_LAUNCH_TIMEOUT 5 600)" || exit 2
+rc=0
 for ((i=0; i<launch_timeout*10; i++)); do
-    if [ -n "$(ableton_max_pids | head -n 1)" ]; then ready=1; break; fi
+    if [ "$max_was_running" -eq 1 ]; then
+        readiness_pids="$(ableton_prefix_pids)"
+    else
+        readiness_pids="$(ableton_max_pids)"
+    fi
+    while IFS= read -r readiness_pid; do
+        [ -n "$readiness_pid" ] || continue
+        if ableton_pid_has_env "$readiness_pid" "ABLETON_LAUNCH_HANDOFF=$handoff_token"; then
+            ready=1
+            break
+        fi
+    done <<< "$readiness_pids"
+    [ "$ready" -ne 1 ] || break
     kill -0 "$child" 2>/dev/null || break
     sleep 0.1
 done
-flock -u 9 2>/dev/null || true
-exec 9>&-
 if [ "$ready" -ne 1 ]; then
-    if [ "$process_group" -eq 1 ] && kill -0 -- "-$child" 2>/dev/null; then
+    if ! kill -0 "$child" 2>/dev/null; then
+        wait "$child" 2>/dev/null || rc=$?
+        if [ "$max_was_running" -eq 1 ] && [ "$rc" -eq 0 ]; then
+            flock -u 9 2>/dev/null || true
+            exec 9>&-
+            ableton_install_lock_release || true
+            exit 0
+        fi
+    elif [ "$process_group" -eq 1 ] && kill -0 -- "-$child" 2>/dev/null; then
         kill -TERM -- "-$child" 2>/dev/null || true
         for _ in {1..50}; do kill -0 -- "-$child" 2>/dev/null || break; sleep 0.1; done
         kill -0 -- "-$child" 2>/dev/null && kill -KILL -- "-$child" 2>/dev/null || true
@@ -114,8 +197,16 @@ if [ "$ready" -ne 1 ]; then
         for _ in {1..50}; do kill -0 "$child" 2>/dev/null || break; sleep 0.1; done
         kill -0 "$child" 2>/dev/null && kill -KILL "$child" 2>/dev/null || true
     fi
-    wait "$child" 2>/dev/null || true
-    echo "max9: Max did not become observable within ${launch_timeout}s" >&2
+    if kill -0 "$child" 2>/dev/null; then
+        wait "$child" 2>/dev/null || true
+    fi
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+    echo "max9: Max did not start within ${launch_timeout}s. Try again; if it repeats, run the latest installer." >&2
     exit 1
 fi
+flock -u 9 2>/dev/null || true
+exec 9>&-
+ableton_install_lock_release || \
+    echo "max9: Max started, but installer changes will remain blocked until Max closes." >&2
 wait "$child"

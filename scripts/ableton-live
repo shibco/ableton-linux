@@ -94,7 +94,7 @@ ABLETON-LIVE VARIABLES:
     ABLETON_LINK_MODE=off|session|always
         whether the launcher starts the Ableton Link session anchor;
         new installations save session; otherwise the launcher follows
-        the saved policy, with off as the unconfigured compatibility fallback
+        the saved setting, with off as the unconfigured compatibility fallback
 
     ABLETON_LINKD=/path/to/ableton-linkd
         start this binary as the Ableton Link session anchor instead
@@ -259,12 +259,27 @@ for config_lib in "$launcher_here/lib/config.sh" \
                   "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
     if [ -r "$config_lib" ]; then . "$config_lib"; break; fi
 done
-declare -F ableton_config_init >/dev/null 2>&1 || { echo "ableton-live: configuration helper is missing" >&2; exit 1; }
-ableton_config_init
+declare -F ableton_config_init >/dev/null 2>&1 || {
+    echo "ableton-live: support files are incomplete. Run the latest installer again." >&2
+    exit 1
+}
+if ! ableton_config_init 2>/dev/null; then
+    echo "ableton-live: installer settings could not be read. Run the latest installer to repair them, then try again." >&2
+    exit 1
+fi
 for lifecycle_lib in "$launcher_here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/lifecycle.sh"; do
     if [ -r "$lifecycle_lib" ]; then . "$lifecycle_lib"; break; fi
 done
-declare -F ableton_live_running >/dev/null 2>&1 || { echo "ableton-live: lifecycle helper is missing" >&2; exit 1; }
+for lifecycle_function in ableton_live_running ableton_prefix_wine_processes_any_runtime \
+                          ableton_prefix_wait; do
+    declare -F "$lifecycle_function" >/dev/null 2>&1 || {
+        echo "ableton-live: support files are incomplete. Run the latest installer again." >&2
+        exit 1
+    }
+done
+for manifest_lib in "$launcher_here/lib/manifest.sh" "$ABLETON_DATA_HOME/lib/manifest.sh"; do
+    if [ -r "$manifest_lib" ]; then . "$manifest_lib"; break; fi
+done
 for live_options_lib in "$launcher_here/lib/live-options.sh" "$ABLETON_DATA_HOME/lib/live-options.sh"; do
     if [ -r "$live_options_lib" ]; then . "$live_options_lib"; break; fi
 done
@@ -274,10 +289,14 @@ for live_options_function in ableton_available_physical_cores \
                              ableton_live_product_version \
                              ableton_seed_max_audio_threads; do
     declare -F "$live_options_function" >/dev/null 2>&1 || {
-        echo "ableton-live: live-options.sh helper is missing or incomplete" >&2
+        echo "ableton-live: support files are incomplete. Run the latest installer again." >&2
         exit 1
     }
 done
+declare -F ableton_install_state_has_active_transaction >/dev/null 2>&1 || {
+    echo "ableton-live: support files are incomplete. Run the latest installer again." >&2
+    exit 1
+}
 
 # Live exits cleanly; WebView2's updater does not, and one wedged agent keeps the
 # wineserver alive for the whole login session.
@@ -291,14 +310,24 @@ session_teardown()
 {
     local rc=$?
     [ -n "$session_started" ] || return "$rc"
-    ABLETON_SESSION_LABEL="Ableton Live" ableton_session_teardown || true
+    if ableton_install_lock_acquire; then
+        ABLETON_SESSION_LABEL="Ableton Live" ableton_session_teardown || true
+        # The descriptor closes automatically when this launcher exits. A
+        # failed explicit unlock here has no remaining user-visible effect.
+        ableton_install_lock_release || true
+    else
+        echo "ableton-live: Live closed, but its background Wine processes were left running because installation work started." >&2
+    fi
     return "$rc"
 }
 
 WINE_ROOT="$ABLETON_WINE_ROOT"
 export WINEPREFIX="$ABLETON_WINEPREFIX"
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "ableton-live: Wine runtime is missing at $WINE_ROOT" >&2; exit 1; }
-[ -x "$WINE_ROOT/bin/wineserver" ] || { echo "ableton-live: wineserver is missing at $WINE_ROOT" >&2; exit 1; }
+[ -x "$WINE_ROOT/bin/wineserver" ] || {
+    echo "ableton-live: The Wine runtime is incomplete at $WINE_ROOT. Run the latest installer again." >&2
+    exit 1
+}
 [ -f "$WINEPREFIX/system.reg" ] || { echo "ableton-live: Wine prefix is missing or incomplete at $WINEPREFIX" >&2; exit 1; }
 case "${ABLETON_LIVE_VERSION:-}" in ''|11|12) ;;
     *) echo "ableton-live: ABLETON_LIVE_VERSION must be 11 or 12" >&2; exit 2 ;;
@@ -409,6 +438,25 @@ fi
 
 caller_winedlloverrides="${WINEDLLOVERRIDES:-}"
 
+# Host integration, diagnostics, and the selected prefix are installer-managed
+# state. Hold the same lifecycle lock before the first launcher-side write and
+# through cold bring-up, so a launch cannot invalidate an open installer
+# journal.
+ableton_install_lock_acquire || {
+    echo "ableton-live: installation work is in progress; retry this launch when it finishes" >&2
+    exit 1
+}
+if ableton_install_state_has_active_transaction; then
+    active_transaction_marker="$(find "$ABLETON_STATE_HOME/transactions" \
+        -mindepth 2 -maxdepth 3 -name active -print -quit 2>/dev/null || true)"
+    active_transaction="${active_transaction_marker%/active}"
+    [ -n "$active_transaction" ] || active_transaction="$ABLETON_STATE_HOME/transactions"
+    echo "ableton-live: an earlier install stopped before it restored the Wine runtime or prefix." >&2
+    echo "ableton-live: keep the recovery files at $active_transaction and report the problem before launching Live." >&2
+    ableton_install_lock_release || true
+    exit 1
+fi
+
 # Keep diagnostics from the current launch at one stable path. Tee preserves
 # terminal output while also covering desktop launchers whose stderr is
 # otherwise inherited from the desktop environment (and may be /dev/null).
@@ -422,8 +470,14 @@ if ableton_mark_state_home && mkdir -p -- "$diagnostic_dir" && : >> "$diagnostic
     # fallback warning that lands about two seconds into a faulted session. Same
     # already-running test as the single-instance guard below. Rotation preserves
     # the previous session when a later guard refuses this launch.
-    ableton_live_running || mv -f -- "$diagnostic_dir/live.log" "$diagnostic_dir/live.log.1"
-    exec 2> >(tee -a "$diagnostic_dir/live.log" >&2)
+    if ! ableton_live_running \
+       && ! mv -f -- "$diagnostic_dir/live.log" "$diagnostic_dir/live.log.1"; then
+        echo "ableton-live: could not rotate the previous diagnostic log" >&2
+    fi
+    # Process substitution is an asynchronous child. Close its duplicate of the
+    # lifecycle descriptor before exec, or tee can keep an otherwise released
+    # lock alive until the diagnostic pipe reaches EOF.
+    exec 2> >(ableton_install_lock_close_in_child || exit 1; exec tee -a "$diagnostic_dir/live.log" >&2)
 else
     echo "ableton-live: cannot write diagnostics to $diagnostic_dir/live.log" >&2
 fi
@@ -505,6 +559,7 @@ export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGU
 # empty, and the repair below copies the staged entry verbatim as it always
 # has.
 RUNTIME_LINK=""
+desktop_integration_ready=1
 runtime_lib="$WINE_ROOT/share/ableton-wine/scripts/runtime-link.sh"
 if [ -r "$runtime_lib" ]; then
     . "$runtime_lib"
@@ -517,32 +572,25 @@ fi
 # missing or changed entry can be repaired before the next browser round trip.
 repair_handler_entries() {
     local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    local staged id type current want tmp rewrite wrote i repaired=0
+    local staged id want tmp rewrite wrote repaired=0
     local -a ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
-    local -a types=(x-scheme-handler/ableton application/x-wine-extension-auz)
     for id in "${ids[@]}"; do
         staged="$ABLETON_DATA_HOME/$id"
         # Packaged installs (nix) stage them under the runtime root instead of $HOME.
         [ -f "$staged" ] || staged="$WINE_ROOT/share/ableton-wine/$id"
         if [ ! -f "$staged" ]; then
-            echo "ableton-live: cannot repair $id: staged handler is missing at $staged" >&2
+            desktop_integration_ready=0
             continue
         fi
-        # An entry that is a symlink into the store is owned by nix or
-        # home-manager: it is read-only, rewriting it fails, and the declaration
-        # that produced it would put it back anyway. Repairing it every launch
-        # would only print two failures each time.
-        case "$(readlink -- "$apps/$id" 2>/dev/null)" in
-            /nix/store/*) continue ;;
-        esac
         # A packaged install's staged copy names the runtime root, which on Nix
         # is a store path; record the stable link instead, so neither an upgrade
         # nor a garbage collection can strand the entry. A tarball entry routes
         # through $ABLETON_BIN_HOME and contains no runtime root at all, so
-        # there is nothing to rewrite and the file is copied verbatim, as
-        # before - which keeps it byte-identical to the digest install.sh
-        # recorded for it.
-        want="$(cat -- "$staged")"
+        # there is nothing to rewrite and the file is copied verbatim.
+        if ! want="$(cat -- "$staged")"; then
+            desktop_integration_ready=0
+            continue
+        fi
         rewrite=0
         if [ -n "$RUNTIME_LINK" ] && [ "${want#*"$WINE_ROOT"/}" != "$want" ]; then
             want="${want//"$WINE_ROOT"\//$RUNTIME_LINK/}"
@@ -553,12 +601,14 @@ repair_handler_entries() {
         else
             cmp -s -- "$staged" "$apps/$id" && continue
         fi
-        echo "ableton-live: reinstating project handler $id" >&2
-        tmp="$apps/.$id.$$"
         if ! mkdir -p -- "$apps"; then
-            echo "ableton-live: failed to install $apps/$id" >&2
+            desktop_integration_ready=0
             continue
         fi
+        tmp="$(mktemp "$apps/.$id.XXXXXX")" || {
+            desktop_integration_ready=0
+            continue
+        }
         # wrote, not an emptied $tmp: clearing the variable loses the path and
         # leaves the partial file in place, once per launch with a new pid.
         wrote=1
@@ -567,38 +617,55 @@ repair_handler_entries() {
         else
             cp -- "$staged" "$tmp" || wrote=0
         fi
-        if [ "$wrote" -eq 0 ] || ! mv -f -- "$tmp" "$apps/$id"; then
-            rm -f -- "$tmp"
-            echo "ableton-live: failed to install $apps/$id" >&2
+        if [ "$wrote" -eq 0 ] || ! chmod 644 "$tmp" \
+           || ! mv -T -f -- "$tmp" "$apps/$id"; then
+            rm -f -- "$tmp" 2>/dev/null || true
+            desktop_integration_ready=0
             continue
         fi
         repaired=1
     done
     if [ "$repaired" -eq 1 ]; then
         if command -v update-desktop-database >/dev/null 2>&1; then
-            update-desktop-database "$apps" || \
-                echo "ableton-live: failed to refresh the desktop application database at $apps" >&2
+            update-desktop-database "$apps" || desktop_integration_ready=0
         else
-            echo "ableton-live: update-desktop-database is unavailable; repaired handlers may not be visible yet" >&2
+            desktop_integration_ready=0
         fi
     fi
+    return 0
+}
+repair_handler_entries
+
+# These reverse-DNS defaults belong to the generated callback entries above.
+# Querying avoids a needless mimeapps.list rewrite on every launch; a drifted
+# value is repaired directly while the global installation lock is held.
+# Association repair is ancillary: a failure warns but never blocks Live.
+repair_mime_defaults()
+{
+    local id type current i
+    local -a ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
+    local -a types=(x-scheme-handler/ableton application/x-wine-extension-auz)
     if ! command -v xdg-mime >/dev/null 2>&1; then
-        echo "ableton-live: xdg-mime is unavailable; cannot verify the Ableton callback defaults" >&2
+        desktop_integration_ready=0
         return 0
     fi
     for ((i=0; i<${#ids[@]}; i++)); do
-        id="${ids[i]}"; type="${types[i]}"
+        id="${ids[i]}"
+        type="${types[i]}"
+        current="$(xdg-mime query default "$type" 2>/dev/null || true)"
+        [ "$current" = "$id" ] && continue
         if ! xdg-mime default "$id" "$type"; then
-            echo "ableton-live: failed to set $type to $id" >&2
+            desktop_integration_ready=0
             continue
         fi
         current="$(xdg-mime query default "$type" 2>/dev/null || true)"
         if [ "$current" != "$id" ]; then
-            echo "ableton-live: $type still resolves to '${current:-no handler}', expected $id" >&2
+            desktop_integration_ready=0
         fi
     done
+    return 0
 }
-repair_handler_entries
+repair_mime_defaults
 
 # Live and Max share this coordinator.  It is acquired only for a cold Live
 # start and remains held until the selected prefix exposes the Live process.
@@ -606,16 +673,28 @@ cold_launch=0
 launch_lock_held=0
 if ! ableton_live_running; then
     cold_launch=1
-    coordinator_dir="$(ableton_lifecycle_runtime_dir)"
-    mkdir -p -- "$coordinator_dir"
+    coordinator_dir="$(ableton_lifecycle_runtime_dir)" || {
+        echo "ableton-live: Live was not started because its launch lock could not be prepared. Try again; if it repeats, report the problem." >&2
+        exit 1
+    }
+    mkdir -p -- "$coordinator_dir" || {
+        echo "ableton-live: Live was not started because its launch lock directory could not be created at $coordinator_dir. Check the directory permissions and try again." >&2
+        exit 1
+    }
     launch_lock="$coordinator_dir/bring-up.lock"
-    exec 9>"$launch_lock"
+    exec 9>"$launch_lock" || {
+        echo "ableton-live: Live was not started because its launch lock could not be opened at $launch_lock. Check the file permissions and try again." >&2
+        exit 1
+    }
     if ! flock -n 9; then
-        echo "ableton-live: another Live/Max launcher is bringing this prefix up" >&2
+        echo "ableton-live: another Live or Max launch is starting. Wait a few seconds and try again." >&2
         exit 1
     fi
     launch_lock_held=1
-    printf 'live %s\n' "$$" >&9
+    printf 'live %s\n' "$$" >&9 || {
+        echo "ableton-live: Live was not started because its launch lock could not be initialised. Try again; if it repeats, report the problem." >&2
+        exit 1
+    }
     # This launcher owns the session from here: every wine invocation is below.
     # launch_lock_held cannot serve as the gate - it is cleared once Live appears.
     session_started=1
@@ -667,44 +746,100 @@ if [ "$max_audio_threads_action" -eq 1 ]; then
     fi
 fi
 
-# Keep the menu entry tracking the installed edition: install.sh renders it
-# before Live exists in the prefix, so name, icon and window class heal here
-# on each start. An entry that does not route through this launcher is
-# hand-made and stays untouched.
-if [ -n "$exe_base" ]; then
-    apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    live_entry="$apps_dir/ableton-live.desktop"
-    if [ -f "$live_entry" ] && grep -qF "$ABLETON_BIN_HOME/ableton-live" "$live_entry"; then
-        entry_name="${exe_base%.exe}"
-        entry_wmclass="$(printf '%s' "$exe_base" | tr '[:upper:]' '[:lower:]')"
-        entry_edition="$(printf '%s' "$entry_name" | awk '{print tolower($NF)}')"
-        entry_icon="live-suite"
-        [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/live-$entry_edition.svg" ] \
-            && entry_icon="live-$entry_edition"
-        if ! grep -qxF "Name=$entry_name" "$live_entry" \
-            || ! grep -qxF "Icon=$entry_icon" "$live_entry" \
-            || ! grep -qxF "StartupWMClass=$entry_wmclass" "$live_entry"; then
-            awk -v name="$entry_name" -v icon="$entry_icon" -v wmclass="$entry_wmclass" '
-                /^Name=/           { print "Name=" name; next }
-                /^Icon=/           { print "Icon=" icon; next }
-                /^StartupWMClass=/ { print "StartupWMClass=" wmclass; seen = 1; next }
-                { print }
-                END { if (!seen) print "StartupWMClass=" wmclass }
-            ' "$live_entry" > "$live_entry.tmp" && mv "$live_entry.tmp" "$live_entry"
-            update-desktop-database "$apps_dir" 2>/dev/null || true
-        fi
+# The menu entry is a generated artifact, not a user configuration surface.
+# Rebuild its complete canonical form from the selected edition while the
+# global lock is held. A failure only affects desktop integration, so warn and
+# continue to Live rather than turning optional self-heal into a launch gate.
+repair_live_desktop_entry()
+{
+    local apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    local live_entry="$apps_dir/ableton-live.desktop" live_entry_tmp=""
+    local entry_name entry_wmclass entry_edition entry_icon live_launcher
+    [ -n "$exe_base" ] || return 0
+    entry_name="${exe_base%.exe}"
+    entry_wmclass="$(printf '%s' "$exe_base" | tr '[:upper:]' '[:lower:]')"
+    entry_edition="$(printf '%s' "$entry_name" | awk '{print tolower($NF)}')"
+    entry_icon="live-suite"
+    [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/live-$entry_edition.svg" ] \
+        && entry_icon="live-$entry_edition"
+    live_launcher="$ABLETON_BIN_HOME/ableton-live"
+    if [ -x "$WINE_ROOT/bin/ableton-live" ]; then
+        live_launcher="$WINE_ROOT/bin/ableton-live"
+        [ -z "$RUNTIME_LINK" ] || live_launcher="$RUNTIME_LINK/bin/ableton-live"
     fi
+    if ! mkdir -p -- "$apps_dir"; then
+        desktop_integration_ready=0
+        return 0
+    fi
+    live_entry_tmp="$(mktemp "$apps_dir/.ableton-live.desktop.XXXXXX")" || {
+        desktop_integration_ready=0
+        return 0
+    }
+    if ! {
+        printf '[Desktop Entry]\n'
+        printf 'Name=%s\n' "$entry_name"
+        printf 'Comment=Music production and performance\n'
+        printf 'Exec=%s %%f\n' "$live_launcher"
+        printf 'Type=Application\n'
+        printf 'StartupNotify=true\n'
+        printf 'Path=%s\n' "$WINEPREFIX"
+        printf 'Icon=%s\n' "$entry_icon"
+        printf 'StartupWMClass=%s\n' "$entry_wmclass"
+        printf 'MimeType=application/x-ableton-live-set;application/x-ableton-live-clip;application/x-ableton-live-pack;\n'
+        printf 'Categories=AudioVideo;Audio;\n'
+    } > "$live_entry_tmp" || ! chmod 644 "$live_entry_tmp"; then
+        rm -f -- "$live_entry_tmp" 2>/dev/null || true
+        desktop_integration_ready=0
+    elif cmp -s -- "$live_entry_tmp" "$live_entry"; then
+        rm -f -- "$live_entry_tmp" 2>/dev/null || true
+    elif ! mv -T -f -- "$live_entry_tmp" "$live_entry"; then
+        rm -f -- "$live_entry_tmp" 2>/dev/null || true
+        desktop_integration_ready=0
+    elif command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$apps_dir" || desktop_integration_ready=0
+    else
+        desktop_integration_ready=0
+    fi
+    return 0
+}
+repair_live_desktop_entry
+if [ "$desktop_integration_ready" -eq 0 ]; then
+    echo "ableton-live: Live will start, but browser activation, file opening, or the application menu may need repair. Run the latest installer again." >&2
 fi
 
-# Never kill a prefix merely because Live is absent: standalone Max and other
-# clients intentionally share it.  Boot only an entirely idle prefix, under the
-# shared bring-up lock, and supervise the cold boot.
-if [ "$cold_launch" -eq 1 ] && ! ableton_prefix_busy; then
-    if ! ableton_run_bounded "${ABLETON_WINEBOOT_TIMEOUT:-60}" \
-        env WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wineboot" -u >/dev/null 2>&1 9>&-; then
-        echo "ableton-live: bounded wineboot failed; refusing to launch into a partial boot" >&2
+# Record whether this launcher owns an idle prefix before its first Wine
+# command. A DPI registry write starts wineserver and seeds X11's monitor DPI
+# from the old LogPixels value, so a changed block must end that launcher-owned
+# session before wineboot. Never stop a prefix that Max or another client was
+# already using.
+dpi_prefix_was_idle=0
+dpi_changed=0
+dpi_write_failed=0
+dpi_transaction_token=""
+dpi_reseed_marker=""
+dpi_reseed_required=0
+ableton_prefix_idle_across_runtimes()
+{
+    local holders
+    holders="$(ableton_prefix_wine_processes_any_runtime "$WINEPREFIX" "$WINE_ROOT")"
+    [ -z "$holders" ]
+}
+if [ "$cold_launch" -eq 1 ]; then
+    # This fence belongs to the prefix, not the selected Wine generation. A
+    # runtime upgrade must not hide an interrupted DPI transaction while an
+    # older runtime still has the same prefix open.
+    dpi_reseed_marker="$WINEPREFIX/.ableton-linux-dpi-reseed-required"
+    if [ -L "$dpi_reseed_marker" ] \
+       || { [ -e "$dpi_reseed_marker" ] && [ ! -f "$dpi_reseed_marker" ]; }; then
+        session_started=""
+        echo "ableton-live: Live was not started because the DPI reseed marker is not a regular file: $dpi_reseed_marker" >&2
+        echo "ableton-live: move that unexpected path aside, then retry." >&2
         exit 1
     fi
+    [ ! -f "$dpi_reseed_marker" ] || dpi_reseed_required=1
+fi
+if [ "$cold_launch" -eq 1 ] && ableton_prefix_idle_across_runtimes; then
+    dpi_prefix_was_idle=1
 fi
 
 # Recalibrate prefix DPI to the detected scale before each launch. The block comes from
@@ -712,8 +847,9 @@ fi
 # other compositors -> LogPixels = round(96 x scale), no IFEO. Scales outside 100-250%
 # keep current values. ABLETON_DPI_MODE=100|fractional|dpi<N>|preserve overrides.
 if ! ableton_live_running; then
-    dpi_mode="${ABLETON_DPI_MODE:-auto}"
-    dpi_family=""; dpi_scale=""
+    dpi_mode_request="${ABLETON_DPI_MODE:-auto}"
+    dpi_mode="$dpi_mode_request"
+    dpi_family=""; dpi_scale=""; mutter_feats=""
     dpi_lib="$ABLETON_DATA_HOME/detect-scale.sh"
     # Packaged installs (nix) ship the libs under the runtime root instead of $HOME.
     [ -r "$dpi_lib" ] || dpi_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-scale.sh"
@@ -751,12 +887,49 @@ if ! ableton_live_running; then
             esac
         fi
     fi
-    # The dpiAwareness IFEO is keyed on the exe name, so it follows the discovered install.
-    dpi_ifeo=""; cur_ifeo=""
-    if [ -n "$exe_base" ]; then
-        dpi_ifeo="HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\$exe_base"
-        cur_ifeo="$(awk '/^\[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Image File Execution Options\\\\'"$exe_base"'\]/{f=1;next} /^\[/{f=0} f&&/"dpiAwareness"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/system.reg" 2>/dev/null || true)"
+    if [ "$dpi_family" = gnome ] && [ "$dpi_mode_request" = auto ]; then
+        case "$dpi_mode" in
+            fractional*)
+                if command -v gsettings >/dev/null 2>&1; then
+                    mutter_feats="$(ableton_run_bounded 5 gsettings get \
+                        org.gnome.mutter experimental-features 9>&- 2>/dev/null || true)"
+                fi
+                case "$mutter_feats" in
+                    *xwayland-native-scaling*) ;;
+                    "")
+                        # Keeping an unknown existing block is not proof of
+                        # coherence. Refuse before Wine and require an explicit
+                        # policy instead of blessing a potentially bad tuple.
+                        session_started=""
+                        echo "ableton-live: GNOME xwayland-native-scaling could not be verified, so Live was not started." >&2
+                        echo "ableton-live: retry after gsettings works, or set ABLETON_DPI_MODE=100, fractional, or preserve explicitly." >&2
+                        exit 1 ;;
+                    *)
+                        echo "ableton-live: GNOME xwayland-native-scaling is OFF; selecting the coherent 100% DPI block." >&2
+                        dpi_mode=100 ;;
+                esac ;;
+        esac
     fi
+    # The dpiAwareness IFEO is keyed on the exe name. A direct launch updates
+    # its selected edition. A cold protocol/AUZ callback deliberately has no
+    # selected edition, so transact every installed Live target; the prefix
+    # association may choose any of them.
+    dpi_ifeo_keys=()
+    dpi_cur_ifeos=()
+    dpi_target_bases=()
+    if [ -n "$exe_base" ]; then
+        dpi_target_bases+=("$exe_base")
+    elif [ -n "$callback_kind" ]; then
+        while IFS= read -r dpi_target_exe; do
+            [ -n "$dpi_target_exe" ] || continue
+            dpi_target_bases+=("$(basename "$dpi_target_exe")")
+        done < <(ABLETON_LIVE_EXE='' find_live_exe "")
+    fi
+    for dpi_target_base in "${dpi_target_bases[@]}"; do
+        dpi_ifeo_key="HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\$dpi_target_base"
+        dpi_ifeo_keys+=("$dpi_ifeo_key")
+        dpi_cur_ifeos+=("$(awk '/^\[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Image File Execution Options\\\\'"$dpi_target_base"'\]/{f=1;next} /^\[/{f=0} f&&/"dpiAwareness"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/system.reg" 2>/dev/null || true)")
+    done
     # Read current values from the registry files directly (no wineserver spin-up).
     cur_lp="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"LogPixels"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
     case "$dpi_mode" in
@@ -769,35 +942,176 @@ if ! ableton_live_running; then
                 want_lp="${lp_ifeo% *}"
                 want_ifeo="${lp_ifeo#* }"
                 want_lp_hex="$(printf '%08x' "$want_lp")"
-                if [ "$want_ifeo" = 2 ]; then
-                    if [ "${cur_lp:-}" != "$want_lp_hex" ] || { [ -n "$dpi_ifeo" ] && [ "${cur_ifeo:-}" != 00000002 ]; }; then
-                        echo "ableton-live: recalibrating prefix DPI to the '$dpi_mode' set (LogPixels $want_lp, IFEO=2)" >&2
-                        ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1 9>&-
-                        [ -z "$dpi_ifeo" ] || ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f >/dev/null 2>&1 9>&-
-                    fi
+                dpi_ifeo_mismatch=0
+                if [ "${#dpi_ifeo_keys[@]}" -eq 0 ]; then
+                    dpi_ifeo_mismatch=1
                 else
-                    if [ "${cur_lp:-00000060}" != "$want_lp_hex" ] || [ -n "$cur_ifeo" ]; then
-                        echo "ableton-live: recalibrating prefix DPI to the '$dpi_mode' set (LogPixels $want_lp, no IFEO)" >&2
-                        ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d "$want_lp" /f >/dev/null 2>&1 9>&-
-                        [ -z "$dpi_ifeo" ] || ableton_run_bounded 60 "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" /v dpiAwareness /f >/dev/null 2>&1 9>&- || true
+                    for cur_ifeo in "${dpi_cur_ifeos[@]}"; do
+                        if { [ "$want_ifeo" = 2 ] && [ "$cur_ifeo" != 00000002 ]; } \
+                           || { [ "$want_ifeo" != 2 ] && [ -n "$cur_ifeo" ]; }; then
+                            dpi_ifeo_mismatch=1
+                            break
+                        fi
+                    done
+                fi
+                dpi_change_required=0
+                if [ "$want_ifeo" = 2 ]; then
+                    [ "${cur_lp:-}" = "$want_lp_hex" ] && [ "$dpi_ifeo_mismatch" -eq 0 ] \
+                        || dpi_change_required=1
+                else
+                    [ "${cur_lp:-00000060}" = "$want_lp_hex" ] \
+                        && [ "$dpi_ifeo_mismatch" -eq 0 ] \
+                        || dpi_change_required=1
+                fi
+                if [ "$dpi_change_required" -eq 1 ]; then
+                    if [ "${#dpi_ifeo_keys[@]}" -eq 0 ]; then
+                        session_started=""
+                        echo "ableton-live: display scaling changed, but no installed Live executable was found for its DPI override." >&2
+                        echo "ableton-live: repair or install Live, then start it directly once before retrying the callback." >&2
+                        exit 1
                     fi
+                    if [ "$dpi_prefix_was_idle" -ne 1 ] \
+                       || ! ableton_prefix_idle_across_runtimes; then
+                        # This launcher has not started a Wine client. Do not let
+                        # the EXIT trap run session cleanup against the prefix
+                        # whose existing owner caused this refusal.
+                        session_started=""
+                        echo "ableton-live: display scaling changed, but another program is using the Wine prefix." >&2
+                        echo "ableton-live: close Max or the other prefix program, then start Live again so Wine can initialise the new DPI consistently." >&2
+                        exit 1
+                    fi
+                    echo "ableton-live: adjusting Wine display scaling for '$dpi_mode'" >&2
+                    dpi_transaction_token="${BASHPID:-$$}-${RANDOM:-0}-$SECONDS"
+                    # Keep an existing regular fence intact. For a new one,
+                    # noclobber prevents a path swapped to a symlink between
+                    # validation and creation from being followed.
+                    if [ ! -f "$dpi_reseed_marker" ] \
+                       && ! ( umask 077; set -o noclobber; : > "$dpi_reseed_marker" ) \
+                            2>/dev/null; then
+                        # No Wine process belongs to this launcher yet. Do not
+                        # let EXIT cleanup touch a client that may have entered
+                        # the prefix while marker publication was failing.
+                        session_started=""
+                        echo "ableton-live: display scaling changed, but its safe restart marker could not be written at $dpi_reseed_marker." >&2
+                        exit 1
+                    fi
+                    dpi_reseed_required=1
+                    dpi_changed=1
+                    if ! ableton_run_bounded 60 env WINEPREFIX="$WINEPREFIX" \
+                            ABLETON_DPI_TRANSACTION="$dpi_transaction_token" \
+                            "$WINE_ROOT/bin/wine" reg add \
+                            'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD \
+                            /d "$want_lp" /f >/dev/null 2>&1 9>&-; then
+                        dpi_write_failed=1
+                    fi
+                    for dpi_ifeo_index in "${!dpi_ifeo_keys[@]}"; do
+                        dpi_ifeo="${dpi_ifeo_keys[dpi_ifeo_index]}"
+                        cur_ifeo="${dpi_cur_ifeos[dpi_ifeo_index]}"
+                        if [ "$want_ifeo" = 2 ]; then
+                            if ! ableton_run_bounded 60 env WINEPREFIX="$WINEPREFIX" \
+                                    ABLETON_DPI_TRANSACTION="$dpi_transaction_token" \
+                                    "$WINE_ROOT/bin/wine" reg add \
+                                    "$dpi_ifeo" /v dpiAwareness /t REG_DWORD /d 2 /f \
+                                    >/dev/null 2>&1 9>&-; then
+                                dpi_write_failed=1
+                            fi
+                        elif [ -n "$cur_ifeo" ] && ! ableton_run_bounded 60 env \
+                                WINEPREFIX="$WINEPREFIX" \
+                                ABLETON_DPI_TRANSACTION="$dpi_transaction_token" \
+                                "$WINE_ROOT/bin/wine" reg delete "$dpi_ifeo" \
+                                /v dpiAwareness /f >/dev/null 2>&1 9>&-; then
+                            dpi_write_failed=1
+                        fi
+                    done
                 fi
             fi ;;
     esac
-    # Warn if mutter's xwayland-native-scaling disagrees with the DPI set; never change it.
-    # The knob only exists under mutter: skip when another compositor family was detected.
-    if [ -z "$dpi_family" ] || [ "$dpi_family" = gnome ]; then
-        if command -v gsettings >/dev/null 2>&1; then
-            mutter_feats="$(gsettings get org.gnome.mutter experimental-features 2>/dev/null || true)"
-            case "$dpi_mode" in
-                fractional*)   # upscaled-framebuffer sets expect the knob ON
-                    case "$mutter_feats" in *xwayland-native-scaling*) ;; *)
-                        [ -n "$mutter_feats" ] && echo "ableton-live: warn: mutter xwayland-native-scaling is OFF; the '$dpi_mode' set expects it ON" >&2 ;; esac ;;
-                100|dpi*)
-                    case "$mutter_feats" in *xwayland-native-scaling*)
-                        echo "ableton-live: warn: mutter xwayland-native-scaling is ON; the '$dpi_mode' set expects it OFF" >&2 ;; esac ;;
-            esac
+fi
+
+# A reg.exe process has already initialised Wine's X11 monitor source from the
+# pre-change LogPixels value. End only the session this cold launcher created,
+# wait for it to disappear, then let wineboot seed both system and monitor DPI
+# from the same registry block. Starting Live in the half-old/half-new state
+# causes the self-resize loop in opposite directions.
+if [ "$dpi_changed" -eq 1 ]; then
+    dpi_foreign_holder=""
+    while IFS="$(printf '\t')" read -r dpi_pid _; do
+        [ -n "$dpi_pid" ] || continue
+        if ! ableton_pid_has_env "$dpi_pid" \
+                "ABLETON_DPI_TRANSACTION=$dpi_transaction_token"; then
+            dpi_foreign_holder="$dpi_pid"
+            break
         fi
+    done < <(ableton_prefix_wine_processes_any_runtime "$WINEPREFIX" "$WINE_ROOT")
+    if [ -n "$dpi_foreign_holder" ]; then
+        # The runtime marker keeps the half-applied state from being treated as
+        # coherent on the next launch. Leave every existing process alone.
+        session_started=""
+        echo "ableton-live: another Wine process entered the prefix while display scaling was changing." >&2
+        echo "ableton-live: close it, then start Live again to finish the safe DPI restart." >&2
+        exit 1
+    fi
+    ableton_run_bounded 15 env WINEPREFIX="$WINEPREFIX" \
+        "$WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 9>&- || true
+    if ! ableton_prefix_wait "$WINE_ROOT" "$WINEPREFIX"; then
+        echo "ableton-live: Wine did not stop after its display scaling changed, so Live was not started." >&2
+        exit 1
+    fi
+    if [ "$dpi_write_failed" -eq 1 ]; then
+        echo "ableton-live: Wine display scaling could not be updated completely, so Live was not started." >&2
+        exit 1
+    fi
+fi
+
+# A previous launcher may have written the new registry block but refused to
+# stop after another client appeared. Matching registry values do not make that
+# live X11 source coherent; wait for a genuinely idle prefix and reseed it.
+if [ "$cold_launch" -eq 1 ] && [ "$dpi_reseed_required" -eq 1 ] \
+   && [ "$dpi_prefix_was_idle" -ne 1 ]; then
+    session_started=""
+    echo "ableton-live: Wine display scaling is waiting for a safe prefix restart." >&2
+    echo "ableton-live: close Max or the other prefix program, then start Live again." >&2
+    exit 1
+fi
+
+# Warn if mutter's xwayland-native-scaling disagrees with the DPI set; never change it.
+# The knob only exists under mutter: skip when another compositor family was detected.
+# This ancillary D-Bus query is deliberately after the mandatory DPI stop/wait.
+if [ -z "${dpi_family:-}" ] || [ "$dpi_family" = gnome ]; then
+    if command -v gsettings >/dev/null 2>&1; then
+        [ -n "${mutter_feats:-}" ] || mutter_feats="$(ableton_run_bounded 5 \
+            gsettings get org.gnome.mutter experimental-features 9>&- 2>/dev/null || true)"
+        case "${dpi_mode:-preserve}" in
+            fractional*)   # upscaled-framebuffer sets expect the knob ON
+                case "$mutter_feats" in *xwayland-native-scaling*) ;; *)
+                    [ -n "$mutter_feats" ] && echo "ableton-live: warn: mutter xwayland-native-scaling is OFF; the '$dpi_mode' set expects it ON" >&2 ;; esac ;;
+            100|dpi*)
+                case "$mutter_feats" in *xwayland-native-scaling*)
+                    echo "ableton-live: warn: mutter xwayland-native-scaling is ON; the '$dpi_mode' set expects it OFF" >&2 ;; esac ;;
+        esac
+    fi
+fi
+
+# Never boot merely because Live is absent: standalone Max and other clients
+# intentionally share this prefix. Boot only the prefix that was idle when this
+# launcher acquired the shared bring-up lock. This runs after DPI calibration
+# so X11 and Win32 initialise from one coherent scale.
+if [ "$cold_launch" -eq 1 ] && [ "$dpi_prefix_was_idle" -eq 1 ]; then
+    if ableton_prefix_idle_across_runtimes; then
+        if ! ableton_run_bounded "${ABLETON_WINEBOOT_TIMEOUT:-60}" \
+            env WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wineboot" -u >/dev/null 2>&1 9>&-; then
+            echo "ableton-live: Wine could not finish preparing the prefix, so Live was not started. Run the installer's prefix update command, then try again." >&2
+            exit 1
+        fi
+        if [ "$dpi_reseed_required" -eq 1 ] \
+           && ! rm -f -- "$dpi_reseed_marker"; then
+            echo "ableton-live: Wine restarted with coherent display scaling, but the completed DPI marker could not be removed at $dpi_reseed_marker." >&2
+        fi
+    elif [ "$dpi_reseed_required" -eq 1 ]; then
+        session_started=""
+        echo "ableton-live: another Wine process entered the prefix before its required display restart." >&2
+        echo "ableton-live: close it, then start Live again to finish the safe DPI restart." >&2
+        exit 1
     fi
 fi
 
@@ -1022,8 +1336,26 @@ theme_watch_loop() {
         if [ "$*" = "$applied" ]; then
             continue
         fi
-        applied="$*"
-        ableton_run_bounded 30 "$WINE_ROOT/bin/wine" "$apply" "$@" >/dev/null 2>&1
+        # Live can exit between the liveness test and this Wine invocation. A
+        # lifecycle operation may then begin, so take the global lock for the
+        # exact prefix mutation and recheck Live after acquiring it.
+        if ableton_install_lock_acquire 2>/dev/null; then
+            if ableton_live_running; then
+                if ableton_run_bounded 30 "$WINE_ROOT/bin/wine" "$apply" "$@" 8>&- \
+                        >/dev/null 2>&1; then
+                    applied="$*"
+                else
+                    # Retry the same preference generation instead of treating a
+                    # failed Wine mutation as already applied.
+                    last=""
+                fi
+            fi
+            ableton_install_lock_release || return 1
+        else
+            # The installer owns the global lock. Keep this generation pending
+            # so the next watcher pass retries after it finishes.
+            last=""
+        fi
     done
 }
 
@@ -1134,7 +1466,7 @@ sync_font_fallback() {   # family -> register its SystemLink chain from what syn
                 # "Noto Sans CJK JP Regular" in ID 1, so the ID 16 name matched
                 # nothing and the entry was dropped at load with a silent
                 # "Unable to find file", dumping CJK text onto Unifont.
-                fc_fam="$(fc-scan -f '%{fullname}\n' "$f" 2>/dev/null | head -1)"
+                fc_fam="$(fc-scan -f '%{fullname}\n' "$f" 2>/dev/null | sed -n '1p')"
                 [ -n "$fc_fam" ] && pairs+=("$base,$fc_fam")
             done
         done
@@ -1334,7 +1666,9 @@ if [ -n "$shortcut_lib" ]; then
     if [ "$ableton_shortcuts_active" -eq 1 ]; then
         # The watcher can outlive a failed launch.  Do not let it keep the
         # single-launch guard open while it waits to restore the desktop.
-        ( exec 9>&-; ableton_shortcuts_watch_loop ) </dev/null >/dev/null 2>&1 &
+        ( exec 9>&- || exit 1
+          ableton_install_lock_close_in_child || exit 1
+          ableton_shortcuts_watch_loop ) </dev/null >/dev/null 2>&1 &
         disown
     fi
 elif [ "$shortcuts_mode" = take ] && [ -n "$EXE" ]; then
@@ -1394,14 +1728,16 @@ linkctl="$ABLETON_DATA_HOME/ableton-linkctl"
 # Packaged installs (nix) stage it under the runtime root instead of $HOME.
 [ -x "$linkctl" ] || linkctl="$WINE_ROOT/share/ableton-wine/scripts/ableton-linkctl"
 if [ "$ABLETON_LINK_MODE" != off ] && [ -x "$linkctl" ]; then
-    "$linkctl" start || echo "ableton-live: configured Link anchor failed to start" >&2
+    "$linkctl" start || echo "ableton-live: Ableton Link could not start; Live will continue without it." >&2
 fi
 
 # Follow Live-theme changes while it runs (see theme_watch_loop above). Spawned
 # after the launch lock is closed, fully detached; a no-op when the helper exe
 # is not installed or another watcher already holds the prefix's watch lock.
 if [ "${ABLETON_TOPBAR_MODE:-live}" = live ] && [ -n "$EXE" ] && [ -n "${want_light:-}" ]; then
-    ( exec 9>&-; theme_watch_loop ) </dev/null >/dev/null 2>&1 &
+    ( exec 9>&- || exit 1
+      ableton_install_lock_close_in_child || exit 1
+      theme_watch_loop ) </dev/null >/dev/null 2>&1 &
     disown
 fi
 
@@ -1414,22 +1750,76 @@ fi
 learnheal="$ABLETON_DATA_HOME/learnheal.exe"
 [ -f "$learnheal" ] || learnheal="$WINE_ROOT/share/ableton-wine/learnheal.exe"
 if [ -n "$EXE" ] && [ -f "$learnheal" ]; then
-    ( exec 9>&-; ableton_run_bounded 90 env WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wine" "$learnheal" ) </dev/null >/dev/null 2>&1 &
+    ( exec 9>&- || exit 1
+      ableton_install_lock_close_in_child || exit 1
+      ableton_run_bounded 90 env WINEPREFIX="$WINEPREFIX" "$WINE_ROOT/bin/wine" "$learnheal" ) </dev/null >/dev/null 2>&1 &
     disown
 fi
 
 launch_command()
 {
-    if [ "$launch_lock_held" -ne 1 ]; then
-        exec "$@"
-    fi
     local child rc=0 timeout_secs i ready=0 process_group=0
     timeout_secs="$(ableton_timeout_value "${ABLETON_LAUNCH_TIMEOUT:-90}" ABLETON_LAUNCH_TIMEOUT 5 600)" || return 2
+    if [ "$launch_lock_held" -ne 1 ]; then
+        local after_pid handed_off=0 handoff_token="${BASHPID:-$$}-${RANDOM:-0}-$SECONDS"
+        if command -v setsid >/dev/null 2>&1; then
+            ( ableton_install_lock_close_in_child || exit 1
+              export ABLETON_LAUNCH_HANDOFF="$handoff_token"
+              exec setsid -- "$@" ) &
+            process_group=1
+        else
+            ( ableton_install_lock_close_in_child || exit 1
+              export ABLETON_LAUNCH_HANDOFF="$handoff_token"
+              exec "$@" ) &
+        fi
+        child=$!
+        # Do not create an unlock->exec window. Hand the lifecycle lock to a
+        # process that the installer's busy check can observe, or retain it until
+        # a short-lived callback has completed.
+        for ((i=0; i<timeout_secs*10; i++)); do
+            if ! kill -0 "$child" 2>/dev/null; then break; fi
+            while IFS= read -r after_pid; do
+                [ -n "$after_pid" ] || continue
+                if ableton_pid_has_env "$after_pid" "ABLETON_LAUNCH_HANDOFF=$handoff_token"; then
+                    handed_off=1
+                    break
+                fi
+            done < <(ableton_prefix_pids)
+            [ "$handed_off" -ne 1 ] || break
+            sleep 0.1
+        done
+        if [ "$handed_off" -eq 1 ]; then
+            ableton_install_lock_release || \
+                echo "ableton-live: Live started, but installer changes will remain blocked until this launch finishes." >&2
+            wait "$child"
+            return
+        fi
+        if kill -0 "$child" 2>/dev/null; then
+            if [ "$process_group" -eq 1 ] && kill -0 -- "-$child" 2>/dev/null; then
+                kill -TERM -- "-$child" 2>/dev/null || true
+                for _ in {1..50}; do kill -0 -- "-$child" 2>/dev/null || break; sleep 0.1; done
+                kill -0 -- "-$child" 2>/dev/null && kill -KILL -- "-$child" 2>/dev/null || true
+            else
+                kill -TERM "$child" 2>/dev/null || true
+                for _ in {1..50}; do kill -0 "$child" 2>/dev/null || break; sleep 0.1; done
+                kill -0 "$child" 2>/dev/null && kill -KILL "$child" 2>/dev/null || true
+            fi
+            wait "$child" || rc=$?
+            # This path returns immediately, so descriptor close completes any
+            # release that could not be done explicitly.
+            ableton_install_lock_release || true
+            echo "ableton-live: Live did not start within ${timeout_secs}s. Check $diagnostic_dir/live.log and try again." >&2
+            return 1
+        fi
+        wait "$child" || rc=$?
+        ableton_install_lock_release || true
+        return "$rc"
+    fi
     if command -v setsid >/dev/null 2>&1; then
-        setsid -- "$@" 9>&- &
+        ( ableton_install_lock_close_in_child || exit 1; exec setsid -- "$@" 9>&- ) &
         process_group=1
     else
-        "$@" 9>&- &
+        ( ableton_install_lock_close_in_child || exit 1; exec "$@" 9>&- ) &
     fi
     child=$!
     for ((i=0; i<timeout_secs*10; i++)); do
@@ -1437,9 +1827,6 @@ launch_command()
         if ! kill -0 "$child" 2>/dev/null; then break; fi
         sleep 0.1
     done
-    flock -u 9 2>/dev/null || true
-    exec 9>&-
-    launch_lock_held=0
     if [ "$ready" -ne 1 ]; then
         if [ "$process_group" -eq 1 ] && kill -0 -- "-$child" 2>/dev/null; then
             kill -TERM -- "-$child" 2>/dev/null || true
@@ -1451,9 +1838,17 @@ launch_command()
             kill -0 "$child" 2>/dev/null && kill -KILL "$child" 2>/dev/null || true
         fi
         wait "$child" || rc=$?
-        echo "ableton-live: Live did not become observable in the selected prefix within ${timeout_secs}s (launcher exit $rc)" >&2
+        flock -u 9 2>/dev/null || true
+        exec 9>&-
+        launch_lock_held=0
+        echo "ableton-live: Live did not start within ${timeout_secs}s (launcher exit $rc). Check $diagnostic_dir/live.log and try again." >&2
         return 1
     fi
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+    launch_lock_held=0
+    ableton_install_lock_release || \
+        echo "ableton-live: Live started, but installer changes will remain blocked until Live closes." >&2
     wait "$child"
 }
 

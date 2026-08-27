@@ -26,7 +26,7 @@ pipeasio_tsan_log_is_infrastructure_failure()
     if grep -E 'WARNING: ThreadSanitizer:' "$log" \
             | grep -Ev \
                 'WARNING: ThreadSanitizer:.*(memory layout is incompatible|unexpectedly found incompatible memory layout|high-entropy ASLR|fixed virtual address space)' \
-            | grep -q .; then
+                >/dev/null; then
         return 1
     fi
     if grep -Eq \
@@ -36,12 +36,12 @@ pipeasio_tsan_log_is_infrastructure_failure()
     fi
     if grep -E 'FATAL: ThreadSanitizer:' "$log" \
             | grep -Ev 'FATAL: ThreadSanitizer: unexpected memory mapping' \
-            | grep -q .; then
+                >/dev/null; then
         return 1
     fi
     if grep -E 'CHECK failed:' "$log" \
             | grep -Ev '(personality|ADDR_NO_RANDOMIZE)' \
-            | grep -q .; then
+                >/dev/null; then
         return 1
     fi
 

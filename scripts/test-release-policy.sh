@@ -37,6 +37,47 @@ rejects()
     fi
 }
 
+set +e
+(
+    set +o pipefail
+    config_lib="$root/scripts/lib/config.sh"
+    # shellcheck disable=SC1090
+    . "$config_lib"
+    export ABLETON_CONFIG_FILE="$tmp/missing-config" \
+        ABLETON_WINE_ROOT="$tmp/runtime-root" ABLETON_WINEPREFIX="$tmp/prefix" \
+        ABLETON_LINKD="$tmp/linkd" ABLETON_LINK_MODE=off \
+        ABLETON_DATA_HOME="$tmp/data" ABLETON_CONFIG_HOME="$tmp/config" \
+        ABLETON_STATE_HOME="$tmp/state" ABLETON_CACHE_HOME="$tmp/cache" \
+        ABLETON_BIN_HOME="$tmp/bin"
+    sha256sum() { return 91; }
+    ableton_config_snapshot_capture absent
+)
+snapshot_rc=$?
+set -e
+[ "$snapshot_rc" -eq 1 ] \
+    || fail "configuration snapshot capture returned $snapshot_rc for a value-hash failure without pipefail"
+set +e
+(
+    set +o pipefail
+    config_lib="$root/scripts/lib/config.sh"
+    # shellcheck disable=SC1090
+    . "$config_lib"
+    export ABLETON_CONFIG_FILE="$tmp/missing-config" \
+        ABLETON_WINE_ROOT="$tmp/runtime-root" ABLETON_WINEPREFIX="$tmp/prefix" \
+        ABLETON_LINKD="$tmp/linkd" ABLETON_LINK_MODE=off \
+        ABLETON_DATA_HOME="$tmp/data" ABLETON_CONFIG_HOME="$tmp/config" \
+        ABLETON_STATE_HOME="$tmp/state" ABLETON_CACHE_HOME="$tmp/cache" \
+        ABLETON_BIN_HOME="$tmp/bin"
+    ableton_config_snapshot_capture absent || exit 90
+    sha256sum() { return 91; }
+    ableton_config_snapshot_verify
+)
+snapshot_rc=$?
+set -e
+[ "$snapshot_rc" -eq 1 ] \
+    || fail "configuration snapshot verification returned $snapshot_rc for a value-hash failure without pipefail"
+printf 'ok - configuration snapshot hash failures propagate without caller pipefail\n'
+
 printf 'dist-version: 2026.08.12.1\nsource-tree: %s\ncabextract-static: %s\nableton-linkd: %s\n%s\n' \
     "$source_sha" "$cab_hash" "$link_hash" "$official" > "$tmp/official"
 accepts "$tmp/official" || fail 'exact official sanitizer record was rejected'
@@ -117,6 +158,52 @@ seal_kit()
     cat "$payload" >> "$wrapper"
     chmod +x "$wrapper"
 }
+
+cleanup_kit="$tmp/cleanup-kit"
+mkdir -p -- "$cleanup_kit/scripts" "$tmp/failing-rm" "$tmp/wrapper-tmp"
+cat > "$cleanup_kit/scripts/installer.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'installer child reached status %s\n' "${WRAPPER_TEST_STATUS:-0}"
+exit "${WRAPPER_TEST_STATUS:-0}"
+EOF
+chmod +x "$cleanup_kit/scripts/installer.sh"
+seal_kit "$cleanup_kit" "$tmp/cleanup-status.run"
+cat > "$tmp/failing-rm/rm" <<'EOF'
+#!/usr/bin/env bash
+target=""
+for target in "$@"; do :; done
+case "$target" in
+    "$WRAPPER_TEST_TMP"/ableton-installer.*) exit 91 ;;
+esac
+exec /bin/rm "$@"
+EOF
+chmod +x "$tmp/failing-rm/rm"
+
+set +e
+PATH="$tmp/failing-rm:$PATH" TMPDIR="$tmp/wrapper-tmp" \
+    WRAPPER_TEST_TMP="$tmp/wrapper-tmp" WRAPPER_TEST_STATUS=0 \
+    bash "$tmp/cleanup-status.run" > "$tmp/cleanup-zero.out" 2>&1
+cleanup_rc=$?
+set -e
+[ "$cleanup_rc" -eq 0 ] \
+    || fail "installer wrapper changed child status 0 to $cleanup_rc after scratch cleanup failed"
+grep -qF 'installer child reached status 0' "$tmp/cleanup-zero.out" \
+    || fail 'installer wrapper did not reach its child after early scratch cleanup failed'
+grep -qF '!! The installer finished, but temporary files remain at' "$tmp/cleanup-zero.out" \
+    || fail 'installer wrapper did not name retained scratch after cleanup failed'
+
+set +e
+PATH="$tmp/failing-rm:$PATH" TMPDIR="$tmp/wrapper-tmp" \
+    WRAPPER_TEST_TMP="$tmp/wrapper-tmp" WRAPPER_TEST_STATUS=37 \
+    bash "$tmp/cleanup-status.run" > "$tmp/cleanup-nonzero.out" 2>&1
+cleanup_rc=$?
+set -e
+[ "$cleanup_rc" -eq 37 ] \
+    || fail "installer wrapper changed child status 37 to $cleanup_rc after scratch cleanup failed"
+grep -qF 'installer child reached status 37' "$tmp/cleanup-nonzero.out" \
+    || fail 'installer wrapper did not preserve the failing child execution path'
+printf 'ok - installer wrapper scratch cleanup is warning-only and preserves child status\n'
+
 tar --sort=name --owner=0 --group=0 --numeric-owner \
     -cf "$tmp/payload.tar" -C "$tmp/kit" .
 payload_sha="$(sha256sum "$tmp/payload.tar" | awk '{print $1}')"

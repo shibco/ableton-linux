@@ -43,7 +43,8 @@ EOF
 
 warn_compat()
 {
-    printf 'WARNING: %s is deprecated; use %s\n' "$1" "$2" >&2
+    printf 'WARNING: %s is deprecated; use %s\n' "$1" "$2" >&2 || true
+    return 0
 }
 
 command_name=""
@@ -124,7 +125,7 @@ while [ $# -gt 0 ]; do
             [ "$major_seen" -eq 0 ] || { echo "!! --live-major was specified more than once" >&2; exit 2; }
             major_seen=1; cli_major="${1#*=}" ;;
         --link=*)
-            [ "$link_seen" -eq 0 ] || { echo "!! Link policy was specified more than once" >&2; exit 2; }
+            [ "$link_seen" -eq 0 ] || { echo "!! The Ableton Link setting was specified more than once" >&2; exit 2; }
             link_seen=1
             cli_link="${1#*=}" ;;
         --mode=*)
@@ -209,7 +210,7 @@ esac
 [ "$major_seen" -eq 0 ] || [ -n "$cli_major" ] || {
     echo "!! --live-major needs 11 or 12" >&2; exit 2; }
 [ "$link_seen" -eq 0 ] || [ -n "$cli_link" ] || {
-    echo "!! --link needs a policy" >&2; exit 2; }
+    echo "!! --link needs off, session, always, or keep" >&2; exit 2; }
 [ "$mode_seen" -eq 0 ] || [ -n "$link_mode_option" ] || {
     echo "!! --mode needs session or always" >&2; exit 2; }
 [ "$delete_prefix" -eq 0 ] || [ "$keep_prefix" -eq 0 ] || { echo "!! --keep-prefix and --delete-prefix conflict" >&2; exit 2; }
@@ -266,7 +267,22 @@ esac
 if [ -n "$cli_prefix" ]; then ABLETON_WINEPREFIX="$cli_prefix"; export ABLETON_WINEPREFIX; fi
 if [ -n "$cli_runtime" ]; then ABLETON_WINE_ROOT="$cli_runtime"; export ABLETON_WINE_ROOT; fi
 if [ -n "$cli_major" ]; then ABLETON_LIVE_VERSION="$cli_major"; export ABLETON_LIVE_VERSION; fi
-ableton_config_init
+if [ "$dry_run" -eq 1 ]; then
+    ABLETON_CONFIG_LAYOUT_ROOTS=none
+else
+    case "$command_name:$subcommand" in
+        runtime:install) ABLETON_CONFIG_LAYOUT_ROOTS=runtime ;;
+        install:|update:|prefix:create|prefix:update)
+            ABLETON_CONFIG_LAYOUT_ROOTS='runtime prefix state' ;;
+        prefix:repair-live11) ABLETON_CONFIG_LAYOUT_ROOTS='prefix state' ;;
+        link:enable|link:disable) ABLETON_CONFIG_LAYOUT_ROOTS='data config state' ;;
+        link:status) ABLETON_CONFIG_LAYOUT_ROOTS=none ;;
+        uninstall:) ABLETON_CONFIG_LAYOUT_ROOTS='runtime prefix' ;;
+        *) ABLETON_CONFIG_LAYOUT_ROOTS='runtime prefix state' ;;
+    esac
+fi
+export ABLETON_CONFIG_LAYOUT_ROOTS
+ableton_config_init repair
 
 # PR #182 briefly owned a configured custom Link binary.  Only a narrowly
 # proven install of that release is migrated to the canonical managed path.
@@ -292,7 +308,7 @@ case "$command_name" in
 esac
 [ "$desired_link" != keep ] || desired_link="$prior_link"
 [ -n "$desired_link" ] || desired_link="$prior_link"
-case "$desired_link" in off|session|always|'') ;; *) echo "!! no persistent Link policy is available; choose --link=off|session|always" >&2; exit 2 ;; esac
+case "$desired_link" in off|session|always|'') ;; *) echo "!! No saved Ableton Link setting is available; choose --link=off|session|always" >&2; exit 2 ;; esac
 
 resolve_payload()
 {
@@ -335,28 +351,53 @@ resolve_payload()
 
 payload_major()
 {
-    local payload="$1" names lower majors
+    local payload="$1" lower majors scan prefix=""
     lower="$(basename "$payload" | tr '[:upper:]' '[:lower:]')"
     majors=""
     case "$lower" in *live*11*) majors=11 ;; esac
     case "$lower" in *live*12*) majors="${majors:+$majors }12" ;; esac
+    scan="$(mktemp "${TMPDIR:-/tmp}/ableton-payload-scan.XXXXXX")" || return 1
     case "$lower" in
         *.zip)
-            if command -v unzip >/dev/null 2>&1; then names="$(unzip -Z1 "$payload" 2>/dev/null | head -n 200 || true)"
-            elif command -v bsdtar >/dev/null 2>&1; then names="$(bsdtar -tf "$payload" 2>/dev/null | head -n 200 || true)"
-            else names=""; fi ;;
-        *) names="$(head -c 8388608 -- "$payload" 2>/dev/null | strings 2>/dev/null | head -n 20000 || true)" ;;
+            if command -v unzip >/dev/null 2>&1; then
+                unzip -Z1 "$payload" > "$scan" 2>/dev/null || { rm -f -- "$scan"; return 1; }
+            elif command -v bsdtar >/dev/null 2>&1; then
+                bsdtar -tf "$payload" > "$scan" 2>/dev/null || { rm -f -- "$scan"; return 1; }
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 -m zipfile -l "$payload" > "$scan" 2>/dev/null \
+                    || { rm -f -- "$scan"; return 1; }
+            else
+                rm -f -- "$scan"
+                return 1
+            fi ;;
+        *)
+            prefix="$(mktemp "${TMPDIR:-/tmp}/ableton-payload-prefix.XXXXXX")" \
+                || { rm -f -- "$scan"; return 1; }
+            if ! head -c 8388608 -- "$payload" > "$prefix" 2>/dev/null \
+               || ! strings "$prefix" > "$scan" 2>/dev/null; then
+                rm -f -- "$prefix" "$scan"
+                return 1
+            fi
+            rm -f -- "$prefix" 2>/dev/null || true ;;
     esac
-    printf '%s\n' "$names" | grep -Eqi 'Ableton[ _-]*Live[ _-]*11' && majors="${majors:+$majors }11"
-    printf '%s\n' "$names" | grep -Eqi 'Ableton[ _-]*Live[ _-]*12' && majors="${majors:+$majors }12"
-    tr ' ' '\n' <<< "$majors" | sed '/^$/d' | sort -u | paste -sd' ' -
+    if grep -Eqi 'Ableton[ _-]*Live[ _-]*11' "$scan"; then
+        case " $majors " in *' 11 '*) ;; *) majors="${majors:+$majors }11" ;; esac
+    fi
+    if grep -Eqi 'Ableton[ _-]*Live[ _-]*12' "$scan"; then
+        case " $majors " in *' 12 '*) ;; *) majors="${majors:+$majors }12" ;; esac
+    fi
+    rm -f -- "$scan" 2>/dev/null || true
+    printf '%s\n' "$majors"
 }
 
 validate_payload_major()
 {
     [ -n "$live_payload" ] || return 0
     local detected
-    detected="$(payload_major "$live_payload")"
+    if ! detected="$(payload_major "$live_payload")"; then
+        echo "!! cannot read $(basename "$live_payload") well enough to verify its Live version" >&2
+        return 2
+    fi
     if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
         case " $detected " in *" $ABLETON_LIVE_VERSION "*) ;;
             "  ") echo "!! cannot prove that $(basename "$live_payload") matches Live $ABLETON_LIVE_VERSION" >&2; return 2 ;;
@@ -386,16 +427,12 @@ host_preflight()
     case "$command_name:$subcommand" in
         prefix:repair-live11) ;;
         *) command -v timeout >/dev/null \
-            || { echo "!! GNU timeout is required" >&2; return 1; } ;;
+            || { echo "!! Install GNU coreutils (the timeout command), then run the installer again." >&2; return 1; } ;;
     esac
     case "$command_name" in
         install|update|runtime)
-            command -v tar >/dev/null || { echo "!! tar is required" >&2; return 1; }
-            command -v zstd >/dev/null || { echo "!! zstd is required" >&2; return 1; } ;;
-    esac
-    case "$command_name:$subcommand" in
-        install:|update:|prefix:create|prefix:update)
-            command -v cabextract >/dev/null || { echo "!! cabextract is required" >&2; return 1; } ;;
+            command -v tar >/dev/null || { echo "!! Install tar, then run the installer again." >&2; return 1; }
+            command -v zstd >/dev/null || { echo "!! Install zstd, then run the installer again." >&2; return 1; } ;;
     esac
 }
 host_preflight
@@ -447,10 +484,9 @@ install_args=()
 [ "$dry_run" -eq 0 ] || install_args+=(--dry-run)
 components=()
 if [ "$command_name" = install ] || [ "$command_name" = update ]; then
-    components=(--runtime-only --integration-only)
-    if [ "$desired_link" != off ] || [ -n "${ABLETON_PR182_CUSTOM_LINKD:-}" ]; then
-        components+=(--link-assets-only)
-    fi
+    # Runtime and prefix/registry state are the core transaction. Desktop and
+    # Link integration are repaired only after that core has committed.
+    components=(--runtime-only)
 fi
 
 case "$command_name:$subcommand" in
@@ -473,7 +509,7 @@ case "$command_name:$subcommand" in
         fi ;;
     prefix:update)
         "$here/setup-prefix.sh" --refresh --validate
-        if [ "$dry_run" -eq 1 ]; then printf 'PLAN: transactionally update prefix %s\n' "$ABLETON_WINEPREFIX"; exit; fi ;;
+        if [ "$dry_run" -eq 1 ]; then printf 'PLAN: update the Ableton Wine prefix at %s\n' "$ABLETON_WINEPREFIX"; exit; fi ;;
     prefix:repair-live11)
         if [ "$dry_run" -eq 1 ]; then
             printf 'PLAN: move aside stale Live 11 Max preferences in %s\n' "$ABLETON_WINEPREFIX"
@@ -496,17 +532,20 @@ case "$command_name:$subcommand" in
         ABLETON_RUNTIME_PENDING=1 "$here/setup-prefix.sh" "${prefix_validate[@]}" --validate
         if [ "$dry_run" -eq 1 ]; then
             "$here/install.sh" "${components[@]}" --dry-run
-            printf '  transactionally %s prefix: %s\n' "$([ "$command_name" = update ] && echo update || echo create)" "$ABLETON_WINEPREFIX"
-            printf '  stage prefix as a sibling, promote only after all checks, then write: %s/pipeasio/config.ini\n' \
-                "${XDG_CONFIG_HOME:-$HOME/.config}"
-            [ -z "$live_payload" ] || printf '  run bounded Live %s installer: %s\n' "$ABLETON_LIVE_VERSION" "$live_payload"
-            printf '  write persistent resolved configuration: %s\n' "$ABLETON_CONFIG_FILE"
+            "$here/install.sh" --integration-only --dry-run
+            if [ "$desired_link" != off ]; then
+                "$here/install.sh" --link-assets-only --dry-run
+            fi
+            printf '  %s the Ableton Wine prefix: %s\n' "$([ "$command_name" = update ] && echo Update || echo Create)" "$ABLETON_WINEPREFIX"
+            printf '  configure PipeASIO: %s/pipeasio/config.ini\n' "${XDG_CONFIG_HOME:-$HOME/.config}"
+            [ -z "$live_payload" ] || printf '  run the Live %s installer: %s\n' "$ABLETON_LIVE_VERSION" "$live_payload"
+            printf '  save installer settings: %s\n' "$ABLETON_CONFIG_FILE"
             if [ "$desired_link" = off ]; then
                 "$here/setup-link.sh" plan-disable
             else
                 "$here/setup-link.sh" plan-enable "--mode=$desired_link"
             fi
-            printf '  final Link policy: %s\n' "$desired_link"
+            printf '  set Ableton Link mode: %s\n' "$desired_link"
             exit
         fi ;;
 esac
@@ -518,8 +557,7 @@ ableton_install_lock_acquire
 if [ "$command_name:$subcommand" = runtime:install ]; then
     transaction="$(mktemp -d "${TMPDIR:-/tmp}/ableton-runtime-install.XXXXXX")"
 else
-    ableton_mark_state_home
-    mkdir -p -- "$ABLETON_STATE_HOME/transactions"
+    ableton_prepare_transactions_dir
     transaction="$(mktemp -d "$ABLETON_STATE_HOME/transactions/installer.XXXXXX")"
 fi
 # ShellCheck does not follow function names stored in traps.
@@ -529,7 +567,7 @@ cleanup_unstarted_transaction()
     local rc=$?
     trap - EXIT
     if [ "$rc" -ne 0 ] && ! rm -rf -- "$transaction"; then
-        echo "!! failed to remove unstarted installer transaction: $transaction" >&2
+        echo "!! The installer stopped before making changes, and temporary files remain at $transaction." >&2
     fi
     exit "$rc"
 }
@@ -538,33 +576,39 @@ ABLETON_TRANSACTION_DIR="$transaction"
 export ABLETON_TRANSACTION_DIR
 config_backup="$transaction/config.before"
 config_existed=0
+config_rollback_state=absent
 if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
-    { [ -f "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; } \
-        && [ ! -d "$ABLETON_CONFIG_FILE" ] \
-        && [ -n "$(ableton_manifest_digest "$ABLETON_CONFIG_FILE" 2>/dev/null || true)" ] || {
-        echo "!! current installer configuration is unsafe" >&2
-        exit 1
-    }
-    mkdir -p -- "$(dirname "$config_backup")"
-    cp -a -- "$ABLETON_CONFIG_FILE" "$config_backup"
-    config_existed=1
+    config_rollback_state=unchanged
+    if [ -f "$ABLETON_CONFIG_FILE" ] && [ ! -L "$ABLETON_CONFIG_FILE" ] \
+       && [ -n "$(ableton_manifest_digest "$ABLETON_CONFIG_FILE" 2>/dev/null || true)" ] \
+       && cp -a -- "$ABLETON_CONFIG_FILE" "$config_backup"; then
+        config_existed=1
+        config_rollback_state=present
+    fi
 fi
-pipeasio_config_parent="$(ableton_realpath_m "${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio")"
-pipeasio_config="$pipeasio_config_parent/config.ini"
-case "$pipeasio_config" in *$'\n'*|*$'\r'*|*$'\t'*)
-    echo "!! PipeASIO configuration path contains a newline or tab" >&2; exit 2 ;;
-esac
+pipeasio_config_parent="$(ableton_realpath_m \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio" 2>/dev/null || true)"
+pipeasio_config="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
+pipeasio_config_resolved=0
+if [ -n "$pipeasio_config_parent" ]; then
+    pipeasio_config="$pipeasio_config_parent/config.ini"
+    pipeasio_config_resolved=1
+fi
 pipeasio_config_backup="$transaction/pipeasio-config.before"
 pipeasio_config_existed=0
-if [ -e "$pipeasio_config" ] || [ -L "$pipeasio_config" ]; then
-    { [ -f "$pipeasio_config" ] || [ -L "$pipeasio_config" ]; } \
-        && [ ! -d "$pipeasio_config" ] \
-        && [ -n "$(ableton_manifest_digest "$pipeasio_config" 2>/dev/null || true)" ] || {
-        echo "!! current PipeASIO configuration is unsafe" >&2
-        exit 1
-    }
-    cp -a -- "$pipeasio_config" "$pipeasio_config_backup"
-    pipeasio_config_existed=1
+pipeasio_rollback_state=absent
+if [ "$pipeasio_config_resolved" -ne 1 ]; then
+    # Saved settings are an optional rollback convenience. A path that cannot
+    # be resolved leaves the current PipeASIO settings untouched.
+    pipeasio_rollback_state=unchanged
+elif [ -e "$pipeasio_config" ] || [ -L "$pipeasio_config" ]; then
+    pipeasio_rollback_state=unchanged
+    if [ -f "$pipeasio_config" ] && [ ! -L "$pipeasio_config" ] \
+       && [ -n "$(ableton_manifest_digest "$pipeasio_config" 2>/dev/null || true)" ] \
+       && cp -a -- "$pipeasio_config" "$pipeasio_config_backup"; then
+        pipeasio_config_existed=1
+        pipeasio_rollback_state=present
+    fi
 fi
 panel_integration_existed=0
 ownership_manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
@@ -577,11 +621,26 @@ fi
 transaction_complete=0
 rollback_log="$transaction/rollback.log"
 rollback_sink="$rollback_log"
-committed_cleanup_step=""
+cleanup_log="$transaction/cleanup.log"
 link_transaction=0
-link_setup_failed=0
+integration_ready=1
+link_ready=1
+settings_ready=1
+cleanup_ready=1
+link_resume_command=""
 live_unpack=""
-config_post_token=""
+
+format_link_resume_command()
+{
+    local installer_path
+    if [ -n "${ABLETON_INSTALLER_PATH:-}" ]; then
+        printf -v installer_path '%q' "$ABLETON_INSTALLER_PATH"
+        printf 'sh %s link enable --mode=%q' "$installer_path" "$1"
+    else
+        printf -v installer_path '%q' "$here/installer.sh"
+        printf 'bash %s link enable --mode=%q' "$installer_path" "$1"
+    fi
+}
 
 cleanup_live_unpack()
 {
@@ -590,7 +649,8 @@ cleanup_live_unpack()
     safe="$(ableton_path_is_safe_delete_target "$live_unpack")" || return 1
     case "$(basename "$safe")" in ableton-live-installer.*) ;; *) return 1 ;; esac
     [ ! -L "$safe" ] || return 1
-    rm -rf -- "$safe"
+    rm -rf -- "$safe" || return 1
+    [ ! -e "$safe" ] && [ ! -L "$safe" ] || return 1
     live_unpack=""
 }
 
@@ -604,10 +664,13 @@ rollback_log_step()
 rollback_all()
 {
     local rc=$? restore_error="" restoration_complete=yes failure_record="$transaction/FAILURE"
-    local rollback_preflight_ok=1 config_current_token="" config_prior_token=""
+    local rollback_preflight_ok=1 failure_record_written=0
     trap - EXIT
+    # A closed terminal must not stop recovery from running. From this point
+    # every recovery command and status write is checked explicitly.
+    set +e
     if [ "$transaction_complete" -ne 1 ]; then
-        echo "!! installer transaction failed; restoring the previous component and prefix state" >&2
+        echo "!! Installation did not finish. Restoring the changes from this attempt." >&2
         # A log the installer cannot open must not stop the restoration: a
         # child redirected to an unopenable path never runs at all.
         if ! : 2>/dev/null >> "$rollback_sink"; then
@@ -615,92 +678,70 @@ rollback_all()
             rollback_sink=/dev/null
             rollback_log=""
         fi
-        rollback_log_step "rollback started for $command_name${subcommand:+ $subcommand} (exit $rc)"
-        rollback_log_step "prefix rollback preflight"
+        rollback_log_step "Recovery started for $command_name${subcommand:+ $subcommand} (exit $rc)"
+        rollback_log_step "Checking Wine prefix recovery"
         if ! "$here/setup-prefix.sh" --preflight-rollback "$transaction" >> "$rollback_sink" 2>&1; then
-            restore_error="prefix rollback preflight failed"
+            restore_error="Wine prefix recovery could not be checked"
             rollback_preflight_ok=0
         fi
-        rollback_log_step "component rollback preflight"
+        rollback_log_step "Checking Wine runtime recovery"
         if ! "$here/install.sh" --preflight-rollback "$transaction" >> "$rollback_sink" 2>&1; then
-            restore_error="${restore_error}${restore_error:+; }component rollback preflight failed"
+            restore_error="${restore_error}${restore_error:+; }Wine runtime recovery could not be checked"
             rollback_preflight_ok=0
         fi
-        [ "$link_transaction" -ne 1 ] || rollback_log_step "Link rollback preflight"
+        [ "$link_transaction" -ne 1 ] || rollback_log_step "Checking Link recovery"
         if [ "$link_transaction" -eq 1 ] \
            && ! "$here/setup-link.sh" preflight-rollback "$transaction" >> "$rollback_sink" 2>&1; then
-            restore_error="${restore_error}${restore_error:+; }Link rollback preflight failed"
+            restore_error="${restore_error}${restore_error:+; }Link recovery could not be checked"
             rollback_preflight_ok=0
         fi
-        if [ "$config_existed" -eq 1 ] \
-           && { [ ! -f "$config_backup" ] || [ -L "$config_backup" ]; }; then
-            restore_error="${restore_error}${restore_error:+; }installer configuration snapshot is unsafe"
-            rollback_preflight_ok=0
-        fi
-        if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
-            if [ -d "$ABLETON_CONFIG_FILE" ] \
-               || { [ ! -f "$ABLETON_CONFIG_FILE" ] && [ ! -L "$ABLETON_CONFIG_FILE" ]; }; then
-                restore_error="${restore_error}${restore_error:+; }installer configuration destination is unsafe"
-                rollback_preflight_ok=0
-            fi
-        fi
-        if [ "$rollback_preflight_ok" -eq 1 ] && [ -n "$config_post_token" ]; then
-            config_current_token="$(ableton_object_token "$ABLETON_CONFIG_FILE" 2>/dev/null || true)"
-            if [ "$config_existed" -eq 1 ]; then
-                config_prior_token="$(ableton_object_token "$config_backup" 2>/dev/null || true)"
-            else
-                config_prior_token=absent
-            fi
-            if [ -z "$config_current_token" ] \
-               || { [ "$config_current_token" != "$config_post_token" ] \
-                    && [ "$config_current_token" != "$config_prior_token" ]; }; then
-                restore_error="${restore_error}${restore_error:+; }installer configuration changed while the transaction was open"
-                rollback_preflight_ok=0
-            fi
-        fi
-        [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "prefix rollback"
+        [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "Restoring Wine prefix"
         if [ "$rollback_preflight_ok" -eq 1 ] \
            && ! "$here/setup-prefix.sh" --rollback "$transaction" >> "$rollback_sink" 2>&1; then
-            restore_error="prefix rollback failed"
+            restore_error="Wine prefix could not be restored"
         fi
-        [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "component rollback"
+        [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "Restoring Wine runtime"
         if [ "$rollback_preflight_ok" -eq 1 ] \
            && ! "$here/install.sh" --rollback "$transaction" >> "$rollback_sink" 2>&1; then
-            restore_error="${restore_error}${restore_error:+; }component rollback failed"
-        fi
-        if [ "$rollback_preflight_ok" -eq 1 ] && [ "$config_existed" -eq 1 ]; then
-            if ! ableton_atomic_restore_object "$config_backup" "$ABLETON_CONFIG_FILE"; then
-                restore_error="${restore_error}${restore_error:+; }installer configuration restoration failed"
-            fi
-        elif [ "$rollback_preflight_ok" -eq 1 ] \
-             && [ "$config_existed" -eq 0 ] \
-             && ! rm -f -- "$ABLETON_CONFIG_FILE"; then
-            restore_error="${restore_error}${restore_error:+; }installer configuration cleanup failed"
+            restore_error="${restore_error}${restore_error:+; }Wine runtime could not be restored"
         fi
         if [ "$rollback_preflight_ok" -eq 1 ] && [ "$link_transaction" -eq 1 ]; then
-            rollback_log_step "Link rollback"
+            rollback_log_step "Restoring Link settings"
             if ! "$here/setup-link.sh" rollback "$transaction" >> "$rollback_sink" 2>&1; then
-                restore_error="${restore_error}${restore_error:+; }Link rollback failed"
+                restore_error="${restore_error}${restore_error:+; }Link settings could not be restored"
             fi
         fi
         if [ "$rollback_preflight_ok" -eq 1 ] && ! cleanup_live_unpack; then
-            restore_error="${restore_error}${restore_error:+; }temporary Live payload cleanup failed"
+            rollback_log_step "temporary Live installer files were retained at $live_unpack"
+        fi
+        # Domain helpers deliberately leave the coordinator marker alone.  It
+        # is retired only after every rollback domain and temporary payload has
+        # been restored.  If any recovery is incomplete, keep it so launchers
+        # cannot self-heal managed files inside the retained evidence.
+        if [ "$rollback_preflight_ok" -eq 1 ] && [ -z "$restore_error" ] \
+           && ! rm -f -- "$transaction/active"; then
+            restore_error="recovery status cleanup failed"
         fi
         [ -z "$restore_error" ] || restoration_complete=no
-        printf 'command=%s %s\nexit=%s\nrestoration_complete=%s\nrestoration_error=%s\nrollback_log=%s\n' \
+        if printf 'command=%s %s\nexit=%s\nrestoration_complete=%s\nrestoration_error=%s\nrollback_log=%s\n' \
             "$command_name" "$subcommand" "$rc" "$restoration_complete" "$restore_error" "$rollback_log" \
-            > "$failure_record" || true
+            > "$failure_record"; then
+            failure_record_written=1
+        fi
         if [ "$restoration_complete" = yes ]; then
-            echo "!! rollback complete; failure record: $failure_record" >&2
+            echo "!! Installation did not finish. The earlier installation state was restored." >&2
+            [ "$failure_record_written" -eq 0 ] || echo "!! Details: $failure_record" >&2
         else
-            echo "!! installer rollback is incomplete: $restore_error" >&2
-            echo "!! inspect $failure_record${rollback_log:+ and $rollback_log} before retrying" >&2
+            echo "!! Installation failed, and recovery still needs attention: $restore_error" >&2
+            if [ "$failure_record_written" -eq 1 ]; then
+                echo "!! Save these recovery details before retrying: $failure_record${rollback_log:+ and $rollback_log}" >&2
+            elif [ -n "$rollback_log" ]; then
+                echo "!! Save this recovery log before retrying: $rollback_log" >&2
+            fi
         fi
     elif [ "$rc" -ne 0 ]; then
-        printf 'command=%s %s\nstatus=committed-cleanup-incomplete\nstep=%s\nexit=%s\n' \
-            "$command_name" "$subcommand" "${committed_cleanup_step:-unknown}" "$rc" \
-            > "$transaction/COMMITTED_CLEANUP_FAILURE"
-        echo "!! installation committed, but rollback metadata or cleanup was incomplete: $transaction/COMMITTED_CLEANUP_FAILURE" >&2
+        echo "!! Ableton is ready. Run the installer again to retry shortcuts, Link, or saved settings." >&2 || true
+        rc=0
     fi
     exit "$rc"
 }
@@ -709,16 +750,17 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 case "$command_name:$subcommand" in
-    install:|update:|link:enable|link:disable)
+    link:enable|link:disable)
         "$here/setup-link.sh" snapshot "$transaction"
         link_transaction=1 ;;
 esac
 
 ABLETON_LINK_MODE="$desired_link"
 export ABLETON_LINK_MODE
-if [ "$command_name:$subcommand" != runtime:install ]; then
-    config_post_token="$(ableton_expected_config_token)"
-fi
+# Child lifecycle helpers inherit both the lock and this snapshot. Refresh the
+# resolved-value half after applying the requested policy; the file itself has
+# not changed, so its original token remains the concurrency boundary.
+ableton_config_snapshot_capture
 
 case "$command_name:$subcommand" in
     runtime:install)
@@ -729,12 +771,9 @@ case "$command_name:$subcommand" in
         "$here/setup-prefix.sh" --refresh --transaction-dir "$transaction" ;;
     link:enable)
         "$here/install.sh" --link-assets-only --transaction-dir "$transaction" "${install_args[@]}"
-        "$here/setup-link.sh" enable "--mode=$desired_link" ;;
+        ABLETON_LINK_COORDINATED=1 "$here/setup-link.sh" enable "--mode=$desired_link" ;;
     link:disable)
-        if [ -n "${ABLETON_PR182_CUSTOM_LINKD:-}" ]; then
-            "$here/install.sh" --link-assets-only --transaction-dir "$transaction" "${install_args[@]}"
-        fi
-        "$here/setup-link.sh" disable ;;
+        ABLETON_LINK_COORDINATED=1 "$here/setup-link.sh" disable ;;
     install:|update:)
         "$here/install.sh" "${components[@]}" --transaction-dir "$transaction" "${install_args[@]}"
         if [ "$command_name" = update ]; then
@@ -744,12 +783,87 @@ case "$command_name:$subcommand" in
         fi ;;
 esac
 
+# Direct Link commands save their selected mode themselves. Drop the parent's
+# now-stale view of that generated file so later cleanup cannot mistake the
+# child's successful write for an installation failure.
+case "$command_name:$subcommand" in
+    link:enable|link:disable)
+        unset ABLETON_CONFIG_SNAPSHOT_PATH ABLETON_CONFIG_SNAPSHOT_TOKEN \
+            ABLETON_CONFIG_SNAPSHOT_VALUES ;;
+esac
+
+live11_registry_ready()
+{
+    ableton_run_bounded 30 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+        "$ABLETON_WINE_ROOT/bin/wine" reg query 'HKLM\Software' >/dev/null 2>&1
+}
+
+live11_placeholder_present()
+{
+    local key
+    for key in \
+        'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' \
+        'HKLM\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4'; do
+        ableton_run_bounded 30 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+            "$ABLETON_WINE_ROOT/bin/wine" reg query "$key" \
+            /v 16A75B0B0E11E2A4A911BAE107021162 >/dev/null 2>&1 || return 1
+    done
+    for key in \
+        'HKLM\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162' \
+        'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\16A75B0B0E11E2A4A911BAE107021162'; do
+        ableton_run_bounded 30 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+            "$ABLETON_WINE_ROOT/bin/wine" reg query "$key" >/dev/null 2>&1 || return 1
+    done
+}
+
+live11_placeholder_absent()
+{
+    local key status
+    live11_registry_ready || return 1
+    for key in \
+        'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' \
+        'HKLM\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4'; do
+        status=0
+        ableton_run_bounded 30 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+            "$ABLETON_WINE_ROOT/bin/wine" reg query "$key" \
+            /v 16A75B0B0E11E2A4A911BAE107021162 >/dev/null 2>&1 || status=$?
+        [ "$status" -eq 1 ] || return 1
+    done
+    for key in \
+        'HKLM\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162' \
+        'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\16A75B0B0E11E2A4A911BAE107021162'; do
+        status=0
+        ableton_run_bounded 30 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+            "$ABLETON_WINE_ROOT/bin/wine" reg query "$key" >/dev/null 2>&1 || status=$?
+        [ "$status" -eq 1 ] || return 1
+    done
+}
+
+live_install_result_valid()
+{
+    local major="$1" exe live_found=0 base="$ABLETON_WINEPREFIX/drive_c/ProgramData/Ableton"
+    for exe in "$base"/"Live $major"*/Program/"Ableton Live $major"*.exe; do
+        [ -e "$exe" ] || [ -L "$exe" ] || continue
+        if [ ! -f "$exe" ] || [ -L "$exe" ]; then
+            echo "!! Live created an unsafe executable path: $exe" >&2
+            return 1
+        fi
+        live_found=1
+    done
+    [ "$live_found" -eq 1 ] || {
+        echo "!! The Live installer exited without installing Ableton Live $major in the selected prefix." >&2
+        return 1
+    }
+}
+
 install_live_payload()
 {
     [ -n "$live_payload" ] || return 0
-    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 seed_reg=""
+    local installer="$live_payload" unpack="" stale_unpack="" lower flags=() timeout_secs extract_timeout status=0 seed_reg=""
     local zip_name zip_bytes zip_fingerprint zip_kb need_kb avail_kb
-    local stop_answer="" holders="" unknown="" holder holder_image
+    local stop_answer="" holders="" unknown="" holder holder_image wait_status=0
+    local exe_inventory="" exe_inventory_sorted="" signature="" key
+    local -a payload_exes=()
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
         unpack="${ABLETON_PAYLOAD_UNPACK_DIR:-$(dirname "$installer")}/ableton-live-installer.d"
@@ -760,10 +874,20 @@ install_live_payload()
         zip_bytes="$(stat -c %s -- "$installer" 2>/dev/null || wc -c < "$installer" 2>/dev/null || echo 0)"
         zip_fingerprint="$zip_name $zip_bytes"
         if [ -f "$unpack/.extracted" ] && [ "$(cat "$unpack/.extracted" 2>/dev/null)" = "$zip_fingerprint" ]; then
-            echo "-- reusing the Live installer payload already extracted at $unpack"
+            echo "-- Reusing the extracted Live installer at $unpack" || true
         else
-            live_unpack="$unpack"; cleanup_live_unpack || return 1
-            mkdir -p -- "$unpack" || { echo "!! cannot create $unpack" >&2; return 1; }
+            live_unpack="$unpack"
+            if cleanup_live_unpack; then
+                mkdir -p -- "$unpack" || { echo "!! cannot create $unpack" >&2; return 1; }
+            else
+                # Old extraction data is disposable. If its permissions or
+                # shape prevent removal, use a new private directory rather
+                # than turning our own cache into an installation gate.
+                stale_unpack="$unpack"
+                unpack="$(mktemp -d "${TMPDIR:-/tmp}/ableton-live-installer.XXXXXX")" \
+                    || { echo "!! cannot create a temporary directory for the Live installer" >&2; return 1; }
+                live_unpack="$unpack"
+            fi
             if [ ! -w "$unpack" ]; then
                 echo "!! $unpack is not writable; set ABLETON_PAYLOAD_UNPACK_DIR to a writable location" >&2
                 return 1
@@ -771,7 +895,9 @@ install_live_payload()
             # Need headroom: the unpacked payload can exceed the zip's own size.
             if command -v df >/dev/null 2>&1; then
                 zip_kb=$(( zip_bytes / 1024 )); need_kb=$(( zip_kb * 3 / 2 ))
-                avail_kb="$(df -Pk -- "$unpack" 2>/dev/null | awk 'NR==2{print $4}')"
+                if ! avail_kb="$(df -Pk -- "$unpack" 2>/dev/null | awk 'NR==2{print $4}')"; then
+                    avail_kb=""
+                fi
                 case "$avail_kb" in
                     ''|*[!0-9]*) ;; # no usable df figure; skip the guard
                     *) [ "$avail_kb" -ge "$need_kb" ] || {
@@ -780,23 +906,36 @@ install_live_payload()
                 esac
             fi
             extract_timeout="$(ableton_timeout_value "${ABLETON_PAYLOAD_EXTRACT_TIMEOUT:-900}" ABLETON_PAYLOAD_EXTRACT_TIMEOUT 60 7200)"
-            echo "-- extracting Live installer payload (bounded to ${extract_timeout}s; extracted filenames show progress)"
+            echo "-- Extracting the Live installer (up to ${extract_timeout}s)" || true
             # -o + </dev/null stop unzip hanging on a "replace? (y/n)" prompt.
-            if command -v unzip >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" unzip -o "$installer" -d "$unpack" </dev/null
-            elif command -v bsdtar >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" bsdtar -xvf "$installer" -C "$unpack" </dev/null
+            if command -v unzip >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" unzip -oq "$installer" -d "$unpack" </dev/null
+            elif command -v bsdtar >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" bsdtar -xf "$installer" -C "$unpack" </dev/null
             elif command -v python3 >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" python3 -m zipfile -e "$installer" "$unpack" </dev/null
             else echo "!! unzip, bsdtar, or python3 is required for a ZIP payload" >&2; return 1; fi
-            printf '%s\n' "$zip_fingerprint" > "$unpack/.extracted"
+            printf '%s\n' "$zip_fingerprint" > "$unpack/.extracted" 2>/dev/null || true
         fi
         live_unpack="$unpack"
-        mapfile -t payload_exes < <(find "$unpack" -type f -iname '*.exe' -print | sort -V)
+        exe_inventory="$(mktemp "$transaction/live-exes.XXXXXX")" || return 1
+        exe_inventory_sorted="$(mktemp "$transaction/live-exes-sorted.XXXXXX")" || return 1
+        if ! find "$unpack" -type f -iname '*.exe' -print0 > "$exe_inventory" \
+           || ! sort -zV "$exe_inventory" > "$exe_inventory_sorted"; then
+            echo "!! The extracted Live installer could not be checked completely." >&2
+            return 1
+        fi
+        mapfile -d '' -t payload_exes < "$exe_inventory_sorted"
+        rm -f -- "$exe_inventory" "$exe_inventory_sorted" 2>/dev/null || true
         [ "${#payload_exes[@]}" -eq 1 ] || {
             echo "!! expected exactly one installer executable in the ZIP, found ${#payload_exes[@]}" >&2; return 1; }
         installer="${payload_exes[0]}"
     fi
-    if grep -qaF '.wixburn' < <(head -c 4096 -- "$installer"); then
+    signature="$(mktemp "$transaction/live-installer-signature.XXXXXX")" || return 1
+    if ! head -c 4194304 -- "$installer" > "$signature" 2>/dev/null; then
+        echo "!! The Live installer could not be read completely." >&2
+        return 1
+    fi
+    if grep -qaF '.wixburn' "$signature"; then
         flags=(/passive /norestart)
-        if grep -qa 'wixtoolset' < <(head -c 4194304 -- "$installer"); then
+        if grep -qa 'wixtoolset' "$signature"; then
             # WiX 4 Live 11 bundles expose no command-line switch for the
             # Windows-only Push USB audio driver. Register a high-version
             # placeholder so the bundle's own plan excludes that package.
@@ -819,16 +958,28 @@ Windows Registry Editor Version 5.00
 "DisplayVersion"="99.0.0"
 "WindowsInstaller"=dword:00000001
 EOF
+            if ! live11_registry_ready; then
+                echo "!! The Wine registry could not be checked before installing Live." >&2
+                return 1
+            fi
             ableton_run_bounded 60 env WINEPREFIX="$ABLETON_WINEPREFIX" \
                 "$ABLETON_WINE_ROOT/bin/wine" regedit /S "$seed_reg"
+            if ! live11_placeholder_present; then
+                echo "!! The temporary Live 11 driver block was not written to the Wine registry." >&2
+                return 1
+            fi
         fi
-    elif grep -qa 'Inno Setup' < <(head -c 4194304 -- "$installer"); then
+    elif grep -qa 'Inno Setup' "$signature"; then
         flags=(/SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver')
     fi
+    rm -f -- "$signature" 2>/dev/null || true
     timeout_secs="$(ableton_timeout_value "${ABLETON_LIVE_INSTALL_TIMEOUT:-3600}" ABLETON_LIVE_INSTALL_TIMEOUT 60 14400)"
-    echo "-- running the Live installer under a ${timeout_secs}s TERM→KILL watchdog"
+    echo "-- Running the Live installer (up to ${timeout_secs}s)" || true
     (
-        cd "$(dirname "$installer")"
+        if ! cd "$(dirname "$installer")"; then
+            echo "!! The Live installer directory is no longer available." >&2
+            exit 1
+        fi
         ableton_run_bounded "$timeout_secs" env WINEPREFIX="$ABLETON_WINEPREFIX" \
             "$ABLETON_WINE_ROOT/bin/wine" "./$(basename "$installer")" "${flags[@]}"
     ) || status=$?
@@ -849,11 +1000,16 @@ EOF
             ableton_run_bounded 30 env WINEPREFIX="$ABLETON_WINEPREFIX" \
                 "$ABLETON_WINE_ROOT/bin/wine" reg delete "$key" /f >/dev/null 2>&1 || true
         done
-        rm -f -- "$seed_reg"
+        if ! live11_placeholder_absent; then
+            echo "!! The temporary Live 11 driver block is still present in the Wine registry." >&2
+            return 1
+        fi
+        rm -f -- "$seed_reg" 2>/dev/null \
+            || echo "!! Live is installed, but a temporary installer file could not be removed: $seed_reg" >&2 \
+            || true
     fi
-    # The prefix is promoted and nothing below opens it again, so the install is
-    # complete from here and this step never fails it.
-    #
+    live_install_result_valid "$ABLETON_LIVE_VERSION" || return 1
+
     # The agents an install leaves behind are ended by name first, because that is
     # what removes the cause: Live 12's WebView2 updater cannot validate its COM
     # registration under Wine, so it parks in Core::DoRun and holds the wineserver
@@ -861,23 +1017,29 @@ EOF
     # applet from a Startup shortcut.  Wine resolves a process to its long image
     # name, so the list matches the applet through its 8.3 path too.  Wine's own
     # processes exit once the last client goes, so the server needs no signal.
-    ableton_stop_leftover_agents
-    if ! ableton_prefix_wait_progress; then
+    ableton_stop_leftover_agents \
+        || echo "!! Live is installed, but one of its background helpers could not be stopped." >&2 \
+        || true
+    ableton_prefix_wait_progress || wait_status=$?
+    if [ "$wait_status" -eq 124 ] || [ "$wait_status" -eq 137 ]; then
         # Named before anything is decided: once the prefix is ended there is no
         # process left to read an image name from, and the image name is the only
         # part of this a bug report can carry.
-        holders="$(ableton_prefix_holders)"
-        unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
+        holders="$(ableton_prefix_holders 2>/dev/null)" || holders=""
+        unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders 2>/dev/null)" \
+            || unknown=""
         # The unknown set, not every holder: naming an agent the step just ended
         # and then saying nothing needs to be done reads as a contradiction.
         if [ -n "$unknown" ]; then
-            echo "-- the install is complete. A program in the prefix is still running:"
+            echo "-- The Live installer finished, but a program is still using its Wine prefix:" \
+                || true
             while IFS="$(printf '\t')" read -r holder holder_image; do
                 [ -n "$holder" ] || continue
-                printf '   %s (pid %s)\n' "$holder_image" "$holder"
+                printf '   %s (pid %s)\n' "$holder_image" "$holder" || true
             done <<< "$unknown"
         else
-            echo "-- the install is complete; a background program is still finishing."
+            echo "-- The Live installer finished; a background program is still using its Wine prefix." \
+                || true
         fi
         # The question is asked only when a program this project did not install is
         # holding the prefix.  A helper this project installed exits once the prefix
@@ -887,63 +1049,53 @@ EOF
         # one of those.  A prefix a Max may be sharing is not ended without an
         # answer, so with nobody to ask the install completes and prints the command.
         if [ -z "$unknown" ] || [ "$assume_yes" -eq 1 ] || [ ! -t 0 ]; then
-            echo "-- nothing needs to be done. To end it anyway, close it or run:"
+            echo "-- You can leave it running. To stop every program in the prefix instead, run:" \
+                || true
             printf '   WINEPREFIX=%s %s/bin/wineserver -k\n' \
-                "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT"
+                "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT" || true
         else
             # Default no, and a timed read that falls back to it: pressing return or
             # walking away leaves the prefix as it is.
-            printf 'End every program in the prefix now? [y/N] ' >&2
+            printf 'End every program in the prefix now? [y/N] ' >&2 || true
             read -r -t 60 stop_answer || stop_answer=""
             case "$stop_answer" in
                 [yY]*)
-                    ableton_run_bounded 20 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-                        "$ABLETON_WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 || true
-                    echo "-- ended the programs in the prefix" ;;
+                    if ableton_run_bounded 20 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+                        "$ABLETON_WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1; then
+                        echo "-- stopped the programs in the prefix" || true
+                    else
+                        echo "!! Live is installed, but the programs in its Wine prefix could not be stopped." >&2 \
+                            || true
+                    fi ;;
                 *)
-                    echo "-- left them running; the next update may ask you to close them" ;;
+                    echo "-- left them running; the next update may ask you to close them" \
+                        || true ;;
             esac
         fi
+    elif [ "$wait_status" -ne 0 ]; then
+        echo "!! Live is installed, but Wine could not be checked afterward (exit $wait_status)." >&2 \
+            || true
     fi
-    [ -z "$unpack" ] || cleanup_live_unpack
+    if [ -n "$unpack" ] && ! cleanup_live_unpack; then
+        echo "!! Live is installed, but its extracted installer files could not be removed: $unpack" >&2 \
+            || true
+    fi
+    if [ -n "$stale_unpack" ] \
+       && { [ -e "$stale_unpack" ] || [ -L "$stale_unpack" ]; }; then
+        echo "!! Live is installed. Older extracted installer files remain at $stale_unpack." >&2 \
+            || true
+    fi
 }
 
 if [ "$command_name" = install ]; then
     install_live_payload
 fi
 
-case "$command_name" in
-    install|update)
-        if [ "$desired_link" = off ]; then
-            "$here/setup-link.sh" disable
-        else
-            # Link setup asks for a sudo password when a firewall is active.
-            # Preserve the completed Live changes when the prompt expires or
-            # receives Ctrl-C. Report the stopped Link step. Show the command that
-            # resumes it. The stored Link choice makes later updates repeat the
-            # setup.
-            trap 'link_setup_failed=1' INT
-            "$here/setup-link.sh" enable "--mode=$desired_link" || link_setup_failed=1
-            trap 'exit 130' INT
-            if [ "$link_setup_failed" -eq 1 ]; then
-                echo "!! Link setup stopped; the $command_name continues" >&2
-                echo "   Run this command to complete Link setup: installer link enable --mode=$desired_link" >&2
-            fi
-        fi ;;
-esac
-
-if [ "$command_name:$subcommand" != runtime:install ]; then
-    ableton_write_config
-    [ "$(ableton_object_token "$ABLETON_CONFIG_FILE")" = "$config_post_token" ] || {
-        echo "!! installed configuration does not match the resolved transaction" >&2
-        exit 1
-    }
-fi
-
 persist_runtime_rollback_metadata()
 {
     local record="$transaction/runtime-rollback-path" rollback_path meta new_meta old_meta
-    local marker marker_tmp parent base target installer_state=absent pipeasio_state=absent
+    local marker marker_tmp parent base target installer_state="$config_rollback_state"
+    local pipeasio_state="$pipeasio_rollback_state"
     local old_moved=0
     [ -r "$record" ] || return 0
     rollback_path="$(sed -n '1p' "$record")" || return 1
@@ -1054,59 +1206,186 @@ persist_runtime_rollback_metadata()
     rm -f -- "$marker" || return 1
 }
 
-# Validate every cleanup domain before any one of them retires its rollback
-# material.  A corrupt or concurrently changed later journal must leave all
-# component, prefix, and Link snapshots available for the ordinary rollback.
-if [ -n "$config_post_token" ] \
-   && [ "$(ableton_object_token "$ABLETON_CONFIG_FILE" 2>/dev/null || true)" != "$config_post_token" ]; then
-    echo "!! installer configuration changed while the transaction was open" >&2
-    exit 1
-fi
+# Validate the core rollback records before discarding any of them.  These
+# records cover only the runtime and prefix; generated desktop and Link files
+# are repaired after this point and cannot invalidate the core install.
 "$here/install.sh" --preflight-commit "$transaction"
 "$here/setup-prefix.sh" --preflight-commit "$transaction"
 if [ "$link_transaction" -eq 1 ]; then
     "$here/setup-link.sh" preflight-commit "$transaction"
 fi
 
-# Every requested component is valid and the persistent configuration is now
-# coherent.  This is the transaction commit point.  The calls below only retire
-# rollback snapshots/backups; a cleanup failure must not attempt restoration
-# from pre-state that another cleanup call may already have discarded.
+# The runtime, prefix, Live installation, and registry are valid.  Nothing
+# below is allowed to roll them back: the remaining work either retires old
+# recovery data or rebuilds optional host integration.
 transaction_complete=1
+# The runtime, prefix, Live payload, and registry have crossed their final
+# postconditions. Keep attempting every optional repair and cleanup step even
+# when a terminal write or another advisory operation fails; the EXIT guard
+# still reports one retry warning for any uncaught final status.
+set +e
 cleanup_status=0
-committed_cleanup_step="versioning the previous runtime"
-"$here/install.sh" --commit "$transaction"
-committed_cleanup_step="sealing runtime rollback metadata"
-persist_runtime_rollback_metadata
-committed_cleanup_step="retiring transaction snapshots"
+component_commit_ok=1
+core_marker_ready=1
+prefix_core_marker_ready=1
+ableton_mark_transaction_core_complete "$transaction" || core_marker_ready=0
+if [ -d "$transaction/prefix-host" ] && [ ! -L "$transaction/prefix-host" ]; then
+    ableton_mark_transaction_core_complete "$transaction/prefix-host" \
+        || prefix_core_marker_ready=0
+fi
+if ! : > "$cleanup_log"; then
+    cleanup_log=/dev/null
+fi
+if ! "$here/install.sh" --commit "$transaction" >> "$cleanup_log" 2>&1; then
+    component_commit_ok=0
+    cleanup_status=1
+fi
+if [ "$component_commit_ok" -eq 1 ] \
+   && ! persist_runtime_rollback_metadata >> "$cleanup_log" 2>&1; then
+    cleanup_status=1
+fi
 if [ "$link_transaction" -eq 1 ]; then
-    "$here/setup-link.sh" commit "$transaction" || cleanup_status=1
+    "$here/setup-link.sh" commit "$transaction" >> "$cleanup_log" 2>&1 || cleanup_status=1
 fi
-"$here/setup-prefix.sh" --commit "$transaction" || cleanup_status=1
-rm -f -- "$transaction/active"
-trap - EXIT
-if [ "$cleanup_status" -ne 0 ]; then
-    printf 'command=%s %s\nstatus=committed-cleanup-incomplete\n' "$command_name" "$subcommand" \
-        > "$transaction/COMMITTED_CLEANUP_FAILURE"
-    echo "!! installation committed, but rollback-snapshot cleanup was incomplete: $transaction/COMMITTED_CLEANUP_FAILURE" >&2
-    exit 1
+"$here/setup-prefix.sh" --commit "$transaction" >> "$cleanup_log" 2>&1 || cleanup_status=1
+if ! rm -f -- "$transaction/active"; then
+    cleanup_status=1
 fi
-if ! rm -rf -- "$transaction"; then
-    printf 'command=%s %s\nstatus=committed-cleanup-incomplete\nstep=retiring transaction directory\n' \
-        "$command_name" "$subcommand" > "$transaction/COMMITTED_CLEANUP_FAILURE" 2>/dev/null || true
-    echo "!! installation committed, but the transaction directory could not be removed: $transaction" >&2
-    exit 1
-fi
-
-echo "OK: $command_name${subcommand:+ $subcommand} completed"
-# runtime install writes no configuration, so it reports only what it touched.
-if [ "$command_name:$subcommand" = runtime:install ]; then
-    printf '  runtime: %s\n' "$ABLETON_WINE_ROOT"
-else
-    printf '  runtime: %s\n  prefix: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX"
-    if [ "$link_setup_failed" -eq 1 ]; then
-        printf '  Link: setup stopped (run: installer link enable --mode=%s)\n' "$ABLETON_LINK_MODE"
-    else
-        printf '  Link: %s\n' "$ABLETON_LINK_MODE"
+if [ "$cleanup_status" -eq 0 ]; then
+    if ! rm -rf -- "$transaction" || [ -e "$transaction" ] || [ -L "$transaction" ]; then
+        cleanup_status=1
     fi
 fi
+if [ "$cleanup_status" -ne 0 ]; then
+    cleanup_ready=0
+    echo "!! The install is ready, but old recovery files could not be removed. They were kept at $transaction." >&2 \
+        || true
+    if { [ "$core_marker_ready" -eq 0 ] \
+         && { [ -e "$transaction/active" ] || [ -L "$transaction/active" ]; }; } \
+       || { [ "$core_marker_ready" -eq 0 ] \
+            && [ "$prefix_core_marker_ready" -eq 0 ] \
+            && { [ -e "$transaction/prefix-host/active" ] \
+                 || [ -L "$transaction/prefix-host/active" ]; }; }; then
+        echo "!! Keep those files and report this cleanup problem before launching Live." >&2 \
+            || true
+    fi
+fi
+
+# Desktop integration and Link are deliberately outside the core transaction.
+# Their files belong to this project and are replaced authoritatively on every
+# run, so a later run is the repair path; failure here never removes Ableton.
+if [ "$command_name" = install ] || [ "$command_name" = update ]; then
+    if [ "$command_name" = update ]; then
+        core_outcome="Ableton is updated"
+    elif [ -n "$live_payload" ]; then
+        core_outcome="Ableton Live $ABLETON_LIVE_VERSION is installed"
+    else
+        core_outcome="The Ableton runtime and Wine prefix are ready"
+    fi
+    ABLETON_LINK_MODE="$desired_link"
+    export ABLETON_LINK_MODE
+    integration_status=0
+    ABLETON_INTERNAL_OPTIONAL_STATUS=1 \
+        "$here/install.sh" --integration-only "${install_args[@]}" \
+        || integration_status=$?
+    case "$integration_status" in
+        0) ;;
+        3)
+            integration_ready=0
+            echo "!! $core_outcome, but some desktop files need another update. Run the installer again to retry them." >&2 \
+                || true ;;
+        *)
+            integration_ready=0
+            echo "!! $core_outcome, but its desktop shortcuts could not be updated. Run the installer again to repair them." >&2 \
+                || true ;;
+    esac
+
+    link_resume_command="$(format_link_resume_command "$desired_link")"
+    if [ "$desired_link" = off ]; then
+        if ABLETON_LINK_COORDINATED=1 "$here/setup-link.sh" disable; then
+            ABLETON_LINK_MODE=off
+        else
+            link_ready=0
+            ABLETON_LINK_MODE="$prior_link"
+            echo "!! $core_outcome, but Link could not be turned off completely. Run the installer again to retry." >&2 \
+                || true
+        fi
+    elif "$here/install.sh" --link-assets-only "${install_args[@]}" \
+         && ABLETON_LINK_COORDINATED=1 "$here/setup-link.sh" enable "--mode=$desired_link"; then
+        ABLETON_LINK_MODE="$desired_link"
+    else
+        link_ready=0
+        ABLETON_LINK_MODE="$prior_link"
+        echo "!! $core_outcome, but Link could not be set up. Retry with: $link_resume_command" >&2 \
+            || true
+    fi
+    export ABLETON_LINK_MODE
+    # Link owns its own requested system change. Its generated preference file
+    # is safe to reload and replace; a stale parent checksum must not add a
+    # second failure path after Link has already finished.
+    unset ABLETON_CONFIG_SNAPSHOT_PATH ABLETON_CONFIG_SNAPSHOT_TOKEN \
+        ABLETON_CONFIG_SNAPSHOT_VALUES
+    if ! ableton_write_config; then
+        settings_ready=0
+        echo "!! $core_outcome, but the installer could not save these settings. Run the installer again to retry." >&2 \
+            || true
+    fi
+elif [ "$command_name:$subcommand" = runtime:install ] \
+     && [ "${ABLETON_CONFIG_REPAIR_NEEDED:-0}" = 1 ]; then
+    if ! ableton_write_config; then
+        settings_ready=0
+        echo "!! Wine is ready, but installer settings could not be saved. Run the same command again to retry." >&2 \
+            || true
+    fi
+elif [ "$command_name:$subcommand" = prefix:create ] \
+     || [ "$command_name:$subcommand" = prefix:update ]; then
+    if ! ableton_write_config; then
+        settings_ready=0
+        echo "!! The Wine prefix is ready, but the installer could not save its location. Run the same command again to retry." >&2 \
+            || true
+    fi
+fi
+
+case "$command_name:$subcommand" in
+    runtime:install)
+        echo "OK: the Wine runtime is installed"
+        printf '  runtime: %s\n' "$ABLETON_WINE_ROOT" ;;
+    install:|update:)
+        printf 'OK: %s\n' "$core_outcome"
+        printf '  runtime: %s\n  prefix: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX"
+        if [ "$integration_ready" -eq 1 ]; then
+            printf '  desktop shortcuts: ready\n'
+        else
+            printf '  desktop shortcuts: retry needed\n'
+        fi
+        if [ "$link_ready" -eq 1 ]; then
+            printf '  Link: %s\n' "$ABLETON_LINK_MODE"
+        else
+            printf '  Link: unchanged; setup can be retried\n'
+        fi
+        if [ "$settings_ready" -eq 1 ]; then
+            printf '  saved settings: ready\n'
+        else
+            printf '  saved settings: retry needed\n'
+        fi
+        if [ "$cleanup_ready" -eq 1 ]; then
+            printf '  old recovery files: removed\n'
+        else
+            printf '  old recovery files: remain at %s\n' "$transaction"
+        fi ;;
+    prefix:create)
+        echo "OK: the Wine prefix is ready"
+        printf '  runtime: %s\n  prefix: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX"
+        [ "$settings_ready" -eq 1 ] || printf '  saved settings: retry needed\n' ;;
+    prefix:update)
+        echo "OK: the Wine prefix is updated"
+        printf '  runtime: %s\n  prefix: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX"
+        [ "$settings_ready" -eq 1 ] || printf '  saved settings: retry needed\n' ;;
+    link:enable)
+        printf 'OK: Ableton Link is enabled (%s)\n' "$ABLETON_LINK_MODE" ;;
+    link:disable)
+        echo "OK: Ableton Link is off" ;;
+    *)
+        echo "OK: requested change completed"
+        printf '  runtime: %s\n  prefix: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" ;;
+esac
