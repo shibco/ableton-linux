@@ -9,6 +9,11 @@ declare -Ag ABLETON_OWNED_KINDS=()
 declare -Ag ABLETON_MANIFEST_TOUCHED=()
 declare -Ag ABLETON_MANIFEST_DEOWNED=()
 declare -gi ABLETON_OPTIONAL_FILE_FAILURES=0
+declare -gi ABLETON_OPTIONAL_FILE_CANCELLED=0
+declare -gi ABLETON_OPTIONAL_FILES_KEPT=0
+declare -gi ABLETON_OPTIONAL_FILES_BACKED_UP=0
+declare -gi ABLETON_PROJECT_OVERWRITE_ALL=0
+declare -gi ABLETON_PROJECT_KEEP_ALL=0
 declare -gi ABLETON_PUBLICATION_JOURNAL_BROKEN=0
 
 ableton_file_has_no_nul()
@@ -1062,7 +1067,7 @@ ableton_validate_install_state_journals()
             "$ABLETON_STATE_HOME/install-manifest.tsv" || return 1
     elif ! ableton_validate_ownership_manifest \
             "$ABLETON_STATE_HOME/install-manifest.tsv" >/dev/null 2>&1; then
-        echo "   rebuilding the installed-file list" || true
+        ui_status m_rebuilding_file_list
     fi
     # Repair rebuilds installer-generated files and their inventory. Saved
     # earlier files are relevant only when uninstall needs to restore them, so
@@ -1453,26 +1458,166 @@ ableton_publish_without_file_journal()
     return "$rc"
 }
 
-# Optional files are separate repairs. A blocked shared path must not prevent
-# later project-owned files from being refreshed in the same run.
-ableton_try_publish_file()
+# Project files are a fixed list of independent copies. A failed path does not
+# stop later paths, and completed copies are never restored automatically.
+ableton_prepare_project_backup_dir()
 {
-    if ableton_publish_file "$@"; then return 0; fi
-    ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    local root stamp marker
+    if [ -n "${ABLETON_PROJECT_BACKUP_DIR:-}" ]; then
+        if [ -z "${ABLETON_PROJECT_BACKUP_STAMP:-}" ]; then
+            ABLETON_PROJECT_BACKUP_STAMP="$(date -u +%Y%m%dT%H%M%SZ)" || return 1
+            export ABLETON_PROJECT_BACKUP_STAMP
+        fi
+        return 0
+    fi
+    root="$ABLETON_STATE_HOME/backups"
+    marker="$ABLETON_STATE_HOME/.ableton-linux-state"
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)" || return 1
+    mkdir -p -- "$root" || return 1
+    if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
+        printf 'format=1\nowner=ableton-linux\n' > "$marker" 2>/dev/null || true
+        chmod 600 "$marker" 2>/dev/null || true
+    fi
+    ABLETON_PROJECT_BACKUP_DIR="$(mktemp -d "$root/$stamp.XXXXXX")" || return 1
+    ABLETON_PROJECT_BACKUP_STAMP="$stamp"
+    export ABLETON_PROJECT_BACKUP_DIR ABLETON_PROJECT_BACKUP_STAMP
+}
+
+ableton_project_choice_marker()   # marker name: present or created in the run's backup dir
+{
+    local marker
+    ableton_prepare_project_backup_dir || return 1
+    marker="$ABLETON_PROJECT_BACKUP_DIR/$1"
+    mkdir -- "$marker" 2>/dev/null || { [ -d "$marker" ] && [ ! -L "$marker" ]; }
+}
+
+# One question per installer run, at the first existing destination. 0 =
+# overwrite (the default), 1 = keep every existing destination, 2 = abort,
+# 3 = the overwrite choice could not be recorded for later processes.
+ableton_project_overwrite_choice()
+{
+    local target="$1" run="${ABLETON_PROJECT_BACKUP_DIR:-}"
+    if [ "$ABLETON_PROJECT_KEEP_ALL" -eq 1 ] \
+       || { [ -n "$run" ] && [ -d "$run/.keep-all" ] && [ ! -L "$run/.keep-all" ]; }; then
+        return 1
+    fi
+    [ "${ABLETON_PROJECT_ASSUME_YES:-0}" != 1 ] \
+        && [ "$ABLETON_PROJECT_OVERWRITE_ALL" -ne 1 ] \
+        && { [ -z "$run" ] || [ ! -d "$run/.overwrite-all" ] || [ -L "$run/.overwrite-all" ]; } \
+        || return 0
+    printf '%s exists.\n' "$target" >&2 || true
+    ui_question q_overwrite_title o q_overwrite_all q_keep q_abort
+    case "$UI_ANSWER" in
+        k)
+            ableton_project_choice_marker .keep-all || true
+            ABLETON_PROJECT_KEEP_ALL=1
+            ui_info q_keep_chosen
+            return 1 ;;
+        a)
+            ui_info q_abort_chosen
+            return 2 ;;
+    esac
+    if ! ableton_project_choice_marker .overwrite-all; then
+        echo "!! $(ui_text m_overwrite_all_failed)" >&2 || true
+        return 3
+    fi
+    ABLETON_PROJECT_OVERWRITE_ALL=1
+    ui_info q_overwrite_chosen "$ABLETON_PROJECT_BACKUP_DIR"
     return 0
 }
 
-ableton_try_publish_launcher_file()
+ableton_backup_project_destination()
 {
-    if ableton_publish_launcher_file "$@"; then return 0; fi
-    ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    local target="$1" relative backup parent
+    if ! ableton_prepare_project_backup_dir; then
+        echo "!! backup failed; left destination untouched: $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+        return 1
+    fi
+    relative="${target#/}"
+    backup="$ABLETON_PROJECT_BACKUP_DIR/$relative.bak-$ABLETON_PROJECT_BACKUP_STAMP"
+    parent="$(dirname -- "$backup")" || return 1
+    if ! mkdir -p -- "$parent"; then
+        echo "!! backup failed; left destination untouched: $target -> $backup" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+        return 1
+    fi
+    if ! mv -T -- "$target" "$backup"; then
+        echo "!! backup failed; left destination untouched: $target -> $backup" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+        return 1
+    fi
+    ABLETON_OPTIONAL_FILES_BACKED_UP=$((ABLETON_OPTIONAL_FILES_BACKED_UP + 1))
+    printf '   backup: %s\n' "$backup" || true
+}
+
+ableton_prepare_project_destination()
+{
+    local source="$1" target="$2" choice parent
+    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 1
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        if ableton_project_overwrite_choice "$target"; then
+            choice=0
+        else
+            choice=$?
+        fi
+        case "$choice" in
+            0) ableton_backup_project_destination "$target" || return 1 ;;
+            1)
+                ABLETON_OPTIONAL_FILES_KEPT=$((ABLETON_OPTIONAL_FILES_KEPT + 1))
+                ui_status m_kept_file "$target"
+                return 1 ;;
+            2)
+                ABLETON_OPTIONAL_FILE_CANCELLED=1
+                echo "!! cancelled before replacing $target" >&2 || true
+                return 1 ;;
+            3)
+                ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+                return 1 ;;
+        esac
+    fi
+    parent="$(dirname -- "$target")" || return 1
+    if ! mkdir -p -- "$parent"; then
+        echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+        return 1
+    fi
+}
+
+ableton_install_project_file()
+{
+    local mode="$1" source="$2" target="$3"
+    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
+    if [ ! -f "$source" ]; then
+        echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+        return 0
+    fi
+    ableton_prepare_project_destination "$source" "$target" || return 0
+    if ! cp -- "$source" "$target"; then
+        echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    elif ! chmod "$mode" "$target"; then
+        echo "!! chmod failed: $target (mode $mode)" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    fi
     return 0
 }
 
-ableton_try_publish_launcher_symlink()
+ableton_install_project_symlink()
 {
-    if ableton_publish_launcher_symlink "$@"; then return 0; fi
-    ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    local source="$1" target="$2"
+    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
+    if [ ! -e "$source" ] && [ ! -L "$source" ]; then
+        echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+        return 0
+    fi
+    ableton_prepare_project_destination "$source" "$target" || return 0
+    if ! ln -s -- "$source" "$target"; then
+        echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    fi
     return 0
 }
 
@@ -1575,7 +1720,7 @@ ableton_remove_managed_file()
         fi
         ableton_txn_expect "$backup" absent || return 1
         rm -f -- "$backup" || return 1
-        printf '   restored your previous %s\n' "$target" || true
+        ui_status pa_restored_previous "$target"
     else
         rm -f -- "$target" || return 1
         [ ! -e "$target" ] && [ ! -L "$target" ] || return 1

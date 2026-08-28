@@ -36,7 +36,8 @@ mkdir -p -- "$kit/../tools"
 cp -- "$here/../tools/setsyscolors.exe" "$here/../tools/learnheal.exe" \
     "$kit/../tools/"
 cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
-    "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$kit/lib/"
+    "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$here/lib/ui.sh" \
+    "$kit/lib/"
 cat > "$kit/setup-link.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -160,7 +161,7 @@ run_integration_install()
         ABLETON_WINEPREFIX="$base/prefix" \
         ABLETON_LINK_MODE=off \
         ABLETON_SHORTCUTS=preserve \
-        bash "$here/install.sh" --integration-only
+        bash "$here/install.sh" --integration-only --yes
 }
 
 assert_warning_contract()
@@ -312,9 +313,9 @@ env HOME="$base/home" \
     bash "$kit/uninstall.sh" --keep-prefix --yes --dry-run \
     > "$base/out" 2> "$base/err" \
     || fail "snapshot-free current uninstall plan failed"
-grep -qxF '  clear only file-opening defaults that name Ableton Linux' "$base/out" \
+grep -qF 'Clear only the file-opening defaults that name Ableton Linux' "$base/out" \
     || fail "snapshot-free current uninstall plan misdescribed MIME cleanup"
-if grep -qxF '  leave file-opening defaults unchanged' "$base/out"; then
+if grep -qF 'Leave file-opening defaults unchanged' "$base/out"; then
     fail "snapshot-free current uninstall plan claimed its own defaults were untouched"
 fi
 ok "snapshot-free current uninstall plans describe their narrow MIME cleanup truthfully"
@@ -333,9 +334,27 @@ run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
 if grep -q '^!! warning:' "$base/err"; then
     fail "clean full integration uninstall emitted an optional-failure warning"
 fi
-grep -qxF 'OK: uninstall complete' "$base/out" \
+grep -qF '│  ┃ 2/2 ╏ REMOVE ABLETON LINUX ┃' "$base/out" \
+    && grep -qF '│  └─ Step 2 Complete! ✓' "$base/out" \
     || fail "clean full integration uninstall did not report complete success"
 ok "clean full integration uninstall removes all managed state without warnings"
+
+# Per-run overwrite backups are inert manual recovery files. Uninstall keeps
+# them byte-for-byte and removes the independently managed runtime as usual.
+base="$(new_fixture inert-installer-backups)"
+backup_root="$(state_path "$base")/backups"
+backup="$backup_root/20260827T000000Z.test/home/user/.local/bin/ableton-live.bak-20260827T000000Z"
+mkdir -p -- "$(dirname "$backup")"
+printf 'manual recovery sentinel\n' > "$backup"
+run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
+    || fail "manual installer backup made uninstall fail"
+[ ! -e "$base/runtime" ] \
+    || fail "manual installer backup retained the runtime"
+grep -qxF 'manual recovery sentinel' "$backup" \
+    || fail "uninstall changed or removed a manual installer backup"
+grep -qF "kept manual installer backups at $backup_root" "$base/out" \
+    || fail "uninstall did not report the retained manual backups"
+ok "uninstall leaves per-run installer backups for manual recovery"
 
 # Legacy marker adoption creates a short-lived transaction under state. The
 # uninstall must mark that directory before using it, so its own transaction
@@ -387,7 +406,8 @@ run_uninstall "$base" --keep-prefix "ABLETON_WINE_ROOT=$legacy_runtime" \
 if grep -q '^!! warning:' "$base/err"; then
     fail "clean legacy support-file removal emitted a warning"
 fi
-grep -qxF 'OK: uninstall complete' "$base/out" \
+grep -qF '│  ┃ 2/2 ╏ REMOVE ABLETON LINUX ┃' "$base/out" \
+    && grep -qF '│  └─ Step 2 Complete! ✓' "$base/out" \
     || fail "clean legacy support-file removal did not report complete success"
 ok "clean legacy uninstall retires exactly recognised historical support files"
 
@@ -987,7 +1007,8 @@ run_uninstall "$base" --keep-prefix \
     || fail "runtime command status overrode a successful deletion outcome"
 [ ! -e "$base/runtime" ] \
     || fail "status-only runtime failure fixture did not reach the deletion outcome"
-grep -qxF 'OK: uninstall complete' "$base/out" \
+grep -qF '│  ┃ 2/2 ╏ REMOVE ABLETON LINUX ┃' "$base/out" \
+    && grep -qF '│  └─ Step 2 Complete! ✓' "$base/out" \
     || fail "successful runtime deletion outcome was not reported as complete"
 ok "runtime deletion is classified by postcondition, not command status alone"
 

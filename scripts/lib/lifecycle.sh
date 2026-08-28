@@ -241,7 +241,7 @@ ableton_prefix_holders()
 }
 
 # A helper this project installed and started, asked by the data home rather than
-# by name so it stays right as helpers come and go.  Each carries its own exit
+# by name so it stays right as helpers come and go.  Each has its own exit
 # contract - learnheal.exe outlives Live deliberately, to heal the Learn View
 # pane - so one still running does not mean the session is unfinished.
 ableton_vendored_helper_image()

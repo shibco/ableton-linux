@@ -20,7 +20,7 @@ declare -F ableton_config_init >/dev/null 2>&1 || {
 ABLETON_CONFIG_LAYOUT_ROOTS='runtime prefix state'
 export ABLETON_CONFIG_LAYOUT_ROOTS
 ableton_config_init repair
-for name in lifecycle manifest pipeasio; do
+for name in ui lifecycle manifest pipeasio; do
     found=""
     for lib in "$here/lib/$name.sh" "$ABLETON_DATA_HOME/lib/$name.sh"; do
         [ -r "$lib" ] || continue
@@ -507,7 +507,7 @@ if ableton_pipeasio_validate_runtime "$runtime" >/dev/null 2>&1; then
         ableton_pipeasio_remove_panel_integration || panel_restore_ready=0
     fi
 else
-    # Legacy runtimes have no sealed panel contract.  Remove only projections
+    # Legacy runtimes have no sealed panel state.  Remove only projections
     # whose literal manifest digest still proves this project owns them.
     ableton_pipeasio_remove_panel_integration || panel_restore_ready=0
 fi

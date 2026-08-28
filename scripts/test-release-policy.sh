@@ -153,8 +153,7 @@ seal_kit()
     tar --sort=name --owner=0 --group=0 --numeric-owner \
         -cf "$payload" -C "$source_kit" .
     digest="$(sha256sum "$payload" | awk '{print $1}')"
-    sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$digest/g" \
-        "$root/scripts/setup-run-header.sh" > "$wrapper"
+    "$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $digest > "$wrapper"
     cat "$payload" >> "$wrapper"
     chmod +x "$wrapper"
 }
@@ -187,10 +186,15 @@ cleanup_rc=$?
 set -e
 [ "$cleanup_rc" -eq 0 ] \
     || fail "installer wrapper changed child status 0 to $cleanup_rc after scratch cleanup failed"
-grep -qF 'installer child reached status 0' "$tmp/cleanup-zero.out" \
+# The wrapper keeps the screen for the renderer; what the child and the
+# wrapper print raw goes to the log beside the .run (rule D1).
+newest_log() { ls -t "$tmp"/ableton-linux-installer-*.log 2>/dev/null | head -n 1; }
+grep -qF 'installer child reached status 0' "$(newest_log)" \
     || fail 'installer wrapper did not reach its child after early scratch cleanup failed'
-grep -qF '!! The installer finished, but temporary files remain at' "$tmp/cleanup-zero.out" \
+grep -qF 'The installer finished, but temporary files remain at' "$(newest_log)" \
     || fail 'installer wrapper did not name retained scratch after cleanup failed'
+grep -q '│ Complete │' "$tmp/cleanup-zero.out" \
+    || fail 'installer wrapper did not report a completed run after cleanup failed'
 
 set +e
 PATH="$tmp/failing-rm:$PATH" TMPDIR="$tmp/wrapper-tmp" \
@@ -200,15 +204,16 @@ cleanup_rc=$?
 set -e
 [ "$cleanup_rc" -eq 37 ] \
     || fail "installer wrapper changed child status 37 to $cleanup_rc after scratch cleanup failed"
-grep -qF 'installer child reached status 37' "$tmp/cleanup-nonzero.out" \
+grep -qF 'installer child reached status 37' "$(newest_log)" \
     || fail 'installer wrapper did not preserve the failing child execution path'
+grep -q '│   Failed │' "$tmp/cleanup-nonzero.out" \
+    || fail 'installer wrapper did not report the failed run'
 printf 'ok - installer wrapper scratch cleanup is warning-only and preserves child status\n'
 
 tar --sort=name --owner=0 --group=0 --numeric-owner \
     -cf "$tmp/payload.tar" -C "$tmp/kit" .
 payload_sha="$(sha256sum "$tmp/payload.tar" | awk '{print $1}')"
-sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$payload_sha/g" \
-    "$root/scripts/setup-run-header.sh" > "$tmp/installer.run"
+"$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $payload_sha > "$tmp/installer.run"
 cat "$tmp/payload.tar" >> "$tmp/installer.run"
 chmod +x "$tmp/installer.run"
 bash "$checker" "$tmp/official" --version 2026.08.12.1 \
@@ -221,8 +226,7 @@ payload_size="$(wc -c < "$tmp/nonzero-tail.tar")"
 printf X | dd of="$tmp/nonzero-tail.tar" bs=1 seek="$((payload_size - 1))" \
     conv=notrunc status=none
 nonzero_tail_sha="$(sha256sum "$tmp/nonzero-tail.tar" | awk '{print $1}')"
-sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$nonzero_tail_sha/g" \
-    "$root/scripts/setup-run-header.sh" > "$tmp/nonzero-tail.run"
+"$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $nonzero_tail_sha > "$tmp/nonzero-tail.run"
 cat "$tmp/nonzero-tail.tar" >> "$tmp/nonzero-tail.run"
 if bash "$checker" "$tmp/official" --version 2026.08.12.1 \
     --runtime "$tmp/runtime.tar.zst" --installer "$tmp/nonzero-tail.run" \
@@ -235,8 +239,7 @@ printf '\n# changed after the tag\n' >> "$tmp/tampered-kit/scripts/install.sh"
 tar --sort=name --owner=0 --group=0 --numeric-owner \
     -cf "$tmp/tampered-payload.tar" -C "$tmp/tampered-kit" .
 tampered_sha="$(sha256sum "$tmp/tampered-payload.tar" | awk '{print $1}')"
-sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$tampered_sha/g" \
-    "$root/scripts/setup-run-header.sh" > "$tmp/tampered-installer.run"
+"$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $tampered_sha > "$tmp/tampered-installer.run"
 cat "$tmp/tampered-payload.tar" >> "$tmp/tampered-installer.run"
 if bash "$checker" "$tmp/official" --version 2026.08.12.1 \
     --runtime "$tmp/runtime.tar.zst" --installer "$tmp/tampered-installer.run" \
@@ -280,8 +283,7 @@ cp -- "$tmp/skipped-runtime.tar.zst" "$tmp/kit/dist/runtime.tar.zst"
 tar --sort=name --owner=0 --group=0 --numeric-owner \
     -cf "$tmp/mixed-payload.tar" -C "$tmp/kit" .
 mixed_payload_sha="$(sha256sum "$tmp/mixed-payload.tar" | awk '{print $1}')"
-sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$mixed_payload_sha/g" \
-    "$root/scripts/setup-run-header.sh" > "$tmp/mixed-installer.run"
+"$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $mixed_payload_sha > "$tmp/mixed-installer.run"
 cat "$tmp/mixed-payload.tar" >> "$tmp/mixed-installer.run"
 chmod +x "$tmp/mixed-installer.run"
 if bash "$checker" "$tmp/official" --version 2026.08.12.1 \

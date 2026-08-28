@@ -336,9 +336,11 @@ def verify(args: argparse.Namespace) -> None:
     info = args.info.resolve()
     runtime = args.runtime.resolve()
     template = root / "scripts/setup-run-header.sh"
+    renderer = root / "scripts/lib/ui.sh"
     for path, label in (
         (installer, "installer"), (info, "BUILD-INFO"), (runtime, "runtime"),
         (Path(f"{runtime}.sha256"), "runtime checksum"), (template, "trusted installer header"),
+        (renderer, "trusted installer renderer"),
     ):
         regular_file(path, label)
     wrapper_size = installer.stat().st_size
@@ -360,7 +362,13 @@ def verify(args: argparse.Namespace) -> None:
                 payload.write(chunk)
         payload.flush()
         payload_sha = digest.hexdigest()
-        trusted_header = template.read_bytes().replace(b"@VERSION@", args.version.encode("ascii"))
+        # The packer inlines the renderer at the @UI_LIB@ line before it
+        # fills the two markers (make-installer.sh render_header).
+        trusted_header = template.read_bytes()
+        if trusted_header.count(b"@UI_LIB@\n") != 1:
+            fail("trusted installer header does not carry exactly one @UI_LIB@ line")
+        trusted_header = trusted_header.replace(b"@UI_LIB@\n", renderer.read_bytes())
+        trusted_header = trusted_header.replace(b"@VERSION@", args.version.encode("ascii"))
         trusted_header = trusted_header.replace(b"@PAYLOAD_SHA@", payload_sha.encode("ascii"))
         with installer.open("rb") as candidate:
             candidate_header = candidate.read(payload_offset)

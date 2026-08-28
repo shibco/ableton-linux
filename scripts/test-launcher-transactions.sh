@@ -211,8 +211,12 @@ block="$(run_isolated "$base" bash -c \
     '. "$1"; ableton_dpi_block_for_scale 1.33333 gnome' _ "$here/detect-scale.sh")"
 [ "$block" = fractional ] \
     || fail "GNOME mixed-scale detection did not select the doubled-framebuffer DPI block"
-grep -qF "using GNOME/Xwayland's shared framebuffer scale from 1.3333333333333333" \
+grep -qxF 'note: monitors run mixed scales (1.0 1.3333333333333333).' \
+    "$base/detect.err" || fail "GNOME mixed-scale detection did not list the active scales cleanly"
+grep -qxF "note: using GNOME/Xwayland's shared framebuffer scale: 1.3333333333333333." \
     "$base/detect.err" || fail "GNOME mixed-scale detection did not explain its global choice"
+awk 'length > 80 { exit 1 }' "$base/detect.err" \
+    || fail "GNOME mixed-scale diagnostics exceed the terminal-friendly line width"
 ok "GNOME mixed scales follow Xwayland's shared framebuffer"
 
 # Changing LogPixels through reg.exe starts Wine under the old value. A cold

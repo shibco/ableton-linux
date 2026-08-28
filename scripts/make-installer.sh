@@ -12,6 +12,50 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 cd "$root"
 
+usage()
+{
+    cat <<'EOF'
+Usage: scripts/make-installer.sh [--dev]
+       scripts/make-installer.sh --render-header --version VERSION --payload-sha SHA
+
+Packs dist/ableton-wine-setup-VERSION.run from the attested dist/ artefacts.
+  --dev             pack dist/ableton-wine-setup-VERSION-dev.run from whatever
+                    is in dist/ with no BUILD-INFO, digest, or attestation
+                    check; for trying script changes, never for a release
+  --render-header   print the .run header (setup-run-header.sh with
+                    scripts/lib/ui.sh inlined and the markers filled) and exit
+EOF
+}
+
+# The header carries the renderer so the banner, the system check, and the
+# action menu render before the kit exists.
+render_header()
+{
+    local version="$1" payload_sha="$2"
+    sed -e "s/@VERSION@/$version/g" -e "s/@PAYLOAD_SHA@/$payload_sha/g" \
+        -e '/^@UI_LIB@$/{r scripts/lib/ui.sh' -e 'd}' scripts/setup-run-header.sh
+}
+
+dev_pack=0
+case "${1:-}" in
+    --help|-h) usage; exit 0 ;;
+    --dev) dev_pack=1; shift ;;
+    --render-header)
+        shift
+        header_version="" header_sha=""
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --version) header_version="${2:?}"; shift 2 ;;
+                --payload-sha) header_sha="${2:?}"; shift 2 ;;
+                *) usage >&2; exit 2 ;;
+            esac
+        done
+        [ -n "$header_version" ] && [ -n "$header_sha" ] || { usage >&2; exit 2; }
+        render_header "$header_version" "$header_sha"
+        exit 0 ;;
+esac
+[ "$#" -eq 0 ] || { usage >&2; exit 2; }
+
 NAME="wine-d2d1-nspa-11.13"
 VERSION="$(cat VERSION)"
 [[ "$VERSION" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] \
@@ -31,6 +75,9 @@ linkd="dist/ableton-linkd"
 [ -f "$ntsync_probe" ] || { echo "!! $ntsync_probe is missing" >&2; exit 1; }
 [ -x "$cabextract_static" ] || { echo "!! dist/cabextract-static is missing: run ./build.sh first" >&2; exit 1; }
 [ -x "$linkd" ] || { echo "!! dist/ableton-linkd is missing: run ./build.sh first" >&2; exit 1; }
+if [ "$dev_pack" -eq 1 ]; then
+    echo "== dev pack: BUILD-INFO, digest, and attestation checks skipped =="
+else
 if [ "$(grep -c '^dist-version:' "$build_info" || true)" -ne 1 ] \
    || ! grep -qxF "dist-version: $VERSION" "$build_info"; then
     echo "!! BUILD-INFO does not match VERSION $VERSION" >&2
@@ -55,6 +102,7 @@ for helper_spec in \
         exit 1
     }
 done
+fi
 [ "$(wc -l < "$tarball.sha256")" -eq 1 ] || {
     echo "!! exact runtime checksum record is invalid" >&2; exit 1; }
 read -r runtime_sha runtime_checksum_name runtime_checksum_extra < "$tarball.sha256"
@@ -66,7 +114,7 @@ runtime_checksum_name="${runtime_checksum_name#\*}"
 echo "   runtime: $(basename "$tarball")"
 
 echo "== [0/5] build audit (no unaudited runtime gets packed) =="
-bash scripts/build-audit.sh "$tarball"
+[ "$dev_pack" -eq 1 ] || bash scripts/build-audit.sh "$tarball"
 
 echo "== [1/5] verify attested installer helpers =="
 stage="$(mktemp -d)"
@@ -101,11 +149,11 @@ install -m755 scripts/setup-realtime.sh scripts/audio-report.sh scripts/rollback
       "$kit/scripts/"
 install -m644 "$ntsync_probe" "$kit/scripts/ntsyncprobe.exe"
 cp -- scripts/lib/config.sh scripts/lib/lifecycle.sh scripts/lib/live-options.sh \
-      scripts/lib/manifest.sh scripts/lib/pipeasio.sh \
+      scripts/lib/manifest.sh scripts/lib/pipeasio.sh scripts/lib/ui.sh \
       "$kit/scripts/lib/"
 chmod 644 "$kit/scripts/lib/config.sh" "$kit/scripts/lib/lifecycle.sh" \
     "$kit/scripts/lib/live-options.sh" "$kit/scripts/lib/manifest.sh" \
-    "$kit/scripts/lib/pipeasio.sh"
+    "$kit/scripts/lib/pipeasio.sh" "$kit/scripts/lib/ui.sh"
 install -m644 scripts/ableton-linkd.service "$kit/scripts/ableton-linkd.service"
 install -m644 tools/setsyscolors.exe "$kit/scripts/setsyscolors.exe"
 install -m644 tools/learnheal.exe "$kit/scripts/learnheal.exe"
@@ -185,15 +233,21 @@ tar --sort=name --owner=0 --group=0 --numeric-owner \
     -cf "$payload" -C "$kit" .
 payload_sha="$(sha256sum "$payload" | awk '{print $1}')"
 out="dist/ableton-wine-setup-${VERSION}.run"
-sed -e "s/@VERSION@/$VERSION/g" -e "s/@PAYLOAD_SHA@/$payload_sha/g" \
-    scripts/setup-run-header.sh > "$out"
+[ "$dev_pack" -eq 0 ] || out="dist/ableton-wine-setup-${VERSION}-dev.run"
+render_header "$VERSION" "$payload_sha" > "$out"
+grep -q '^declare -A UI_TEXT=' "$out" || {
+    echo "!! the .run header did not receive the renderer" >&2; exit 1; }
 cat "$payload" >> "$out"
 chmod +x "$out"
 ( cd dist && sha256sum "$(basename "$out")" > "$(basename "$out").sha256" )
 
 echo "== [4/5] wrapper self-check =="
-bash scripts/check-release-build-info.sh "$build_info" \
-    --version "$VERSION" --runtime "$tarball" --installer "$out"
+if [ "$dev_pack" -eq 1 ]; then
+    sh "$out" --help > /dev/null
+else
+    bash scripts/check-release-build-info.sh "$build_info" \
+        --version "$VERSION" --runtime "$tarball" --installer "$out"
+fi
 echo
 echo "== [5/5] done =="
 echo "OK: $out ($(du -h "$out" | cut -f1))"

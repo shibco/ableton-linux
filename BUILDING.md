@@ -72,6 +72,8 @@ make test
 
 `make check` inspects the pointer changes and tests their limits with difficult input. Neither it nor `make verify` starts Wine or Live.
 
+`scripts/test-installer-ui.sh` covers the installer's screen. It renders a fixed run and compares the result byte for byte with a golden transcript of the template. It replays a real pseudo-terminal through a small terminal simulator to check the `└─` to `├─` rewrite. It also checks that only `scripts/lib/ui.sh` prints tree glyphs and that every sentence comes from the dictionary.
+
 Verify all pinned build and packaging inputs:
 
 ```bash
@@ -114,6 +116,16 @@ After a successful `./build.sh`, create the single-file installer:
 ```
 
 This writes `dist/ableton-wine-setup-<version>.run` and its SHA-256 file. Packaging refuses a build that lacks the required sanitizer result or fails the runtime audit.
+
+To try a script change with the Wine runtime you already built, pack a development installer from the current contents of `dist/`:
+
+```bash
+./scripts/make-installer.sh --dev
+```
+
+This command writes `dist/ableton-wine-setup-<version>-dev.run` and skips the BUILD-INFO, digest, and attestation checks. Publish only the release `.run`.
+
+The packer builds the `.run` header from `scripts/setup-run-header.sh` and inserts `scripts/lib/ui.sh` at the `@UI_LIB@` marker, so the banner and the action menu render before the installer unpacks the kit. `./scripts/make-installer.sh --render-header --version V --payload-sha S` prints that assembled header. The test suites use it to build stub installers.
 
 ## Current configuration
 

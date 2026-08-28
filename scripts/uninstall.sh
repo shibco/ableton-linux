@@ -11,6 +11,15 @@ declare -F ableton_config_init >/dev/null 2>&1 || {
     echo "!! Uninstall support is incomplete. Run the latest installer again, then retry uninstall." >&2
     exit 1
 }
+# shellcheck disable=SC1090
+for lib in "$here/lib/ui.sh" "$here/ui.sh" \
+           "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/ui.sh"; do
+    if [ -r "$lib" ]; then . "$lib"; break; fi
+done
+declare -F ui_step_begin >/dev/null 2>&1 || {
+    echo "!! Uninstall support is incomplete. Run the latest installer again, then retry uninstall." >&2
+    exit 1
+}
 # Installer settings are cleanup/retry convenience, not deletion authority.
 # Repair mode salvages valid path values (or accepts explicit caller values);
 # the runtime/prefix markers and registry checks below remain the hard proof.
@@ -44,16 +53,12 @@ dry_run=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --help|-h)
-            cat <<'EOF'
-Usage: uninstall.sh [--keep-prefix|--delete-prefix] [--yes] [--dry-run]
-
-The prefix is kept by default. --delete-prefix removes Live and its Wine-side
-authorisation after validating a project marker (or the legacy default path).
-EOF
+            ui_note u_usage_line1
+            ui_note u_usage_line2
             exit 0 ;;
         --keep-prefix) keep_prefix=1 ;;
         --delete-prefix) delete_prefix=1 ;;
-        --prefix) delete_prefix=1; echo "WARNING: --prefix is deprecated; use --delete-prefix" >&2 ;;
+        --prefix) delete_prefix=1; ui_warn u_prefix_flag_deprecated ;;
         --yes|-y) assume_yes=1 ;;
         --dry-run) dry_run=1 ;;
         *) echo "!! unknown uninstall option: $1" >&2; exit 2 ;;
@@ -61,6 +66,10 @@ EOF
     shift
 done
 [ "$delete_prefix" -eq 0 ] || [ "$keep_prefix" -eq 0 ] || { echo "!! --keep-prefix and --delete-prefix conflict" >&2; exit 2; }
+ABLETON_UI_ACTION="${ABLETON_UI_ACTION:-uninstall}"
+export ABLETON_UI_ACTION
+case "$ABLETON_UI_ACTION" in plan) ui_step_begin s_plan ;; *) ui_step_begin s_remove ;; esac
+trap 'ui_cleanup $?' EXIT
 
 retry_mode=--keep-prefix
 [ "$delete_prefix" -eq 0 ] || retry_mode=--delete-prefix
@@ -70,37 +79,33 @@ retain_retry_support=0
 print_uninstall_retry()
 {
     if [ -n "${ABLETON_INSTALLER_PATH:-}" ]; then
+        ui_info u_retry_installer "$ABLETON_INSTALLER_PATH" "$retry_mode"
         printf '   Retry: %q uninstall %s --yes\n' "$ABLETON_INSTALLER_PATH" "$retry_mode" >&2 || true
     else
+        ui_info u_retry_script "$here/uninstall.sh" "$retry_mode"
         printf '   Retry: bash %q %s --yes\n' "$here/uninstall.sh" "$retry_mode" >&2 || true
     fi
 }
 
-warn_optional_remaining()
-{
-    local message="$1" remedy="${2:-}"
-    printf '!! warning: %s\n' "$message" >&2 || true
-    [ -z "$remedy" ] || printf '   %s\n' "$remedy" >&2 || true
-    optional_cleanup_incomplete=1
-    retain_retry_support=1
-    return 0
-}
-
+# Optional cleanup warnings take the message key, the remedy key, then the
+# message's arguments followed by the remedy's. The log keeps the "!!" line.
 warn_optional_notice()
 {
-    local message="$1" remedy="${2:-}"
-    printf '!! warning: %s\n' "$message" >&2 || true
-    [ -z "$remedy" ] || printf '   %s\n' "$remedy" >&2 || true
+    local key="$1" remedy="$2" n
+    shift 2
+    n="${UI_TEXT[$key]//[!%]/}"
+    ui_warn "$key" "${@:1:${#n}}"
+    printf '!! warning: %s\n' "$(ui_text "$key" "${@:1:${#n}}")" >&2 || true
+    ui_info "$remedy" "${@:${#n}+1}"
     optional_cleanup_incomplete=1
     return 0
 }
 
-# Progress text is not an uninstall precondition.  In particular, a closed
-# terminal or pipe must not stop the verified removals that follow it, or turn
-# a completed removal into a failed command.
-uninstall_note()
+warn_optional_remaining()
 {
-    printf '%s\n' "$@" || true
+    warn_optional_notice "$@"
+    retain_retry_support=1
+    return 0
 }
 
 manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
@@ -151,14 +156,10 @@ if [ "$state_home_overlaps_core" -eq 1 ]; then
 elif [ -e "$mime_prestate" ] || [ -L "$mime_prestate" ]; then
     if [ ! -f "$mime_prestate" ] || [ -L "$mime_prestate" ] || [ ! -r "$mime_prestate" ]; then
         mime_prestate_usable=0
-        warn_optional_remaining \
-            "File-opening defaults were left unchanged because the saved settings at $mime_prestate could not be read safely" \
-            "Move that object aside only after checking that it is not your file."
+        warn_optional_remaining u_mime_prestate_unsafe u_mime_prestate_unsafe_hint "$mime_prestate"
     elif ! ableton_validate_mime_prestate "$mime_prestate" >/dev/null 2>&1; then
         mime_prestate_usable=0
-        warn_optional_remaining \
-            "File-opening defaults were left unchanged because the saved settings at $mime_prestate are not recognised" \
-            "Move that file aside only if you no longer need those saved settings."
+        warn_optional_remaining u_mime_prestate_unrecognised u_mime_prestate_unrecognised_hint "$mime_prestate"
     fi
 else
     mime_prestate_usable=0
@@ -174,9 +175,7 @@ legacy_state_adoption=0
 state_home_usable=1
 if [ "$state_home_overlaps_core" -eq 1 ]; then
     state_home_usable=0
-    warn_optional_remaining \
-        "Ableton Linux support files were not cleaned separately because their path overlaps the Wine runtime or prefix: $ABLETON_STATE_HOME" \
-        "The requested Wine removal will still continue; inspect any remaining support path afterward."
+    warn_optional_remaining u_state_overlaps_core u_state_overlaps_core_hint "$ABLETON_STATE_HOME"
 elif [ -e "$ABLETON_STATE_HOME" ] || [ -L "$ABLETON_STATE_HOME" ]; then
     if ableton_state_marker_valid "$ABLETON_STATE_HOME"; then
         :
@@ -186,9 +185,7 @@ elif [ -e "$ABLETON_STATE_HOME" ] || [ -L "$ABLETON_STATE_HOME" ]; then
     else
         state_home_usable=0
         optional_inventory_usable=0
-        warn_optional_remaining \
-            "Ableton Linux support files were left unchanged because their directory is not recognised: $ABLETON_STATE_HOME" \
-            "Inspect that directory and move it aside only if you are certain it belongs to this project."
+        warn_optional_remaining u_state_unrecognised u_state_unrecognised_hint "$ABLETON_STATE_HOME"
     fi
 fi
 legacy_prefix_adoption=0
@@ -219,9 +216,7 @@ mime_prestate_before=unavailable
 if [ "$mime_prestate_usable" -eq 1 ]; then
     if ! mime_prestate_before="$(ableton_manifest_digest "$mime_prestate" 2>/dev/null)"; then
         mime_prestate_usable=0
-        warn_optional_remaining \
-            "File-opening defaults were left unchanged because the saved settings at $mime_prestate could not be read" \
-            "Check the file permissions before retrying."
+        warn_optional_remaining u_mime_prestate_unreadable u_check_file_permissions_hint "$mime_prestate"
     fi
 fi
 managed_runtimes=("$safe_runtime")
@@ -328,9 +323,7 @@ leave_optional_inventory_untouched()
     optional_inventory_usable=0
     manifest_runtime_records=()
     managed_runtimes=("$safe_runtime")
-    warn_optional_remaining \
-        "Desktop shortcuts, file-opening settings, and older Wine runtimes were left unchanged because the installer's file list could not be trusted" \
-        "Inspect $manifest and $prestate, then retry after moving aside only a file you know is damaged."
+    warn_optional_remaining u_inventory_untrusted u_inventory_untrusted_hint "$manifest" "$prestate"
 }
 
 if [ "$optional_inventory_usable" -eq 1 ] \
@@ -378,31 +371,29 @@ if [ "$optional_inventory_usable" -eq 1 ] && [ -r "$manifest" ]; then
 fi
 
 if [ "$dry_run" -eq 1 ]; then
-    echo "PLAN: uninstall Ableton Linux"
-    printf '  remove the installed Wine runtime and saved previous versions: %s\n' \
-        "${managed_runtimes[*]}"
+    ui_status u_plan_heading
+    ui_status u_plan_remove_runtimes "${managed_runtimes[*]}"
     if [ "$optional_inventory_usable" -eq 0 ]; then
-        echo "  leave desktop shortcuts, file-opening settings, and older Wine runtimes unchanged"
+        ui_status u_plan_leave_desktop
     else
-        echo "  remove Ableton Linux launchers, icons, file-opening support, and diagnostic tools"
+        ui_status u_plan_remove_desktop
     fi
     if [ "$mime_prestate_usable" -eq 1 ]; then
-        echo "  restore the file-opening defaults that were in use before installation"
+        ui_status u_plan_restore_mime
     elif [ "$optional_inventory_usable" -eq 1 ]; then
-        echo "  clear only file-opening defaults that name Ableton Linux"
+        ui_status u_plan_clear_mime
     else
-        echo "  leave file-opening defaults unchanged"
+        ui_status u_plan_leave_mime
     fi
-    echo "  remove installer settings and support files"
+    ui_status u_plan_remove_settings
     if [ "$delete_prefix" -eq 0 ] && [ -f "$safe_prefix/system.reg" ]; then
-        printf '  remove PipeASIO from the kept Wine prefix: %s\n' "$safe_prefix"
+        ui_status u_plan_unregister_pipeasio "$safe_prefix"
     fi
     if ! "$here/setup-link.sh" plan-disable; then
-        warn_optional_notice \
-            "the Link shutdown plan could not be produced; Link settings may remain enabled" \
-            "Close any Ableton Link helper before retrying."
+        warn_optional_notice u_plan_link_failed u_plan_link_failed_hint
     fi
-    [ "$delete_prefix" -eq 0 ] || printf '  delete the Wine prefix, including Live and its authorisation: %s\n' "$safe_prefix"
+    [ "$delete_prefix" -eq 0 ] || ui_status u_plan_delete_prefix "$safe_prefix"
+    ui_step_end ok
     exit 0
 fi
 
@@ -410,10 +401,11 @@ fi
 if [ "$delete_prefix" -eq 1 ] && [ -e "$safe_prefix" ] && [ "$assume_yes" -ne 1 ]; then
     answer=""
     if [ -t 0 ]; then
-        printf 'Delete %s? This removes Live and its Wine-side authorisation. [y/N] ' "$safe_prefix" >&2
-        read -r -t 60 answer || answer=""
+        ui_status u_plan_delete_prefix "$safe_prefix"
+        ui_question u_q_delete_prefix k u_q_delete_yes u_q_delete_no
+        answer="$UI_ANSWER"
     fi
-    case "$answer" in y|Y|yes|YES|Yes) ;; *) echo "!! prefix deletion was not confirmed; nothing was changed" >&2; exit 1 ;; esac
+    [ "$answer" = d ] || { echo "!! prefix deletion was not confirmed; nothing was changed" >&2; exit 1; }
 fi
 
 runtime_pids_all=""
@@ -433,10 +425,10 @@ if [ -n "$runtime_pids_all" ]; then
     if [ "$assume_yes" -ne 1 ]; then
         answer=""
         if [ -t 0 ]; then
-            printf 'Stop every running client in the selected prefix and uninstall? [y/N] ' >&2
-            read -r -t 60 answer || answer=""
+            ui_question u_q_stop_clients l q_stop_prefix_end q_stop_prefix_leave
+            answer="$UI_ANSWER"
         fi
-        case "$answer" in y|Y|yes|YES|Yes) ;; *) echo "!! nothing was changed" >&2; exit 1 ;; esac
+        [ "$answer" = e ] || { echo "!! nothing was changed" >&2; exit 1; }
         runtime_stop_confirmed=1
     fi
 fi
@@ -453,9 +445,7 @@ for candidate in "${managed_runtimes[@]}"; do
         exe="$(readlink -f "$proc/exe" 2>/dev/null || true)"
         case "$exe" in "$candidate"/*)
             skipped_managed_runtimes["$candidate"]=1
-            warn_optional_remaining \
-                "an older Wine runtime was left unchanged because PID $pid is using it: $candidate" \
-                "Close that program before retrying if you want this older runtime removed."
+            warn_optional_remaining u_old_runtime_in_use u_old_runtime_in_use_hint "$pid" "$candidate"
             break ;;
         esac
     done
@@ -484,15 +474,11 @@ fi
 if [ "$mime_prestate_usable" -eq 1 ]; then
     if ! mime_prestate_after="$(ableton_manifest_digest "$mime_prestate" 2>/dev/null)"; then
         mime_prestate_usable=0
-        warn_optional_remaining \
-            "File-opening defaults were left unchanged because the saved settings at $mime_prestate could not be read again" \
-            "Check the file permissions before retrying."
+        warn_optional_remaining u_mime_prestate_reread_failed u_check_file_permissions_hint "$mime_prestate"
     elif [ "$mime_prestate_before" != "$mime_prestate_after" ] \
        || ! ableton_validate_mime_prestate "$mime_prestate" >/dev/null 2>&1; then
         mime_prestate_usable=0
-        warn_optional_remaining \
-            "File-opening defaults were left unchanged because their saved settings changed while uninstall was starting: $mime_prestate" \
-            "Review that file, then retry if you still want the old defaults restored."
+        warn_optional_remaining u_mime_prestate_changed u_mime_prestate_changed_hint "$mime_prestate"
     fi
 fi
 if [ "$state_home_usable" -eq 1 ] \
@@ -507,9 +493,7 @@ if [ "$state_home_usable" -eq 1 ] \
     state_home_usable=0
     legacy_state_adoption=0
     leave_optional_inventory_untouched
-    warn_optional_remaining \
-        "Ableton Linux support files were left unchanged because their directory changed while uninstall was starting: $ABLETON_STATE_HOME" \
-        "Inspect that directory before retrying."
+    warn_optional_remaining u_state_changed u_inspect_directory_hint "$ABLETON_STATE_HOME"
 fi
 [ ! -L "$ABLETON_WINE_ROOT" ] && [ ! -L "$ABLETON_WINEPREFIX" ] || {
     echo "!! installation paths changed; retry uninstall" >&2
@@ -543,9 +527,7 @@ for candidate in "${managed_runtimes[@]}"; do
             exit 1
         fi
         skipped_managed_runtimes["$candidate"]=1
-        warn_optional_remaining \
-            "an older Wine runtime was left unchanged because the installer no longer recognises it: $candidate" \
-            "Inspect that runtime before retrying."
+        warn_optional_remaining u_old_runtime_unrecognised u_inspect_runtime_hint "$candidate"
     }
 done
 if [ "$legacy_state_adoption" -eq 1 ] \
@@ -554,9 +536,7 @@ if [ "$legacy_state_adoption" -eq 1 ] \
         state_home_usable=0
         legacy_state_adoption=0
         leave_optional_inventory_untouched
-        warn_optional_remaining \
-            "legacy shortcut support files were left unchanged because their directory could not be prepared safely" \
-            "Inspect $ABLETON_STATE_HOME before retrying."
+        warn_optional_remaining u_legacy_state_unprepared u_inspect_path_hint "$ABLETON_STATE_HOME"
     fi
 fi
 uninstall_adoption_transaction=""
@@ -566,6 +546,7 @@ uninstall_adoption_cleanup()
 {
     local rc=$? restore_rc=0
     trap - EXIT
+    ui_cleanup "$rc"
     if [ "$uninstall_adoption_active" -eq 1 ] && [ "$rc" -ne 0 ]; then
         ableton_txn_rollback_files "$uninstall_adoption_transaction" || restore_rc=1
         if [ "$restore_rc" -eq 0 ]; then
@@ -635,9 +616,7 @@ for candidate in "${managed_runtimes[@]}"; do
         exe="$(readlink -f "$proc/exe" 2>/dev/null || true)"
         case "$exe" in "$candidate"/*)
             skipped_managed_runtimes["$candidate"]=1
-            warn_optional_remaining \
-                "an older Wine runtime was left unchanged because PID $pid began using it: $candidate" \
-                "Close that program before retrying if you want this older runtime removed."
+            warn_optional_remaining u_old_runtime_in_use_late u_old_runtime_in_use_hint "$pid" "$candidate"
             break ;;
         esac
     done
@@ -649,7 +628,7 @@ done
 # legacy launcher/VERSION evidence that the first attempt may have removed.
 if [ "$uninstall_adoption_active" -eq 1 ]; then
     uninstall_adoption_active=0
-    trap - EXIT
+    trap 'ui_cleanup $?' EXIT
     if ableton_mark_transaction_core_complete "$uninstall_adoption_transaction" \
         2>/dev/null; then
         uninstall_adoption_core_complete=1
@@ -660,13 +639,9 @@ if [ "$uninstall_adoption_active" -eq 1 ]; then
         if [ "$uninstall_adoption_core_complete" -eq 1 ] \
            || { [ ! -e "$uninstall_adoption_transaction/active" ] \
                 && [ ! -L "$uninstall_adoption_transaction/active" ]; }; then
-            warn_optional_notice \
-                "temporary legacy-install cleanup remains at $uninstall_adoption_transaction" \
-                "Check its permissions; the recognised installation is already safe to retry."
+            warn_optional_notice u_adoption_tmp_remains u_adoption_tmp_remains_hint "$uninstall_adoption_transaction"
         else
-            warn_optional_remaining \
-                "temporary legacy-install cleanup remains active at $uninstall_adoption_transaction" \
-                "Keep those files for inspection before retrying."
+            warn_optional_remaining u_adoption_tmp_active u_adoption_tmp_active_hint "$uninstall_adoption_transaction"
         fi
     fi
 fi
@@ -679,48 +654,36 @@ declare -A managed_rollback_owners=()
 declare -A skipped_managed_rollbacks=()
 runtime_inventory=""
 if ! runtime_inventory="$(mktemp "${TMPDIR:-/tmp}/ableton-uninstall-runtimes.XXXXXX")"; then
-    warn_optional_notice \
-        "older saved Wine runtimes could not be inspected because a temporary uninstall file could not be created" \
-        "Remove any older saved runtimes manually, or retry after checking the temporary-directory permissions."
+    warn_optional_notice u_rollback_scan_tmp_failed u_rollback_scan_tmp_failed_hint
 fi
 if [ -n "$runtime_inventory" ]; then
     for candidate in "${managed_runtimes[@]}"; do
         [ -z "${skipped_managed_runtimes[$candidate]+x}" ] || continue
         if ! runtime_parent="$(dirname "$candidate")" \
            || ! runtime_base="$(basename "$candidate")"; then
-            warn_optional_remaining \
-                "older saved Wine runtimes related to $candidate could not be located" \
-                "Retry after checking that the standard path tools are working."
+            warn_optional_remaining u_rollback_scan_path_failed u_rollback_scan_path_failed_hint "$candidate"
             continue
         fi
         if [ -e "$runtime_parent" ] || [ -L "$runtime_parent" ]; then
             if [ ! -d "$runtime_parent" ] || [ -L "$runtime_parent" ]; then
-                warn_optional_remaining \
-                    "older saved Wine runtimes were left unchanged because their parent directory is not safe to inspect: $runtime_parent" \
-                    "Inspect that path before retrying."
+                warn_optional_remaining u_rollback_parent_unsafe u_inspect_that_path_hint "$runtime_parent"
                 continue
             fi
         else
             continue
         fi
         if ! : > "$runtime_inventory"; then
-            warn_optional_notice \
-                "older saved Wine runtimes could not be inspected because the temporary uninstall file is not writable: $runtime_inventory" \
-                "Check that file and the temporary-directory permissions before retrying."
+            warn_optional_notice u_rollback_scan_tmp_unwritable u_rollback_scan_tmp_unwritable_hint "$runtime_inventory"
             break
         fi
         if ! find "$runtime_parent" -maxdepth 1 -mindepth 1 -type d -print0 \
             > "$runtime_inventory" 2>/dev/null; then
-            warn_optional_remaining \
-                "older saved Wine runtimes were left unchanged because $runtime_parent could not be inspected" \
-                "Check the directory permissions before retrying."
+            warn_optional_remaining u_rollback_parent_unreadable u_check_directory_permissions_hint "$runtime_parent"
             continue
         fi
         while IFS= read -r -d '' old_runtime; do
             if ! old_runtime_base="$(basename "$old_runtime")"; then
-                warn_optional_remaining \
-                    "an older saved Wine runtime could not be identified and was left unchanged: $old_runtime" \
-                    "Inspect that path before retrying."
+                warn_optional_remaining u_rollback_unidentified u_inspect_that_path_hint "$old_runtime"
                 continue
             fi
             if [[ "$old_runtime_base" != "$runtime_base-rollback-"* \
@@ -732,9 +695,7 @@ if [ -n "$runtime_inventory" ]; then
                || [ "$old_runtime_safe" != "$old_runtime" ] || [ -L "$old_runtime" ] \
                || ! ableton_runtime_marker_valid \
                     "$old_runtime" "${managed_runtime_names[$candidate]}"; then
-                warn_optional_remaining \
-                    "an unrecognised saved Wine runtime was left unchanged at $old_runtime" \
-                    "Inspect it and remove it manually only if you are certain it belongs to this project."
+                warn_optional_remaining u_rollback_unrecognised u_rollback_unrecognised_hint "$old_runtime"
                 continue
             fi
             managed_rollbacks+=("$old_runtime")
@@ -744,20 +705,16 @@ if [ -n "$runtime_inventory" ]; then
     done
     rm -f -- "$runtime_inventory" 2>/dev/null || true
     if [ -e "$runtime_inventory" ] || [ -L "$runtime_inventory" ]; then
-        warn_optional_notice \
-            "a temporary uninstall file remains at $runtime_inventory" \
-            "Check its permissions, then remove it or retry uninstall."
+        warn_optional_notice u_scan_tmp_remains u_tmp_remains_hint "$runtime_inventory"
     fi
 fi
 
-uninstall_note "== stop Ableton Linux background services =="
+ui_item_begin u_stop_services
 uninstall_partial=0
 mime_backend_unavailable=0
 if [ "$optional_inventory_usable" -eq 1 ] \
    && ! "$here/setup-link.sh" disable; then
-    warn_optional_remaining \
-        "Ableton Link integration may still be enabled" \
-        "Close any Link helper and check the user service before retrying."
+    warn_optional_remaining u_link_still_enabled u_link_still_enabled_hint
 fi
 # Not "busy && stop": under set -euo pipefail a straggler that survives the stop
 # makes the compound fail, and the script exits here - after the trap is cleared,
@@ -779,6 +736,7 @@ if [ "$uninstall_partial" -eq 1 ]; then
     echo "!! close the remaining Wine program, then run uninstall again" >&2
     exit 1
 fi
+ui_item_end ok
 
 # A retained prefix must not keep a CLSID pointing into a runtime that is about
 # to disappear.  Refuse the runtime deletion unless both exact PipeASIO keys
@@ -797,8 +755,9 @@ if [ "$delete_prefix" -eq 0 ] && [ -f "$safe_prefix/system.reg" ]; then
     {
         ableton_prefix_wait "$safe_runtime" "$safe_prefix"
     }
-    uninstall_note "== unregister PipeASIO from the retained prefix =="
+    ui_item_begin u_unregister_pipeasio
     ableton_pipeasio_unregister uninstall_wine uninstall_wineserver_wait
+    ui_item_end ok
 fi
 
 shortcut_helper="$ABLETON_DATA_HOME/shortcut-hold.sh"
@@ -812,20 +771,14 @@ if [ "$optional_inventory_usable" -eq 1 ] \
         if ! ableton_legacy_owned_path "$shortcut_helper" \
            || ! . "$shortcut_helper" 2>/dev/null \
            || ! declare -F ableton_shortcuts_prepare >/dev/null 2>&1; then
-            warn_optional_remaining \
-                "GNOME shortcut restoration was skipped because its project helper could not be used: $shortcut_helper" \
-                "Keep the saved shortcut values, repair or reinstall that helper, then retry."
+            warn_optional_remaining u_shortcuts_helper_unusable u_shortcuts_helper_unusable_hint "$shortcut_helper"
         elif ! ABLETON_SHORTCUTS=preserve \
              ableton_shortcuts_prepare "" "$legacy_shortcut_state" 0; then
-            warn_optional_remaining \
-                "GNOME shortcut restoration did not finish; saved values remain under $ABLETON_STATE_HOME" \
-                "Close Live and make sure gsettings is available before retrying."
+            warn_optional_remaining u_shortcuts_unfinished u_shortcuts_unfinished_hint "$ABLETON_STATE_HOME"
         fi
     fi
     if [ -e "$shortcut_state" ] || [ -e "$legacy_shortcut_state" ]; then
-        warn_optional_remaining \
-            "GNOME shortcut restoration is incomplete; saved values remain at ${shortcut_state}${legacy_shortcut_state:+ or $legacy_shortcut_state}" \
-            "Close Live and make sure gsettings can update your desktop shortcuts."
+        warn_optional_remaining u_shortcuts_incomplete u_shortcuts_incomplete_hint "${shortcut_state}${legacy_shortcut_state:+ or $legacy_shortcut_state}"
     fi
 fi
 
@@ -875,18 +828,14 @@ restore_adjacent_launcher_backup()
         if [ "$saved_current" = "$saved_digest" ]; then
             rm -f -- "$saved" 2>/dev/null || true
             if [ -e "$saved" ] || [ -L "$saved" ]; then
-                warn_optional_remaining \
-                    "the earlier launcher is restored at $path, but its extra saved copy remains at $saved" \
-                    "Check the saved copy's permissions before retrying."
+                warn_optional_remaining u_launcher_restored_copy_remains u_check_saved_copy_permissions_hint "$path" "$saved"
             else
-                uninstall_note "kept restored launcher $path"
+                ui_status u_kept_restored_launcher "$path"
             fi
         elif [ ! -e "$saved" ] && [ ! -L "$saved" ]; then
-            uninstall_note "kept restored launcher $path"
+            ui_status u_kept_restored_launcher "$path"
         else
-            warn_optional_remaining \
-                "kept the restored launcher at $path and a changed saved copy at $saved" \
-                "Review the changed saved copy before moving or deleting it."
+            warn_optional_remaining u_kept_restored_launcher_changed_copy u_kept_restored_launcher_changed_copy_hint "$path" "$saved"
         fi
         return 0
     fi
@@ -901,24 +850,18 @@ restore_adjacent_launcher_backup()
     fi
 
     if [ "$project_launcher" -ne 1 ]; then
-        warn_optional_remaining \
-            "kept the user-modified launcher at $path and its saved earlier launcher at $saved" \
-            "Review both files and move your preferred launcher into place before retrying."
+        warn_optional_remaining u_kept_modified_launcher u_kept_modified_launcher_hint "$path" "$saved"
         return 0
     fi
     if [ -z "$saved_current" ] || [ "$saved_current" != "$saved_digest" ]; then
-        warn_optional_remaining \
-            "the project launcher at $path was left unchanged because its saved earlier launcher is missing or changed: $saved" \
-            "Restore or review the saved launcher before retrying."
+        warn_optional_remaining u_launcher_saved_copy_invalid u_launcher_saved_copy_invalid_hint "$path" "$saved"
         return 0
     fi
 
     ableton_atomic_restore_object "$saved" "$path" 2>/dev/null || true
     restored="$(ableton_manifest_digest "$path" 2>/dev/null || true)"
     if [ "$restored" != "$saved_digest" ]; then
-        warn_optional_remaining \
-            "the earlier launcher at $saved could not be restored at $path; both files were kept" \
-            "Check the destination permissions before retrying."
+        warn_optional_remaining u_launcher_restore_failed u_check_destination_permissions_hint "$saved" "$path"
         return 0
     fi
 
@@ -930,11 +873,9 @@ restore_adjacent_launcher_backup()
 
     rm -f -- "$saved" 2>/dev/null || true
     if [ -e "$saved" ] || [ -L "$saved" ]; then
-        warn_optional_remaining \
-            "the earlier launcher was restored at $path, but its extra saved copy remains at $saved" \
-            "Check the saved copy's permissions before retrying."
+        warn_optional_remaining u_launcher_restored_copy_remains_late u_check_saved_copy_permissions_hint "$path" "$saved"
     else
-        uninstall_note "restored earlier launcher $path"
+        ui_status u_restored_earlier_launcher "$path"
     fi
     return 0
 }
@@ -951,22 +892,18 @@ restore_adjacent_backup_prestate()
         current="$(ableton_manifest_digest "$path" 2>/dev/null || true)"
     fi
     if [ "$current" = "$backup_digest" ]; then
-        uninstall_note "kept your already-restored earlier file at $path"
+        ui_status u_kept_restored_file "$path"
         return 0
     fi
     if [ -n "$current" ] && [ "$current" != "$replaceable_digest" ]; then
-        warn_optional_remaining \
-            "kept a changed saved launcher at $path and its earlier copy at $backup" \
-            "Review both files and keep the one you want before retrying."
+        warn_optional_remaining u_kept_changed_saved_launcher u_kept_changed_saved_launcher_hint "$path" "$backup"
         return 0
     fi
     ableton_atomic_restore_object "$backup" "$path" 2>/dev/null || true
     if [ "$(ableton_manifest_digest "$path" 2>/dev/null || true)" != "$backup_digest" ]; then
-        warn_optional_remaining \
-            "the earlier file was not restored at $path; its saved copy remains at $backup" \
-            "Check the destination permissions before retrying."
+        warn_optional_remaining u_file_restore_failed u_check_destination_permissions_hint "$path" "$backup"
     else
-        uninstall_note "restored your earlier file at $path"
+        ui_status u_restored_earlier_file "$path"
     fi
     return 0
 }
@@ -1111,11 +1048,9 @@ remove_owned_manifest_files()
                     if [ -n "$backup" ]; then
                         ableton_atomic_restore_object "$backup" "$path" || true
                         if [ "$(ableton_manifest_digest "$path" 2>/dev/null || true)" != "$backup_digest" ]; then
-                            warn_optional_remaining \
-                                "the earlier file was not restored at $path; its saved copy remains at $backup" \
-                                "Check the destination permissions before retrying."
+                            warn_optional_remaining u_file_restore_failed u_check_destination_permissions_hint "$path" "$backup"
                         else
-                            uninstall_note "restored your earlier file at $path"
+                            ui_status u_restored_earlier_file "$path"
                         fi
                     fi
                     continue
@@ -1126,45 +1061,33 @@ remove_owned_manifest_files()
                     if [ -n "$backup" ]; then
                         ableton_atomic_restore_object "$backup" "$path" || true
                         if [ "$(ableton_manifest_digest "$path" 2>/dev/null || true)" != "$backup_digest" ]; then
-                            warn_optional_remaining \
-                                "the Ableton Linux file at $path could not be replaced by its saved earlier copy at $backup" \
-                                "Check both paths and their permissions before retrying."
+                            warn_optional_remaining u_file_replace_failed u_file_replace_failed_hint "$path" "$backup"
                         else
-                            uninstall_note "restored your earlier file at $path"
+                            ui_status u_restored_earlier_file "$path"
                         fi
                     else
                         rm -f -- "$path" 2>/dev/null || true
                         if [ -e "$path" ] || [ -L "$path" ]; then
-                            warn_optional_remaining \
-                                "an Ableton Linux file remains at $path" \
-                                "Check the file permissions before retrying."
+                            warn_optional_remaining u_file_remains u_check_file_permissions_hint "$path"
                         else
-                            uninstall_note "removed $path"
+                            ui_status u_removed_path "$path"
                         fi
                     fi
                 elif [ -n "$backup" ] && [ "$current" = "$backup_digest" ]; then
                     # A prior partial uninstall may already have restored this
                     # exact pre-install object before another path failed.
                     # Treat that as completed work so a retry can finish.
-                    uninstall_note "kept your already-restored earlier file at $path"
+                    ui_status u_kept_restored_file "$path"
                 else
                     if [ "$kind" = config ]; then
-                        warn_optional_remaining \
-                            "kept user-modified configuration at $path" \
-                            "Move or delete it yourself only if you no longer need those settings."
+                        warn_optional_remaining u_kept_modified_config u_kept_modified_config_hint "$path"
                     elif [ "$kind" = symlink ]; then
-                        warn_optional_remaining \
-                            "kept a link at $path because it was changed or points somewhere else" \
-                            "Remove it yourself only if you recognise it as obsolete."
+                        warn_optional_remaining u_kept_changed_link u_kept_changed_link_hint "$path"
                     elif [ "$pr182_custom_link_adoption" -eq 1 ] \
                          && [ "$path" = "$ABLETON_LINKD" ]; then
-                        warn_optional_remaining \
-                            "kept a modified custom Ableton Link helper at $path" \
-                            "Remove it yourself only if you no longer use that custom Link helper."
+                        warn_optional_remaining u_kept_custom_linkd u_kept_custom_linkd_hint "$path"
                     else
-                        warn_optional_remaining \
-                            "kept an unrecognised or user-modified file at $path" \
-                            "Move it aside only if you are certain it belongs to this project."
+                        warn_optional_remaining u_kept_unrecognised_file u_move_aside_if_certain_hint "$path"
                     fi
                 fi ;;
             runtime) ;;
@@ -1202,19 +1125,15 @@ remove_legacy_files()
                 && [ ! -L "$target" ] && cmp -s -- "$original" "$target"; }; then
             rm -f -- "$target" 2>/dev/null || true
             if [ -e "$target" ] || [ -L "$target" ]; then
-                warn_optional_remaining \
-                    "an Ableton Linux file from an older release remains at $target" \
-                    "Check its permissions before retrying."
+                warn_optional_remaining u_legacy_file_remains u_check_its_permissions_hint "$target"
             else
-                uninstall_note "removed an Ableton Linux file from an older release: $target"
+                ui_status u_removed_legacy_file "$target"
             fi
         else
             # Wine and other packages install files under these names, and this
             # branch has no digest to tell one of those from a file of ours that
             # the user changed.  Stop rather than guess.
-            warn_optional_remaining \
-                "kept an unrecognised or modified file at $target" \
-                "Move it aside only if you are certain it belongs to this project."
+            warn_optional_remaining u_kept_unrecognised_legacy_file u_move_aside_if_certain_hint "$target"
         fi
     }
 
@@ -1239,16 +1158,12 @@ remove_legacy_files()
         if [ "$exact" -eq 1 ]; then
             rm -f -- "$target" 2>/dev/null || true
             if [ -e "$target" ] || [ -L "$target" ]; then
-                warn_optional_remaining \
-                    "an Ableton Linux file from an older release remains at $target" \
-                    "Check its permissions before retrying."
+                warn_optional_remaining u_legacy_file_remains u_check_its_permissions_hint "$target"
             else
-                uninstall_note "removed an Ableton Linux file from an older release: $target"
+                ui_status u_removed_legacy_file "$target"
             fi
         else
-            warn_optional_remaining \
-                "kept a modified or unrecognised older support file at $target" \
-                "Remove it manually only if you no longer need it."
+            warn_optional_remaining u_kept_modified_legacy_support u_kept_modified_legacy_support_hint "$target"
         fi
     }
 
@@ -1311,16 +1226,12 @@ remove_legacy_files()
              = "$legacy_version_digest" ]; then
             rm -f -- "$legacy_version" 2>/dev/null || true
             if [ -e "$legacy_version" ] || [ -L "$legacy_version" ]; then
-                warn_optional_remaining \
-                    "the older Ableton Linux version record remains at $legacy_version" \
-                    "Check its permissions before retrying."
+                warn_optional_remaining u_legacy_version_remains u_check_its_permissions_hint "$legacy_version"
             else
-                uninstall_note "removed the older Ableton Linux version record: $legacy_version"
+                ui_status u_removed_legacy_version "$legacy_version"
             fi
         else
-            warn_optional_remaining \
-                "kept the older Ableton Linux version record because it changed during uninstall: $legacy_version" \
-                "Inspect it and remove it manually only if you recognise it."
+            warn_optional_remaining u_kept_legacy_version_changed u_inspect_remove_if_recognised_hint "$legacy_version"
         fi
     fi
     if [ "$legacy_project_proven" -eq 1 ]; then
@@ -1351,16 +1262,12 @@ remove_legacy_panel_files()
         if ableton_legacy_owned_path "$path"; then
             rm -f -- "$path" 2>/dev/null || true
             if [ -e "$path" ] || [ -L "$path" ]; then
-                warn_optional_remaining \
-                    "a PipeASIO Settings file from an older release remains at $path" \
-                    "Check its permissions before retrying."
+                warn_optional_remaining u_legacy_panel_file_remains u_check_its_permissions_hint "$path"
             else
-                uninstall_note "removed a PipeASIO Settings file from an older release: $path"
+                ui_status u_removed_legacy_panel_file "$path"
             fi
         else
-            warn_optional_remaining \
-                "kept an independently installed PipeASIO panel file at $path" \
-                "Remove it yourself only if you no longer use that panel installation."
+            warn_optional_remaining u_kept_foreign_panel_file u_kept_foreign_panel_file_hint "$path"
         fi
     done
 }
@@ -1389,9 +1296,7 @@ discard_mime_scratch()
     local tmp="$1"
     rm -f -- "$tmp" 2>/dev/null || true
     if [ -e "$tmp" ] || [ -L "$tmp" ]; then
-        warn_optional_notice \
-            "a temporary file-opening settings file remains at $tmp" \
-            "Check its permissions, then remove it or retry uninstall."
+        warn_optional_notice u_mime_tmp_remains u_tmp_remains_hint "$tmp"
     fi
 }
 
@@ -1467,49 +1372,38 @@ clear_mime_defaults()
     [ "${#mime_records[@]}" -gt 0 ] || return 0
     if ! command -v xdg-mime >/dev/null 2>&1; then
         mime_backend_unavailable=1
-        warn_optional_remaining \
-            "some Ableton file-opening defaults could not be cleared because the xdg-utils tool is missing" \
-            "Install the xdg-utils package before retrying."
+        warn_optional_remaining u_mime_xdg_missing u_mime_xdg_missing_hint
         return 0
     fi
     mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
-    uninstall_note "== restore previous file-opening defaults =="
+    ui_item_begin u_restore_mime_defaults
     for record in "${mime_records[@]}"; do
         IFS=$'\t' read -r type prior extra <<< "$record"
         [ -n "$type" ] || continue
         type_label="$(mime_type_label "$type")"
         if ! current="$(xdg-mime query default "$type" 2>/dev/null)"; then
-            warn_optional_remaining \
-                "the current app for $type_label could not be checked and may still point to Ableton Linux" \
-                "Install xdg-utils or check that it can read your desktop settings, then retry."
+            warn_optional_remaining u_mime_query_failed u_mime_query_failed_hint "$type_label"
             continue
         fi
         if ! explicit="$(mime_explicit_default "$mimeapps" "$type")"; then
-            warn_optional_remaining \
-                "the setting for $type_label was left unchanged because $mimeapps could not be read" \
-                "Check the file permissions before retrying."
+            warn_optional_remaining u_mime_file_unreadable u_check_file_permissions_hint "$type_label" "$mimeapps"
             continue
         fi
         mime_id_is_managed "$explicit" || mime_id_is_managed "$current" || continue
         if mime_id_is_managed "$explicit" \
            && ! mime_clear_default "$mimeapps" "$type"; then
-            warn_optional_remaining \
-                "Ableton Linux is still set to open $type_label in $mimeapps" \
-                "Check the file permissions before retrying."
+            warn_optional_remaining u_mime_still_default u_check_file_permissions_hint "$type_label" "$mimeapps"
             continue
         fi
         if ! explicit="$(mime_explicit_default "$mimeapps" "$type")"; then
-            warn_optional_remaining \
-                "the setting for $type_label could not be verified in $mimeapps" \
-                "Check the file permissions before retrying."
+            warn_optional_remaining u_mime_verify_failed u_check_file_permissions_hint "$type_label" "$mimeapps"
             continue
         fi
         if mime_id_is_managed "$explicit"; then
-            warn_optional_remaining \
-                "Ableton Linux is still set to open $type_label in $mimeapps" \
-                "Remove that default or make the file writable before retrying."
+            warn_optional_remaining u_mime_still_default u_mime_still_default_hint "$type_label" "$mimeapps"
         fi
     done
+    ui_item_end ok
     return 0
 }
 
@@ -1530,9 +1424,7 @@ reconcile_mime_defaults()
         [ -n "$type" ] || continue
         type_label="$(mime_type_label "$type")"
         if ! current="$(xdg-mime query default "$type" 2>/dev/null)"; then
-            warn_optional_remaining \
-                "the current app for $type_label could not be checked after Ableton Linux files were removed" \
-                "Install xdg-utils or check that it can read your desktop settings, then retry."
+            warn_optional_remaining u_mime_query_failed_after u_mime_query_failed_hint "$type_label"
             continue
         fi
         # A prior that is itself a managed id names a file this run deleted, so
@@ -1544,7 +1436,7 @@ reconcile_mime_defaults()
                 # of these names can only be a file this run deliberately left
                 # alone.  Where it points is the user's business, and the first
                 # pass already proved no explicit line of ours survives.
-                uninstall_note "$type_label still uses an app that Ableton Linux did not install; leaving it unchanged"
+                ui_status u_mime_foreign_default_kept "$type_label"
             fi
             continue
         fi
@@ -1552,9 +1444,7 @@ reconcile_mime_defaults()
         xdg-mime default "$prior" "$type" >/dev/null 2>&1 || true
         if ! explicit="$(mime_explicit_default "$mimeapps" "$type")" \
            || [ "$explicit" != "$prior" ]; then
-            warn_optional_remaining \
-                "the previous app for $type_label could not be restored" \
-                "Check that $mimeapps is writable, then retry uninstall."
+            warn_optional_remaining u_mime_restore_failed u_mime_restore_failed_hint "$type_label" "$mimeapps"
         fi
     done
     return 0
@@ -1566,9 +1456,7 @@ if [ "$mime_prestate_usable" -eq 1 ]; then
     if ! mapfile -t mime_records < "$restore_mime"; then
         mime_prestate_usable=0
         mime_records=()
-        warn_optional_remaining \
-            "File-opening defaults were left unchanged because the saved settings at $restore_mime could not be read" \
-            "Check the file permissions before retrying."
+        warn_optional_remaining u_mime_prestate_unreadable u_check_file_permissions_hint "$restore_mime"
     else
         declare -A mime_record_types=()
         for mime_record in "${mime_records[@]}"; do
@@ -1590,9 +1478,7 @@ if [ "$mime_prestate_usable" -eq 1 ]; then
             if [ "$mime_record_valid" -ne 1 ]; then
                 mime_prestate_usable=0
                 mime_records=()
-                warn_optional_remaining \
-                    "File-opening defaults were left unchanged because their saved settings changed before they could be used: $restore_mime" \
-                    "Review that file, then retry if you still want the old defaults restored."
+                warn_optional_remaining u_mime_prestate_changed_late u_mime_prestate_changed_hint "$restore_mime"
                 break
             fi
             mime_record_types["$mime_type"]=1
@@ -1648,20 +1534,16 @@ if [ "$mime_cleanup_authorized" -eq 1 ] && [ "${#mime_records[@]}" -eq 0 ]; then
     )
 fi
 clear_mime_defaults
-uninstall_note "== remove the Wine runtime, launchers, and support files =="
+ui_item_begin u_remove_runtime_files
 if [ "$optional_inventory_usable" -eq 1 ]; then
     if ! remove_legacy_panel_files; then
-        warn_optional_remaining \
-            "PipeASIO Settings shortcuts were left unchanged because the installer could not confirm that it created them" \
-            "Inspect those shortcuts and retry after repairing the installer's file list."
+        warn_optional_remaining u_panel_shortcuts_unconfirmed u_panel_shortcuts_unconfirmed_hint
     fi
 fi
 if [ "$manifest_present" -eq 1 ] && [ "$optional_inventory_usable" -eq 1 ]; then
     if ! remove_owned_manifest_files; then
         leave_optional_inventory_untouched
-        warn_optional_remaining \
-            "some Ableton Linux launchers or support files were left unchanged because the installer could not confirm that it created them" \
-            "Inspect the remaining files and retry after repairing the installer's file list."
+        warn_optional_remaining u_files_unconfirmed u_files_unconfirmed_hint
     fi
 elif [ "$manifest_present" -eq 0 ] && [ "$optional_inventory_usable" -eq 1 ]; then
     remove_legacy_files
@@ -1697,9 +1579,7 @@ for candidate in "${managed_runtimes[@]}"; do
             exit 1
         fi
         skipped_managed_runtimes["$candidate"]=1
-        warn_optional_remaining \
-            "an older Wine runtime was left unchanged because its location is no longer recognised: $candidate" \
-            "Inspect that runtime before retrying."
+        warn_optional_remaining u_old_runtime_location_unrecognised u_inspect_runtime_hint "$candidate"
     fi
 done
 for old_runtime in "${managed_rollbacks[@]}"; do
@@ -1719,9 +1599,7 @@ for old_runtime in "${managed_rollbacks[@]}"; do
        || ! ableton_runtime_marker_valid \
             "$old_runtime" "${managed_rollback_names[$old_runtime]}"; then
         skipped_managed_rollbacks["$old_runtime"]=1
-        warn_optional_remaining \
-            "an older saved Wine runtime was left unchanged because its target is no longer recognised: $old_runtime" \
-            "Inspect that runtime before retrying."
+        warn_optional_remaining u_rollback_target_unrecognised u_inspect_runtime_hint "$old_runtime"
     fi
 done
 
@@ -1741,9 +1619,7 @@ for candidate in "${managed_runtimes[@]}"; do
                 exit 1
             fi
             skipped_managed_runtimes["$candidate"]=1
-            warn_optional_remaining \
-                "an older Wine runtime was left unchanged because its location changed before removal: $candidate" \
-                "Inspect that runtime before retrying."
+            warn_optional_remaining u_old_runtime_location_changed u_inspect_runtime_hint "$candidate"
             continue
         fi
         rm -rf -- "$candidate" 2>/dev/null || true
@@ -1752,12 +1628,10 @@ for candidate in "${managed_runtimes[@]}"; do
                 echo "!! could not remove configured runtime $candidate" >&2
                 uninstall_partial=1
             else
-                warn_optional_remaining \
-                    "an older Wine runtime remains at $candidate" \
-                    "Check its permissions before retrying."
+                warn_optional_remaining u_old_runtime_remains u_check_its_permissions_hint "$candidate"
             fi
         else
-            uninstall_note "removed $candidate"
+            ui_status u_removed_path "$candidate"
         fi
     fi
 done
@@ -1772,18 +1646,14 @@ for old_runtime in "${managed_rollbacks[@]}"; do
            || [ "$old_runtime_safe" != "$old_runtime" ] || [ -L "$old_runtime" ] \
            || ! ableton_runtime_marker_valid \
                 "$old_runtime" "${managed_rollback_names[$old_runtime]}"; then
-            warn_optional_remaining \
-                "an older saved Wine runtime was left unchanged because its target changed before removal: $old_runtime" \
-                "Inspect that runtime before retrying."
+            warn_optional_remaining u_rollback_target_changed u_inspect_runtime_hint "$old_runtime"
             continue
         fi
         rm -rf -- "$old_runtime" 2>/dev/null || true
         if [ -e "$old_runtime" ] || [ -L "$old_runtime" ]; then
-            warn_optional_remaining \
-                "an older saved Wine runtime remains at $old_runtime" \
-                "Check its permissions before retrying."
+            warn_optional_remaining u_rollback_remains u_check_its_permissions_hint "$old_runtime"
         else
-            uninstall_note "removed $old_runtime"
+            ui_status u_removed_path "$old_runtime"
         fi
     fi
 done
@@ -1797,25 +1667,17 @@ fi
 mime_cache_dir="${XDG_DATA_HOME:-$HOME/.local/share}/mime"
 if [ -d "$mime_cache_dir" ]; then
     if ! command -v update-mime-database >/dev/null 2>&1; then
-        warn_optional_notice \
-            "the desktop file-type cache was not refreshed under $mime_cache_dir" \
-            "Install shared-mime-info, then rerun uninstall or update-mime-database for that directory."
+        warn_optional_notice u_mime_cache_not_refreshed u_mime_cache_not_refreshed_hint "$mime_cache_dir"
     elif ! update-mime-database "$mime_cache_dir" >/dev/null 2>&1; then
-        warn_optional_notice \
-            "the desktop file-type cache could not be refreshed under $mime_cache_dir" \
-            "Check the directory permissions, then rerun uninstall or update-mime-database for that directory."
+        warn_optional_notice u_mime_cache_refresh_failed u_mime_cache_refresh_failed_hint "$mime_cache_dir"
     fi
 fi
 desktop_cache_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 if [ -d "$desktop_cache_dir" ]; then
     if ! command -v update-desktop-database >/dev/null 2>&1; then
-        warn_optional_notice \
-            "the desktop application cache was not refreshed under $desktop_cache_dir" \
-            "Install desktop-file-utils, then rerun uninstall or update-desktop-database for that directory."
+        warn_optional_notice u_desktop_cache_not_refreshed u_desktop_cache_not_refreshed_hint "$desktop_cache_dir"
     elif ! update-desktop-database "$desktop_cache_dir" >/dev/null 2>&1; then
-        warn_optional_notice \
-            "the desktop application cache could not be refreshed under $desktop_cache_dir" \
-            "Check the directory permissions, then rerun uninstall or update-desktop-database for that directory."
+        warn_optional_notice u_desktop_cache_refresh_failed u_desktop_cache_refresh_failed_hint "$desktop_cache_dir"
     fi
 fi
 reconcile_mime_defaults
@@ -1836,12 +1698,12 @@ if [ "$delete_prefix" -eq 1 ] \
         echo "!! The Wine prefix could not be removed: $safe_prefix" >&2
         uninstall_partial=1
     else
-        uninstall_note "removed $safe_prefix"
+        ui_status u_removed_path "$safe_prefix"
     fi
 elif [ -e "$safe_prefix" ] || [ -L "$safe_prefix" ]; then
-    uninstall_note "kept Wine prefix $safe_prefix"
+    ui_status u_kept_prefix "$safe_prefix"
 else
-    uninstall_note "no Wine prefix to remove at $safe_prefix"
+    ui_status u_no_prefix "$safe_prefix"
 fi
 
 if [ "$uninstall_partial" -eq 1 ]; then
@@ -1855,14 +1717,10 @@ safe_cache="$(ableton_path_is_safe_delete_target "$ABLETON_CACHE_HOME")" || safe
 if [ -n "$safe_cache" ]; then
     rmdir -- "$safe_cache" 2>/dev/null || true
     if [ -e "$safe_cache" ] || [ -L "$safe_cache" ]; then
-        warn_optional_notice \
-            "the Ableton Linux cache directory remains at $safe_cache" \
-            "Remove it after checking that it contains no files you need."
+        warn_optional_notice u_cache_dir_remains u_cache_dir_remains_hint "$safe_cache"
     fi
 elif [ -e "$ABLETON_CACHE_HOME" ] || [ -L "$ABLETON_CACHE_HOME" ]; then
-    warn_optional_notice \
-        "the project cache path was left unchanged because it is not a safe empty directory: $ABLETON_CACHE_HOME" \
-        "Inspect that path and remove it manually only if you recognise it."
+    warn_optional_notice u_cache_path_unsafe u_inspect_path_remove_if_recognised_hint "$ABLETON_CACHE_HOME"
 fi
 
 # Keep enough project support information for a direct retry whenever an
@@ -1871,17 +1729,13 @@ fi
 if [ "$retain_retry_support" -eq 0 ]; then
     rm -f -- "$restore_mime" 2>/dev/null || true
     if [ -e "$restore_mime" ] || [ -L "$restore_mime" ]; then
-        warn_optional_remaining \
-            "saved file-opening settings remain at $restore_mime" \
-            "Check the file permissions before retrying."
+        warn_optional_remaining u_mime_prestate_remains u_check_file_permissions_hint "$restore_mime"
     fi
 fi
 if [ "$retain_retry_support" -eq 0 ]; then
     rm -f -- "$manifest" 2>/dev/null || true
     if [ -e "$manifest" ] || [ -L "$manifest" ]; then
-        warn_optional_remaining \
-            "the Ableton Linux file list remains at $manifest" \
-            "Check the file permissions before retrying."
+        warn_optional_remaining u_manifest_remains u_check_file_permissions_hint "$manifest"
     fi
 fi
 
@@ -1899,14 +1753,10 @@ if [ "$retain_retry_support" -eq 0 ] \
     if ableton_managed_config_valid "$ABLETON_CONFIG_FILE"; then
         rm -f -- "$ABLETON_CONFIG_FILE" 2>/dev/null || true
         if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
-            warn_optional_remaining \
-                "installer settings remain at $ABLETON_CONFIG_FILE" \
-                "Check the file permissions before retrying."
+            warn_optional_remaining u_settings_remain u_check_file_permissions_hint "$ABLETON_CONFIG_FILE"
         fi
     else
-        warn_optional_remaining \
-            "installer settings at $ABLETON_CONFIG_FILE changed during uninstall and were preserved" \
-            "Inspect them and remove them manually only if you recognise them as Ableton Linux settings."
+        warn_optional_remaining u_settings_changed u_settings_changed_hint "$ABLETON_CONFIG_FILE"
     fi
 fi
 if [ "$retain_retry_support" -eq 0 ]; then
@@ -1919,39 +1769,36 @@ if [ "$retain_retry_support" -eq 0 ] \
    && { [ -e "$ABLETON_STATE_HOME" ] || [ -L "$ABLETON_STATE_HOME" ]; }; then
     safe_state=""
     if ! safe_state="$(ableton_path_is_safe_delete_target "$ABLETON_STATE_HOME")"; then
-        warn_optional_remaining \
-            "Ableton Linux support files were left unchanged because their directory is not safe to remove: $ABLETON_STATE_HOME" \
-            "Inspect that path and remove it manually only if you recognise it."
+        warn_optional_remaining u_state_unsafe_remove u_inspect_path_remove_if_recognised_hint "$ABLETON_STATE_HOME"
     elif [ "$safe_state" != "$ABLETON_STATE_HOME" ] || [ -L "$ABLETON_STATE_HOME" ] \
          || ! ableton_state_marker_valid "$safe_state"; then
-        warn_optional_remaining \
-            "Ableton Linux support files were left unchanged because the installer could not confirm that it created their directory: $ABLETON_STATE_HOME" \
-            "Inspect that directory before retrying."
+        warn_optional_remaining u_state_unconfirmed u_inspect_directory_hint "$ABLETON_STATE_HOME"
     else
         state_marker="$safe_state/.ableton-linux-state"
+        backup_root="$safe_state/backups"
         # Keep the ownership marker until every other entry is gone. A partial
         # recursive cleanup therefore remains safe and directly retryable.
-        find "$safe_state" -depth -mindepth 1 ! -path "$state_marker" \
+        # Per-run overwrite backups are inert manual recovery files. Uninstall
+        # never consumes or removes them.
+        find "$safe_state" -depth -mindepth 1 \
+            ! -path "$state_marker" \
+            ! -path "$backup_root" ! -path "$backup_root/*" \
             -delete >/dev/null 2>&1 || true
         if ! state_remaining="$(find "$safe_state" -mindepth 1 \
-                ! -path "$state_marker" -printf x -quit 2>/dev/null)"; then
-            warn_optional_remaining \
-                "Ableton Linux support files could not be fully checked after cleanup at $safe_state" \
-                "Check the directory permissions and contents before retrying."
+                ! -path "$state_marker" \
+                ! -path "$backup_root" ! -path "$backup_root/*" \
+                -printf x -quit 2>/dev/null)"; then
+            warn_optional_remaining u_state_check_failed u_state_check_failed_hint "$safe_state"
         elif [ -n "$state_remaining" ]; then
-            warn_optional_remaining \
-                "Ableton Linux support files remain at $safe_state" \
-                "Check the remaining files and directory permissions before retrying."
+            warn_optional_remaining u_state_files_remain u_state_files_remain_hint "$safe_state"
+        elif [ -e "$backup_root" ] || [ -L "$backup_root" ]; then
+            ui_status u_kept_backups "$backup_root"
         elif ! ableton_state_marker_valid "$safe_state"; then
-            warn_optional_remaining \
-                "the Ableton Linux support directory changed during cleanup and was kept at $safe_state" \
-                "Inspect that directory before retrying."
+            warn_optional_remaining u_state_changed_cleanup u_inspect_directory_hint "$safe_state"
         else
             rm -f -- "$state_marker" 2>/dev/null || true
             if [ -e "$state_marker" ] || [ -L "$state_marker" ]; then
-                warn_optional_remaining \
-                    "the final Ableton Linux support record remains at $state_marker" \
-                    "Check the file permissions before retrying."
+                warn_optional_remaining u_state_marker_remains u_check_file_permissions_hint "$state_marker"
             else
                 rmdir -- "$safe_state" 2>/dev/null || true
                 if [ -e "$safe_state" ] || [ -L "$safe_state" ]; then
@@ -1966,13 +1813,9 @@ if [ "$retain_retry_support" -eq 0 ] \
                         fi
                     fi
                     if ableton_state_marker_valid "$safe_state"; then
-                        warn_optional_remaining \
-                            "the empty Ableton Linux support directory remains at $safe_state" \
-                            "Check the parent-directory permissions before retrying."
+                        warn_optional_remaining u_state_dir_empty_remains u_state_dir_empty_remains_hint "$safe_state"
                     else
-                        warn_optional_remaining \
-                            "an empty Ableton Linux support path remains at $safe_state and could not be prepared for an automatic retry" \
-                            "Inspect it, then remove that empty path manually."
+                        warn_optional_remaining u_state_path_empty_unprepared u_state_path_empty_unprepared_hint "$safe_state"
                     fi
                 fi
             fi
@@ -1980,9 +1823,7 @@ if [ "$retain_retry_support" -eq 0 ] \
     fi
 fi
 
-if [ "$optional_cleanup_incomplete" -eq 1 ]; then
-    uninstall_note "OK: runtime and requested prefix removal completed; the warnings above describe optional items that remain"
-else
-    uninstall_note "OK: uninstall complete"
-fi
+[ "$optional_cleanup_incomplete" -eq 0 ] || ui_info u_done_with_warnings
+ui_item_end ok
 [ "$retain_retry_support" -eq 0 ] || print_uninstall_retry
+ui_step_end ok

@@ -83,11 +83,13 @@ run_link env ABLETON_LINK_COORDINATED=1 \
     bash "$here/setup-link.sh" enable --mode=session \
     > "$base/out" 2> "$base/err" \
     || { sed -n '1,100p' "$base/err" >&2; fail "coordinated Link setup failed"; }
-! grep -q '^OK:' "$base/out" \
-    || fail "Link child reported final success before its coordinator finished"
-grep -qxF 'link_mode=session' "$base/config/ableton-wine/config" \
-    || fail "coordinated Link child did not complete its requested mode"
-ok "coordinated Link leaves final success reporting to the installer"
+! grep -q 'Step [0-9]* Complete' "$base/out" \
+    || fail "Link child closed a step that belongs to its coordinator"
+[ ! -e "$base/config/ableton-wine/config" ] \
+    || fail "coordinated Link child wrote the installer's final config mapping"
+grep -qF '│  │  > No active ufw or firewalld; the firewall is unchanged' "$base/out" \
+    || fail "coordinated Link progress bypassed the installer tree"
+ok "coordinated Link leaves final config and success reporting to the installer"
 
 # The canonical service file belongs to this project. Re-running setup repairs
 # arbitrary bytes at that path instead of demanding an old checksum.
@@ -95,7 +97,7 @@ new_env authoritative-unit
 mkdir -p -- "$base/config/systemd/user"
 printf 'foreign bytes at a generated path\n' \
     > "$base/config/systemd/user/ableton-linkd.service"
-run_link bash "$here/setup-link.sh" enable --mode=session \
+printf 'o\n' | run_link bash "$here/setup-link.sh" enable --mode=session \
     > "$base/out" 2> "$base/err" \
     || { sed -n '1,100p' "$base/err" >&2; fail "a modified generated unit blocks Link repair"; }
 grep -qxF 'X-AbletonLinuxOwned=true' \
@@ -110,7 +112,7 @@ ok "Link overwrites its generated user service authoritatively"
 # there is reported but cannot reject an otherwise complete session setup.
 new_env optional-session-unit
 mkdir -p -- "$base/config/systemd/user/ableton-linkd.service"
-run_link bash "$here/setup-link.sh" enable --mode=session \
+printf 'Keep\n' | run_link bash "$here/setup-link.sh" enable --mode=session \
     > "$base/out" 2> "$base/err" \
     || { sed -n '1,100p' "$base/err" >&2; fail "optional systemd preparation blocks session Link"; }
 grep -qxF 'link_mode=session' "$base/config/ableton-wine/config" \
@@ -131,7 +133,7 @@ printf 'orphan\n' > "$base/state/ableton-wine/install-prestate/orphan"
 run_link bash "$here/setup-link.sh" enable --mode=session \
     > "$base/out" 2> "$base/err" \
     || { sed -n '1,100p' "$base/err" >&2; fail "optional local records block Link repair"; }
-grep -qF 'OK: Ableton Link is enabled' "$base/out" \
+grep -qF 'Ableton Link is enabled' "$base/out" \
     || fail "Link did not report the successful repair"
 ok "malformed optional local records do not gate Link setup"
 
@@ -152,7 +154,7 @@ EOF
 cp -- "$base/config/ableton-wine/config" "$base/config.before"
 run_link bash "$here/setup-link.sh" status > "$base/out" 2> "$base/err" \
     || fail "an interrupted project settings file hid read-only Link status"
-grep -qxF 'mode: session (while Ableton Live is running)' "$base/out" \
+grep -qF 'mode: session (while Ableton Live is running)' "$base/out" \
     || fail "Link status did not use the unambiguous saved mode"
 grep -qF 'Installer settings need repair; showing Link status' "$base/err" \
     || fail "Link status did not explain its salvaged settings"
@@ -209,7 +211,7 @@ link_mode=session
 linkd=$base/custom/ableton-linkd
 unexpected=old-generated-line
 EOF
-run_link bash "$here/setup-link.sh" disable > /dev/full 2> "$base/err" \
+printf 'o\n' | run_link bash "$here/setup-link.sh" disable > /dev/full 2> "$base/err" \
     || { sed -n '1,100p' "$base/err" >&2; fail "closed repair output blocks Link disable"; }
 grep -qxF '# ableton-linux installer configuration; managed by the installer' \
     "$base/config/ableton-wine/config" \
@@ -222,9 +224,8 @@ grep -qxF '#!/bin/sh' "$base/custom/ableton-linkd" \
     || fail "Link disable changed an external configured helper"
 ok "repairable generated settings are rebuilt without losing safe values"
 
-# Repair publishes a complete canonical config before any firewall or service
-# mutation. A later real system failure therefore cannot erase the settings it
-# used to locate the existing install.
+# A Link system failure before the settings mapping leaves that destination
+# untouched. There is no config preflight or automatic repair transaction.
 new_env repair-before-system-failure
 mkdir -p -- "$base/config/ableton-wine" "$base/custom"
 printf '#!/bin/sh\nexit 0\n' > "$base/custom/ableton-linkd"
@@ -239,6 +240,7 @@ link_mode=session
 linkd=$base/custom/ableton-linkd
 obsolete_generated_key=remove-me
 EOF
+cp -- "$base/config/ableton-wine/config" "$base/config.before"
 cat > "$base/fakebin/grep" <<'EOF'
 #!/bin/sh
 for argument do
@@ -257,17 +259,20 @@ if run_link bash "$here/setup-link.sh" enable --mode=session \
     > "$base/out" 2> "$base/err"; then
     fail "an unreadable active firewall was accepted"
 fi
-if ! grep -qxF '# ableton-linux installer configuration; managed by the installer' \
-        "$base/config/ableton-wine/config" \
-   || ! grep -qxF "linkd=$base/custom/ableton-linkd" "$base/config/ableton-wine/config" \
-   || grep -qF obsolete_generated_key "$base/config/ableton-wine/config"; then
-    fail "a later Link failure lost or partially published repaired settings"
-fi
-ok "Link publishes repaired settings before a later system failure"
+cmp -s -- "$base/config.before" "$base/config/ableton-wine/config" \
+    || fail "a Link system failure changed project settings before their mapping"
+ok "a Link system failure leaves project settings untouched"
 
 # Settings are generated local integration. If their atomic publication is
 # unavailable, the requested firewall/service change remains authoritative and
 # the user gets a concrete retry instruction instead of a fake Link failure.
+# The settings file is a project file now: when it already exists the run asks
+# [O]verwrite all / [K]eep originals / [A]bort once (rule F3), and EOF on stdin
+# takes the default, Overwrite all (rule F4), instead of cancelling. Under
+# Overwrite all the first mv that touches the file is the backup move (settings
+# file -> backup directory), so the mv stub below fails whenever the settings
+# path is any operand, not only the destination. A failed backup leaves the
+# file untouched and counts as a preference failure; Link must still finish.
 new_env optional-link-preference-write
 mkdir -p -- "$base/config/ableton-wine"
 cat > "$base/config/ableton-wine/config" <<EOF
@@ -282,14 +287,15 @@ EOF
 cp -- "$base/config/ableton-wine/config" "$base/config.before"
 cat > "$base/fakebin/mv" <<'EOF'
 #!/bin/sh
-target=""
-for argument do target="$argument"; done
-[ "$target" != "${ABLETON_TEST_CONFIG_TARGET:?}" ] || exit 73
+for argument do
+    [ "$argument" != "${ABLETON_TEST_CONFIG_TARGET:?}" ] || exit 73
+done
 exec /usr/bin/mv "$@"
 EOF
 chmod 755 "$base/fakebin/mv"
 run_link env ABLETON_TEST_CONFIG_TARGET="$base/config/ableton-wine/config" \
     bash "$here/setup-link.sh" enable --mode=session > "$base/out" 2> "$base/err" \
+    < /dev/null \
     || { sed -n '1,100p' "$base/err" >&2; fail "optional Link preference publication became an enable gate"; }
 cmp -s -- "$base/config.before" "$base/config/ableton-wine/config" \
     || fail "failed optional preference publication damaged the prior config"
@@ -299,8 +305,7 @@ grep -qF 'run the installer again to save the preference' "$base/out" \
     || fail "Link preference warning did not give the user a direct next step"
 ok "Link preference persistence is warning-only after the requested system change"
 
-# A foreign file or symlink is not proof of project-owned generated state.
-# Direct Link commands refuse it without deleting or following it.
+# Keep preserves any existing settings object and lets Link continue.
 new_env foreign-config-preservation
 mkdir -p -- "$base/config/ableton-wine"
 cat > "$base/config/ableton-wine/config" <<EOF
@@ -313,12 +318,12 @@ link_mode=session
 linkd=$base/data/ableton-wine/ableton-linkd
 EOF
 cp -- "$base/config/ableton-wine/config" "$base/foreign.before"
-if run_link bash "$here/setup-link.sh" disable > "$base/out" 2> "$base/err"; then
-    fail "direct Link replaced a foreign settings file"
-fi
+printf 'Keep\n' | run_link bash "$here/setup-link.sh" disable \
+    > "$base/out" 2> "$base/err" \
+    || fail "Keep at a foreign settings file blocked Link disable"
 cmp -s -- "$base/foreign.before" "$base/config/ableton-wine/config" \
     || fail "direct Link changed a foreign settings file"
-ok "direct Link preserves foreign settings"
+ok "Keep preserves a foreign settings file and continues"
 
 new_env symlink-config-preservation
 mkdir -p -- "$base/config/ableton-wine" "$base/personal"
@@ -334,84 +339,48 @@ obsolete_generated_key=remove-me
 EOF
 cp -- "$base/personal/config" "$base/symlink-target.before"
 ln -s -- "$base/personal/config" "$base/config/ableton-wine/config"
-if run_link bash "$here/setup-link.sh" disable > "$base/out" 2> "$base/err"; then
-    fail "direct Link followed a settings symlink"
-fi
+printf 'Keep\n' | run_link bash "$here/setup-link.sh" disable \
+    > "$base/out" 2> "$base/err" \
+    || fail "Keep at a settings symlink blocked Link disable"
 if [ ! -L "$base/config/ableton-wine/config" ] \
    || [ "$(readlink -- "$base/config/ableton-wine/config")" != "$base/personal/config" ] \
    || ! cmp -s -- "$base/symlink-target.before" "$base/personal/config"; then
     fail "direct Link changed a settings symlink or its target"
 fi
-ok "direct Link preserves settings symlinks and their targets"
+ok "Keep preserves settings symlinks and their targets"
 
-# Once firewall/service state and the saved mode are verified, failure to
-# delete temporary recovery data is cleanup—not failure of Link itself.
-new_env cleanup-after-success
-cat > "$base/fakebin/rm" <<'EOF'
-#!/bin/sh
-for argument do
-    case "$argument" in
-        *.link-enable.*)
-            kill -TERM "$PPID"
-            exit 99 ;;
-    esac
-done
-exec /usr/bin/rm "$@"
-EOF
-chmod 755 "$base/fakebin/rm"
-run_link bash "$here/setup-link.sh" enable --mode=session \
-    > "$base/out" 2> "$base/err" \
-    || { sed -n '1,100p' "$base/err" >&2; fail "temporary cleanup turns successful Link setup into failure"; }
-grep -qF 'temporary recovery files could not be removed' "$base/err" \
-    || fail "Link cleanup warning did not explain what remains"
-grep -qxF 'link_mode=session' "$base/config/ableton-wine/config" \
-    || fail "cleanup warning lost the successful Link mode"
-ok "enable cleanup and a late signal cannot reverse completed Link setup"
-
-# Disable has the same commit boundary: once the helper is stopped and off is
-# saved, a signal raised by generated-file cleanup must not make the public
-# installer roll back a completed result.
-new_env disable-after-success-signal
+# Disabling Link changes the mode but leaves the installed support files in
+# place for the next enable or installer run.
+new_env disable-keeps-support-files
 run_link bash "$here/setup-link.sh" enable --mode=session \
     > "$base/enable.out" 2> "$base/enable.err" \
-    || fail "disable signal fixture could not first enable Link"
-printf 'file\t%s\t%s\n' "$base/data/ableton-wine/ableton-linkd" \
-    "$(sha256sum -- "$base/data/ableton-wine/ableton-linkd" | awk '{print $1}')" \
-    > "$base/state/ableton-wine/install-manifest.tsv"
-cat > "$base/fakebin/rm" <<EOF
-#!/bin/sh
-for argument do
-    if [ "\$argument" = "$base/data/ableton-wine/ableton-linkd" ]; then
-        kill -TERM "\$PPID"
-    fi
-done
-exec /usr/bin/rm "\$@"
-EOF
-chmod 755 "$base/fakebin/rm"
-run_link bash "$here/setup-link.sh" disable > "$base/out" 2> "$base/err" \
-    || { sed -n '1,100p' "$base/err" >&2; fail "late cleanup signal reversed completed Link disable"; }
+    || fail "Link disable fixture could not first enable Link"
+cp -- "$base/data/ableton-wine/ableton-linkd" "$base/linkd.before"
+printf 'o\n' | run_link bash "$here/setup-link.sh" disable \
+    > "$base/out" 2> "$base/err" \
+    || { sed -n '1,100p' "$base/err" >&2; fail "Link disable failed"; }
 grep -qxF 'link_mode=off' "$base/config/ableton-wine/config" \
-    || fail "late cleanup signal lost the saved off mode"
-ok "disable cleanup and a late signal cannot reverse completed Link setup"
+    || fail "Link disable lost the saved off mode"
+cmp -s -- "$base/linkd.before" "$base/data/ableton-wine/ableton-linkd" \
+    || fail "Link disable changed or removed its installed support helper"
+ok "Link disable keeps installed support files while saving the off mode"
 
-# The pre-config legacy marker is generated by old releases. Only its two exact
-# one-line values belong to this project, and removing it happens after the new
-# Link mode has already been saved.
-new_env exact-legacy-policy-cleanup
+# Old Link-setting files are outside the fixed installer mappings. Their
+# contents are not interpreted and they are never removed automatically.
+new_env exact-legacy-policy-preservation
 printf 'configured\n' > "$base/data/ableton-wine/link-configured"
 run_link bash "$here/setup-link.sh" enable --mode=session \
     > "$base/enable.out" 2> "$base/enable.err" \
     || fail "an exact old Link setting blocked Link enable"
-[ ! -e "$base/data/ableton-wine/link-configured" ] \
-    && [ ! -L "$base/data/ableton-wine/link-configured" ] \
-    || fail "Link enable retained its exact obsolete setting"
+grep -qxF 'configured' "$base/data/ableton-wine/link-configured" \
+    || fail "Link enable changed an old Link-setting file"
 printf 'declined\n' > "$base/data/ableton-wine/link-configured"
-run_link bash "$here/setup-link.sh" disable > "$base/disable.out" 2> "$base/disable.err" \
+printf 'o\n' | run_link bash "$here/setup-link.sh" disable \
+    > "$base/disable.out" 2> "$base/disable.err" \
     || fail "an exact old Link setting blocked Link disable"
-[ ! -e "$base/data/ableton-wine/link-configured" ] \
-    && [ ! -L "$base/data/ableton-wine/link-configured" ] \
-    || fail "Link disable retained its exact obsolete setting"
-ok "exact old Link settings are best-effort cleanup after the requested mode is saved"
+grep -qxF 'declined' "$base/data/ableton-wine/link-configured" \
+    || fail "Link disable changed an old Link-setting file"
+ok "old Link-setting files are not interpreted or removed"
 
 for foreign_policy_kind in multiline symlink directory; do
     new_env "foreign-legacy-policy-$foreign_policy_kind"
@@ -437,7 +406,7 @@ for foreign_policy_kind in multiline symlink directory; do
             || fail "Link disable removed a foreign marker directory" ;;
     esac
 done
-ok "foreign objects at the old Link-setting path are preserved without gating disable"
+ok "all objects at the old Link-setting path are preserved without gating disable"
 
 # Disabling Link may remove only assets proven by their saved digest or an exact
 # historical signature. Canonical-looking paths alone are not ownership proof.
@@ -478,7 +447,7 @@ if ! run_link bash "$here/setup-link.sh" enable --mode=session 2> "$base/enable.
 fi
 grep -qxF 'link_mode=session' "$base/config/ableton-wine/config" \
     || fail "closed progress output lost the enabled mode"
-if ! run_link bash "$here/setup-link.sh" disable 2> "$base/disable.err" \
+if ! printf 'o\n' | run_link bash "$here/setup-link.sh" disable 2> "$base/disable.err" \
         | head -n 1 > /dev/null; then
     fail "closed progress output reversed completed Link disable"
 fi

@@ -1,8 +1,17 @@
 # Changelog
 
-## 2026.08.27.1
+## Unreleased
 
-- **The installer learned to stop panicking and accept that your install works:**
+- **Installer v3:**
+  - The installer draws one nested tree. It shows a banner, the system check, the action menu, one numbered box per step (`1/8`, `2/8`, and so on) with its operations underneath, and a footer with the time taken, the warning and error counts, and the runtime and prefix paths. The running operation shows `└─` and a spinner. It changes to `├─ ✓` (or `𐄂` after a failure) when the next operation starts.
+  - Every sentence the installer shows comes from one dictionary at the top of `scripts/lib/ui.sh`. Edit the text there. The packer copies the dictionary into the `.run` header. Errors and everything the scripts print outside the tree go to the log beside the `.run`. On failure the footer lists them.
+  - Long lines wrap inside the tree. A terminal with a locale other than UTF-8 gets an ASCII version of the same tree.
+  - The action menu offers `E[x]it`. When several Ableton Live downloads sit next to the installer, the installer lists them newest first and uses the first after 5 seconds.
+  - Every update of a support file (launchers, shortcuts, Link, settings) runs through one fixed mapping loop. When the installer finds existing files it asks once: Overwrite all (the default, also after 5 seconds), Keep originals, or Abort. An overwrite moves the existing file into one dated backup directory for the run, then copies the new file.
+  - `scripts/make-installer.sh --dev` packs a `-dev.run` from the current `dist/` and skips the release checks, so you can try script changes with the Wine runtime you already built.
+  - Fixed an early exit in `setup-link.sh disable` on a closed output pipe. It could delete the saved settings file before it wrote the new one.
+  - Backup and copy failures report the affected path and continue. Desktop, launcher, PipeASIO panel, Link, or saved-settings failures can no longer unwind the completed Wine runtime, prefix, or Live installation.
+  - Removed the manifests, hashes, drift classification, launcher pairing, persistent prestate, journals, commit preflights, backup validation, and automatic restoration for the support files (launchers, shortcuts, Link, settings). The Wine runtime and the prefix keep their recovery. Backups are plain files kept for manual recovery.
   - If Live installed, launched, and makes sound, the installer is no longer allowed to throw all of that in the bin because a desktop icon cache hiccupped, a bookkeeping file went stale, or Ableton Link setup got interrupted halfway. Core install means core install (and this time, we mean it). Everything else is a warning you can ignore or fix later.
   - We now assume ownership over all the stuff we write out. So, each shortcut, launcher, and file association can be repaired independently and a single failure can't cascade into a rollback that reverses your whole prefix. To help with this, **we now assume that desktop launchers, scripts, etc are fair game** and we will overwrite them with new defaults as needed. 
   - Interrupted Link setup leaves Live installed and prints the single command that picks up where it left off. No redo, no "please start over."
@@ -24,6 +33,33 @@
   - `WINE_APC_FASTPATH=1` selects an experimental NTSync wait path for controlled tests for performance. It is off by default (#277).
   - A CPU optimisation research summary records the evidence, the rejected ideas, and the test gates for future defaults, so nobody has to re-litigate a dead end (#270).
   - Thank you to @haushaushaus for the Ableton Live Benchmark set. Remember to read the README.md for that, because there are some free third party VSTs used in the test and we don't distribute those with this project.
+
+## ~~2026.08.27.1~~
+
+- This release was withdrawn due to a major regression in the installer that blocked most updates.
+
+- **~~The installer learned to stop panicking and accept that your install works:~~**
+  - ~~If Live installed, launched, and makes sound, the installer is no longer allowed to throw all of that in the bin because a desktop icon cache hiccupped, a bookkeeping file went stale, or Ableton Link setup got interrupted halfway. Core install means core install (and this time, we mean it). Everything else is a warning you can ignore or fix later.~~
+  - ~~We now assume ownership over all the stuff we write out. So, each shortcut, launcher, and file association can be repaired independently and a single failure can't cascade into a rollback that reverses your whole prefix. To help with this, **we now assume that desktop launchers, scripts, etc are fair game** and we will overwrite them with new defaults as needed. ~~
+  - ~~Interrupted Link setup leaves Live installed and prints the single command that picks up where it left off. No redo, no "please start over."~~
+  - ~~Fixes #280, #279, #258 (#268). Thanks @CoenKonings for the install report with enough log detail to actually reproduce, and ΦNYX from Discord for the Link interrupt report.~~
+  - ~~Thank you to everyone for their patience with this. Writing installers that also won't nuke your system is actually harder than you'd think.~~
+
+- **~~Performance Moonshot part deux:~~**
+  - ~~Further hardening of our graphics stack. Dragging Live between monitors with different scaling no longer produces a funhouse-mirror window at the wrong size with an application menu that has simply left the chat. Display negotiation happens once, cleanly, before Live launches.~~
+  - ~~Dialog windows like Separate Stems paint their content now. You'll see the progress bar, the options, the whole experience. Not a void staring back at you (#263, #267). Confirmation on @Sandai64's original KDE/NVIDIA setup is still pending — get angry at us in the Github Issues if you still see the void staring back at you.~~
+  - ~~Live 12's audio worker count now is picked from your CPU's physical core count instead of whatever Live guessed. This means that we can try to optimse Live's audio performance for your own CPU configuration. We also added a troubleshooting entry to walk you through A/B-testing to compare against Live's auto-assignment (#278).~~
+  - ~~Made PipeASIO more resilient. Now, it does **not** re-publish audio it already sent, and when another application briefly borrows your audio graph (a video call, a browser tab that thinks it's the DJ), Live snaps back to your saved buffer size instead of staying stuck on the stranger's setting (#269, #274) and freaking out about it.~~
+  - ~~The NTSync check now actually proves wineserver uses it, instead of nodding along because a file exists somewhere. The audio report captures your full CPU topology so bug reports can explain themselves to us (#272, #275). This helps us understand whether bad Live performance is your fault or our fault. :3~~
+  - ~~Thanks @ClickSentinel for the relentless review across every PR in this section — six blocking findings caught before merge, all hardware-verified on real silicon.~~
+
+- **~~First rollout of diagnostics and measurement tooling** (aka preparing to flex the moonshot work):~~
+  - ~~We now have a CPU and audio benchmark suite that can run five fixed Live Sets and produces reports you can actually compare between versions, machines, or arguments. JSON, Markdown, CSV — take your pick (#271).~~
+  - ~~`PIPEASIO_TELEMETRY=on` records audio callback timing through a side-channel worker. The regular driver path will not pay a performance tax for your curiosity (#273).~~
+  - ~~A new PipeWire Pro Audio comparison tool allows you to measure an audio device in both its current and Pro Audio profiles, then sets it back to whatever setting you had. Useful for finding out whether Pro Audio actually helps your interface or is just a placebo (#276).~~
+  - ~~`WINE_APC_FASTPATH=1` selects an experimental NTSync wait path for controlled tests for performance. It is off by default (#277).~~
+  - ~~A CPU optimisation research summary records the evidence, the rejected ideas, and the test gates for future defaults, so nobody has to re-litigate a dead end (#270).~~
+  - ~~Thank you to @haushaushaus for the Ableton Live Benchmark set. Remember to read the README.md for that, because there are some free third party VSTs used in the test and we don't distribute those with this project.~~
 
 ## 2026.08.26.1
 
