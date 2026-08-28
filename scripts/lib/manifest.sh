@@ -175,7 +175,7 @@ ableton_managed_path_allowed()
     case "$path" in
         "$ABLETON_DATA_HOME/lib/config.sh"|"$ABLETON_DATA_HOME/lib/lifecycle.sh"|\
         "$ABLETON_DATA_HOME/lib/live-options.sh"|"$ABLETON_DATA_HOME/lib/manifest.sh"|\
-        "$ABLETON_DATA_HOME/lib/pipeasio.sh"|\
+        "$ABLETON_DATA_HOME/lib/pipeasio.sh"|"$ABLETON_DATA_HOME/lib/preferences.sh"|\
         "$ABLETON_DATA_HOME/detect-scale.sh"|"$ABLETON_DATA_HOME/detect-theme.sh"|\
         "$ABLETON_DATA_HOME/shortcut-hold.sh"|"$ABLETON_DATA_HOME/setup-realtime.sh"|\
         "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/check-ntsync.sh"|\
@@ -226,7 +226,7 @@ ableton_replace_generated_path_allowed()
     case "$1" in
         "$ABLETON_DATA_HOME/lib/config.sh"|"$ABLETON_DATA_HOME/lib/lifecycle.sh"|\
         "$ABLETON_DATA_HOME/lib/live-options.sh"|"$ABLETON_DATA_HOME/lib/manifest.sh"|\
-        "$ABLETON_DATA_HOME/lib/pipeasio.sh"|\
+        "$ABLETON_DATA_HOME/lib/pipeasio.sh"|"$ABLETON_DATA_HOME/lib/preferences.sh"|\
         "$ABLETON_DATA_HOME/detect-scale.sh"|"$ABLETON_DATA_HOME/detect-theme.sh"|\
         "$ABLETON_DATA_HOME/shortcut-hold.sh"|"$ABLETON_DATA_HOME/setup-realtime.sh"|\
         "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/check-ntsync.sh"|\

@@ -30,3 +30,20 @@ sh ~/Downloads/install-ableton-latest.run update
 | `extract DIR` | Unpacks the installer files without installing them. Replace `DIR` with the folder you want to use. |
 | `help` | Shows the main command list. |
 
+## Pre-flight choices
+
+Interactive Install, Update, and Reinstall runs ask these questions one at a time.
+Press `Esc` to go back one question. Press Enter to accept the shown default
+or current value. The launcher preferences are persistent. A nonempty
+environment variable takes priority for one launch.
+
+You can pass the same choices to `install` and `update`:
+
+| Option | Values and explanation |
+| --- | --- |
+| `--audio-buffer=VALUE` | `64`, `128`, `256`, `512`, or `1024` frames. The default is `128`; larger buffers improve stability and add latency. |
+| `--shortcuts=VALUE` | `take` assigns conflicting GNOME shortcuts to Live; `preserve` keeps the desktop assignments. The default is `take`. |
+| `--dpi=VALUE` | `auto`, `100`, `fractional`, or `preserve`. The default `auto` matches the detected display scale. |
+| `--audio-threads=VALUE` | `auto`, `off`, or `1` to `63`. The default `auto` selects a worker count; `off` lets Live decide. |
+| `--rt=VALUE` | `auto` uses real-time scheduling when available; `off` uses normal scheduling. The default is `auto`. |
+| `--power=VALUE` | `performance`, `balanced`, or `off`. The default `performance` holds that profile during each Live or Max session. |

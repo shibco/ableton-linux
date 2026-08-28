@@ -25,10 +25,9 @@ ABLETON-LIVE VARIABLES:
     ABLETON_LIVE_VERSION=11|12
         only look for installs of this major version
 
-    ABLETON_RT=off
-        skip the realtime probe and run Live under normal scheduling;
-        by default the launcher runs Live under SCHED_RR wherever
-        realtime rights exist
+    ABLETON_RT=auto|off
+        auto uses SCHED_RR wherever realtime rights exist; off runs
+        Live under normal scheduling; default auto
 
     ABLETON_NTSYNC_WARN=off
         keep launch quiet while Wine uses its regular wait route;
@@ -46,10 +45,9 @@ ABLETON-LIVE VARIABLES:
         A demanding Set can work better with a higher count or off.
         Check auto after you move the prefix to another computer.
 
-    ABLETON_POWER=off
-        skip the performance power-profile hold for this launch; by
-        default the launcher holds the "performance" profile while
-        Live runs and releases it on exit
+    ABLETON_POWER=performance|balanced|off
+        hold the selected power profile while Live runs; off keeps the
+        current profile; default performance
 
     ABLETON_SHORTCUTS=take|preserve
         GNOME only: hold the desktop shortcuts that shadow Live
@@ -267,6 +265,25 @@ if ! ableton_config_init 2>/dev/null; then
     echo "ableton-live: installer settings could not be read. Run the latest installer to repair them, then try again." >&2
     exit 1
 fi
+# Launcher preferences are optional so a partially published support update
+# retains the historical defaults. Nonempty environment values take priority.
+max_audio_threads_preference_requested=0
+[ -z "${ABLETON_MAX_AUDIO_THREADS-}" ] \
+    || max_audio_threads_preference_requested=1
+preferences_apply_status=0
+for preferences_lib in "$launcher_here/lib/preferences.sh" \
+                       "$ABLETON_DATA_HOME/lib/preferences.sh" \
+                       "$ABLETON_WINE_ROOT/share/ableton-wine/scripts/lib/preferences.sh"; do
+    if [ -r "$preferences_lib" ]; then . "$preferences_lib"; break; fi
+done
+if declare -F ableton_preferences_apply >/dev/null 2>&1; then
+    launcher_preferences_path="${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine/preferences"
+    if declare -F ableton_preferences_valid >/dev/null 2>&1 \
+       && ableton_preferences_valid "$launcher_preferences_path"; then
+        max_audio_threads_preference_requested=1
+    fi
+    ableton_preferences_apply || preferences_apply_status=$?
+fi
 for lifecycle_lib in "$launcher_here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/lifecycle.sh"; do
     if [ -r "$lifecycle_lib" ]; then . "$lifecycle_lib"; break; fi
 done
@@ -333,8 +350,7 @@ case "${ABLETON_LIVE_VERSION:-}" in ''|11|12) ;;
     *) echo "ableton-live: ABLETON_LIVE_VERSION must be 11 or 12" >&2; exit 2 ;;
 esac
 max_audio_threads_request="${ABLETON_MAX_AUDIO_THREADS:-auto}"
-max_audio_threads_replace_seeded=1
-[ -n "${ABLETON_MAX_AUDIO_THREADS+x}" ] || max_audio_threads_replace_seeded=0
+max_audio_threads_replace_seeded="$max_audio_threads_preference_requested"
 max_audio_threads_restore_at_default=0
 max_audio_threads_action=1
 case "$max_audio_threads_request" in
@@ -372,6 +388,7 @@ case "$shortcuts_mode" in
     take|preserve) ;;
     *) echo "ableton-live: Set ABLETON_SHORTCUTS to take or preserve." >&2; exit 2 ;;
 esac
+[ "$preferences_apply_status" -eq 0 ] || exit "$preferences_apply_status"
 ABLETON_SHORTCUTS="$shortcuts_mode"
 
 # Armed after the guards: teardown ends this prefix's agents, and a launch that
@@ -1692,7 +1709,10 @@ run=("$WINE_ROOT/bin/wine")
 # can be active without any opt-in here. SCHED_RR covers the whole process, GUI
 # threads included; ABLETON_RT=off exists for A/B runs and low-core machines
 # where that is a net loss.
-if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
+rt_mode="${ABLETON_RT:-auto}"
+[ "$rt_mode" != on ] || rt_mode=auto
+export ABLETON_RT="$rt_mode"
+if [ "$rt_mode" != off ] && command -v chrt >/dev/null 2>&1 \
     && chrt -r 10 true >/dev/null 2>&1; then
     run=(chrt -r 10 "$WINE_ROOT/bin/wine")
 fi
@@ -1713,9 +1733,12 @@ fi
 # either way: scheduling policy is inherited across fork/exec. One side
 # effect: with /w the spawned process sits in a kill-on-close job object, so
 # killing the launcher chain now takes Live down with it.
-if [ "${ABLETON_POWER:-on}" != off ] && command -v powerprofilesctl >/dev/null 2>&1 \
-    && ableton_run_bounded 10 powerprofilesctl launch -p performance -r "Ableton Live session" -i ableton-live -- true >/dev/null 2>&1; then
-    run=(powerprofilesctl launch -p performance -r "Ableton Live session" -i ableton-live -- "${run[@]}")
+power_profile="${ABLETON_POWER:-performance}"
+case "$power_profile" in on|auto) power_profile=performance ;; esac
+export ABLETON_POWER="$power_profile"
+if [ "$power_profile" != off ] && command -v powerprofilesctl >/dev/null 2>&1 \
+    && ableton_run_bounded 10 powerprofilesctl launch -p "$power_profile" -r "Ableton Live session" -i ableton-live -- true >/dev/null 2>&1; then
+    run=(powerprofilesctl launch -p "$power_profile" -r "Ableton Live session" -i ableton-live -- "${run[@]}")
 fi
 
 # Ableton Link session anchor (optional): if ableton-linkd is installed but

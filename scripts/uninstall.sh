@@ -45,6 +45,9 @@ declare -F ableton_pipeasio_unregister >/dev/null 2>&1 || {
     echo "!! PipeASIO removal support is incomplete. Run the latest installer again, then retry uninstall." >&2
     exit 1
 }
+for lib in "$here/lib/preferences.sh" "$ABLETON_DATA_HOME/lib/preferences.sh"; do
+    if [ -r "$lib" ]; then . "$lib"; break; fi
+done
 
 delete_prefix=0
 keep_prefix=0
@@ -66,6 +69,15 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ "$delete_prefix" -eq 0 ] || [ "$keep_prefix" -eq 0 ] || { echo "!! --keep-prefix and --delete-prefix conflict" >&2; exit 2; }
+launcher_preferences="${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine/preferences"
+launcher_preferences_token=""
+launcher_preferences_snapshot=0
+if declare -F ableton_preferences_object_token >/dev/null 2>&1 \
+   && launcher_preferences_token="$(
+        ableton_preferences_object_token "$launcher_preferences"
+   )"; then
+    launcher_preferences_snapshot=1
+fi
 ABLETON_UI_ACTION="${ABLETON_UI_ACTION:-uninstall}"
 export ABLETON_UI_ACTION
 case "$ABLETON_UI_ACTION" in plan) ui_step_begin s_plan ;; *) ui_step_begin s_remove ;; esac
@@ -82,7 +94,7 @@ retain_retry_support=0
 authoritative_support_relatives=(
     VERSION
     lib/config.sh lib/lifecycle.sh lib/live-options.sh lib/manifest.sh
-    lib/pipeasio.sh lib/ui.sh
+    lib/pipeasio.sh lib/preferences.sh lib/ui.sh
     detect-scale.sh detect-theme.sh shortcut-hold.sh setup-realtime.sh
     audio-report.sh check-ntsync.sh rollback.sh ntsyncprobe.exe
     pipewire-version-probe setsyscolors.exe learnheal.exe
@@ -1718,6 +1730,14 @@ if [ "$uninstall_partial" -eq 1 ]; then
     echo "!! prefix removal is incomplete; uninstall support files were retained" >&2
     print_uninstall_retry
     exit 1
+fi
+
+# Mutable launcher choices use their own generation check. Core runtime and
+# requested-prefix removal finish first, and a changed or unsafe object stays.
+if [ "$launcher_preferences_snapshot" -eq 1 ] \
+   && declare -F ableton_preferences_remove >/dev/null 2>&1; then
+    ableton_preferences_remove \
+        "$launcher_preferences" "$launcher_preferences_token" >/dev/null 2>&1 || true
 fi
 
 safe_cache="$(ableton_path_is_safe_delete_target "$ABLETON_CACHE_HOME")" || safe_cache=""

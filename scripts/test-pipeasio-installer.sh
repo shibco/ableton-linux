@@ -442,7 +442,8 @@ make_runtime_only_kit()
     cp -- "$here/install.sh" "$here/installer.sh" "$here/setup-prefix.sh" \
         "$kit/scripts/"
     cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
-        "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$here/lib/ui.sh" \
+        "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$here/lib/preferences.sh" \
+        "$here/lib/ui.sh" \
         "$kit/scripts/lib/"
     printf '%s\n' "$version" > "$kit/VERSION"
     make_runtime "$payload/$runtime_name" "$base/BUILD-INFO.txt" built
@@ -1078,7 +1079,8 @@ mkdir -p -- "$base/kit/scripts/lib" "$base/kit/bin"
 cp -- "$here/installer.sh" "$base/kit/scripts/"
 cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
     "$here/lib/live-options.sh" "$here/lib/manifest.sh" \
-    "$here/lib/pipeasio.sh" "$here/lib/ui.sh" "$base/kit/scripts/lib/"
+    "$here/lib/pipeasio.sh" "$here/lib/preferences.sh" "$here/lib/ui.sh" \
+    "$base/kit/scripts/lib/"
 cp -- "$here/../VERSION" "$base/kit/VERSION"
 cat > "$base/kit/bin/pipewire-version-probe" <<'EOF'
 #!/bin/sh
@@ -1149,7 +1151,8 @@ mkdir -p -- "$base/kit/scripts/lib" "$base/kit/bin" "$base/runtime/bin"
 cp -- "$here/installer.sh" "$base/kit/scripts/"
 cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
     "$here/lib/live-options.sh" "$here/lib/manifest.sh" \
-    "$here/lib/pipeasio.sh" "$here/lib/ui.sh" "$base/kit/scripts/lib/"
+    "$here/lib/pipeasio.sh" "$here/lib/preferences.sh" "$here/lib/ui.sh" \
+    "$base/kit/scripts/lib/"
 cp -- "$here/../VERSION" "$base/kit/VERSION"
 cat > "$base/kit/bin/pipewire-version-probe" <<'EOF'
 #!/bin/sh

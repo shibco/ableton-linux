@@ -34,6 +34,7 @@ declare -F ableton_config_init >/dev/null 2>&1 \
     || { echo "!! Setup support files are incomplete. Run the latest installer again." >&2 || true; exit 1; }
 . "$here/lib/manifest.sh"
 . "$here/lib/pipeasio.sh"
+. "$here/lib/preferences.sh"
 
 # The kit root holds vendor/. Layouts that must work:
 #   <kit>/scripts/setup-prefix.sh        -> vendor at $here/../vendor (repo, extracted .run kit)
@@ -177,6 +178,10 @@ prefix_transaction_preflight()
             echo "!! Saved support-file recovery data is unsafe." >&2 || true; return 1; }
         ableton_txn_preflight_rollback_files "$txn/prefix-host" || return 1
     fi
+    ableton_pipeasio_seed_record_preflight "$txn" || {
+        echo "!! The saved PipeASIO recovery data is unsafe or invalid." >&2 || true
+        return 1
+    }
 }
 
 prefix_transaction_commit_preflight()
@@ -186,6 +191,10 @@ prefix_transaction_commit_preflight()
     if [ -e "$txn/prefix-host" ]; then
         ableton_txn_preflight_commit_files "$txn/prefix-host" || return 1
     fi
+    ableton_pipeasio_seed_record_commit_preflight "$txn" || {
+        echo "!! Fresh PipeASIO settings have not reached a committable generation." >&2 || true
+        return 1
+    }
 }
 
 prefix_transaction_rollback()
@@ -244,6 +253,10 @@ prefix_transaction_rollback()
             rm -f -- "$txn/prefix-host/active" || rc=1
         fi
     fi
+    if ! ableton_pipeasio_seed_record_rollback "$txn"; then
+        echo "!! Fresh PipeASIO settings could not be restored safely." >&2 || true
+        rc=1
+    fi
     update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" >/dev/null 2>&1 || true
     return "$rc"
 }
@@ -252,27 +265,29 @@ prefix_transaction_commit()
 {
     local txn="$1" target backup safe
     prefix_transaction_commit_preflight "$txn" || return 1
-    [ -r "$txn/prefix.tsv" ] || return 0
-    IFS=$'\t' read -r target backup < "$txn/prefix.tsv" || {
-        echo "!! The saved Wine prefix cleanup data could not be read." >&2 || true
-        return 1
-    }
-    if [ "$backup" != absent ] && [ -e "$backup" ]; then
-        safe="$(ableton_path_is_safe_delete_target "$backup")" || { echo "!! The saved previous Wine prefix path is unsafe: $backup" >&2 || true; return 1; }
-        [ ! -L "$safe" ] || { echo "!! Cleanup stopped because the saved previous Wine prefix is a link: $safe" >&2 || true; return 1; }
-        ableton_prefix_marker_valid "$safe" "$target" || {
-            echo "!! Cleanup stopped because the saved previous Wine prefix is not recognized: $safe" >&2 || true
+    if [ -r "$txn/prefix.tsv" ]; then
+        IFS=$'\t' read -r target backup < "$txn/prefix.tsv" || {
+            echo "!! The saved Wine prefix cleanup data could not be read." >&2 || true
             return 1
         }
+        if [ "$backup" != absent ] && [ -e "$backup" ]; then
+            safe="$(ableton_path_is_safe_delete_target "$backup")" || { echo "!! The saved previous Wine prefix path is unsafe: $backup" >&2 || true; return 1; }
+            [ ! -L "$safe" ] || { echo "!! Cleanup stopped because the saved previous Wine prefix is a link: $safe" >&2 || true; return 1; }
+            ableton_prefix_marker_valid "$safe" "$target" || {
+                echo "!! Cleanup stopped because the saved previous Wine prefix is not recognized: $safe" >&2 || true
+                return 1
+            }
+            prefix_commit_started=1
+            rm -rf -- "$safe" || return 1
+            [ ! -e "$safe" ] && [ ! -L "$safe" ] || return 1
+        fi
         prefix_commit_started=1
-        rm -rf -- "$safe" || return 1
-        [ ! -e "$safe" ] && [ ! -L "$safe" ] || return 1
+        rm -f -- "$txn/prefix.tsv" || return 1
     fi
-    prefix_commit_started=1
-    rm -f -- "$txn/prefix.tsv" || return 1
     if [ -d "$txn/prefix-host" ] && [ ! -L "$txn/prefix-host" ]; then
         rm -f -- "$txn/prefix-host/active" || return 1
     fi
+    ableton_pipeasio_seed_record_commit "$txn" || return 1
 }
 
 if [ "$operation" != setup ]; then
@@ -1249,23 +1264,53 @@ write_default_pipeasio_settings()
 {
     local pipeasio_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
     local pipeasio_tmp="" pipeasio_parent pipeasio_seeded=0
+    local pipeasio_producer_token=""
+    local pipeasio_buffer_seed="${ABLETON_PIPEASIO_BUFFER_SEED:-256}"
+    case "$pipeasio_buffer_seed" in
+        64|128|256|512|1024) ;;
+        *)
+            echo "!! ABLETON_PIPEASIO_BUFFER_SEED must be 64, 128, 256, 512, or 1024." >&2 || true
+            return 1 ;;
+    esac
     if [ ! -e "$pipeasio_cfg" ] && [ ! -L "$pipeasio_cfg" ]; then
+        if ! ableton_pipeasio_seed_record_load "$transaction_dir" \
+           || [ "$ABLETON_PIPEASIO_SEED_PRESENT" -ne 0 ]; then
+            echo "!! PipeASIO recovery data already exists or is invalid; prefix setup stopped safely." >&2 || true
+            return 1
+        fi
         pipeasio_parent="$(dirname "$pipeasio_cfg")"
         if mkdir -p -- "$pipeasio_parent" \
            && pipeasio_tmp="$(mktemp "$pipeasio_parent/.config.ini.XXXXXX")"; then
-            if cat > "$pipeasio_tmp" <<'EOF'
+            if cat > "$pipeasio_tmp" <<EOF
 [pipeasio]
 inputs = 2
 outputs = 2
-buffer_size = 256
+buffer_size = $pipeasio_buffer_seed
 fixed_buffer_size = true
 auto_connect = true
 EOF
             then
-                if chmod 600 "$pipeasio_tmp" \
-                   && mv -T -n -- "$pipeasio_tmp" "$pipeasio_cfg" \
-                   && [ ! -e "$pipeasio_tmp" ] && [ -f "$pipeasio_cfg" ] && [ ! -L "$pipeasio_cfg" ]; then
-                    pipeasio_seeded=1
+                if chmod 600 "$pipeasio_tmp"; then
+                    pipeasio_producer_token="$(ableton_pipeasio_seed_identity_token \
+                        "$pipeasio_tmp")" || true
+                    if [ -n "$pipeasio_producer_token" ] \
+                       && ableton_pipeasio_seed_record_publish "$transaction_dir" \
+                            "$pipeasio_cfg" "$pipeasio_producer_token" \
+                            "$pipeasio_tmp"; then
+                        if mv -T -n -- "$pipeasio_tmp" "$pipeasio_cfg" \
+                           && [ ! -e "$pipeasio_tmp" ] \
+                           && [ -f "$pipeasio_cfg" ] && [ ! -L "$pipeasio_cfg" ] \
+                           && [ "$(ableton_pipeasio_seed_identity_token \
+                                    "$pipeasio_cfg" 2>/dev/null || true)" \
+                                = "$pipeasio_producer_token" ] \
+                           && ableton_pipeasio_seed_record_promote "$transaction_dir" \
+                                "$pipeasio_cfg" "$pipeasio_producer_token"; then
+                            pipeasio_seeded=1
+                        elif ! ableton_pipeasio_seed_record_rollback "$transaction_dir"; then
+                            echo "!! Fresh PipeASIO settings could not be restored safely." >&2 || true
+                            return 1
+                        fi
+                    fi
                 fi
             fi
         fi

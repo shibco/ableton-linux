@@ -7,7 +7,7 @@ ABLETON_AUZ_DESKTOP_ID=io.github.shibco.ableton-linux.auz.desktop
 authoritative_support_relatives=(
     VERSION
     lib/config.sh lib/lifecycle.sh lib/live-options.sh lib/manifest.sh
-    lib/pipeasio.sh lib/ui.sh
+    lib/pipeasio.sh lib/preferences.sh lib/ui.sh
     detect-scale.sh detect-theme.sh shortcut-hold.sh setup-realtime.sh
     audio-report.sh check-ntsync.sh rollback.sh ntsyncprobe.exe
     pipewire-version-probe setsyscolors.exe learnheal.exe
@@ -38,6 +38,8 @@ ok()
 
 kit="$work/kit/scripts"
 mkdir -p -- "$kit/lib"
+[ -r "$here/lib/preferences.sh" ] \
+    || fail "scripts/lib/preferences.sh exists for uninstall boundary tests"
 cp -- "$here/installer.sh" "$here/uninstall.sh" "$kit/"
 cp -- "$here/detect-scale.sh" "$here/detect-theme.sh" \
     "$here/shortcut-hold.sh" "$here/check-ntsync.sh" \
@@ -46,7 +48,8 @@ mkdir -p -- "$kit/../tools"
 cp -- "$here/../tools/setsyscolors.exe" "$here/../tools/learnheal.exe" \
     "$kit/../tools/"
 cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
-    "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$here/lib/ui.sh" \
+    "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" \
+    "$here/lib/preferences.sh" "$here/lib/ui.sh" \
     "$kit/lib/"
 cat > "$kit/setup-link.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -77,6 +80,9 @@ new_fixture()
 #!/usr/bin/env bash
 set -u
 for argument in "$@"; do
+    if [ -n "${ABLETON_TEST_RM_LOG:-}" ]; then
+        printf '%s\n' "$argument" >> "$ABLETON_TEST_RM_LOG"
+    fi
     if [ "${FAIL_ADOPTION_CLEANUP:-0}" -eq 1 ]; then
         case "$argument" in
             */transactions/uninstall-adopt.*) exit 75 ;;
@@ -85,7 +91,11 @@ for argument in "$@"; do
     if [ -n "${CORRUPT_STATE_AFTER_TARGET:-}" ] \
        && [ "$argument" = "$CORRUPT_STATE_AFTER_TARGET" ]; then
         /bin/rm "$@" || exit $?
-        printf 'changed during uninstall\n' > "${CORRUPT_STATE_FILE:?}"
+        if [ -n "${CORRUPT_STATE_REPLACEMENT:-}" ]; then
+            /bin/cp -- "$CORRUPT_STATE_REPLACEMENT" "${CORRUPT_STATE_FILE:?}"
+        else
+            printf 'changed during uninstall\n' > "${CORRUPT_STATE_FILE:?}"
+        fi
         exit 0
     fi
     if [ -n "${FAIL_RM_TARGET:-}" ] && [ "$argument" = "$FAIL_RM_TARGET" ]; then
@@ -263,6 +273,27 @@ prepare_optional_inventory_fixture()
         > "$state/install-manifest.tsv"
 }
 
+write_uninstall_preferences()   # base [format]
+{
+    local base="$1" format="${2:-1}"
+    mkdir -p -- "$base/xdg/config/ableton-wine"
+    if [ "$format" = 1 ]; then
+        cat > "$base/xdg/config/ableton-wine/preferences" <<'EOF'
+# ableton-linux launcher preferences; managed by the installer
+format=1
+shortcuts=preserve
+dpi=preserve
+audio_threads=off
+rt=off
+power=balanced
+EOF
+    else
+        printf '# ableton-linux launcher preferences; managed by the installer\nformat=%s\n' \
+            "$format" > "$base/xdg/config/ableton-wine/preferences"
+    fi
+    chmod 600 "$base/xdg/config/ableton-wine/preferences"
+}
+
 # Optional installer settings cannot veto removal when the public dispatcher
 # has already supplied exact runtime/prefix paths. Runtime ownership remains
 # the deletion authority; the malformed settings are preserved for inspection.
@@ -329,6 +360,118 @@ if grep -qF 'Leave file-opening defaults unchanged' "$base/out"; then
     fail "snapshot-free current uninstall plan claimed its own defaults were untouched"
 fi
 ok "snapshot-free current uninstall plans describe their narrow MIME cleanup truthfully"
+
+# Mutable launcher preferences are separate from authoritative support. Remove
+# one exact valid record, but retain malformed/future/indirect objects and a
+# valid record that changes after uninstall's initial inspection.
+base="$(new_fixture valid-launcher-preferences)"
+write_uninstall_preferences "$base"
+run_uninstall "$base" --keep-prefix "ABLETON_TEST_RM_LOG=$base/rm.log" \
+    >"$base/out" 2>"$base/err" \
+    || fail "valid launcher preference cleanup failed"
+[ ! -e "$base/xdg/config/ableton-wine/preferences" ] \
+    || fail "valid unchanged launcher preferences survive uninstall"
+runtime_rm_line="$(grep -nFx "$base/runtime" "$base/rm.log" | head -n1 | cut -d: -f1)"
+preferences_rm_line="$(grep -nFx "$base/xdg/config/ableton-wine/preferences" \
+    "$base/rm.log" | head -n1 | cut -d: -f1)"
+[ -n "$runtime_rm_line" ] && [ -n "$preferences_rm_line" ] \
+    && [ "$runtime_rm_line" -lt "$preferences_rm_line" ] \
+    || fail "launcher preferences are removed before core runtime ownership is retired"
+
+base="$(new_fixture valid-launcher-preferences-delete-prefix)"
+mkdir -p -- "$base/prefix"
+printf 'format=1\nprefix=%s\n' "$base/prefix" \
+    > "$base/prefix/.ableton-linux-prefix"
+printf 'registry fixture\n' > "$base/prefix/system.reg"
+write_uninstall_preferences "$base"
+run_uninstall "$base" --delete-prefix "ABLETON_TEST_RM_LOG=$base/rm.log" \
+    >"$base/out" 2>"$base/err" \
+    || fail "valid launcher preference cleanup with prefix removal failed"
+preferences="$base/xdg/config/ableton-wine/preferences"
+[ ! -e "$base/runtime" ] && [ ! -e "$base/prefix" ] && [ ! -e "$preferences" ] \
+    || fail "valid preferences survive or precede requested core removal"
+runtime_rm_line="$(grep -nFx "$base/runtime" "$base/rm.log" | head -n1 | cut -d: -f1)"
+prefix_rm_line="$(grep -nFx "$base/prefix" "$base/rm.log" | head -n1 | cut -d: -f1)"
+preferences_rm_line="$(grep -nFx "$preferences" "$base/rm.log" | head -n1 | cut -d: -f1)"
+[ -n "$runtime_rm_line" ] && [ -n "$prefix_rm_line" ] \
+    && [ -n "$preferences_rm_line" ] \
+    && [ "$runtime_rm_line" -lt "$preferences_rm_line" ] \
+    && [ "$prefix_rm_line" -lt "$preferences_rm_line" ] \
+    || fail "launcher preferences are removed before runtime and requested prefix"
+
+base="$(new_fixture malformed-launcher-preferences)"
+write_uninstall_preferences "$base"
+printf 'unknown=value\n' >> "$base/xdg/config/ableton-wine/preferences"
+before="$(sha256sum "$base/xdg/config/ableton-wine/preferences")"
+run_uninstall "$base" --keep-prefix >"$base/out" 2>"$base/err" \
+    || fail "malformed launcher preferences block core uninstall"
+[ ! -e "$base/runtime" ] \
+    || fail "malformed launcher preferences turn core uninstall into a no-op"
+[ "$(sha256sum "$base/xdg/config/ableton-wine/preferences")" = "$before" ] \
+    || fail "malformed launcher preferences are not preserved byte-for-byte"
+
+base="$(new_fixture future-launcher-preferences)"
+write_uninstall_preferences "$base" 2
+before="$(sha256sum "$base/xdg/config/ableton-wine/preferences")"
+run_uninstall "$base" --keep-prefix >"$base/out" 2>"$base/err" \
+    || fail "future launcher preferences block core uninstall"
+[ ! -e "$base/runtime" ] \
+    || fail "future launcher preferences turn core uninstall into a no-op"
+[ "$(sha256sum "$base/xdg/config/ableton-wine/preferences")" = "$before" ] \
+    || fail "future launcher preferences are not preserved byte-for-byte"
+
+base="$(new_fixture symlink-launcher-preferences)"
+write_uninstall_preferences "$base"
+mv -- "$base/xdg/config/ableton-wine/preferences" "$base/external-preferences"
+ln -s -- "$base/external-preferences" "$base/xdg/config/ableton-wine/preferences"
+before="$(sha256sum "$base/external-preferences")"
+run_uninstall "$base" --keep-prefix >"$base/out" 2>"$base/err" \
+    || fail "symlinked launcher preferences block core uninstall"
+[ ! -e "$base/runtime" ] \
+    || fail "symlinked launcher preferences turn core uninstall into a no-op"
+[ -L "$base/xdg/config/ableton-wine/preferences" ] \
+    && [ "$(sha256sum "$base/external-preferences")" = "$before" ] \
+    || fail "uninstall follows or removes symlinked launcher preferences"
+
+base="$(new_fixture directory-launcher-preferences)"
+mkdir -p -- "$base/xdg/config/ableton-wine/preferences"
+printf 'directory sentinel\n' > "$base/xdg/config/ableton-wine/preferences/keep"
+run_uninstall "$base" --keep-prefix >"$base/out" 2>"$base/err" \
+    || fail "directory launcher preferences block core uninstall"
+[ ! -e "$base/runtime" ] \
+    || fail "directory launcher preferences turn core uninstall into a no-op"
+grep -qxF 'directory sentinel' "$base/xdg/config/ableton-wine/preferences/keep" \
+    || fail "uninstall recurses into a launcher-preferences directory"
+
+base="$(new_fixture raced-launcher-preferences)"
+write_uninstall_preferences "$base"
+preferences="$base/xdg/config/ableton-wine/preferences"
+cat > "$base/replacement-preferences" <<'EOF'
+# ableton-linux launcher preferences; managed by the installer
+format=1
+shortcuts=take
+dpi=auto
+audio_threads=auto
+rt=auto
+power=performance
+EOF
+run_uninstall "$base" --keep-prefix \
+    "CORRUPT_STATE_AFTER_TARGET=$base/runtime" \
+    "CORRUPT_STATE_FILE=$preferences" \
+    "CORRUPT_STATE_REPLACEMENT=$base/replacement-preferences" \
+    "ABLETON_TEST_RM_LOG=$base/rm.log" \
+    >"$base/out" 2>"$base/err" \
+    || fail "changed launcher preferences block core uninstall"
+[ ! -e "$base/runtime" ] \
+    || fail "changed launcher preferences turn core uninstall into a no-op"
+cmp -s -- "$base/replacement-preferences" "$preferences" \
+    || fail "uninstall removes a different valid preference record written during the run"
+runtime_rm_line="$(grep -nFx "$base/runtime" "$base/rm.log" | head -n1 | cut -d: -f1)"
+[ -n "$runtime_rm_line" ] \
+    || fail "preference-race fixture did not reach core runtime removal"
+! grep -qxF "$preferences" "$base/rm.log" \
+    || fail "uninstall removes preferences before core or retries after their generation changed"
+ok "uninstall removes only exact valid unchanged launcher preferences"
 
 # Exercise the real integration support tree so an ordinary clean uninstall does
 # not acquire a warning merely because a generated support path is present.
@@ -1143,6 +1286,9 @@ ok "presentation output handling preserves core deletion failures"
 
 # Runtime and requested-prefix deletion are the core operation and stay fatal.
 base="$(new_fixture runtime-removal)"
+write_uninstall_preferences "$base"
+preferences="$base/xdg/config/ableton-wine/preferences"
+preferences_before="$(sha256sum "$preferences")"
 if run_uninstall "$base" --keep-prefix FAIL_RM_TARGET="$base/runtime" \
     > "$base/out" 2> "$base/err"; then
     fail "uninstall succeeded while the runtime remained"
@@ -1150,6 +1296,8 @@ fi
 [ -e "$base/runtime" ] || fail "runtime failure fixture unexpectedly disappeared"
 [ -e "$(state_path "$base")" ] \
     || fail "runtime failure discarded support files needed to retry"
+[ "$(sha256sum "$preferences")" = "$preferences_before" ] \
+    || fail "runtime deletion failure removes or changes launcher preferences"
 grep -q 'runtime removal is incomplete' "$base/err" \
     || fail "runtime removal failure was not explicit"
 grep -q '^   Retry:' "$base/err" \
@@ -1161,6 +1309,9 @@ mkdir -p -- "$base/prefix"
 printf 'format=1\nprefix=%s\n' "$base/prefix" \
     > "$base/prefix/.ableton-linux-prefix"
 printf 'registry fixture\n' > "$base/prefix/system.reg"
+write_uninstall_preferences "$base"
+preferences="$base/xdg/config/ableton-wine/preferences"
+preferences_before="$(sha256sum "$preferences")"
 if run_uninstall "$base" --delete-prefix FAIL_RM_TARGET="$base/prefix" \
     > "$base/out" 2> "$base/err"; then
     fail "uninstall succeeded while the requested prefix remained"
@@ -1169,6 +1320,8 @@ fi
 [ ! -e "$base/runtime" ] || fail "prefix failure occurred before runtime removal"
 [ -e "$(state_path "$base")" ] \
     || fail "prefix failure discarded support files needed to retry"
+[ "$(sha256sum "$preferences")" = "$preferences_before" ] \
+    || fail "requested-prefix deletion failure removes or changes launcher preferences"
 grep -q 'prefix removal is incomplete' "$base/err" \
     || fail "prefix removal failure was not explicit"
 grep -q '^   Retry:' "$base/err" \

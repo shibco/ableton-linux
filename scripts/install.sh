@@ -798,7 +798,7 @@ install_integration()
         application-x-ableton-live-set
     )
     ui_item_begin i_setup_launchers
-    for tool in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh ui.sh; do
+    for tool in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh preferences.sh ui.sh; do
         ableton_install_project_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
     ableton_install_project_file 755 "$here/ableton-live" "$bin/ableton-live"
@@ -998,7 +998,7 @@ install_link_assets()
     # A Link-only run needs these common support files. A combined integration
     # run already handled the same destinations once.
     if [ "$want_integration" -eq 0 ]; then
-        for tool in config.sh lifecycle.sh manifest.sh ui.sh; do
+        for tool in config.sh lifecycle.sh manifest.sh preferences.sh ui.sh; do
             ableton_install_project_file 644 "$here/lib/$tool" "$data/lib/$tool"
         done
     fi

@@ -15,6 +15,7 @@ fi
 . "$here/lib/lifecycle.sh"
 . "$here/lib/pipeasio.sh"
 . "$here/lib/manifest.sh"
+. "$here/lib/preferences.sh"
 unset ABLETON_PROJECT_BACKUP_DIR ABLETON_PROJECT_BACKUP_STAMP
 
 usage()
@@ -23,9 +24,19 @@ usage()
 Usage:
   installer install [--live-installer FILE] [--prefix PATH] [--runtime-root PATH]
                     [--live-major 11|12] [--link=off|session|always]
+                    [--audio-buffer=64|128|256|512|1024]
+                    [--shortcuts=take|preserve]
+                    [--dpi=auto|100|fractional|preserve]
+                    [--audio-threads=auto|off|1..63] [--rt=auto|off]
+                    [--power=performance|balanced|off]
                     [--skip-live-install] [--yes] [--dry-run]
   installer update [--prefix PATH] [--runtime-root PATH]
                    [--link=keep|off|session|always] [--yes] [--dry-run]
+                   [--audio-buffer=64|128|256|512|1024]
+                   [--shortcuts=take|preserve]
+                   [--dpi=auto|100|fractional|preserve]
+                   [--audio-threads=auto|off|1..63] [--rt=auto|off]
+                   [--power=performance|balanced|off]
   installer runtime install [--runtime-root PATH] [--yes] [--dry-run]
   installer prefix create|update [--prefix PATH] [--live-major 11|12] [--dry-run]
   installer prefix repair-live11 [--prefix PATH] [--dry-run]
@@ -74,6 +85,18 @@ runtime_seen=0
 major_seen=0
 mode_seen=0
 link_seen=0
+cli_audio_buffer=""
+cli_shortcuts=""
+cli_dpi=""
+cli_audio_threads=""
+cli_rt=""
+cli_power=""
+audio_buffer_seen=0
+shortcuts_seen=0
+dpi_seen=0
+audio_threads_seen=0
+rt_seen=0
+power_seen=0
 
 if [ "${1:-}" = plan ]; then
     dry_run=1
@@ -134,6 +157,24 @@ while [ $# -gt 0 ]; do
         --mode=*)
             [ "$mode_seen" -eq 0 ] || { echo "!! --mode was specified more than once" >&2; exit 2; }
             mode_seen=1; link_mode_option="${1#*=}" ;;
+        --audio-buffer=*)
+            [ "$audio_buffer_seen" -eq 0 ] || { echo "!! --audio-buffer was specified more than once" >&2; exit 2; }
+            audio_buffer_seen=1; cli_audio_buffer="${1#*=}" ;;
+        --shortcuts=*)
+            [ "$shortcuts_seen" -eq 0 ] || { echo "!! --shortcuts was specified more than once" >&2; exit 2; }
+            shortcuts_seen=1; cli_shortcuts="${1#*=}" ;;
+        --dpi=*)
+            [ "$dpi_seen" -eq 0 ] || { echo "!! --dpi was specified more than once" >&2; exit 2; }
+            dpi_seen=1; cli_dpi="${1#*=}" ;;
+        --audio-threads=*)
+            [ "$audio_threads_seen" -eq 0 ] || { echo "!! --audio-threads was specified more than once" >&2; exit 2; }
+            audio_threads_seen=1; cli_audio_threads="${1#*=}" ;;
+        --rt=*)
+            [ "$rt_seen" -eq 0 ] || { echo "!! --rt was specified more than once" >&2; exit 2; }
+            rt_seen=1; cli_rt="${1#*=}" ;;
+        --power=*)
+            [ "$power_seen" -eq 0 ] || { echo "!! --power was specified more than once" >&2; exit 2; }
+            power_seen=1; cli_power="${1#*=}" ;;
         --skip-live-install) skip_live=1 ;;
         --yes|-y) assume_yes=1 ;;
         --dry-run) dry_run=1 ;;
@@ -220,6 +261,38 @@ esac
 case "$cli_major" in ''|11|12) ;; *) echo "!! --live-major must be 11 or 12" >&2; exit 2 ;; esac
 case "$cli_link" in ''|off|session|always|keep) ;; *) echo "!! --link must be off, session, always, or keep" >&2; exit 2 ;; esac
 case "$link_mode_option" in ''|session|always) ;; *) echo "!! --mode must be session or always" >&2; exit 2 ;; esac
+[ "$audio_buffer_seen" -eq 0 ] || [ -n "$cli_audio_buffer" ] \
+    || { echo "!! --audio-buffer needs a value" >&2; exit 2; }
+[ "$shortcuts_seen" -eq 0 ] || [ -n "$cli_shortcuts" ] \
+    || { echo "!! --shortcuts needs a value" >&2; exit 2; }
+[ "$dpi_seen" -eq 0 ] || [ -n "$cli_dpi" ] \
+    || { echo "!! --dpi needs a value" >&2; exit 2; }
+[ "$audio_threads_seen" -eq 0 ] || [ -n "$cli_audio_threads" ] \
+    || { echo "!! --audio-threads needs a value" >&2; exit 2; }
+[ "$rt_seen" -eq 0 ] || [ -n "$cli_rt" ] \
+    || { echo "!! --rt needs a value" >&2; exit 2; }
+[ "$power_seen" -eq 0 ] || [ -n "$cli_power" ] \
+    || { echo "!! --power needs a value" >&2; exit 2; }
+case "$cli_audio_buffer" in ''|64|128|256|512|1024) ;;
+    *) echo "!! --audio-buffer must be 64, 128, 256, 512, or 1024" >&2; exit 2 ;;
+esac
+case "$cli_shortcuts" in ''|take|preserve) ;;
+    *) echo "!! --shortcuts must be take or preserve" >&2; exit 2 ;;
+esac
+case "$cli_dpi" in ''|auto|100|fractional|preserve) ;;
+    *) echo "!! --dpi must be auto, 100, fractional, or preserve" >&2; exit 2 ;;
+esac
+case "$cli_audio_threads" in
+    ''|auto|off) ;;
+    *) [[ "$cli_audio_threads" =~ ^([1-9]|[1-5][0-9]|6[0-3])$ ]] \
+        || { echo "!! --audio-threads must be auto, off, or 1 through 63" >&2; exit 2; } ;;
+esac
+case "$cli_rt" in ''|auto|off) ;;
+    *) echo "!! --rt must be auto or off" >&2; exit 2 ;;
+esac
+case "$cli_power" in ''|performance|balanced|off) ;;
+    *) echo "!! --power must be performance, balanced, or off" >&2; exit 2 ;;
+esac
 [ "$skip_live" -eq 0 ] || [ -z "$live_payload" ] || {
     echo "!! --skip-live-install conflicts with --live-installer" >&2; exit 2; }
 [ "$cli_link" != keep ] || [ "$command_name" = update ] || {
@@ -230,6 +303,15 @@ invalid_option()
     echo "!! $1 cannot be used with $command_name${subcommand:+ $subcommand}" >&2
     exit 2
 }
+
+if [ "$command_name" != install ] && [ "$command_name" != update ]; then
+    [ "$audio_buffer_seen" -eq 0 ] || invalid_option --audio-buffer
+    [ "$shortcuts_seen" -eq 0 ] || invalid_option --shortcuts
+    [ "$dpi_seen" -eq 0 ] || invalid_option --dpi
+    [ "$audio_threads_seen" -eq 0 ] || invalid_option --audio-threads
+    [ "$rt_seen" -eq 0 ] || invalid_option --rt
+    [ "$power_seen" -eq 0 ] || invalid_option --power
+fi
 
 # A selected command has one fixed option schema.  Irrelevant values are
 # rejected here instead of becoming order-dependent or silent no-ops.
@@ -384,6 +466,72 @@ esac
 [ -n "$desired_link" ] || desired_link="$prior_link"
 case "$desired_link" in off|session|always|'') ;; *) echo "!! No saved Ableton Link setting is available; choose --link=off|session|always" >&2; exit 2 ;; esac
 
+preferences_path="${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine/preferences"
+pipeasio_config_path="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
+preferences_requested=0
+[ "$shortcuts_seen$dpi_seen$audio_threads_seen$rt_seen$power_seen" = 00000 ] \
+    || preferences_requested=1
+preferences_token=absent
+pipeasio_token=absent
+merged_shortcuts=take
+merged_dpi=auto
+merged_audio_threads=auto
+merged_rt=auto
+merged_power=performance
+if [ "$command_name" = install ] || [ "$command_name" = update ]; then
+    preferences_token="$(ableton_preferences_object_token "$preferences_path")"
+    pipeasio_token="$(ableton_preferences_object_token "$pipeasio_config_path")"
+    merged_preferences="$(ableton_preferences_merge "$preferences_path" \
+        "$cli_shortcuts" "$cli_dpi" "$cli_audio_threads" "$cli_rt" "$cli_power")" \
+        || { echo "!! persistent pre-flight settings are invalid" >&2; exit 2; }
+    IFS='|' read -r merged_shortcuts merged_dpi merged_audio_threads merged_rt merged_power \
+        <<< "$merged_preferences"
+fi
+
+# A coordinated first seed is part of prefix construction. Existing PipeASIO
+# topology is never touched until after the core generation is known stable.
+if [ "$command_name" = install ] || [ "$command_name" = update ]; then
+    if [ "$pipeasio_token" = absent ]; then
+        ABLETON_PIPEASIO_BUFFER_SEED="${cli_audio_buffer:-128}"
+        export ABLETON_PIPEASIO_BUFFER_SEED
+    fi
+    if [ "$dpi_seen" -eq 1 ]; then
+        ABLETON_DPI_MODE="$cli_dpi"
+        export ABLETON_DPI_MODE
+    fi
+fi
+
+describe_preflight_plan()
+{
+    [ "$audio_buffer_seen" -eq 0 ] \
+        || printf 'Audio buffer: %s frames\n' "$cli_audio_buffer"
+    case "$cli_shortcuts" in
+        take) printf 'Keyboard shortcuts: Assign to Live\n' ;;
+        preserve) printf 'Keyboard shortcuts: Preserve desktop shortcuts\n' ;;
+    esac
+    case "$cli_dpi" in
+        auto) printf 'Display scaling: Automatic\n' ;;
+        100) printf 'Display scaling: 100%%\n' ;;
+        fractional) printf 'Display scaling: Fractional\n' ;;
+        preserve) printf 'Display scaling: Preserve\n' ;;
+    esac
+    case "$cli_audio_threads" in
+        auto) printf 'Audio workers: Automatic\n' ;;
+        off) printf 'Audio workers: Let Live decide\n' ;;
+        '') ;;
+        *) printf 'Audio workers: %s\n' "$cli_audio_threads" ;;
+    esac
+    case "$cli_rt" in
+        auto) printf 'Real-time scheduling: Automatic\n' ;;
+        off) printf 'Real-time scheduling: Normal\n' ;;
+    esac
+    case "$cli_power" in
+        performance) printf 'Power profile: Performance\n' ;;
+        balanced) printf 'Power profile: Balanced\n' ;;
+        off) printf "Power profile: Don't change\n" ;;
+    esac
+}
+
 payload_major()
 {
     local payload="$1" lower majors scan prefix=""
@@ -509,7 +657,14 @@ if [ "$dry_run" -eq 0 ]; then
                 break
             done ;;
         prefix:create|prefix:update)
-            pipewire_probe="$ABLETON_WINE_ROOT/bin/pipewire-version-probe" ;;
+            pipewire_probe="$ABLETON_WINE_ROOT/bin/pipewire-version-probe"
+            for pipewire_probe_candidate in \
+                "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
+                "$root/bin/pipewire-version-probe"; do
+                [ -x "$pipewire_probe_candidate" ] || continue
+                pipewire_probe="$pipewire_probe_candidate"
+                break
+            done ;;
     esac
     if [ -n "$pipewire_probe" ]; then
         ableton_pipewire_preflight "$pipewire_probe" "changing PipeASIO"
@@ -636,6 +791,7 @@ case "$command_name:$subcommand" in
             else
                 ui_status d_plan_prefix_create_line "$ABLETON_WINEPREFIX"
             fi
+            describe_preflight_plan
             ui_status d_plan_pipeasio_config "${XDG_CONFIG_HOME:-$HOME/.config}"
             [ -z "$live_payload" ] || ui_status d_plan_run_live_installer "$ABLETON_LIVE_VERSION" "$live_payload"
             ui_status d_plan_save_settings "$ABLETON_CONFIG_FILE"
@@ -772,6 +928,41 @@ cleanup_ready=1
 optional_cancelled=0
 link_resume_command=""
 live_unpack=""
+
+commit_preflight_settings()
+{
+    local current_buffer=""
+    if [ "$preferences_requested" -eq 1 ]; then
+        if ! ableton_preferences_write "$preferences_path" "$preferences_token" \
+            "$merged_shortcuts" "$merged_dpi" "$merged_audio_threads" \
+            "$merged_rt" "$merged_power"; then
+            settings_ready=0
+            if ! _ableton_token_matches "$preferences_path" "$preferences_token"; then
+                echo "!! Launcher preferences changed while Ableton was being prepared; the newer settings were kept." >&2 || true
+            elif [ -f "$preferences_path" ] && [ ! -L "$preferences_path" ] \
+                 && ! ableton_preferences_valid "$preferences_path"; then
+                echo "!! Launcher preferences are malformed and were not saved; repair or remove the file, then retry." >&2 || true
+            else
+                echo "!! Launcher preferences could not be saved; Ableton itself is ready, so rerun the installer to retry settings." >&2 || true
+            fi
+        fi
+    fi
+
+    if [ "$audio_buffer_seen" -eq 1 ]; then
+        if [ "$pipeasio_token" = absent ]; then
+            current_buffer="$(ableton_pipeasio_buffer_read "$pipeasio_config_path" 2>/dev/null || true)"
+            if [ "$current_buffer" != "$cli_audio_buffer" ]; then
+                settings_ready=0
+                echo "!! The audio buffer configuration changed while Ableton was being prepared; the newer file was kept." >&2 || true
+            fi
+        elif ! ableton_pipeasio_buffer_write "$pipeasio_config_path" \
+                "$pipeasio_token" "$cli_audio_buffer"; then
+            settings_ready=0
+            echo "!! The audio buffer configuration changed while Ableton was being prepared; the newer file was kept." >&2 || true
+        fi
+    fi
+    return 0
+}
 
 format_link_resume_command()
 {
@@ -1249,6 +1440,7 @@ transaction_complete=1
 # when a terminal write or another advisory operation fails; the EXIT guard
 # still reports one retry warning for any uncaught final status.
 set +e
+commit_preflight_settings
 cleanup_status=0
 component_commit_ok=1
 core_marker_ready=1

@@ -24,6 +24,9 @@ test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-config-boundary.sh
 	./scripts/test-project-file-installer.sh
 	./scripts/test-installer-ui.sh
+	./scripts/test-preflight-preferences.sh
+	./scripts/test-preflight-menu.sh
+	./scripts/test-preflight-integration.sh
 	./scripts/test-check-ntsync.sh
 	./scripts/test-shortcut-hold.sh
 	./scripts/test-cpu-topology.sh

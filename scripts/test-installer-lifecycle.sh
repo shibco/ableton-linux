@@ -39,6 +39,28 @@ fail()
     exit 1
 }
 
+lifecycle_object_snapshot()
+{
+    local path="$1" metadata digest target
+    if [ -L "$path" ]; then
+        metadata="$(stat -c '%d|%i|%f|%a|%u|%g|%s|%h|%w|%y|%z' -- "$path")" \
+            || return 1
+        target="$(readlink -- "$path")" || return 1
+        printf 'symlink|%s|%s\n' "$metadata" "$target"
+    elif [ -f "$path" ]; then
+        metadata="$(stat -c '%d|%i|%f|%a|%u|%g|%s|%h|%w|%y|%z' -- "$path")" \
+            || return 1
+        digest="$(sha256sum -- "$path" | awk '{print $1}')" || return 1
+        printf 'file|%s|%s\n' "$metadata" "$digest"
+    elif [ -e "$path" ]; then
+        metadata="$(stat -c '%d|%i|%f|%a|%u|%g|%s|%h|%w|%y|%z' -- "$path")" \
+            || return 1
+        printf 'other|%s\n' "$metadata"
+    else
+        printf 'absent\n'
+    fi
+}
+
 # The suite installs real build artifacts: the exact VERSION runtime from the
 # runtime-plan check onwards and dist/ableton-linkd from the Link checks. A
 # checkout can update the tracked runtime checksum while retaining
@@ -435,9 +457,9 @@ status=0
 run_isolated "$base" env STUB_EXIT=42 STUB_PATH_FILE="$base/installer-path" \
     sh "$base/kit.run" >>"$base/out" 2>>"$base/err" || status=$?
 [ "$status" -eq 42 ] || fail "a delegated install failure code passes through the .run header"
-grep -q '^│ Ableton-Linux Reinstall v. suite-check *│ Complete │$' "$base/out" \
+grep -q '^│ Ableton-Linux Install v. suite-check *│ Complete │$' "$base/out" \
     || fail "successful .run output omitted its completion footer"
-grep -q '^│ Ableton-Linux Reinstall v. suite-check *│   Failed │$' "$base/out" \
+grep -q '^│ Ableton-Linux Install v. suite-check *│   Failed │$' "$base/out" \
     || fail "failed .run output omitted its failure footer"
 grep -qF '  > delegated installer failed with status 42.' "$base/out" \
     || fail "failed .run output omitted its line-by-line error"
@@ -858,7 +880,8 @@ kit="$base/kit"
 mkdir -p "$kit/scripts/lib" "$kit/bin" "$base/runtime/bin"
 cp -- "$here/installer.sh" "$kit/scripts/"
 cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/live-options.sh" \
-    "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$here/lib/ui.sh" \
+    "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" "$here/lib/preferences.sh" \
+    "$here/lib/ui.sh" \
     "$kit/scripts/lib/"
 cat > "$kit/bin/pipewire-version-probe" <<'EOF'
 #!/bin/sh
@@ -1597,6 +1620,39 @@ grep -qxF 'old prefix' "$prefix/generation" \
     || fail "prefix-only recovery did not restore the saved prefix"
 ok "prefix recovery needs no empty host-file journal"
 
+# Canonical encoding cannot make malformed seed ownership trustworthy. Every
+# production recovery entry point must reject it before touching the current
+# settings, the journal, or the coordinator's active marker.
+base="$(new_env malformed-pipeasio-seed-recovery)"
+prefix="$base/prefix"
+txn="$base/txn"
+pipeasio="$base/config/pipeasio/config.ini"
+active="$txn/active"
+journal="$txn/pipeasio-seed.v1"
+mkdir -p -- "$txn" "$(dirname "$pipeasio")"
+printf '[pipeasio]\nbuffer_size = 512\n' > "$pipeasio"
+printf 'active recovery evidence\n' > "$active"
+path_b64="$(printf '%s' "$pipeasio" | base64 | tr -d '\n')"
+token_b64="$(printf '%s' 'file|garbage' | base64 | tr -d '\n')"
+printf 'format=1\npath_b64=%s\ntoken_b64=%s\ntemp_b64=\n' \
+    "$path_b64" "$token_b64" > "$journal"
+journal_before="$(lifecycle_object_snapshot "$journal")"
+pipeasio_before="$(lifecycle_object_snapshot "$pipeasio")"
+active_before="$(lifecycle_object_snapshot "$active")"
+for recovery_operation in --preflight-rollback --rollback --preflight-commit --commit; do
+    if run_isolated "$base" env ABLETON_WINEPREFIX="$prefix" \
+        bash "$here/setup-prefix.sh" "$recovery_operation" "$txn" \
+        >"$base/${recovery_operation#--}.out" \
+        2>"$base/${recovery_operation#--}.err"; then
+        fail "setup-prefix accepts malformed PipeASIO evidence for $recovery_operation"
+    fi
+    [ "$(lifecycle_object_snapshot "$journal")" = "$journal_before" ] \
+        && [ "$(lifecycle_object_snapshot "$pipeasio")" = "$pipeasio_before" ] \
+        && [ "$(lifecycle_object_snapshot "$active")" = "$active_before" ] \
+        || fail "setup-prefix $recovery_operation changes malformed recovery evidence or settings"
+done
+ok "every prefix recovery entry point preserves malformed PipeASIO evidence"
+
 # The EXIT handler has enough state to decide whether a late failure happened
 # before or after the prefix became usable. Diagnostic output is not part of
 # that decision, and a ready prefix must not also be reported as rolled back.
@@ -1656,23 +1712,155 @@ extract_setup_prefix_function write_default_pipeasio_settings \
     "$base/pipeasio-defaults.function"
 extract_setup_prefix_function remove_extracted_live_installer \
     "$base/live-cleanup.function"
-run_isolated "$base" env XDG_CONFIG_HOME="$base/defaults" bash -c '
+mkdir -p -- "$base/defaults-txn" "$base/selected-defaults-txn" \
+    "$base/raced-defaults-txn"
+run_isolated "$base" env XDG_CONFIG_HOME="$base/defaults" \
+    ABLETON_TEST_SEED_ORDER_LOG="$base/defaults-order.log" bash -c '
     set -euo pipefail
     . "$1"
     . "$2"
+    . "$3"
+
+    eval "$(declare -f ableton_pipeasio_seed_record_publish \
+        | sed "1s/^ableton_pipeasio_seed_record_publish/production_seed_record_publish/")"
+    eval "$(declare -f ableton_pipeasio_seed_record_promote \
+        | sed "1s/^ableton_pipeasio_seed_record_promote/production_seed_record_promote/")"
+    seed_case=normal
+    inject_destination_race=0
+    ableton_pipeasio_seed_record_publish()
+    {
+        local txn="$1" final="$2" token="$3" temp="$4"
+        [ ! -e "$final" ] && [ ! -L "$final" ] \
+            && [ -f "$temp" ] && [ ! -L "$temp" ] \
+            || return 81
+        printf "%s-publish-before\n" "$seed_case" \
+            >> "${ABLETON_TEST_SEED_ORDER_LOG:?}"
+        production_seed_record_publish "$@" || return
+        ableton_pipeasio_seed_record_load "$txn" \
+            && [ "$ABLETON_PIPEASIO_SEED_PRESENT" -eq 1 ] \
+            && [ "$ABLETON_PIPEASIO_SEED_PATH" = "$final" ] \
+            && [ "$ABLETON_PIPEASIO_SEED_TOKEN" = "$token" ] \
+            && [ "$ABLETON_PIPEASIO_SEED_TEMP" = "$temp" ] \
+            && [ ! -e "$final" ] && [ -f "$temp" ] && [ ! -L "$temp" ] \
+            || return 82
+        printf "%s-publish-after\n" "$seed_case" \
+            >> "${ABLETON_TEST_SEED_ORDER_LOG:?}"
+        if [ "$inject_destination_race" -eq 1 ]; then
+            cp -- "$temp" "$final.race"
+            mv -T -n -- "$final.race" "$final"
+            [ -f "$final" ] && [ ! -L "$final" ] \
+                && [ "$(ableton_pipeasio_seed_identity_token "$final")" != "$token" ] \
+                || return 83
+            printf "%s-race-injected\n" "$seed_case" \
+                >> "${ABLETON_TEST_SEED_ORDER_LOG:?}"
+        fi
+    }
+    ableton_pipeasio_seed_record_promote()
+    {
+        local txn="$1" final="$2" token="$3"
+        [ "$inject_destination_race" -eq 0 ] || return 84
+        ableton_pipeasio_seed_record_load "$txn" \
+            && [ "$ABLETON_PIPEASIO_SEED_PRESENT" -eq 1 ] \
+            && [ "$ABLETON_PIPEASIO_SEED_TOKEN" = "$token" ] \
+            && [ -n "$ABLETON_PIPEASIO_SEED_TEMP" ] \
+            && [ ! -e "$ABLETON_PIPEASIO_SEED_TEMP" ] \
+            && [ ! -L "$ABLETON_PIPEASIO_SEED_TEMP" ] \
+            && [ -f "$final" ] && [ ! -L "$final" ] \
+            && [ "$(ableton_pipeasio_seed_identity_token "$final")" = "$token" ] \
+            || return 85
+        printf "%s-promote-before\n" "$seed_case" \
+            >> "${ABLETON_TEST_SEED_ORDER_LOG:?}"
+        production_seed_record_promote "$@" || return
+        ableton_pipeasio_seed_record_load "$txn" \
+            && [ "$ABLETON_PIPEASIO_SEED_PRESENT" -eq 1 ] \
+            && _ableton_pipeasio_full_token_valid "$ABLETON_PIPEASIO_SEED_TOKEN" \
+            && [ -z "$ABLETON_PIPEASIO_SEED_TEMP" ] \
+            && [ "$ABLETON_PIPEASIO_SEED_TOKEN" \
+                 = "$(ableton_preferences_object_token "$final")" ] \
+            || return 86
+        printf "%s-promote-after\n" "$seed_case" \
+            >> "${ABLETON_TEST_SEED_ORDER_LOG:?}"
+    }
+
+    transaction_dir="$4"
     write_default_pipeasio_settings > /dev/full
+    [ -f "$XDG_CONFIG_HOME/pipeasio/config.ini" ] \
+        && grep -qxF "buffer_size = 256" \
+            "$XDG_CONFIG_HOME/pipeasio/config.ini" \
+        && [ -f "$transaction_dir/pipeasio-seed.v1" ]
+    ableton_pipeasio_seed_record_commit "$transaction_dir"
+
+    for selected_seed in 64 128 256 512 1024; do
+        seed_case="selected-$selected_seed"
+        inject_destination_race=0
+        XDG_CONFIG_HOME="$5/$selected_seed"
+        export XDG_CONFIG_HOME
+        transaction_dir="$6/$selected_seed"
+        mkdir -p -- "$transaction_dir"
+        ABLETON_PIPEASIO_BUFFER_SEED="$selected_seed"
+        export ABLETON_PIPEASIO_BUFFER_SEED
+        write_default_pipeasio_settings > /dev/full
+        grep -qxF "buffer_size = $selected_seed" \
+            "$XDG_CONFIG_HOME/pipeasio/config.ini"
+        ableton_pipeasio_seed_record_commit "$transaction_dir"
+    done
+    unset ABLETON_PIPEASIO_BUFFER_SEED
+
+    seed_case=raced
+    inject_destination_race=1
+    XDG_CONFIG_HOME="$7"
+    export XDG_CONFIG_HOME
+    transaction_dir="$8"
+    write_default_pipeasio_settings > /dev/full
+    raced_cfg="$XDG_CONFIG_HOME/pipeasio/config.ini"
+    [ -f "$raced_cfg" ] && [ ! -L "$raced_cfg" ] \
+        && [ ! -e "$transaction_dir/pipeasio-seed.v1" ] \
+        && ! find "$(dirname "$raced_cfg")" -maxdepth 1 \
+            -name ".config.ini.*" -print -quit | grep -q .
+    cmp -s -- "$9/pipeasio/config.ini" "$raced_cfg"
+
+    mapfile -t observed_order < "${ABLETON_TEST_SEED_ORDER_LOG:?}"
+    expected_order=(normal-publish-before normal-publish-after
+        normal-promote-before normal-promote-after)
+    for selected_seed in 64 128 256 512 1024; do
+        expected_order+=("selected-$selected_seed-publish-before"
+            "selected-$selected_seed-publish-after"
+            "selected-$selected_seed-promote-before"
+            "selected-$selected_seed-promote-after")
+    done
+    expected_order+=(raced-publish-before raced-publish-after
+        raced-race-injected)
+    [ "${observed_order[*]}" = "${expected_order[*]}" ]
 ' defaults "$base/pipeasio-defaults.function" "$here/lib/ui.sh" \
-    || fail "closed output made default PipeASIO settings fail"
+    "$here/lib/preferences.sh" "$base/defaults-txn" \
+    "$base/selected-defaults" "$base/selected-defaults-txn" \
+    "$base/raced-defaults" "$base/raced-defaults-txn" "$base/defaults" \
+    || fail "production PipeASIO writer violated publication ordering or no-clobber recovery"
 [ -f "$base/defaults/pipeasio/config.ini" ] \
     || fail "closed output stopped default PipeASIO settings from being written"
+[ ! -e "$base/defaults-txn/pipeasio-seed.v1" ] \
+    || fail "successful default-settings fixture did not retire seed provenance"
+for selected_seed in 64 128 256 512 1024; do
+    grep -qxF "buffer_size = $selected_seed" \
+        "$base/selected-defaults/$selected_seed/pipeasio/config.ini" \
+        || fail "production PipeASIO writer ignored selected seed $selected_seed"
+    [ ! -e "$base/selected-defaults-txn/$selected_seed/pipeasio-seed.v1" ] \
+        || fail "selected seed $selected_seed retained committed provenance"
+done
+[ -f "$base/raced-defaults/pipeasio/config.ini" ] \
+    && [ ! -e "$base/raced-defaults-txn/pipeasio-seed.v1" ] \
+    || fail "real writer no-clobber recovery removed a raced destination or retained provenance"
 mkdir -p "$base/blocked"
 printf 'not a directory\n' > "$base/blocked/pipeasio"
 run_isolated "$base" env XDG_CONFIG_HOME="$base/blocked" bash -c '
     set -euo pipefail
     . "$1"
     . "$2"
+    . "$3"
+    transaction_dir="$4"
     write_default_pipeasio_settings
 ' defaults "$base/pipeasio-defaults.function" "$here/lib/ui.sh" \
+    "$here/lib/preferences.sh" "$base/blocked-txn" \
     > "$base/defaults.out" 2> /dev/full \
     || fail "an unwritable optional PipeASIO settings path failed prefix setup"
 mkdir -p "$base/unpack" "$base/fakebin"

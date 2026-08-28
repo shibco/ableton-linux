@@ -818,30 +818,44 @@ menu_case()
         < <(for _ in $(seq 300); do grep -aq 'Choose an action:' "$out" 2>/dev/null && break; sleep 0.05; done
             feed "$out" 'exit=[0-9]' "$keys") > "$out" 2>&1 || true
 }
-menu_case $'x\n' "$work/menu-x.out"
-[ ! -e "$work/stub-args" ] || fail "E[x]it never reaches the installer"
-grep -q 'exit=0' "$work/menu-x.out" || fail "E[x]it exits 0"
-vt "$work/menu-x.out" > "$work/menu-x.screen"
-grep -q '│ Cancelled │' "$work/menu-x.screen" || fail "E[x]it ends with a Cancelled footer"
-grep -q '^│  > E\[x\]it$' "$work/menu-x.screen" || fail "the menu offers E[x]it"
-grep -q '^│  > Remo\[v\]e Ableton Linux$' "$work/menu-x.screen" || fail "the menu offers Remo[v]e"
-grep -q '^│ Ableton-Linux Installer Choice:$' "$work/menu-x.screen" || fail "the menu heading follows the template"
-grep -q '^│  Choose an action: x$' "$work/menu-x.screen" || fail "the answer is echoed on the prompt line"
-! grep -q 'Selected:' "$work/menu-x.screen" || fail "the menu no longer prints a Selected line"
-menu_case $'\n' "$work/menu-enter.out"
+menu_case $'q\n' "$work/menu-q.out"
+[ ! -e "$work/stub-args" ] || fail "[Q]uit never reaches the installer"
+grep -q 'exit=0' "$work/menu-q.out" || fail "[Q]uit exits 0"
+vt "$work/menu-q.out" > "$work/menu-q.screen"
+grep -q '│ Cancelled │' "$work/menu-q.screen" || fail "[Q]uit ends with a Cancelled footer"
+grep -q '^│  > \[Q\]uit$' "$work/menu-q.screen" || fail "the fresh menu offers [Q]uit"
+! grep -q 'Remo\[v\]e Ableton Linux' "$work/menu-q.screen" \
+    || fail "the fresh menu does not claim an owned install can be removed"
+grep -q '^│ Ableton-Linux Installer Choice:$' "$work/menu-q.screen" || fail "the menu heading follows the template"
+grep -q '^│  Choose an action: q$' "$work/menu-q.screen" || fail "the answer is echoed on the prompt line"
+! grep -q 'Selected:' "$work/menu-q.screen" || fail "the menu no longer prints a Selected line"
+menu_case $'\n\n\n\n\n\n\n' "$work/menu-enter.out"
 grep -qx 'install' "$work/stub-args" || fail "Enter picks the default action (no prefix means install)"
-vt "$work/menu-enter.out" | grep -q '^│  > \[R\]einstall (or press Enter)$' \
+vt "$work/menu-enter.out" | grep -q '^│  > \[I\]nstall (or press Enter)$' \
     || fail "the default option carries the Enter hint"
-mkdir -p "$work/home/.wine-ableton" && : > "$work/home/.wine-ableton/system.reg"
-menu_case $'\n' "$work/menu-update.out"
+mkdir -p "$work/home/.wine-ableton" "$work/home/.config/ableton-wine"
+printf 'WINE REGISTRY Version 2\n' > "$work/home/.wine-ableton/system.reg"
+printf 'format=1\nprefix=%s\n' "$work/home/.wine-ableton" \
+    > "$work/home/.wine-ableton/.ableton-linux-prefix"
+cat > "$work/home/.config/ableton-wine/config" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$work/home/.local/opt/wine-d2d1-nspa-11.13
+prefix=$work/home/.wine-ableton
+live_major=12
+link_mode=session
+linkd=$work/home/.local/share/ableton-wine/ableton-linkd
+EOF
+chmod 600 "$work/home/.config/ableton-wine/config"
+menu_case $'\n\n\n\n\n\n\n' "$work/menu-update.out"
 grep -qx 'update' "$work/stub-args" || fail "Enter picks update when a prefix exists"
 vt "$work/menu-update.out" | grep -q '^│  > \[U\]pdate (or press Enter)$' || fail "update is the default with a prefix"
 for key in u U update; do
-    menu_case "$key"$'\n' "$work/menu-$key.out"
+    menu_case "$key"$'\n\n\n\n\n\n\n' "$work/menu-$key.out"
     grep -qx 'update' "$work/stub-args" || fail "$key picks update"
 done
 for key in r reinstall; do
-    menu_case "$key"$'\n' "$work/menu-$key.out"
+    menu_case "$key"$'\n\n\n\n\n\n\n' "$work/menu-$key.out"
     grep -qx 'install' "$work/stub-args" || fail "$key picks reinstall"
 done
 menu_case $'V\n' "$work/menu-v.out"

@@ -523,6 +523,8 @@ stdenv.mkDerivation {
       for d in libexec/lib share/ableton-wine/scripts/lib; do
         [ -r $out/$d/$(basename $helper) ] \
           || { echo "$(basename $helper) is not staged in $d"; exit 1; }
+        cmp -s -- "$helper" "$out/$d/$(basename "$helper")" \
+          || { echo "$(basename "$helper") differs in $d"; exit 1; }
       done
     done
     # The launcher sources these and exits 1 naming any whose functions are

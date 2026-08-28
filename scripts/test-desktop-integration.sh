@@ -193,6 +193,11 @@ grep -qxF 'older generated support bytes' "${support_backups[0]}" \
     || fail "installer does not pin the project AUZ handler"
 installed_ntsync_check="$base/data/ableton-wine/check-ntsync.sh"
 installed_ntsync_probe="$base/data/ableton-wine/ntsyncprobe.exe"
+installed_preferences_lib="$base/data/ableton-wine/lib/preferences.sh"
+if [ ! -f "$installed_preferences_lib" ] || [ -x "$installed_preferences_lib" ] \
+   || ! cmp -s -- "$here/lib/preferences.sh" "$installed_preferences_lib"; then
+    fail "installer omits or changes the data-only launcher preferences support"
+fi
 [ -x "$installed_ntsync_check" ] \
     || fail "installer omits the executable NTSync diagnostic"
 [ -f "$installed_ntsync_probe" ] && [ ! -x "$installed_ntsync_probe" ] \

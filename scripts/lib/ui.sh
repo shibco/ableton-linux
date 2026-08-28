@@ -81,14 +81,18 @@ declare -A UI_TEXT=(
     [w_pipewire_old]='PipeWire %s is older than the required %s.' # found, floor
 
     # ---- action menu ----------------------------------------------------------
+    [m_install]='[I]nstall'
     [m_update]='[U]pdate'
     [m_reinstall]='[R]einstall'
     [m_remove]='Remo[v]e Ableton Linux'
+    # m_exit remains for renderer/API compatibility with callers of ui.sh.
     [m_exit]='E[x]it'
+    [m_quit]='[Q]uit'
     [m_default_hint]=' (or press Enter)'
     [m_prompt]='Choose an action:'
     [m_unknown]='Unknown action: %s'                              # answer
     [label_update]='Update'
+    [label_install]='Install'
     [label_reinstall]='Reinstall'
     [label_remove]='Remove'
     [label_runtime]='Install Wine runtime'
@@ -110,6 +114,43 @@ declare -A UI_TEXT=(
     [q_default_tag]=' (Default)'
     [q_prompt]='Which one?:'
     [q_hint]='(Press Enter for default or wait %s seconds)'      # seconds
+    [q_current_tag]=' (Current)'
+    [q_back_hint]='Press Esc to go back'
+    [q_buffer_title]='1/6 Audio buffer'
+    [q_buffer_explanation]='Lower values reduce monitoring delay; higher values give Live more time and reduce crackles.'
+    [q_buffer_64]='[1] 64 frames'
+    [q_buffer_128]='[2] 128 frames'
+    [q_buffer_256]='[3] 256 frames'
+    [q_buffer_512]='[4] 512 frames'
+    [q_buffer_1024]='[5] 1024 frames'
+    [q_buffer_custom]='%s frames'
+    [q_shortcuts_title]='2/6 Keyboard shortcuts'
+    [q_shortcuts_explanation]='On GNOME, Assign to Live temporarily removes only conflicting desktop shortcuts and restores them when Live exits.'
+    [q_shortcuts_take]='[A] Assign to Live'
+    [q_shortcuts_preserve]='[P] Preserve desktop shortcuts'
+    [q_dpi_title]='3/6 Display scaling'
+    [q_dpi_explanation]='Automatic follows the detected desktop scale; Preserve keeps Wine'\''s current DPI registry values.'
+    [q_dpi_auto]='[A] Automatic'
+    [q_dpi_100]='[1] 100%%'
+    [q_dpi_fractional]='[F] Fractional'
+    [q_dpi_preserve]='[P] Preserve'
+    [q_threads_title]='4/6 Audio workers'
+    [q_threads_explanation]='Automatic chooses a physical-core-based worker count; letting Live decide may help demanding Sets.'
+    [q_threads_auto]='[A] Automatic'
+    [q_threads_off]='[L] Let Live decide'
+    [q_threads_custom]='[1-63] Enter a custom value from 1 to 63'
+    [q_threads_value]='%s workers'
+    [q_threads_invalid]='Choose Automatic, Let Live decide, or a number from 1 to 63.'
+    [q_rt_title]='5/6 Real-time scheduling'
+    [q_rt_explanation]='Automatic uses SCHED_RR only when permission already exists; it does not enable host RT privileges.'
+    [q_rt_auto]='[A] Automatic'
+    [q_rt_off]='[N] Normal scheduling'
+    [q_power_title]='6/6 Power profile'
+    [q_power_explanation]='Performance or Balanced is held only while Live or Max runs; Don'\''t change leaves the system profile alone.'
+    [q_power_performance]='[P] Performance'
+    [q_power_balanced]='[B] Balanced'
+    [q_power_off]='[O] Don'\''t change'
+    [q_choice_invalid]='Choose one of the listed options.'
     [q_overwrite_title]='Some files from an earlier installation already exist.'
     [q_overwrite_all]='[O]verwrite all'
     [q_keep]='[K]eep originals'
@@ -915,6 +956,50 @@ ui_menu_option()   # key, [default], args
     ui__init
     ui__text "$key" "$@"; ui__g trunk; t="$UI_G"; ui__g detail
     ui__emit "$t  $UI_G $UI_R$hint"
+}
+
+# A pre-flight option has either the compatibility-default tag or the current
+# value tag.  The caller owns the option mapping; this function owns its tree
+# rendering so the wrapper never prints presentation text itself.
+ui_preflight_option()   # key, default|current|plain, [args]
+{
+    local key="$1" tag="$2" hint="" t
+    shift 2
+    case "$tag" in
+        default) ui__text q_default_tag; hint="$UI_R" ;;
+        current) ui__text q_current_tag; hint="$UI_R" ;;
+    esac
+    ui__init
+    ui__text "$key" "$@"; ui__g trunk; t="$UI_G"; ui__g detail
+    ui__emit "$t  $UI_G $UI_R$hint"
+}
+
+# Read a normal line, except that a bare Escape is accepted immediately.  A
+# line-oriented read cannot implement the documented one-key back navigation.
+ui_preflight_read()
+{
+    local first="" rest="" seconds rc=0
+    ui__init
+    ui_note q_back_hint
+    ui_prompt q_prompt
+    ui__timeout; seconds="$UI_R"
+    UI_READ_ACTIVE=1
+    IFS= read -r -s -n 1 -t "$seconds" first || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$first" ] && [ "$first" != $'\033' ]; then
+        IFS= read -r -s -t "$seconds" rest || true
+    fi
+    UI_READ_ACTIVE=0
+    if [ "$rc" -ne 0 ]; then
+        UI_ANSWER=""
+    else
+        UI_ANSWER="$first$rest"
+    fi
+    if [ "$rc" -ne 0 ] || [ "$first" = $'\033' ]; then
+        ui__screen $'\n'
+    else
+        ui__screen "$UI_ANSWER"$'\n'
+    fi
+    ui__log INFO "answer: ${UI_ANSWER:-(default)}"
 }
 
 ui_prompt()   # key: a prompt on the trunk, no newline; the caller reads

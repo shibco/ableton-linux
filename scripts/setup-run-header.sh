@@ -7,6 +7,7 @@
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail
 @UI_LIB@
+@PREFERENCES_LIB@
 export LC_ALL=C.UTF-8
 started_at=$SECONDS
 footer_enabled=1
@@ -289,7 +290,7 @@ selected_action=""
 selected_label=""
 explicit_action=0
 case "${1:-}" in
-    install) selected_action=install; selected_label="$(ui_text label_reinstall)"; explicit_action=1 ;;
+    install) selected_action=install; selected_label="$(ui_text label_install)"; explicit_action=1 ;;
     update|--update) selected_action=update; selected_label="$(ui_text label_update)"; explicit_action=1 ;;
     uninstall|--uninstall) selected_action=uninstall; selected_label="$(ui_text label_remove)"; explicit_action=1 ;;
     runtime|--runtime-only) selected_action=runtime; selected_label="$(ui_text label_runtime)"; explicit_action=1 ;;
@@ -299,39 +300,300 @@ case "${1:-}" in
     plan) selected_action=plan; selected_label="$(ui_text label_plan)"; explicit_action=1 ;;
 esac
 
-if [ -f "$HOME/.wine-ableton/system.reg" ]; then
-    default_action=update
-else
-    default_action=install
-fi
+# Return the configured prefix only for the exact format-1 configuration.  It
+# is parsed as inert data: the pre-extraction wrapper must never source HOME.
+configured_prefix()
+{
+    local file="${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine/config"
+    local line="" key value header=0
+    local -A seen=() values=()
+    [ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] || return 1
+    [ "$(LC_ALL=C tr -cd '\000' < "$file" 2>/dev/null | wc -c)" -eq 0 ] \
+        || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$header" -eq 0 ]; then
+            [ "$line" = '# ableton-linux installer configuration; managed by the installer' ] \
+                || return 1
+            header=1
+            continue
+        fi
+        case "$line" in *=*) ;; *) return 1 ;; esac
+        key="${line%%=*}"; value="${line#*=}"
+        [ -z "${seen[$key]+x}" ] || return 1
+        seen["$key"]=1; values["$key"]="$value"
+        case "$key" in
+            format) [ "$value" = 1 ] || return 1 ;;
+            runtime_root|prefix|linkd)
+                [ -n "$value" ] && [[ "$value" = /* ]] || return 1
+                case "$value" in *$'\n'*|*$'\r'*|*$'\t'*) return 1 ;; esac ;;
+            live_major) case "$value" in ''|11|12) ;; *) return 1 ;; esac ;;
+            link_mode) case "$value" in off|session|always) ;; *) return 1 ;; esac ;;
+            *) return 1 ;;
+        esac
+    done < "$file"
+    [ "$header" -eq 1 ] && [ "${#seen[@]}" -eq 6 ] \
+        && [ -n "${seen[format]+x}" ] \
+        && [ -n "${seen[runtime_root]+x}" ] \
+        && [ -n "${seen[prefix]+x}" ] \
+        && [ -n "${seen[live_major]+x}" ] \
+        && [ -n "${seen[link_mode]+x}" ] \
+        && [ -n "${seen[linkd]+x}" ] || return 1
+    printf '%s\n' "${values[prefix]}"
+}
+
+marked_default_prefix()
+{
+    local prefix="$HOME/.wine-ableton" file="$HOME/.wine-ableton/.ableton-linux-prefix"
+    local -a line=()
+    [ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] || return 1
+    [ "$(LC_ALL=C tr -cd '\000' < "$file" 2>/dev/null | wc -c)" -eq 0 ] \
+        || return 1
+    mapfile -t line < "$file" || return 1
+    [ "${#line[@]}" -eq 2 ] && [ "${line[0]}" = format=1 ] \
+        && [ "${line[1]}" = "prefix=$prefix" ] || return 1
+    printf '%s\n' "$prefix"
+}
+
+classify_installation()
+{
+    local prefix=""
+    if prefix="$(configured_prefix)"; then
+        :
+    elif prefix="$(marked_default_prefix)"; then
+        :
+    else
+        printf '%s\n' fresh
+        return 0
+    fi
+    if [ -d "$prefix" ] && [ ! -L "$prefix" ] \
+       && [ -f "$prefix/system.reg" ] && [ ! -L "$prefix/system.reg" ]; then
+        printf '%s\n' healthy
+    else
+        printf '%s\n' incomplete
+    fi
+}
+
+install_state="$(classify_installation)"
+case "$install_state" in
+    healthy) default_action=update ;;
+    *) default_action=install ;;
+esac
+
+render_action_options()
+{
+    case "$install_state" in
+        healthy)
+            ui_menu_option m_update default
+            ui_menu_option m_reinstall
+            ui_menu_option m_remove
+            ui_menu_option m_quit ;;
+        incomplete)
+            ui_menu_option m_reinstall default
+            ui_menu_option m_remove
+            ui_menu_option m_quit ;;
+        *)
+            ui_menu_option m_install default
+            ui_menu_option m_quit ;;
+    esac
+}
+
+load_preflight_values()
+{
+    local loaded buffer_file
+    loaded="$(
+        unset ABLETON_SHORTCUTS ABLETON_DPI_MODE ABLETON_MAX_AUDIO_THREADS \
+            ABLETON_RT ABLETON_POWER
+        ableton_preferences_apply
+        printf '%s|%s|%s|%s|%s' "$ABLETON_SHORTCUTS" "$ABLETON_DPI_MODE" \
+            "$ABLETON_MAX_AUDIO_THREADS" "$ABLETON_RT" "$ABLETON_POWER"
+    )" || loaded='take|auto|auto|auto|performance'
+    IFS='|' read -r initial_shortcuts initial_dpi initial_threads initial_rt \
+        initial_power <<< "$loaded"
+    buffer_file="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
+    initial_buffer="$(ableton_pipeasio_buffer_read "$buffer_file" 2>/dev/null)" \
+        || initial_buffer=128
+}
+
+preflight_option()   # value compatibility-default dictionary-key [args]
+{
+    local value="$1" compatibility="$2" key="$3" tag=plain
+    shift 3
+    if [ "$value" = "${draft[q_index]}" ]; then
+        if [ "${touched[q_index]}" -eq 1 ] \
+           || [ "${initial[q_index]}" != "$compatibility" ]; then
+            tag=current
+        else
+            tag=default
+        fi
+    fi
+    ui_preflight_option "$key" "$tag" "$@"
+}
+
+render_preflight_question()
+{
+    local selected="${draft[q_index]}"
+    ui_blank
+    case "$q_index" in
+        0)
+            ui_heading q_buffer_title
+            ui_note q_buffer_explanation
+            case "$selected" in 64|128|256|512|1024) ;; *)
+                preflight_option "$selected" 128 q_buffer_custom "$selected" ;;
+            esac
+            preflight_option 64 128 q_buffer_64
+            preflight_option 128 128 q_buffer_128
+            preflight_option 256 128 q_buffer_256
+            preflight_option 512 128 q_buffer_512
+            preflight_option 1024 128 q_buffer_1024 ;;
+        1)
+            ui_heading q_shortcuts_title
+            ui_note q_shortcuts_explanation
+            preflight_option take take q_shortcuts_take
+            preflight_option preserve take q_shortcuts_preserve ;;
+        2)
+            ui_heading q_dpi_title
+            ui_note q_dpi_explanation
+            preflight_option auto auto q_dpi_auto
+            preflight_option 100 auto q_dpi_100
+            preflight_option fractional auto q_dpi_fractional
+            preflight_option preserve auto q_dpi_preserve ;;
+        3)
+            ui_heading q_threads_title
+            ui_note q_threads_explanation
+            preflight_option auto auto q_threads_auto
+            preflight_option off auto q_threads_off
+            case "$selected" in auto|off)
+                ui_preflight_option q_threads_custom plain ;;
+                *) preflight_option "$selected" auto q_threads_value "$selected" ;;
+            esac ;;
+        4)
+            ui_heading q_rt_title
+            ui_note q_rt_explanation
+            preflight_option auto auto q_rt_auto
+            preflight_option off auto q_rt_off ;;
+        5)
+            ui_heading q_power_title
+            ui_note q_power_explanation
+            preflight_option performance performance q_power_performance
+            preflight_option balanced performance q_power_balanced
+            preflight_option off performance q_power_off ;;
+    esac
+}
+
+trim_answer()
+{
+    answer="${UI_ANSWER,,}"
+    answer="${answer#"${answer%%[![:space:]]*}"}"
+    answer="${answer%"${answer##*[![:space:]]}"}"
+}
+
+collect_preflight()
+{
+    local answer value
+    load_preflight_values
+    initial=("$initial_buffer" "$initial_shortcuts" "$initial_dpi" \
+        "$initial_threads" "$initial_rt" "$initial_power")
+    draft=("${initial[@]}")
+    touched=(0 0 0 0 0 0)
+    q_index=0
+    while [ "$q_index" -lt 6 ]; do
+        render_preflight_question
+        ui_preflight_read
+        if [ "$UI_ANSWER" = $'\033' ]; then
+            if [ "$q_index" -eq 0 ]; then return 10; fi
+            q_index=$((q_index - 1))
+            continue
+        fi
+        trim_answer
+        if [ -z "$answer" ]; then
+            q_index=$((q_index + 1))
+            continue
+        fi
+        value=""
+        case "$q_index:$answer" in
+            0:1|0:64) value=64 ;; 0:2|0:128) value=128 ;;
+            0:3|0:256) value=256 ;; 0:4|0:512) value=512 ;;
+            0:5|0:1024) value=1024 ;;
+            1:a|1:assign|1:take) value=take ;; 1:p|1:preserve) value=preserve ;;
+            2:a|2:auto|2:automatic) value=auto ;; 2:1|2:100|2:100%) value=100 ;;
+            2:f|2:fractional) value=fractional ;; 2:p|2:preserve) value=preserve ;;
+            3:a|3:auto|3:automatic) value=auto ;; 3:l|3:off) value=off ;;
+            3:*)
+                if [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] \
+                   && [ "$answer" -le 63 ]; then
+                    value="$answer"
+                fi ;;
+            4:a|4:auto|4:automatic) value=auto ;; 4:n|4:normal|4:off) value=off ;;
+            5:p|5:performance) value=performance ;; 5:b|5:balanced) value=balanced ;;
+            5:o|5:off|5:none) value=off ;;
+        esac
+        if [ -z "$value" ]; then
+            if [ "$q_index" -eq 3 ]; then ui_note q_threads_invalid; else ui_note q_choice_invalid; fi
+            continue
+        fi
+        draft[q_index]="$value"
+        touched[q_index]=1
+        q_index=$((q_index + 1))
+    done
+    setting_flags=()
+    [ "${draft[0]}" = "${initial[0]}" ] || setting_flags+=("--audio-buffer=${draft[0]}")
+    [ "${draft[1]}" = "${initial[1]}" ] || setting_flags+=("--shortcuts=${draft[1]}")
+    [ "${draft[2]}" = "${initial[2]}" ] || setting_flags+=("--dpi=${draft[2]}")
+    [ "${draft[3]}" = "${initial[3]}" ] || setting_flags+=("--audio-threads=${draft[3]}")
+    [ "${draft[4]}" = "${initial[4]}" ] || setting_flags+=("--rt=${draft[4]}")
+    [ "${draft[5]}" = "${initial[5]}" ] || setting_flags+=("--power=${draft[5]}")
+    return 0
+}
 
 if [ "$explicit_action" -eq 0 ]; then
-    ui_blank; ui_heading h_action; ui_blank
-    if [ "$default_action" = update ]; then ui_menu_option m_update default; else ui_menu_option m_update; fi
-    if [ "$default_action" = install ]; then ui_menu_option m_reinstall default; else ui_menu_option m_reinstall; fi
-    ui_menu_option m_remove
-    ui_menu_option m_exit
-    ui_blank
-    answer=""
-    if [ -t 0 ]; then
-        ui_prompt m_prompt
-        IFS= read -r answer || answer=""
-        log_event INFO menu "answer: ${answer:-(default)}"
-    fi
-    case "${answer,,}" in
-        '') selected_action="$default_action" ;;
-        u|update) selected_action=update ;;
-        r|reinstall|install) selected_action=install ;;
-        v|remove|uninstall) selected_action=uninstall ;;
-        x|exit|q|quit) cancelled=1; launch_hint=0; exit 0 ;;
-        *) ui_note m_unknown "$answer"; printf '!! %s\n' "$(ui_text m_unknown "$answer")" >&2; exit 2 ;;
-    esac
-    case "$selected_action" in
-        update) selected_label="$(ui_text label_update)" ;;
-        install) selected_label="$(ui_text label_reinstall)" ;;
-        uninstall) selected_label="$(ui_text label_remove)" ;;
-    esac
-    original_args=("$selected_action" "${original_args[@]}")
+    while :; do
+        selected_action=""
+        if [ -t 0 ]; then
+            ui_blank; ui_heading h_action; ui_blank
+            render_action_options
+            ui_blank
+            ui_prompt m_prompt
+            IFS= read -r answer || answer=""
+            log_event INFO menu "answer: ${answer:-(default)}"
+        else
+            answer=""
+        fi
+        case "${answer,,}" in
+            '') selected_action="$default_action" ;;
+            i|install) selected_action=install ;;
+            u|update) [ "$install_state" = healthy ] && selected_action=update ;;
+            r|reinstall) [ "$install_state" != fresh ] && selected_action=install ;;
+            v|remove|uninstall) [ "$install_state" != fresh ] && selected_action=uninstall ;;
+            x|exit|q|quit) cancelled=1; launch_hint=0; exit 0 ;;
+        esac
+        if [ -z "$selected_action" ]; then
+            ui_note m_unknown "$answer"
+            printf '!! %s\n' "$(ui_text m_unknown "$answer")" >&2
+            exit 2
+        fi
+        case "$selected_action" in
+            update) selected_label="$(ui_text label_update)" ;;
+            install)
+                if [ "$install_state" = fresh ]; then
+                    selected_label="$(ui_text label_install)"
+                else
+                    selected_label="$(ui_text label_reinstall)"
+                fi ;;
+            uninstall) selected_label="$(ui_text label_remove)" ;;
+        esac
+        if [ -t 0 ] && { [ "$selected_action" = install ] || [ "$selected_action" = update ]; }; then
+            if collect_preflight; then
+                original_args=("$selected_action" "${setting_flags[@]}")
+                break
+            else
+                collect_rc=$?
+            fi
+            [ "$collect_rc" -eq 10 ] || exit "$collect_rc"
+            continue
+        fi
+        original_args=("$selected_action")
+        break
+    done
 fi
 
 case "$selected_action" in
