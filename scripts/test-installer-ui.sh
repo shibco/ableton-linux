@@ -51,47 +51,86 @@ run_pty_raw()
         < <(feed "$out" "$done_marker") > "$out" 2>&1 || true
 }
 
-# Terminal simulator: replays \r \n ESC[nA ESC[nB ESC[nC ESC[2K ESC[K and
-# ignores cursor visibility, then prints the final screen.
-cat > "$work/vt.awk" <<'AWK'
-BEGIN { row = 1; col = 1; rows = 1; RS = "\001" }
-function put(ch,   line, pre, post) {
-    line = screen[row]
-    while (length(line) < col - 1) line = line " "
-    pre = substr(line, 1, col - 1); post = substr(line, col + 1)
-    screen[row] = pre ch post
-    col++
-}
-{
-    s = $0
-    while (length(s) > 0) {
-        c = substr(s, 1, 1)
-        if (c == "\r") { col = 1; s = substr(s, 2); continue }
-        if (c == "\n") { row++; col = 1; if (row > rows) rows = row; s = substr(s, 2); continue }
-        if (c == "\033") {
-            if (match(s, /^\033\[\?[0-9]+[hl]/)) { s = substr(s, RLENGTH + 1); continue }
-            if (match(s, /^\033\[[0-9;]*m/)) { s = substr(s, RLENGTH + 1); continue }
-            if (substr(s, 2, 1) == "]") {
-                stop = index(s, "\033\\")
-                if (stop > 0) { s = substr(s, stop + 2); continue }
-            }
-            if (match(s, /^\033\[[0-9]*[ABCK]/)) {
-                seq = substr(s, 3, RLENGTH - 3); cmd = substr(s, RLENGTH, 1)
-                n = (seq == "" ? 1 : seq + 0)
-                if (cmd == "A") { row -= n; if (row < 1) row = 1 }
-                else if (cmd == "B") { row += n; if (row > rows) rows = row }
-                else if (cmd == "C") { col += n }
-                else if (cmd == "K") { if (seq == "2") screen[row] = ""; else screen[row] = substr(screen[row], 1, col - 1) }
-                s = substr(s, RLENGTH + 1); continue
-            }
-            s = substr(s, 2); continue
-        }
-        put(c); s = substr(s, 2)
-    }
-}
-END { for (i = 1; i <= rows; i++) print screen[i] }
-AWK
-vt() { LC_ALL=C.UTF-8 awk -f "$work/vt.awk" "$1" | grep -v "^$done_marker" | sed -e 's/[[:space:]]*$//' -e '${/^$/d}'; }
+# Terminal simulator: replays the few sequences emitted by ui.sh and counts
+# cursor columns as Unicode code points without relying on host awk behavior.
+cat > "$work/vt.py" <<'PY'
+import re
+import sys
+
+data = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+visibility = re.compile(r"\x1b\[\?[0-9]+[hl]")
+sgr = re.compile(r"\x1b\[[0-9;]*m")
+cursor = re.compile(r"\x1b\[([0-9]*)([ABCK])")
+screen = {}
+row = column = 0
+rows = 1
+i = 0
+
+while i < len(data):
+    char = data[i]
+    if char == "\r":
+        column = 0
+        i += 1
+        continue
+    if char == "\n":
+        row += 1
+        column = 0
+        rows = max(rows, row + 1)
+        i += 1
+        continue
+    if char == "\x1b":
+        match = visibility.match(data, i) or sgr.match(data, i)
+        if match:
+            i = match.end()
+            continue
+        if data.startswith("\x1b]", i):
+            stop = data.find("\x1b\\", i + 2)
+            if stop >= 0:
+                i = stop + 2
+                continue
+        match = cursor.match(data, i)
+        if match:
+            count = int(match.group(1) or 1)
+            command = match.group(2)
+            if command == "A":
+                row = max(0, row - count)
+            elif command == "B":
+                row += count
+                rows = max(rows, row + 1)
+            elif command == "C":
+                column += count
+            else:
+                line = screen.setdefault(row, [])
+                if match.group(1) == "2":
+                    line.clear()
+                else:
+                    del line[column:]
+            i = match.end()
+            continue
+        i += 1
+        continue
+    line = screen.setdefault(row, [])
+    line.extend(" " for _ in range(column - len(line)))
+    if column == len(line):
+        line.append(char)
+    else:
+        line[column] = char
+    column += 1
+    i += 1
+
+for row in range(rows):
+    print("".join(screen.get(row, [])))
+PY
+vt() { LC_ALL=C.UTF-8 python3 "$work/vt.py" "$1" | grep -v "^$done_marker" | sed -e 's/[[:space:]]*$//' -e '${/^$/d}'; }
+
+# Cursor columns count Unicode code points, not UTF-8 bytes. This regression
+# catches byte-oriented replay before the full PTY checks.
+printf '│  X\r\033[3C│\n' > "$work/vt-unicode.raw"
+vt "$work/vt-unicode.raw" > "$work/vt-unicode.screen"
+grep -qxF '│  │' "$work/vt-unicode.screen" \
+    || fail "the terminal simulator moves across Unicode code points"
+ok "the terminal simulator counts Unicode glyphs as one column"
+
 frames="$(bash -c '. "$1"; printf "%s" "${UI_TEXT[g_spinner]}"' _ "$ui_lib" | tr -d ' ')"
 [ -n "$frames" ] || fail "the dictionary defines the spinner frames"
 has_frame() { grep -q "[$frames]" "$1"; }
@@ -139,9 +178,9 @@ chmod +x "$work/fixture-golden.sh"
 # purpose: a dictionary or layout edit must change this text deliberately.
 # The "Which one?: " line ends with one space (B6); the heredoc keeps it.
 cat > "$work/golden-static.txt" <<'EOF'
-╒════════════════════════════════════════════╕
+╒══════════════════════════╤═════════════════╕
 │  ABLETON-LINUX INSTALLER ┊ v 2026.08.28.1  │
-│┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈│
+├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┴┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┤
 │  https://github.com/shibco/ableton-linux/  │
 ╞════════════════════════════════════════════╛
 │
@@ -240,6 +279,50 @@ grep -qxF '│  ⚠ Required command is missing: tar.' "$work/static-warn.out" \
     || fail "a host warning is rendered on the trunk"
 ok "static rendering matches the template golden byte for byte"
 
+# Every pair of adjacent box-drawing glyphs must agree about both the
+# direction and weight of their shared stroke. This covers the light nested
+# tree, the light/heavy step junctions, and the single/double banner and
+# footer junctions. It catches a visually broken line even if the same wrong
+# glyph was copied into the literal golden transcript.
+python3 - "$work/static.out" <<'PY' || fail "every box-drawing junction connects with the matching weight"
+import sys
+
+paths = {
+    "╒": {"R": 3, "D": 1}, "═": {"L": 3, "R": 3}, "╤": {"L": 3, "R": 3, "D": 1},
+    "╕": {"L": 3, "D": 1}, "│": {"U": 1, "D": 1}, "┊": {"U": 1, "D": 1},
+    "├": {"U": 1, "D": 1, "R": 1}, "┈": {"L": 1, "R": 1},
+    "┴": {"U": 1, "L": 1, "R": 1}, "┤": {"U": 1, "D": 1, "L": 1},
+    "╞": {"U": 1, "D": 1, "R": 3}, "╛": {"U": 1, "L": 3},
+    "─": {"L": 1, "R": 1}, "┲": {"L": 1, "R": 2, "D": 2},
+    "━": {"L": 2, "R": 2}, "┳": {"L": 2, "R": 2, "D": 2},
+    "┓": {"L": 2, "D": 2}, "┃": {"U": 2, "D": 2}, "╏": {"U": 2, "D": 2},
+    "┡": {"U": 2, "R": 2, "D": 1}, "┻": {"U": 2, "L": 2, "R": 2},
+    "┛": {"U": 2, "L": 2}, "└": {"U": 1, "R": 1},
+    "┼": {"U": 1, "D": 1, "L": 1, "R": 1}, "╘": {"U": 1, "R": 3},
+}
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+used = {char for line in lines for char in line if 0x2500 <= ord(char) <= 0x257F}
+if unknown := used - paths.keys():
+    raise SystemExit(f"unmapped box-drawing glyphs: {''.join(sorted(unknown))}")
+for row, line in enumerate(lines):
+    for col, char in enumerate(line):
+        if char not in paths:
+            continue
+        for dx, dy, outgoing, incoming in ((1, 0, "R", "L"), (0, 1, "D", "U")):
+            if row + dy >= len(lines) or col + dx >= len(lines[row + dy]):
+                continue
+            neighbour = lines[row + dy][col + dx]
+            if neighbour not in paths:
+                continue
+            left = paths[char].get(outgoing)
+            right = paths[neighbour].get(incoming)
+            if left != right:
+                raise SystemExit(
+                    f"broken junction at {row + 1}:{col + 1}: {char}{neighbour} ({left} != {right})"
+                )
+PY
+ok "every adjacent box-drawing stroke has matching direction and weight"
+
 # T4: static output never animates or moves the cursor.
 ! LC_ALL=C grep -q $'\033\\[' "$work/static.out" || fail "static output contains no cursor sequences"
 ! LC_ALL=C grep -q $'\r' "$work/static.out" || fail "static output contains no carriage returns"
@@ -252,7 +335,9 @@ ok "static output has no escapes, no frames, and ui.sh sets no traps"
 
 # T3: on a terminal the same fixture ends on the same screen, every settled
 # item as ├─ with its mark on the title, and the raw stream proves the item
-# was └─ first and its details were rewritten with it.
+# was └─ first and its details were rewritten with it. The settled rewrite is
+# immediate: no completed title or detail remains in the temporary last-child
+# form while the caller moves on to the rest of the step.
 FIXTURE_SLEEP=1.5 FIXTURE_ITEM_SLEEP=1.5 FIXTURE_DETAIL_SLEEP=1.5 \
     run_pty_raw 40 80 "$work/live.raw" bash "$work/fixture-golden.sh"
 vt "$work/live.raw" > "$work/live.screen"
@@ -265,18 +350,22 @@ if ! cmp -s "$work/live.screen" "$work/golden-live.txt"; then
     diff -u "$work/golden-live.txt" "$work/live.screen" | head -40 >&2 || true
     fail "the live screen ends as the template golden"
 fi
-first_last="$(LC_ALL=C grep -abo '└─ Copy the embedded kit' "$work/live.raw" | head -1 | cut -d: -f1)"
-first_settled="$(LC_ALL=C grep -abo '├─ Copy the embedded kit ✓' "$work/live.raw" | head -1 | cut -d: -f1)"
+first_last="$(LC_ALL=C grep -abo $'└─ \033\[96mCopy the embedded kit' "$work/live.raw" | head -1 | cut -d: -f1)"
+first_settled="$(LC_ALL=C grep -abo $'├─ \033\[36mCopy the embedded kit ✓' "$work/live.raw" | head -1 | cut -d: -f1)"
 [ -n "$first_last" ] && [ -n "$first_settled" ] && [ "$first_last" -lt "$first_settled" ] \
-    || fail "an item is drawn └─ first and rewritten to ├─ when the next line appears"
-LC_ALL=C grep -q '│     > Copied 482 MiB\.' "$work/live.raw" \
+    || fail "an item is drawn └─ first and rewritten to ├─ when it completes"
+LC_ALL=C grep -q $'│     \033\[96m> Copied 482 MiB\.' "$work/live.raw" \
     || fail "details under the last item use a blank sub-trunk before the flip"
+LC_ALL=C grep -q $'\033\\[2K│  ├─ \033\\[36mCopy the embedded kit ✓\033\\[0m' "$work/live.raw" \
+    || fail "a completed title settles immediately and only its text is coloured"
+LC_ALL=C grep -q $'\033\\[3C│' "$work/live.raw" \
+    || fail "a completed detail gains its missing sub-trunk immediately"
 has_frame "$work/live.raw" || fail "a running ui_run shows spinner frames"
-[ "$(LC_ALL=C grep -o $'\r\033\\[2K\033\\[96m│  └─ Copy the embedded kit' "$work/live.raw" | wc -l)" -ge 2 ] \
+[ "$(LC_ALL=C grep -o $'\r\033\\[2K│  └─ \033\\[96mCopy the embedded kit' "$work/live.raw" | wc -l)" -ge 2 ] \
     || fail "an ordinary active item shows spinner frames"
-[ "$(LC_ALL=C grep -o $'\r\033\\[2K\033\\[96m│    ' "$work/live.raw" | wc -l)" -ge 2 ] \
+[ "$(LC_ALL=C grep -o $'\r\033\\[2K│     \033\\[96m' "$work/live.raw" | wc -l)" -ge 2 ] \
     || fail "the spinner remains active after an item prints status text"
-[ "$(LC_ALL=C grep -o $'\r\033\\[2K\033\\[96m│  └─ Extract the embedded kit' "$work/live.raw" | wc -l)" -ge 2 ] \
+[ "$(LC_ALL=C grep -o $'\r\033\\[2K│  └─ \033\\[96mExtract the embedded kit' "$work/live.raw" | wc -l)" -ge 2 ] \
     || fail "the spinner redraws the running title in place"
 LC_ALL=C grep -q $'\033\\[96m' "$work/live.raw" || fail "active work uses the bright primary colour"
 LC_ALL=C grep -q $'\033\\[36m' "$work/live.raw" || fail "completed work uses the darker history colour"
@@ -287,10 +376,55 @@ LC_ALL=C grep -Fq $'\033]8;;https://github.com/shibco/ableton-linux/\033\\https:
 ! LC_ALL=C grep -q $'\033\\[s\\|\0337\\|\033\\[u\\|\0338' "$work/live.raw" \
     || fail "the renderer never uses cursor save or restore"
 LC_ALL=C grep -q $'\033\\[?25h' "$work/live.raw" || fail "the cursor is shown again after the spinner"
+# Inspect every SGR span, including transient spinner and rewrite frames. A
+# Unicode box-drawing code point inside a non-default foreground span means a
+# structural line was coloured along with its text.
+python3 - "$work/live.raw" <<'PY' || fail "box-drawing glyphs keep the terminal's default colour"
+import re
+import sys
+
+data = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+colour = None
+for token in re.split(r"(\x1b\[[0-9;]*m)", data):
+    match = re.fullmatch(r"\x1b\[([0-9;]*)m", token)
+    if match:
+        params = match.group(1).split(";") if match.group(1) else ["0"]
+        if "0" in params or "39" in params:
+            colour = None
+        for param in params:
+            if param in {"36", "91", "93", "96"}:
+                colour = param
+        continue
+    if colour and any(0x2500 <= ord(char) <= 0x257F for char in token):
+        raise SystemExit(1)
+PY
 PTY_TERM=dumb run_pty_raw 40 80 "$work/dumb.raw" bash "$work/fixture-golden.sh"
 ! LC_ALL=C grep -q $'\033\\[' "$work/dumb.raw" && ! has_frame "$work/dumb.raw" \
     || fail "TERM=dumb renders static even on a terminal"
-ok "live rendering flips └─ to ├─ with its details and ends on the template screen"
+ok "live rendering settles every branch and colours text without colouring its lines"
+
+# Regression for the reported prefix/scaling pair. Once the operation gets
+# its check mark, the title becomes a branch and the detail gets the matching
+# vertical sub-trunk.
+cat > "$work/fixture-settled-detail.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec 7>&1
+export ABLETON_UI_TTY_FD=7
+. "${UI_LIB:?}"
+ui_step_begin s_prefix_create
+ui_item_begin p_copy_existing_prefix
+ui_status p_scale_already_configured 1.33333
+ui_item_end ok
+ui_step_end ok
+EOF
+run_pty_raw 40 80 "$work/settled-detail.raw" bash "$work/fixture-settled-detail.sh"
+vt "$work/settled-detail.raw" > "$work/settled-detail.screen"
+if ! grep -q '^│  ├─ Copy the existing Wine prefix ✓$' "$work/settled-detail.screen" \
+   || ! grep -q '^│  │  > Display scaling is already set for scale 1.33333$' "$work/settled-detail.screen"; then
+    fail "a completed prefix copy keeps the vertical line beside its scaling detail"
+fi
+ok "the reported prefix scaling detail keeps its box-drawing line"
 
 # T2 and C5: long lines wrap on a space at width-2 and continuation lines
 # keep the tree; a long token is cut hard; a long title is cut to one line.
@@ -542,9 +676,9 @@ ui_item_end ok
 ui_step_end ok
 EOF
 run_pty_raw 6 80 "$work/tall.raw" bash "$work/fixture-tall.sh"
-LC_ALL=C grep -q '├─ Short item ✓' "$work/tall.raw" || fail "a short block still flips on a small terminal"
-! LC_ALL=C grep -q '├─ Tall item' "$work/tall.raw" || fail "a block taller than the terminal is not rewritten"
-LC_ALL=C grep -q '└─ Tall item' "$work/tall.raw" || fail "the tall block was drawn"
+LC_ALL=C grep -q $'├─ \033\[36mShort item ✓' "$work/tall.raw" || fail "a short block still flips on a small terminal"
+! LC_ALL=C grep -q $'├─ \033\[[0-9;]*mTall item' "$work/tall.raw" || fail "a block taller than the terminal is not rewritten"
+LC_ALL=C grep -q $'└─ \033\[96mTall item' "$work/tall.raw" || fail "the tall block was drawn"
 ! LC_ALL=C grep -qE $'\033\\[([5-9]|[1-9][0-9]+)A' "$work/tall.raw" \
     || fail "no cursor movement reaches beyond the terminal height"
 ok "rewrites are skipped when the block does not fit the terminal"

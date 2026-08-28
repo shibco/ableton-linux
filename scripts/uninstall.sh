@@ -76,6 +76,49 @@ retry_mode=--keep-prefix
 optional_cleanup_incomplete=0
 retain_retry_support=0
 
+# These fixed support locations are project publications, not user-managed
+# configuration. Keep the relative inventory authoritative for both manifest
+# filtering and final file/link removal, regardless of the installed bytes.
+authoritative_support_relatives=(
+    VERSION
+    lib/config.sh lib/lifecycle.sh lib/live-options.sh lib/manifest.sh
+    lib/pipeasio.sh lib/ui.sh
+    detect-scale.sh detect-theme.sh shortcut-hold.sh setup-realtime.sh
+    audio-report.sh check-ntsync.sh rollback.sh ntsyncprobe.exe
+    pipewire-version-probe setsyscolors.exe learnheal.exe
+    "$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID"
+    ableton-linkd ableton-linkctl setup-link.sh ableton-linkd.service
+)
+historical_authoritative_support_root=""
+historical_support_candidate="$(ableton_realpath_m \
+    "$HOME/.local/share/ableton-wine" 2>/dev/null || true)"
+if [ -n "$historical_support_candidate" ] \
+   && ableton_legacy_project_evidence; then
+    historical_authoritative_support_root="$historical_support_candidate"
+fi
+
+authoritative_support_path_in_root()
+{
+    local root="$1" path="$2" relative
+    for relative in "${authoritative_support_relatives[@]}"; do
+        [ "$path" != "$root/$relative" ] || return 0
+    done
+    return 1
+}
+
+current_authoritative_support_path()
+{
+    authoritative_support_path_in_root "$ABLETON_DATA_HOME" "$1"
+}
+
+authoritative_support_path()
+{
+    current_authoritative_support_path "$1" && return 0
+    [ -n "$historical_authoritative_support_root" ] \
+        && authoritative_support_path_in_root \
+            "$historical_authoritative_support_root" "$1"
+}
+
 print_uninstall_retry()
 {
     if [ -n "${ABLETON_INSTALLER_PATH:-}" ]; then
@@ -926,8 +969,12 @@ remove_owned_manifest_files()
     # fallback only for current snapshot-free installs; an older persistent
     # pre-install record remains authoritative for both paths.
     for record in "${owned_records[@]}"; do
-        if ! IFS=$'\t' read -r kind path digest extra <<< "$record" \
-           || [ -n "$extra" ]; then
+        if ! IFS=$'\t' read -r kind path digest extra <<< "$record"; then
+            echo "!! The list of installed support files is not recognised; no other support files were removed." >&2
+            return 1
+        fi
+        current_authoritative_support_path "$path" && continue
+        if [ -n "$extra" ]; then
             echo "!! The list of installed support files is not recognised; no other support files were removed." >&2
             return 1
         fi
@@ -945,8 +992,12 @@ remove_owned_manifest_files()
         fi
         for record in "${prestate_records[@]}"; do
             if ! IFS=$'\t' read -r prestate_status prestate_path prestate_backup extra \
-                 <<< "$record" \
-               || [ -n "$extra" ] || [ "$prestate_status" != present ]; then
+                 <<< "$record"; then
+                echo "!! The saved copies of files replaced during installation are not recognised; no other support files were removed." >&2
+                return 1
+            fi
+            current_authoritative_support_path "$prestate_path" && continue
+            if [ -n "$extra" ] || [ "$prestate_status" != present ]; then
                 echo "!! The saved copies of files replaced during installation are not recognised; no other support files were removed." >&2
                 return 1
             fi
@@ -983,8 +1034,12 @@ remove_owned_manifest_files()
         backup_launchers["$saved_path"]="$launcher"
     done
     for record in "${owned_records[@]}"; do
-        if ! IFS=$'\t' read -r kind path digest extra <<< "$record" \
-           || [ -n "$extra" ]; then
+        if ! IFS=$'\t' read -r kind path digest extra <<< "$record"; then
+            echo "!! The list of installed support files is not recognised; no other support files were removed." >&2
+            return 1
+        fi
+        current_authoritative_support_path "$path" && continue
+        if [ -n "$extra" ]; then
             echo "!! The list of installed support files is not recognised; no other support files were removed." >&2
             return 1
         fi
@@ -1099,21 +1154,21 @@ remove_owned_manifest_files()
 remove_legacy_files()
 {
     local data_root apps icons mime path source relative
-    local legacy_data_root legacy_version legacy_version_digest=""
+    local legacy_data_root
     local legacy_project_proven=0
     data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
     apps="$data_root/applications"; icons="$data_root/icons/hicolor"; mime="$data_root/mime/packages"
     legacy_data_root="$(ableton_realpath_m "$HOME/.local/share/ableton-wine")" || legacy_data_root=""
-    legacy_version="$legacy_data_root/VERSION"
-    if [ -n "$legacy_data_root" ] && ableton_legacy_project_evidence; then
+    if [ -n "$legacy_data_root" ] \
+       && [ "$legacy_data_root" = "$historical_authoritative_support_root" ]; then
         legacy_project_proven=1
-        legacy_version_digest="$(ableton_manifest_digest "$legacy_version" 2>/dev/null || true)"
     fi
 
     legacy_remove_if_owned()
     {
         local target="$1" original="${2:-}" owned_data_home="${3:-}" owned=0
         [ -e "$target" ] || [ -L "$target" ] || return 0
+        authoritative_support_path "$target" && return 0
         if [ -n "$owned_data_home" ]; then
             ABLETON_DATA_HOME="$owned_data_home" \
                 ableton_legacy_owned_path "$target" && owned=1
@@ -1137,62 +1192,7 @@ remove_legacy_files()
         fi
     }
 
-    # Old installers wrote these files to the historical HOME path even when
-    # XDG_DATA_HOME pointed elsewhere.  Delete only byte-identical packaged
-    # helpers after the launcher/VERSION pair has proved that this is one of
-    # those installations. A locally edited or merely same-named file stays.
-    legacy_remove_if_exact()
-    {
-        local target="$1" original exact=0
-        shift
-        [ -e "$target" ] || [ -L "$target" ] || return 0
-        if [ -f "$target" ] && [ ! -L "$target" ]; then
-            for original in "$@"; do
-                if [ -f "$original" ] && [ ! -L "$original" ] \
-                   && cmp -s -- "$original" "$target"; then
-                    exact=1
-                    break
-                fi
-            done
-        fi
-        if [ "$exact" -eq 1 ]; then
-            rm -f -- "$target" 2>/dev/null || true
-            if [ -e "$target" ] || [ -L "$target" ]; then
-                warn_optional_remaining u_legacy_file_remains u_check_its_permissions_hint "$target"
-            else
-                ui_status u_removed_legacy_file "$target"
-            fi
-        else
-            warn_optional_remaining u_kept_modified_legacy_support u_kept_modified_legacy_support_hint "$target"
-        fi
-    }
-
     if [ "$legacy_project_proven" -eq 1 ]; then
-        legacy_remove_if_exact "$legacy_data_root/detect-scale.sh" \
-            "$here/detect-scale.sh"
-        legacy_remove_if_exact "$legacy_data_root/detect-theme.sh" \
-            "$here/detect-theme.sh"
-        legacy_remove_if_exact "$legacy_data_root/shortcut-hold.sh" \
-            "$here/shortcut-hold.sh"
-        legacy_remove_if_exact "$legacy_data_root/check-ntsync.sh" \
-            "$here/check-ntsync.sh"
-        legacy_remove_if_exact "$legacy_data_root/setup-link.sh" \
-            "$here/setup-link.sh"
-        legacy_remove_if_exact "$legacy_data_root/ableton-linkctl" \
-            "$here/ableton-linkctl"
-        legacy_remove_if_exact "$legacy_data_root/ableton-linkd.service" \
-            "$here/ableton-linkd.service"
-        legacy_remove_if_exact "$legacy_data_root/setsyscolors.exe" \
-            "$here/setsyscolors.exe" "$here/../tools/setsyscolors.exe"
-        legacy_remove_if_exact "$legacy_data_root/learnheal.exe" \
-            "$here/learnheal.exe" "$here/../tools/learnheal.exe"
-        legacy_remove_if_exact "$legacy_data_root/ableton-linkd" \
-            "$here/ableton-linkd" "$here/../bin/ableton-linkd" \
-            "$here/../dist/ableton-linkd"
-        legacy_remove_if_owned "$legacy_data_root/$ABLETON_PROTOCOL_DESKTOP_ID" \
-            "" "$legacy_data_root"
-        legacy_remove_if_owned "$legacy_data_root/$ABLETON_AUZ_DESKTOP_ID" \
-            "" "$legacy_data_root"
         legacy_remove_if_owned "$legacy_data_root/wine-protocol-ableton.desktop" \
             "" "$legacy_data_root"
         legacy_remove_if_owned "$legacy_data_root/wine-extension-auz.desktop" \
@@ -1201,8 +1201,6 @@ remove_legacy_files()
 
     for path in \
         "$ABLETON_BIN_HOME/ableton-live" "$ABLETON_BIN_HOME/max9" \
-        "$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID" \
-        "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID" \
         "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop" \
         "$ABLETON_DATA_HOME/wine-extension-auz.desktop" \
         "$apps/ableton-live.desktop" "$apps/$ABLETON_PROTOCOL_DESKTOP_ID" \
@@ -1219,24 +1217,29 @@ remove_legacy_files()
         relative="${source#"$here/../desktop/icons/"}"
         legacy_remove_if_owned "$icons/$relative" "$source"
     done
-    if [ "$legacy_project_proven" -eq 1 ] \
-       && [ -n "$legacy_version_digest" ] \
-       && [ -f "$legacy_version" ] && [ ! -L "$legacy_version" ]; then
-        if [ "$(ableton_manifest_digest "$legacy_version" 2>/dev/null || true)" \
-             = "$legacy_version_digest" ]; then
-            rm -f -- "$legacy_version" 2>/dev/null || true
-            if [ -e "$legacy_version" ] || [ -L "$legacy_version" ]; then
-                warn_optional_remaining u_legacy_version_remains u_check_its_permissions_hint "$legacy_version"
+}
+
+remove_authoritative_support_files()
+{
+    local root relative path
+    local -a roots=("$ABLETON_DATA_HOME")
+    if [ -n "$historical_authoritative_support_root" ] \
+       && [ "$historical_authoritative_support_root" != "$ABLETON_DATA_HOME" ]; then
+        roots+=("$historical_authoritative_support_root")
+    fi
+    for root in "${roots[@]}"; do
+        for relative in "${authoritative_support_relatives[@]}"; do
+            path="$root/$relative"
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            rm -f -- "$path" 2>/dev/null || true
+            if [ -e "$path" ] || [ -L "$path" ]; then
+                warn_optional_remaining u_file_remains u_check_its_permissions_hint "$path"
             else
-                ui_status u_removed_legacy_version "$legacy_version"
+                ui_status u_removed_path "$path"
             fi
-        else
-            warn_optional_remaining u_kept_legacy_version_changed u_inspect_remove_if_recognised_hint "$legacy_version"
-        fi
-    fi
-    if [ "$legacy_project_proven" -eq 1 ]; then
-        rmdir -- "$legacy_data_root" 2>/dev/null || true
-    fi
+        done
+        rmdir -- "$root/lib" "$root" 2>/dev/null || true
+    done
 }
 
 # PipeASIO 1.5 panel projections from the pre-manifest installer are adopted
@@ -1535,6 +1538,7 @@ if [ "$mime_cleanup_authorized" -eq 1 ] && [ "${#mime_records[@]}" -eq 0 ]; then
 fi
 clear_mime_defaults
 ui_item_begin u_remove_runtime_files
+authoritative_cleanup_ready=0
 if [ "$optional_inventory_usable" -eq 1 ]; then
     if ! remove_legacy_panel_files; then
         warn_optional_remaining u_panel_shortcuts_unconfirmed u_panel_shortcuts_unconfirmed_hint
@@ -1544,10 +1548,14 @@ if [ "$manifest_present" -eq 1 ] && [ "$optional_inventory_usable" -eq 1 ]; then
     if ! remove_owned_manifest_files; then
         leave_optional_inventory_untouched
         warn_optional_remaining u_files_unconfirmed u_files_unconfirmed_hint
+    else
+        authoritative_cleanup_ready=1
     fi
 elif [ "$manifest_present" -eq 0 ] && [ "$optional_inventory_usable" -eq 1 ]; then
     remove_legacy_files
+    authoritative_cleanup_ready=1
 fi
+[ "$authoritative_cleanup_ready" -eq 0 ] || remove_authoritative_support_files
 
 # Revalidate every recursive target as one complete set immediately before the
 # first tree deletion. Integration cleanup above is intentionally non-fatal,

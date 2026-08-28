@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 2026.08.28.1
 
 - **Installer v3:**
-  - The installer draws one nested tree. It shows a banner, the system check, the action menu, one numbered box per step (`1/8`, `2/8`, and so on) with its operations underneath, and a footer with the time taken, the warning and error counts, and the runtime and prefix paths. The running operation shows `└─` and a spinner. It changes to `├─ ✓` (or `𐄂` after a failure) when the next operation starts.
+  - The installer draws one nested tree. It shows a banner, the system check, the action menu, one numbered box per step (`1/8`, `2/8`, and so on) with its operations underneath, and a footer with the time taken, the warning and error counts, and the runtime and prefix paths. The running operation shows `└─` and a spinner. It changes to `├─ ✓` (or `𐄂` after a failure) as soon as the operation finishes. Colour highlights apply to the text and status symbols. Tree and box lines keep the terminal's default colour.
   - Every sentence the installer shows comes from one dictionary at the top of `scripts/lib/ui.sh`. Edit the text there. The packer copies the dictionary into the `.run` header. Errors and everything the scripts print outside the tree go to the log beside the `.run`. On failure the footer lists them.
   - Long lines wrap inside the tree. A terminal with a locale other than UTF-8 gets an ASCII version of the same tree.
   - The action menu offers `E[x]it`. When several Ableton Live downloads sit next to the installer, the installer lists them newest first and uses the first after 5 seconds.
@@ -53,7 +53,7 @@
   - ~~The NTSync check now actually proves wineserver uses it, instead of nodding along because a file exists somewhere. The audio report captures your full CPU topology so bug reports can explain themselves to us (#272, #275). This helps us understand whether bad Live performance is your fault or our fault. :3~~
   - ~~Thanks @ClickSentinel for the relentless review across every PR in this section — six blocking findings caught before merge, all hardware-verified on real silicon.~~
 
-- **~~First rollout of diagnostics and measurement tooling** (aka preparing to flex the moonshot work):~~
+- ~~**First rollout of diagnostics and measurement tooling** (aka preparing to flex the moonshot work):~~
   - ~~We now have a CPU and audio benchmark suite that can run five fixed Live Sets and produces reports you can actually compare between versions, machines, or arguments. JSON, Markdown, CSV — take your pick (#271).~~
   - ~~`PIPEASIO_TELEMETRY=on` records audio callback timing through a side-channel worker. The regular driver path will not pay a performance tax for your curiosity (#273).~~
   - ~~A new PipeWire Pro Audio comparison tool allows you to measure an audio device in both its current and Pro Audio profiles, then sets it back to whatever setting you had. Useful for finding out whether Pro Audio actually helps your interface or is just a placebo (#276).~~

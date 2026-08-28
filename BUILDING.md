@@ -72,7 +72,7 @@ make test
 
 `make check` inspects the pointer changes and tests their limits with difficult input. Neither it nor `make verify` starts Wine or Live.
 
-`scripts/test-installer-ui.sh` covers the installer's screen. It renders a fixed run and compares the result byte for byte with a golden transcript of the template. It replays a real pseudo-terminal through a small terminal simulator to check the `└─` to `├─` rewrite. It also checks that only `scripts/lib/ui.sh` prints tree glyphs and that every sentence comes from the dictionary.
+`scripts/test-installer-ui.sh` covers the installer's screen. It renders a fixed run and compares the result byte for byte with a golden transcript of the template. It replays a real pseudo-terminal through a small terminal simulator to check the `└─` to `├─` rewrite. It checks every adjoining box stroke for matching direction and weight. It also confirms that colour codes apply to text while each line keeps the terminal's default colour. The remaining checks confirm that every tree glyph comes from `scripts/lib/ui.sh` and every sentence comes from the dictionary.
 
 Verify all pinned build and packaging inputs:
 

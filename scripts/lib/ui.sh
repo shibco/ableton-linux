@@ -16,7 +16,7 @@ declare -A UI_TEXT=(
     [g_sub_trunk]='│'      [g_step_join]='├──'    [g_ok]='✓'
     [g_fail]='𐄂'           [g_info]='🛈'          [g_warn]='⚠'
     [g_detail]='>'         [g_ellipsis]='…'
-    [g_box_top]='╒═╕'      [g_box_rule]='│┈│'     [g_box_side]='│'
+    [g_box_top]='╒═╤═╕'    [g_box_rule]='├┈┴┈┤'   [g_box_side]='│'
     [g_box_bottom]='╞═╛'   [g_box_sep]='┊'
     [g_step_top]='┲━┳━┓'   [g_step_mid]='┃╏┃'     [g_step_bottom]='┡━┻━┛'
     [g_foot_top]='╞═╤═╕'   [g_foot_rule]='├─┼─┤'  [g_foot_dash]='├┈┼┈┤'
@@ -28,7 +28,7 @@ declare -A UI_TEXT=(
     [a_sub_trunk]='|'      [a_step_join]='|--'    [a_ok]='+'
     [a_fail]='x'          [a_info]='i'         [a_warn]='!'
     [a_detail]='>'         [a_ellipsis]='...'
-    [a_box_top]='+=+'      [a_box_rule]='|-|'     [a_box_side]='|'
+    [a_box_top]='+=+=+'    [a_box_rule]='+-+-+'   [a_box_side]='|'
     [a_box_bottom]='+=+'   [a_box_sep]='|'
     [a_step_top]='+=+=+'   [a_step_mid]='|:|'     [a_step_bottom]='+=+=+'
     [a_foot_top]='+=+=+'   [a_foot_rule]='+-+-+'  [a_foot_dash]='+-+-+'
@@ -406,7 +406,6 @@ declare -A UI_TEXT=(
     [u_restored_earlier_file]='Restored your earlier file at %s'
     [u_removed_path]='Removed %s'
     [u_removed_legacy_file]='Removed an Ableton Linux file from an older release: %s'
-    [u_removed_legacy_version]='Removed the older Ableton Linux version record: %s'
     [u_removed_legacy_panel_file]='Removed a PipeASIO Settings file from an older release: %s'
     [u_restore_mime_defaults]='Restore the previous file-opening defaults'
     [u_mime_foreign_default_kept]='%s still uses an app that Ableton Linux did not install, so it is left unchanged'
@@ -503,11 +502,6 @@ declare -A UI_TEXT=(
     [u_legacy_file_remains]='an Ableton Linux file from an older release remains at %s'
     [u_check_its_permissions_hint]='Check its permissions before retrying.'
     [u_kept_unrecognised_legacy_file]='kept an unrecognised or modified file at %s'
-    [u_kept_modified_legacy_support]='kept a modified or unrecognised older support file at %s'
-    [u_kept_modified_legacy_support_hint]='Remove it manually only if you no longer need it.'
-    [u_legacy_version_remains]='the older Ableton Linux version record remains at %s'
-    [u_kept_legacy_version_changed]='kept the older Ableton Linux version record because it changed during uninstall: %s'
-    [u_inspect_remove_if_recognised_hint]='Inspect it and remove it manually only if you recognise it.'
     [u_legacy_panel_file_remains]='a PipeASIO Settings file from an older release remains at %s'
     [u_kept_foreign_panel_file]='kept an independently installed PipeASIO panel file at %s'
     [u_kept_foreign_panel_file_hint]='Remove it yourself only if you no longer use that panel installation.'
@@ -738,11 +732,45 @@ ui__screen()   # raw bytes to the screen, no log
 }
 
 # Add live-terminal presentation without changing the text that is measured
-# or written to the log. OSC 8 turns displayed web addresses into links.
+# or written to the log. OSC 8 turns displayed web addresses into links. SGR
+# colours start after the tree prefix and end before trailing whitespace, so
+# every box-drawing glyph remains in the terminal's default colour.
 ui__decorate()   # state, plain text -> UI_R
 {
     local state="$1" shown="$2" scheme="" before rest url after linked code=""
+    local prefix="" body trailing="" t branch last sub
     if [ "$UI_LIVE" -eq 1 ]; then
+        if [ -z "${NO_COLOR:-}" ]; then
+            case "$state" in
+                active|status) code=96 ;;
+                complete) code=36 ;;
+                wait|warn) code=93 ;;
+                fail) code=91 ;;
+            esac
+        fi
+
+        # Coloured lines can have an outer trunk and one inner trunk or
+        # branch. Keep that structural prefix, its indentation, and trailing
+        # padding outside the SGR span. The branch alternatives must be tested
+        # before the one-character sub-trunk in the ASCII glyph set.
+        if [ -n "$code" ]; then
+            rest="$shown"
+            while [ "${rest# }" != "$rest" ]; do prefix="$prefix "; rest="${rest# }"; done
+            ui__g trunk; t="$UI_G"
+            case "$rest" in "$t"*) prefix="$prefix$t"; rest="${rest#"$t"}" ;; esac
+            while [ "${rest# }" != "$rest" ]; do prefix="$prefix "; rest="${rest# }"; done
+            ui__g branch; branch="$UI_G"; ui__g last; last="$UI_G"; ui__g sub_trunk; sub="$UI_G"
+            case "$rest" in
+                "$branch"*) prefix="$prefix$branch"; rest="${rest#"$branch"}" ;;
+                "$last"*) prefix="$prefix$last"; rest="${rest#"$last"}" ;;
+                "$sub"*) prefix="$prefix$sub"; rest="${rest#"$sub"}" ;;
+            esac
+            while [ "${rest# }" != "$rest" ]; do prefix="$prefix "; rest="${rest# }"; done
+            body="$rest"
+            while [ "${body% }" != "$body" ]; do trailing=" $trailing"; body="${body% }"; done
+            shown="$body"
+        fi
+
         case "$shown" in *https://*) scheme=https:// ;; *http://*) scheme=http:// ;; esac
         if [ -n "$scheme" ]; then
             before="${shown%%"$scheme"*}"
@@ -752,14 +780,12 @@ ui__decorate()   # state, plain text -> UI_R
             linked=$'\033]8;;'"$url"$'\033\\'"$url"$'\033]8;;\033\\'
             shown="$before$linked$after"
         fi
-        if [ -z "${NO_COLOR:-}" ]; then
-            case "$state" in
-                active|status) code=96 ;;
-                complete) code=36 ;;
-                wait|warn) code=93 ;;
-                fail) code=91 ;;
-            esac
-            [ -z "$code" ] || shown=$'\033['"${code}m$shown"$'\033[0m'
+        if [ -n "$code" ]; then
+            if [ -n "$body" ]; then
+                shown="$prefix"$'\033['"${code}m$shown"$'\033[0m'"$trailing"
+            else
+                shown="$prefix$trailing"
+            fi
         fi
     fi
     UI_R="$shown"
@@ -827,16 +853,19 @@ ui__wrap()   # first prefix, continuation prefix, text, [level], [state]
 # ---- trunk level ------------------------------------------------------------
 ui_banner()   # version
 {
-    local t title
+    local t title version side sep left=26 right=17 l r
     ui__init
     ui__g box_top; t="$UI_G"
-    ui__rep "${t:1:1}" 44; ui__emit "${t:0:1}$UI_R${t:2:1}"
-    ui__g box_side
-    ui__text banner_version "$1"
-    ui__g box_sep; title="  ${UI_TEXT[banner_title]} $UI_G $UI_R"
-    ui__g box_side; ui__pad "$title" 44; ui__emit "$UI_G$UI_R$UI_G"
+    ui__rep "${t:1:1}" "$left"; l="$UI_R"; ui__rep "${t:3:1}" "$right"; r="$UI_R"
+    ui__emit "${t:0:1}$l${t:2:1}$r${t:4:1}"
+    ui__text banner_version "$1"; version="$UI_R"
+    ui__pad "  ${UI_TEXT[banner_title]} " "$left"; title="$UI_R"
+    ui__pad " $version" "$right"; version="$UI_R"
+    ui__g box_side; side="$UI_G"; ui__g box_sep; sep="$UI_G"
+    ui__emit "$side$title$sep$version$side"
     ui__g box_rule; t="$UI_G"
-    ui__rep "${t:1:1}" 44; ui__emit "${t:0:1}$UI_R${t:2:1}"
+    ui__rep "${t:1:1}" "$left"; l="$UI_R"; ui__rep "${t:3:1}" "$right"; r="$UI_R"
+    ui__emit "${t:0:1}$l${t:2:1}$r${t:4:1}"
     ui__g box_side; ui__pad "  ${UI_TEXT[banner_url]}" 44; ui__emit "$UI_G$UI_R$UI_G"
     ui__g box_bottom; t="$UI_G"
     ui__rep "${t:1:1}" 44; ui__emit "${t:0:1}$UI_R${t:2:1}"
@@ -1174,6 +1203,10 @@ ui_item_end()   # ok|fail
     fi
     ui__log "$level" "$UI_ITEM_TITLE $mark"
     UI_ITEM_OPEN=0
+    # A resolved operation always has the step-completion node after it. Draw
+    # its permanent branch and detail trunk now instead of leaving the live
+    # screen temporarily in the active └─ form.
+    ui_settle
 }
 
 # Flip the last block to its settled form: the title from └─ to ├─ and each
@@ -1201,7 +1234,7 @@ ui__spinner()   # parent pid, line, progress file, total bytes
     local parent="$1" line="$2" progress="$3" total="$4" frame cur suffix
     local -a frames=()
     ui__g spinner; read -r -a frames <<< "$UI_G"
-    local cols shown
+    local cols shown rendered
     while kill -0 "$parent" 2>/dev/null; do
         frame="${frames[RANDOM % ${#frames[@]}]}"
         suffix=""
@@ -1214,7 +1247,11 @@ ui__spinner()   # parent pid, line, progress file, total bytes
         cols="$(stty size <&"$UI_FD" 2>/dev/null)"; cols="${cols#* }"
         case "$cols" in ''|*[!0-9]*) ;; *) [ "${#shown}" -lt "$cols" ] || shown="${shown:0:cols-1}" ;; esac
         ui__decorate active "$shown"
-        ui__screen "$(printf '\r\033[2K%s' "$UI_R")"
+        # Keep formatting in this background shell. If the spinner is killed
+        # during a command substitution, its child printf can otherwise lose
+        # the substitution pipe and leak a "Broken pipe" line into the tree.
+        printf -v rendered '\r\033[2K%s' "$UI_R"
+        ui__screen "$rendered"
         sleep 0.08
     done
 }
@@ -1342,6 +1379,7 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
     fi
     UI_ITEM_OPEN=0
     ui__log "$level" "$UI_ITEM_TITLE $mark"
+    ui_settle
     return "$rc"
 }
 
@@ -1386,6 +1424,7 @@ ui_question()
         [ -z "$UI_ANSWER" ] || break
     done
     UI_ITEM_OPEN=0; UI_ITEM_WAIT=0
+    ui_settle
     ui__log INFO "chosen: $UI_ANSWER"
 }
 

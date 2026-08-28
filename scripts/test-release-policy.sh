@@ -25,6 +25,42 @@ fail()
     exit 1
 }
 
+python3 - "$root" <<'PY' \
+    || fail 'installer source allowlist omits scripts/lib/ui.sh mode 0644'
+from pathlib import Path
+from types import SimpleNamespace
+import runpy
+import sys
+
+root = Path(sys.argv[1])
+module = runpy.run_path(str(root / "scripts/verify-installer-payload.py"))
+globals_ = module["expected_from_source"].__globals__
+real_add_source = globals_["add_source"]
+globals_["add_source"] = lambda expected, source, destination, mode: (
+    real_add_source(expected, source, destination, mode)
+    if destination == "scripts/lib/ui.sh"
+    else None
+)
+globals_["tracked_paths"] = lambda *args: []
+globals_["subprocess"].run = lambda *args, **kwargs: SimpleNamespace(stdout=b"")
+expected = module["expected_from_source"](root, root / "BUILD-INFO", root / "runtime.tar.zst")
+entry = expected["scripts/lib/ui.sh"]
+assert entry.kind == "file"
+assert entry.mode == 0o644
+assert entry.data == (root / "scripts/lib/ui.sh").read_bytes()
+PY
+printf 'ok - installer source allowlist includes the shared UI library\n'
+
+version="$(cat "$root/VERSION")"
+first_changelog_heading="$(grep -m1 '^## ' "$root/CHANGELOG.md" || true)"
+[ "$first_changelog_heading" = "## $version" ] \
+    && [ "$(grep -cxF "## $version" "$root/CHANGELOG.md")" -eq 1 ] \
+    || fail 'CHANGELOG does not start with exactly one heading for VERSION'
+if grep -qE '[*][*]~~.*[*][*].*~~' "$root/CHANGELOG.md"; then
+    fail 'CHANGELOG contains crossed bold and strikethrough markers'
+fi
+printf 'ok - CHANGELOG names this release and nests emphasis correctly\n'
+
 accepts()
 {
     bash "$checker" "$1" >/dev/null 2>&1
@@ -293,6 +329,14 @@ if bash "$checker" "$tmp/official" --version 2026.08.12.1 \
     fail 'release checker accepted an installer carrying a different runtime'
 fi
 printf 'ok - installer payload must carry the exact release record and runtime\n'
+
+dev_wrapper_gate="$(sed -n '/^echo "== \[4\/5\] wrapper self-check =="$/,/^fi$/p' \
+    "$root/scripts/make-installer.sh")"
+grep -qF 'bash "$out" extract "$stage/wrapper-self-check"' <<< "$dev_wrapper_gate" \
+    && grep -qF '[ -f "$stage/wrapper-self-check/scripts/installer.sh" ]' <<< "$dev_wrapper_gate" \
+    && ! grep -qF -- '--help' <<< "$dev_wrapper_gate" \
+    || fail 'the dev wrapper gate does not extract and inspect the packed payload'
+printf 'ok - dev packing validates the final wrapper payload by extraction\n'
 
 grep -qF '    --version "$VERSION" --runtime "$tarball" --installer "$out"' \
     "$root/scripts/make-installer.sh" \

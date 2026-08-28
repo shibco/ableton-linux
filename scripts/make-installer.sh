@@ -243,7 +243,9 @@ chmod +x "$out"
 
 echo "== [4/5] wrapper self-check =="
 if [ "$dev_pack" -eq 1 ]; then
-    sh "$out" --help > /dev/null
+    bash "$out" extract "$stage/wrapper-self-check" >/dev/null
+    [ -f "$stage/wrapper-self-check/scripts/installer.sh" ] || {
+        echo "!! dev wrapper did not extract the staged installer" >&2; exit 1; }
 else
     bash scripts/check-release-build-info.sh "$build_info" \
         --version "$VERSION" --runtime "$tarball" --installer "$out"

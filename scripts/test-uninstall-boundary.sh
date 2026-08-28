@@ -4,6 +4,16 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 ABLETON_PROTOCOL_DESKTOP_ID=io.github.shibco.ableton-linux.protocol.desktop
 ABLETON_AUZ_DESKTOP_ID=io.github.shibco.ableton-linux.auz.desktop
+authoritative_support_relatives=(
+    VERSION
+    lib/config.sh lib/lifecycle.sh lib/live-options.sh lib/manifest.sh
+    lib/pipeasio.sh lib/ui.sh
+    detect-scale.sh detect-theme.sh shortcut-hold.sh setup-realtime.sh
+    audio-report.sh check-ntsync.sh rollback.sh ntsyncprobe.exe
+    pipewire-version-probe setsyscolors.exe learnheal.exe
+    "$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID"
+    ableton-linkd ableton-linkctl setup-link.sh ableton-linkd.service
+)
 work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-uninstall-boundary-test.XXXXXX")"
 cleanup()
 {
@@ -320,7 +330,7 @@ if grep -qF 'Leave file-opening defaults unchanged' "$base/out"; then
 fi
 ok "snapshot-free current uninstall plans describe their narrow MIME cleanup truthfully"
 
-# Exercise the real integration manifest so an ordinary clean uninstall does
+# Exercise the real integration support tree so an ordinary clean uninstall does
 # not acquire a warning merely because a generated support path is present.
 base="$(new_fixture clean-integration)"
 run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
@@ -329,6 +339,7 @@ run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
     || fail "clean full integration uninstall failed"
 [ ! -e "$base/runtime" ] \
     && [ ! -e "$(state_path "$base")" ] \
+    && [ ! -e "$base/xdg/data/ableton-wine" ] \
     && [ ! -e "$base/xdg/config/ableton-wine/config" ] \
     || fail "clean full integration uninstall retained managed state"
 if grep -q '^!! warning:' "$base/err"; then
@@ -338,6 +349,92 @@ grep -qF '│  ┃ 2/2 ╏ REMOVE ABLETON LINUX ┃' "$base/out" \
     && grep -qF '│  └─ Step 2 Complete! ✓' "$base/out" \
     || fail "clean full integration uninstall did not report complete success"
 ok "clean full integration uninstall removes all managed state without warnings"
+
+# A valid older manifest can coexist with the snapshot-free support bundle
+# after an update. Fixed project paths remain authoritative, while an unlisted
+# file and an explicitly configured external Link daemon stay untouched.
+base="$(new_fixture authoritative-support-upgrade)"
+run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
+    || fail "could not create an authoritative support fixture"
+support="$base/xdg/data/ableton-wine"
+for relative in "${authoritative_support_relatives[@]}"; do
+    mkdir -p -- "$(dirname "$support/$relative")"
+    printf 'modified project support\n' > "$support/$relative"
+done
+rm -f -- "$support/ableton-linkctl"
+ln -s -- "$base/missing-linkctl" "$support/ableton-linkctl"
+printf 'foreign support sentinel\n' > "$support/user-notes.txt"
+printf 'external Link daemon\n' > "$base/external-linkd"
+config_path="$support/lib/config.sh"
+config_hash="$(printf '%s' "$config_path" | sha256sum)"
+config_backup="$(state_path "$base")/install-prestate/${config_hash%% *}"
+mkdir -p -- "$(dirname "$config_backup")"
+printf 'earlier config sentinel\n' > "$config_backup"
+printf 'present\t%s\t%s\n' "$config_path" "$config_backup" \
+    > "$(state_path "$base")/install-prestate.tsv"
+printf 'file\t%s\t%064d\nruntime\t%s\twine-d2d1-nspa-11.13\n' \
+    "$config_path" 0 "$base/runtime" \
+    > "$(state_path "$base")/install-manifest.tsv"
+run_uninstall "$base" --keep-prefix "ABLETON_LINKD=$base/external-linkd" \
+    > "$base/out" 2> "$base/err" \
+    || fail "manifest-present authoritative support cleanup failed"
+mapfile -t support_files < <(find "$support" \( -type f -o -type l \) | sort)
+[ "${#support_files[@]}" -eq 1 ] && [ "${support_files[0]}" = "$support/user-notes.txt" ] \
+    || fail "authoritative cleanup retained listed support or removed an unlisted file"
+grep -qxF 'foreign support sentinel' "$support/user-notes.txt" \
+    && grep -qxF 'external Link daemon' "$base/external-linkd" \
+    || fail "authoritative cleanup changed an unlisted or external path"
+for relative in "${authoritative_support_relatives[@]}"; do
+    grep -qF "$support/$relative" "$base/out" \
+        || fail "authoritative cleanup did not report removing $relative"
+done
+! grep -qF "Restored your earlier file at $config_path" "$base/out" \
+    || fail "authoritative manifest cleanup restored obsolete prestate"
+if grep -q '^!! warning:' "$base/err"; then
+    fail "authoritative manifest cleanup emitted a stale preservation warning"
+fi
+[ ! -e "$(state_path "$base")" ] \
+    || fail "successful authoritative manifest cleanup retained retry state"
+ok "manifest upgrades remove fixed support paths and preserve unlisted paths"
+
+# A failed fixed-path removal is warning-only and keeps retry state; a direct
+# retry removes the same path and retires that state.
+base="$(new_fixture authoritative-support-retry)"
+run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
+    || fail "could not create an authoritative retry fixture"
+support_target="$base/xdg/data/ableton-wine/lib/ui.sh"
+run_uninstall "$base" --keep-prefix FAIL_RM_TARGET="$support_target" \
+    > "$base/first.out" 2> "$base/first.err" \
+    || fail "fixed support removal failure made uninstall fail"
+[ -f "$support_target" ] || fail "failed support removal did not retain its target"
+[ -f "$(state_path "$base")/.ableton-linux-state" ] \
+    || fail "failed support removal did not retain retry ownership state"
+grep -qF "an Ableton Linux file remains at $support_target" "$base/first.err" \
+    || fail "failed support removal did not name its target"
+assert_warning_contract "$base/first.err"
+run_uninstall "$base" --keep-prefix > "$base/retry.out" 2> "$base/retry.err" \
+    || fail "fixed support cleanup retry failed"
+[ ! -e "$support_target" ] && [ ! -L "$support_target" ] \
+    && [ ! -e "$(state_path "$base")" ] \
+    || fail "fixed support cleanup retry retained its target or retry state"
+ok "fixed support removal failures remain directly retryable"
+
+# Fixed-path cleanup is authoritative for files and links, never recursive.
+base="$(new_fixture authoritative-support-directory)"
+run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
+    || fail "could not create a non-recursive support fixture"
+support_target="$base/xdg/data/ableton-wine/lib/ui.sh"
+rm -f -- "$support_target"
+mkdir -p -- "$support_target"
+printf 'directory sentinel\n' > "$support_target/keep"
+run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
+    || fail "non-empty support directory made core uninstall fail"
+grep -qxF 'directory sentinel' "$support_target/keep" \
+    || fail "fixed support cleanup recursed into a directory"
+grep -qF "an Ableton Linux file remains at $support_target" "$base/err" \
+    || fail "non-empty fixed support path was not reported"
+assert_warning_contract "$base/err"
+ok "fixed support cleanup never recurses into directories"
 
 # Per-run overwrite backups are inert manual recovery files. Uninstall keeps
 # them byte-for-byte and removes the independently managed runtime as usual.
@@ -411,25 +508,23 @@ grep -qF '│  ┃ 2/2 ╏ REMOVE ABLETON LINUX ┃' "$base/out" \
     || fail "clean legacy support-file removal did not report complete success"
 ok "clean legacy uninstall retires exactly recognised historical support files"
 
-# A same-path helper that differs from the packaged generation may contain
-# local work. Legacy evidence authorises inspection, never deletion by name.
+# Explicit Ableton support paths are authoritative even for pre-manifest
+# installs. Local changes at those paths do not turn them into foreign files.
 base="$(new_fixture modified-legacy-support)"
 legacy_runtime="$(make_legacy_runtime_without_state "$base")"
 legacy_data="$base/home/.local/share/ableton-wine"
 cp -- "$kit/detect-scale.sh" "$legacy_data/detect-scale.sh"
 printf '\n# local modification\n' >> "$legacy_data/detect-scale.sh"
-cp -- "$legacy_data/detect-scale.sh" "$base/modified-helper.before"
 run_uninstall "$base" --keep-prefix "ABLETON_WINE_ROOT=$legacy_runtime" \
     > "$base/out" 2> "$base/err" \
     || fail "modified legacy support file made core uninstall fail"
-cmp -s -- "$base/modified-helper.before" "$legacy_data/detect-scale.sh" \
-    || fail "legacy uninstall deleted or changed a modified support file"
+[ ! -e "$legacy_data/detect-scale.sh" ] && [ ! -L "$legacy_data/detect-scale.sh" ] \
+    || fail "legacy uninstall preserved a modified authoritative support file"
 [ ! -e "$legacy_runtime" ] \
     || fail "modified legacy support file retained the recognised runtime"
-grep -qF "kept a modified or unrecognised older support file at $legacy_data/detect-scale.sh" \
-    "$base/err" || fail "modified legacy support-file preservation was not reported"
-assert_warning_contract "$base/err"
-ok "legacy uninstall preserves modified historical support files"
+! grep -qF "kept a modified or unrecognised older support file at $legacy_data/detect-scale.sh" \
+    "$base/err" || fail "removed legacy support was reported as preserved"
+ok "legacy uninstall removes modified authoritative support files"
 
 # Publishing the adopted ownership marker is the legacy migration commit. If
 # its disposable transaction directory cannot be removed afterward, the exact
@@ -722,7 +817,7 @@ ok "MIME backend failure is warning-only"
 # file at another managed path is preserved without blocking core removal.
 base="$(new_fixture authoritative-and-foreign)"
 desktop="$base/xdg/data/applications/ableton-live.desktop"
-opaque="$base/xdg/data/ableton-wine/ntsyncprobe.exe"
+opaque="$base/xdg/data/applications/max9.desktop"
 mkdir -p -- "$(dirname "$desktop")" "$(dirname "$opaque")"
 cat > "$desktop" <<EOF
 [Desktop Entry]
