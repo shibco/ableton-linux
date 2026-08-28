@@ -30,14 +30,3 @@ sh ~/Downloads/install-ableton-latest.run update
 | `extract DIR` | Unpacks the installer files without installing them. Replace `DIR` with the folder you want to use. |
 | `help` | Shows the main command list. |
 
-## What you see
-
-The installer draws one tree. The top box names the version. The system check lists your machine, the free disk space, and any host warnings. The action menu offers `[U]pdate`, `[R]einstall`, `Remo[v]e Ableton Linux`, and `E[x]it`. The default option shows `(or press Enter)`.
-
-Each step is a numbered box such as `3/8 INSTALL THE WINE RUNTIME`. Its operations hang below it. The running operation shows a spinner and reads `└─`. When the operation finishes, it changes to `├─` with a `✓`, or with a `𐄂` after a failure. Colour highlights apply to the text and status symbols. Tree and box lines keep the terminal's default colour. Questions appear in the same place. Each question marks its default and takes it after 5 seconds. The footer box shows the time taken, the warning and error counts, and the runtime and prefix paths. The launch command and the support links follow the footer.
-
-Every sentence on screen comes from the dictionary at the top of `scripts/lib/ui.sh`. Change the text there.
-
-Everything the scripts print outside the tree, including every `!!` error, goes to the log named at the end of the run. The log sits next to the `.run` file. When that folder is read-only, the log goes to your temporary directory instead. After a failure the footer lists the errors from that log.
-
-When the installer finds files from an earlier installation it asks once: `[O]verwrite all` (the default, also after 5 seconds), `[K]eep originals`, or `[A]bort`. The installer moves each overwritten file to a dated folder under `~/.local/state/ableton-wine/backups/` before it writes the new file.
