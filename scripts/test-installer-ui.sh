@@ -499,6 +499,73 @@ grep -qx 'answer=a' "$work/answer-retry" || fail "the answer after a retry is ho
 [ "$(grep -c 'Which one?:' "$work/retry.out")" -eq 2 ] || fail "an unknown answer repeats the prompt once"
 ok "timed questions honour the timeout, EOF, piped keys, whole words, and retries"
 
+# A command may source ui.sh in a child and ask a question while its parent's
+# ui_run spinner is active. The child owns the trunk until the parent settles.
+cat > "$work/fixture-child-question.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "${UI_LIB:?}"
+sleep 0.2
+ui_question q_overwrite_title o q_overwrite_all q_keep q_abort
+EOF
+cat > "$work/fixture-parent-spinner.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec 7>&1
+export ABLETON_UI_TTY_FD=7
+. "${UI_LIB:?}"
+ui_step_begin s_validate
+ui_run i_check -- bash "${CHILD_FIXTURE:?}"
+ui_step_end ok
+EOF
+run_pty_raw 40 80 "$work/two-process.raw" env \
+    CHILD_FIXTURE="$work/fixture-child-question.sh" bash "$work/fixture-parent-spinner.sh"
+vt "$work/two-process.raw" > "$work/two-process.screen"
+parent_line="$(grep -n '^│  ├─ Check the embedded kit ✓$' "$work/two-process.screen" | cut -d: -f1)"
+question_line="$(grep -n '^│  ├─ QUESTION: Some files from an earlier installation already exist\.$' \
+    "$work/two-process.screen" | cut -d: -f1)"
+hint_line="$(grep -n '^│  │  (Press Enter for default or wait 1 seconds)$' \
+    "$work/two-process.screen" | cut -d: -f1)"
+complete_line="$(grep -n '^│  └─ Step 2 Complete! ✓$' "$work/two-process.screen" | cut -d: -f1)"
+[ -n "$parent_line" ] && [ -n "$question_line" ] && [ -n "$hint_line" ] && [ -n "$complete_line" ] \
+    && [ "$parent_line" -lt "$question_line" ] && [ "$question_line" -lt "$hint_line" ] \
+    && [ "$hint_line" -lt "$complete_line" ] \
+    || fail "a child question stays below its parent's settled operation"
+python3 - "$work/two-process.raw" "$frames" <<'PY' \
+    || fail "the parent spinner stays held after the child posts its question"
+import sys
+
+data = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+after_question = data.split("QUESTION: Some files from an earlier installation already exist.", 1)[1]
+raise SystemExit(any(frame in after_question for frame in sys.argv[2]))
+PY
+printf '1\n' > "$work/held-render-control"
+: > "$work/held-render-control.pause"
+sleep 30 & held_owner=$!
+env -i PATH="$PATH" HOME="$work/home" LANG=C.UTF-8 UI_LIB="$ui_lib" \
+    OWNER="$held_owner" CONTROL="$work/held-render-control" \
+    bash -c '. "$UI_LIB"; ui__spinner "$OWNER" held "" 0 "$CONTROL"' \
+    >/dev/null 2>&1 &
+held_spinner=$!
+sleep 0.1
+kill "$held_owner" 2>/dev/null || true
+wait "$held_owner" 2>/dev/null || true
+for _ in $(seq 100); do
+    ! kill -0 "$held_spinner" 2>/dev/null && break
+    sleep 0.02
+done
+if kill -0 "$held_spinner" 2>/dev/null; then
+    kill "$held_spinner" 2>/dev/null || true
+    wait "$held_spinner" 2>/dev/null || true
+    fail "a held spinner outlives its vanished parent"
+fi
+wait "$held_spinner" 2>/dev/null || true
+[ ! -e "$work/held-render-control" ] \
+    && [ ! -e "$work/held-render-control.pause" ] \
+    && [ ! -e "$work/held-render-control.paused" ] \
+    || fail "an orphaned held spinner leaves its control file behind"
+ok "a child question holds its parent's spinner and keeps the shared tree ordered"
+
 # T9: step numbers and names come from the table, in table order, for
 # every action in the table.
 cat > "$work/fixture-steps.sh" <<'EOF'

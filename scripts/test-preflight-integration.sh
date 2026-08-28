@@ -1168,11 +1168,11 @@ for allowed_values in \
     grep -Eqi -- "$allowed_values" "$root/INSTALLER.md" "$root/README.md" \
         || fail "documentation omits allowed values matching: $allowed_values"
 done
-rg -qi '128.*default|default.*128' "$root/INSTALLER.md" "$root/README.md" \
+grep -Eqi -- '128.*default|default.*128' "$root/INSTALLER.md" "$root/README.md" \
     || fail "documentation omits the 128-frame default"
-rg -qi 'Esc.*back|back.*Esc' "$root/INSTALLER.md" "$root/README.md" \
+grep -Eqi -- 'Esc.*back|back.*Esc' "$root/INSTALLER.md" "$root/README.md" \
     || fail "documentation omits one-question Escape navigation"
-rg -qi 'preferences.*persistent|persistent.*preferences' \
+grep -Eqi -- 'preferences.*persistent|persistent.*preferences' \
     "$root/INSTALLER.md" "$root/README.md" \
     || fail "documentation omits launcher preference persistence"
 ok "DOCS: installer flags, defaults, navigation and persistence are documented"

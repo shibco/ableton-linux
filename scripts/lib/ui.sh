@@ -124,7 +124,7 @@ declare -A UI_TEXT=(
     [q_current_tag]=' (Current)'
     [q_back_hint]='Press Esc to go back'
     [q_buffer_title]='1/6 Audio buffer'
-    [q_buffer_explanation]='Lower values reduce monitoring delay; higher values give Live more time and reduce crackles.'
+    [q_buffer_explanation]='Lower numbers reduce audio delay; higher numbers are less likely to crackle.'
     [q_buffer_64]='[1] 64 frames'
     [q_buffer_128]='[2] 128 frames'
     [q_buffer_256]='[3] 256 frames'
@@ -132,28 +132,28 @@ declare -A UI_TEXT=(
     [q_buffer_1024]='[5] 1024 frames'
     [q_buffer_custom]='%s frames'
     [q_shortcuts_title]='2/6 Keyboard shortcuts'
-    [q_shortcuts_explanation]='On GNOME, Assign to Live temporarily removes only conflicting desktop shortcuts and restores them when Live exits.'
+    [q_shortcuts_explanation]='On GNOME, Assign to Live lets Live use conflicting desktop shortcuts until Live closes.'
     [q_shortcuts_take]='[A] Assign to Live'
     [q_shortcuts_preserve]='[P] Preserve desktop shortcuts'
     [q_dpi_title]='3/6 Display scaling'
-    [q_dpi_explanation]='Automatic follows the detected desktop scale; Preserve keeps Wine'\''s current DPI registry values.'
+    [q_dpi_explanation]='Automatic matches your desktop; 100%% is normal, Fractional suits scaled displays, and Preserve changes nothing.'
     [q_dpi_auto]='[A] Automatic'
     [q_dpi_100]='[1] 100%%'
     [q_dpi_fractional]='[F] Fractional'
     [q_dpi_preserve]='[P] Preserve'
     [q_threads_title]='4/6 Audio workers'
-    [q_threads_explanation]='Automatic chooses a physical-core-based worker count; letting Live decide may help demanding Sets.'
+    [q_threads_explanation]='Automatic chooses how many workers suit your CPU; Let Live decide uses Live'\''s own setting, or enter 1–63 yourself.'
     [q_threads_auto]='[A] Automatic'
     [q_threads_off]='[L] Let Live decide'
     [q_threads_custom]='[1-63] Enter a custom value from 1 to 63'
     [q_threads_value]='%s workers'
     [q_threads_invalid]='Choose Automatic, Let Live decide, or a number from 1 to 63.'
     [q_rt_title]='5/6 Real-time scheduling'
-    [q_rt_explanation]='Automatic uses SCHED_RR only when permission already exists; it does not enable host RT privileges.'
+    [q_rt_explanation]='Automatic uses higher CPU priority when allowed and Normal uses standard priority; neither changes permissions.'
     [q_rt_auto]='[A] Automatic'
     [q_rt_off]='[N] Normal scheduling'
     [q_power_title]='6/6 Power profile'
-    [q_power_explanation]='Performance or Balanced is held only while Live or Max runs; Don'\''t change leaves the system profile alone.'
+    [q_power_explanation]='Performance favors speed, Balanced saves power, and Don'\''t change keeps the current mode while Live or Max is open.'
     [q_power_performance]='[P] Performance'
     [q_power_balanced]='[B] Balanced'
     [q_power_off]='[O] Don'\''t change'
@@ -509,6 +509,7 @@ UI_ITEM_OPEN=0 UI_ITEM_TITLE="" UI_ITEM_MARK="" UI_ITEM_LINES=0 UI_ITEM_LAST=0
 UI_ITEM_ROWS=0 UI_ITEM_COLS=0 UI_RUN_ACTIVE=0 UI_SPINNER_KIND="" UI_ITEM_WAIT=0
 UI_ITEM_STATE=""
 UI_ANSWER="" UI_R="" UI_G="" UI_WRAPPED=0 UI_READ_ACTIVE=0
+UI_CROSS_RENDER_CONTROL=""
 UI_STAMP_FORMAT='%(%d/%m/%Y, %H:%M:%S)T'
 
 ui__init()
@@ -629,6 +630,32 @@ ui__screen()   # raw bytes to the screen, no log
     return 0
 }
 
+ui__cross_render_row()
+{
+    local rows
+    [ -n "$UI_CROSS_RENDER_CONTROL" ] || return 0
+    IFS= read -r rows < "$UI_CROSS_RENDER_CONTROL" 2>/dev/null || return 0
+    case "$rows" in ''|*[!0-9]*) return 0 ;; esac
+    if ! printf '%s\n' "$((rows + 1))" > "$UI_CROSS_RENDER_CONTROL" 2>/dev/null; then true; fi
+}
+
+# A child question owns the trunk until its parent ui_run can settle above it.
+ui__hold_parent_spinner()
+{
+    local control="${ABLETON_UI_RENDER_CONTROL:-}" i
+    [ "$UI_LIVE" -eq 1 ] && [ -z "$UI_CROSS_RENDER_CONTROL" ] \
+        && [ -n "$control" ] && [ -f "$control" ] && [ ! -L "$control" ] || return 0
+    : > "$control.pause" 2>/dev/null || return 0
+    for ((i=0; i<50; i++)); do
+        [ ! -e "$control.paused" ] || break
+        sleep 0.01
+    done
+    [ -e "$control.paused" ] || return 0
+    UI_CROSS_RENDER_CONTROL="$control"
+    ui__screen $'\n'
+    if ! printf '1\n' > "$control" 2>/dev/null; then UI_CROSS_RENDER_CONTROL=""; fi
+}
+
 # Add live-terminal presentation without changing the text that is measured
 # or written to the log. OSC 8 turns displayed web addresses into links. SGR
 # colours start after the tree prefix and end before trailing whitespace, so
@@ -705,6 +732,7 @@ ui__emit()   # one finished line: screen plus log (always the settled form)
     fi
     ui__decorate "$state" "$1"
     { printf '%s\n' "$UI_R" >&"$UI_FD"; } 2>/dev/null || true
+    ui__cross_render_row
     if [ "$UI_ITEM_LAST" -eq 1 ]; then
         ui__g trunk; t="$UI_G"; ui__g last; l="$UI_G"; ui__g branch; b="$UI_G"; ui__g sub_trunk; s="$UI_G"
         case "$logged" in
@@ -835,15 +863,14 @@ ui_preflight_option()   # key, default|current|plain, [args]
 # line-oriented read cannot implement the documented one-key back navigation.
 ui_preflight_read()
 {
-    local first="" rest="" seconds rc=0
+    local first="" rest="" rc=0
     ui__init
     ui_note q_back_hint
     ui_prompt q_prompt
-    ui__timeout; seconds="$UI_R"
     UI_READ_ACTIVE=1
-    IFS= read -r -s -n 1 -t "$seconds" first || rc=$?
+    IFS= read -r -s -n 1 first || rc=$?
     if [ "$rc" -eq 0 ] && [ -n "$first" ] && [ "$first" != $'\033' ]; then
-        IFS= read -r -s -t "$seconds" rest || true
+        IFS= read -r -s rest || true
     fi
     UI_READ_ACTIVE=0
     if [ "$rc" -ne 0 ]; then
@@ -1171,13 +1198,19 @@ ui_settle()
 }
 
 # ---- one command with a spinner ------------------------------------------------
-ui__spinner()   # parent pid, line, progress file, total bytes
+ui__spinner()   # parent pid, line, progress file, total bytes, [render control]
 {
-    local parent="$1" line="$2" progress="$3" total="$4" frame cur suffix
+    local parent="$1" line="$2" progress="$3" total="$4" control="${5:-}"
+    local frame cur suffix
     local -a frames=()
     ui__g spinner; read -r -a frames <<< "$UI_G"
     local cols shown rendered
     while kill -0 "$parent" 2>/dev/null; do
+        if [ -n "$control" ] && [ -e "$control.pause" ]; then
+            : > "$control.paused" 2>/dev/null || true
+            sleep 0.02
+            continue
+        fi
         frame="${frames[RANDOM % ${#frames[@]}]}"
         suffix=""
         if [ -n "$progress" ]; then
@@ -1196,6 +1229,9 @@ ui__spinner()   # parent pid, line, progress file, total bytes
         ui__screen "$rendered"
         sleep 0.08
     done
+    [ -z "$control" ] \
+        || rm -f -- "$control" "$control.pause" "$control.paused" 2>/dev/null \
+        || true
 }
 
 ui__stop_spinner()
@@ -1218,6 +1254,26 @@ ui__run_finish()   # mark, [state]: settle a spinner on the title line
     ui__emit_log_only "$t  $b $UI_ITEM_TITLE"
     UI_RUN_ACTIVE=0; UI_SPINNER_KIND=""
     UI_R="$saved"
+}
+
+ui__run_finish_after_child_question()   # control file, mark, state
+{
+    local control="$1" mark="$2" item_state="$3" rows t b line
+    [ -n "$control" ] || return 1
+    IFS= read -r rows < "$control" 2>/dev/null || return 1
+    case "$rows" in ''|*[!0-9]*|0) return 1 ;; esac
+    ui__stop_spinner
+    UI_RUN_ACTIVE=0; UI_SPINNER_KIND=""
+    if ui__rewrite_title branch "$mark" "$rows" "$item_state"; then
+        ui__g trunk; t="$UI_G"; ui__g last; b="$UI_G"
+        ui__emit_log_only "$t  $b $UI_ITEM_TITLE"
+    else
+        ui__g trunk; t="$UI_G"; ui__g branch; b="$UI_G"
+        line="$t  $b $UI_ITEM_TITLE${mark:+ $mark}"
+        ui__emit "$line" INFO "$item_state"
+    fi
+    ui__screen $'\033[?25h'
+    UI_ITEM_LAST=0
 }
 
 # Stop the temporary spinner before the renderer writes another line. A title
@@ -1264,8 +1320,10 @@ ui__finish_item_spinner()   # mark, state
 
 ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
 {
-    local key="$1" progress="" total=0 rc=0 t b line mark title level=OK
+    local key="$1" progress="" total=0 rc=0 t b line mark title level=OK control=""
+    local inherited_control="${ABLETON_UI_RENDER_CONTROL-}" inherited_control_set=0
     local -a targs=()
+    [ "${ABLETON_UI_RENDER_CONTROL+x}" != x ] || inherited_control_set=1
     shift
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -1293,7 +1351,17 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
         ui__decorate active "$line"
         ui__screen "$UI_R"$'\033[?25l'
         UI_RUN_ACTIVE=1; UI_SPINNER_KIND=run
-        ui__spinner "$$" "$line" "$progress" "$total" &
+        control="$(mktemp "${TMPDIR:-/tmp}/ableton-ui-render.XXXXXX" 2>/dev/null)" || control=""
+        if [ -n "$control" ] && printf '0\n' > "$control" 2>/dev/null; then
+            ABLETON_UI_RENDER_CONTROL="$control"
+            export ABLETON_UI_RENDER_CONTROL
+        else
+            [ -z "$control" ] \
+                || rm -f -- "$control" "$control.pause" "$control.paused" 2>/dev/null \
+                || true
+            control=""
+        fi
+        ui__spinner "$$" "$line" "$progress" "$total" "$control" &
         UI_SPINNER_PID=$!
         "$@" || rc=$?
         if [ "$rc" -eq 0 ]; then
@@ -1303,9 +1371,19 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
         fi
         mark="$UI_G"; UI_ITEM_MARK="$mark"
         if [ "$UI_RUN_ACTIVE" -eq 1 ]; then
-            ui__finish_item_spinner "$mark" "$UI_ITEM_STATE"
+            ui__run_finish_after_child_question "$control" "$mark" "$UI_ITEM_STATE" \
+                || ui__finish_item_spinner "$mark" "$UI_ITEM_STATE"
         else
             ui__rewrite_title last "$mark" "$UI_ITEM_LINES" "$UI_ITEM_STATE" || true
+        fi
+        [ -z "$control" ] \
+            || rm -f -- "$control" "$control.pause" "$control.paused" 2>/dev/null \
+            || true
+        if [ "$inherited_control_set" -eq 1 ]; then
+            ABLETON_UI_RENDER_CONTROL="$inherited_control"
+            export ABLETON_UI_RENDER_CONTROL
+        else
+            unset ABLETON_UI_RENDER_CONTROL
         fi
     else
         "$@" || rc=$?
@@ -1334,6 +1412,7 @@ ui_question()
     local -a letters=() labels=()
     shift 2
     ui__init
+    ui__hold_parent_spinner
     ui__text "$title_key"; ui__text q_title "$UI_R"
     ui__item_open "$UI_R" wait
     ui__detail_blank

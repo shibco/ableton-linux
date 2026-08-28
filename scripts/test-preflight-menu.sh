@@ -145,7 +145,8 @@ run_tty()   # name home driver-function
     snapshot_home "$home" "$before"
     # shellcheck disable=SC2094,SC2016 # child expands path; driver polls transcript
     env -i PATH="$work/fakebin:$PATH" HOME="$home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm \
-        SHELL=/bin/bash NO_COLOR=1 ABLETON_UI_PROMPT_TIMEOUT=30 \
+        SHELL=/bin/bash NO_COLOR=1 \
+        ABLETON_UI_PROMPT_TIMEOUT="${PREFLIGHT_PROMPT_TIMEOUT:-30}" \
         STUB_ARGS_FILE="$work/$name.args" PREFLIGHT_INSTALLER="$work/installer.run" \
         PREFLIGHT_COMMAND="$command" PREFLIGHT_SCOPE="$scope" \
         STUB_TAR_LOG="$tar_log" STUB_REAL_TAR="$real_tar" \
@@ -428,38 +429,38 @@ assert_strict_heading_order "$work/fresh-defaults.txt"
     || fail "fresh defaults do not route to installer install without synthetic overrides"
 fresh_transcript="$work/fresh-defaults.txt"
 assert_adjacent_question "$fresh_transcript" '1/6 Audio buffer' \
-    'Lower values reduce monitoring delay; higher values give Live more time and reduce crackles.' \
+    'Lower numbers reduce audio delay; higher numbers are less likely to crackle.' \
     '64 frames' '128 frames (Default)' '256 frames' '512 frames' '1024 frames' \
     'Press Esc to go back'
 assert_adjacent_question "$fresh_transcript" '2/6 Keyboard shortcuts' \
-    'On GNOME, Assign to Live temporarily removes only conflicting desktop shortcuts and restores them when Live exits.' \
+    'On GNOME, Assign to Live lets Live use conflicting desktop shortcuts until Live closes.' \
     'Assign to Live (Default)' 'Preserve desktop shortcuts' \
     'Press Esc to go back'
 assert_adjacent_question "$fresh_transcript" '3/6 Display scaling' \
-    "Automatic follows the detected desktop scale; Preserve keeps Wine's current DPI registry values." \
+    'Automatic matches your desktop; 100% is normal, Fractional suits scaled displays, and Preserve changes nothing.' \
     'Automatic (Default)' '100%' 'Fractional' 'Preserve' \
     'Press Esc to go back'
 assert_adjacent_question "$fresh_transcript" '4/6 Audio workers' \
-    "Automatic chooses a physical-core-based worker count; letting Live decide may help demanding Sets." \
+    "Automatic chooses how many workers suit your CPU; Let Live decide uses Live's own setting, or enter 1–63 yourself." \
     'Automatic (Default)' 'Let Live decide' 'Enter a custom value from 1 to 63' \
     'Press Esc to go back'
 assert_adjacent_question "$fresh_transcript" '5/6 Real-time scheduling' \
-    'Automatic uses SCHED_RR only when permission already exists; it does not enable host RT privileges.' \
+    'Automatic uses higher CPU priority when allowed and Normal uses standard priority; neither changes permissions.' \
     'Automatic (Default)' 'Normal scheduling' \
     'Press Esc to go back'
 assert_adjacent_question "$fresh_transcript" '6/6 Power profile' \
-    "Performance or Balanced is held only while Live or Max runs; Don't change leaves the system profile alone." \
+    "Performance favors speed, Balanced saves power, and Don't change keeps the current mode while Live or Max is open." \
     'Performance (Default)' 'Balanced' "Don't change" \
     'Press Esc to go back'
 for semantic in \
     '1/6 Audio buffer' '2/6 Keyboard shortcuts' '3/6 Display scaling' \
     '4/6 Audio workers' '5/6 Real-time scheduling' '6/6 Power profile' \
-    'Lower values reduce monitoring delay; higher values give Live more time and reduce crackles.' \
-    'On GNOME, Assign to Live temporarily removes only conflicting desktop shortcuts and restores them when Live exits.' \
-    "Automatic follows the detected desktop scale; Preserve keeps Wine's current DPI registry values." \
-    "Automatic chooses a physical-core-based worker count; letting Live decide may help demanding Sets." \
-    'Automatic uses SCHED_RR only when permission already exists; it does not enable host RT privileges.' \
-    "Performance or Balanced is held only while Live or Max runs; Don't change leaves the system profile alone." \
+    'Lower numbers reduce audio delay; higher numbers are less likely to crackle.' \
+    'On GNOME, Assign to Live lets Live use conflicting desktop shortcuts until Live closes.' \
+    'Automatic matches your desktop; 100% is normal, Fractional suits scaled displays, and Preserve changes nothing.' \
+    "Automatic chooses how many workers suit your CPU; Let Live decide uses Live's own setting, or enter 1–63 yourself." \
+    'Automatic uses higher CPU priority when allowed and Normal uses standard priority; neither changes permissions.' \
+    "Performance favors speed, Balanced saves power, and Don't change keeps the current mode while Live or Max is open." \
     '64 frames' '128 frames (Default)' '256 frames' '512 frames' '1024 frames' \
     'Assign to Live (Default)' 'Preserve desktop shortcuts' '100%' 'Fractional' 'Preserve' \
     'Let Live decide' 'Enter a custom value from 1 to 63' 'Normal scheduling' \
@@ -478,6 +479,37 @@ if sed -n "1,${delegated_line}p" "$fresh_transcript" \
     fail "a seventh prompt or settings summary appears before delegation"
 fi
 ok "ACT-FRESH/NAV-ORDER/DEFAULTS: fresh Install asks six explained questions with 128 default"
+
+drive_delayed_choice()
+{
+    local out="$1" i
+    local -a questions=(
+        '2/6 Keyboard shortcuts' '3/6 Display scaling' '4/6 Audio workers'
+        '5/6 Real-time scheduling' '6/6 Power profile'
+    )
+    wait_for "$out" 'Choose an action:'; printf '\n'
+    wait_for "$out" '1/6 Audio buffer'
+    wait_for "$out" 'Press Esc to go back'
+    sleep 2
+    if grep -aqF '2/6 Keyboard shortcuts' "$out"; then
+        : > "$work/preflight-timed-out"
+        return
+    fi
+    printf '3\n'
+    for i in "${!questions[@]}"; do
+        wait_for "$out" "${questions[$i]}"
+        wait_for "$out" 'Press Esc to go back' "$((i + 2))"
+        printf '\n'
+    done
+    wait_for "$out" '@@DONE@@'
+}
+rm -f -- "$work/preflight-timed-out"
+PREFLIGHT_PROMPT_TIMEOUT=1 run_tty delayed-choice "$fresh" drive_delayed_choice
+[ ! -e "$work/preflight-timed-out" ] \
+    || fail "a pre-flight question advances when its old timer expires"
+[ "$(cat "$work/delayed-choice.args")" = 'install --audio-buffer=256' ] \
+    || fail "a pre-flight question does not accept an answer after its old timer expires"
+ok "NAV-NO-TIMEOUT: pre-flight questions wait until the user answers"
 
 # ACT-HEALTHY: custom configured prefixes count; a healthy install offers
 # Update/Reinstall/Remove/Quit, with Update as the default and no fresh Install.

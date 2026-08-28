@@ -309,4 +309,4 @@ echo
 echo "== [5/5] done =="
 echo "OK: $out ($(du -h "$out" | cut -f1))"
 echo "Copy it (plus your Ableton installer file) to a USB stick and run:"
-echo "  sh /run/media/*/*/ableton-wine-setup-${VERSION}.run install"
+echo "  sh /run/media/*/*/$(basename "$out") install"

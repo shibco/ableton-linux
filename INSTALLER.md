@@ -47,3 +47,15 @@ You can pass the same choices to `install` and `update`:
 | `--audio-threads=VALUE` | `auto`, `off`, or `1` to `63`. The default `auto` selects a worker count; `off` lets Live decide. |
 | `--rt=VALUE` | `auto` uses real-time scheduling when available; `off` uses normal scheduling. The default is `auto`. |
 | `--power=VALUE` | `performance`, `balanced`, or `off`. The default `performance` holds that profile during each Live or Max session. |
+
+## Logs and backups
+
+Everything the scripts print outside the installer display, including every
+`!!` error, goes to the log named at the end of the run. The log sits next to
+the `.run` file, or in your temporary directory when that folder is read-only.
+
+When files from an earlier installation already exist, the installer asks once
+whether to overwrite all, keep the originals, or abort. If you do not answer
+within five seconds, it overwrites them. Overwritten files move to a dated
+folder under `~/.local/state/ableton-wine/backups/` before the new files are
+written.
