@@ -397,6 +397,37 @@ render_action_options()
     esac
 }
 
+choose_uninstall_scope()
+{
+    local answer
+    while :; do
+        ui_blank; ui_heading m_uninstall_scope; ui_blank
+        ui_preflight_option m_uninstall_runtime default
+        ui_preflight_option m_uninstall_prefix plain
+        ui_preflight_option m_uninstall_all plain
+        ui_preflight_option m_uninstall_exit plain
+        ui_blank
+        ui_prompt m_uninstall_prompt
+        IFS= read -r answer || answer=""
+        log_event INFO menu "uninstall scope: ${answer:-(default)}"
+        answer="${answer,,}"
+        answer="${answer#"${answer%%[![:space:]]*}"}"
+        answer="${answer%"${answer##*[![:space:]]}"}"
+        case "$answer" in
+            ''|r|runtime|runtime\ only)
+                uninstall_scope=--keep-prefix; return 0 ;;
+            p|prefix|prefix\ only)
+                uninstall_scope=--prefix-only; return 0 ;;
+            a|all)
+                uninstall_scope=--delete-prefix; return 0 ;;
+            e|exit|q|quit|x)
+                return 10 ;;
+            *)
+                ui_note m_uninstall_unknown "$answer" ;;
+        esac
+    done
+}
+
 load_preflight_values()
 {
     local loaded buffer_file
@@ -594,6 +625,43 @@ if [ "$explicit_action" -eq 0 ]; then
         original_args=("$selected_action")
         break
     done
+fi
+
+# Uninstall scope is chosen while the self-extracting payload is still sealed.
+# An explicit scope remains untouched so the dispatcher can reject conflicts.
+if [ "$selected_action" = uninstall ]; then
+    launch_hint=0
+fi
+if [ "$selected_action" = uninstall ] && [ "$explicit_action" -eq 1 ]; then
+    uninstall_scope=""
+    uninstall_scope_present=0
+    for ((argument_index=1; argument_index < ${#original_args[@]}; argument_index++)); do
+        argument="${original_args[argument_index]}"
+        case "$argument" in
+            --keep-prefix|--prefix-only|--delete-prefix)
+                uninstall_scope_present=1 ;;
+            --prefix)
+                # Preserve the value-less legacy delete-prefix spelling. A
+                # following non-option is instead the configured prefix path.
+                next_argument="${original_args[argument_index + 1]:-}"
+                if [ -z "$next_argument" ] || [[ "$next_argument" = --* ]]; then
+                    uninstall_scope_present=1
+                fi ;;
+        esac
+    done
+    if [ "$uninstall_scope_present" -eq 0 ]; then
+        if [ -t 0 ]; then
+            choose_uninstall_scope || {
+                choose_rc=$?
+                [ "$choose_rc" -eq 10 ] || exit "$choose_rc"
+                cancelled=1
+                exit 0
+            }
+        else
+            uninstall_scope=--keep-prefix
+        fi
+        original_args=("${original_args[0]}" "$uninstall_scope" "${original_args[@]:1}")
+    fi
 fi
 
 case "$selected_action" in

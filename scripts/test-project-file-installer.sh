@@ -19,6 +19,7 @@ ok()
 }
 
 mkdir -p -- "$tmp/work"
+mkdir -p -- "$tmp/home" "$tmp/config" "$tmp/data" "$tmp/cache" "$tmp/run"
 cp -- "$here/lib/config.sh" "$tmp/work/new-a"
 cp -- "$here/lib/pipeasio.sh" "$tmp/work/new-b"
 cp -- "$here/lib/lifecycle.sh" "$tmp/work/old"
@@ -28,7 +29,12 @@ question='│  ├─ QUESTION: Some files from an earlier installation already 
 # file helpers are sourced, a step is open, and the answers arrive on stdin.
 run_loop()
 {
-    env ABLETON_UI_ACTION=install ABLETON_UI_KIT=1 TERM=xterm \
+    env -i PATH="$PATH" HOME="$tmp/home" TMPDIR="$tmp" \
+        LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+        XDG_CONFIG_HOME="$tmp/config" XDG_DATA_HOME="$tmp/data" \
+        XDG_CACHE_HOME="$tmp/cache" XDG_RUNTIME_DIR="$tmp/run" \
+        ABLETON_UI_ACTION=install ABLETON_UI_KIT=1 TERM=xterm \
+        ABLETON_SIMPLE_PROJECT_FILES=1 \
         ABLETON_UI_PROMPT_TIMEOUT="${PROMPT_TIMEOUT:-5}" "$@" bash -c '
         . "$1/lib/ui.sh"
         . "$1/lib/manifest.sh"
@@ -236,5 +242,72 @@ cmp -s -- "$tmp/work/old" "$copy_backup" || fail "copy failure backup changed"
 cmp -s -- "$tmp/work/new-b" "$tmp/work/after-copy-fail" || fail "copy failure prevented a later copy"
 grep -qF "$tmp/work/copy-fail" "$tmp/copy-fail.out" || fail "copy failure did not report the actual path"
 ok "copy failure is reported, left for manual recovery, and continues"
+
+# Publication replaces every historical runtime row with the configured
+# runtime while preserving valid non-runtime rows this invocation did not touch.
+publication="$tmp/publication"
+mkdir -p -- "$publication/home" "$publication/config" "$publication/data" \
+    "$publication/state" "$publication/cache" "$publication/run" \
+    "$publication/runtime-current"
+env -i PATH="$PATH" HOME="$publication/home" TMPDIR="$tmp" \
+    XDG_CONFIG_HOME="$publication/config" XDG_DATA_HOME="$publication/data" \
+    XDG_STATE_HOME="$publication/state" \
+    XDG_CACHE_HOME="$publication/cache" XDG_RUNTIME_DIR="$publication/run" \
+    ABLETON_WINE_ROOT="$publication/runtime-current" \
+    bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        . "$1/lib/manifest.sh"
+        ableton_config_init repair
+        ableton_mark_state_home
+
+        untouched="$ABLETON_DATA_HOME/detect-scale.sh"
+        added="$ABLETON_DATA_HOME/lib/config.sh"
+        outside="$HOME/not-an-ableton-output"
+        mkdir -p -- "$(dirname "$added")"
+        printf "untouched generation\n" > "$untouched"
+        printf "new generation\n" > "$added"
+        printf "foreign\n" > "$outside"
+        untouched_digest="$(sha256sum -- "$untouched")"
+        untouched_digest="${untouched_digest%% *}"
+        cat > "$ABLETON_STATE_HOME/install-manifest.tsv" <<EOF
+file	$untouched	$untouched_digest
+runtime	$HOME/stale-runtime-one	$ABLETON_RUNTIME_NAME
+runtime	$HOME/stale-runtime-two	$ABLETON_RUNTIME_NAME
+EOF
+        chmod 600 "$ABLETON_STATE_HOME/install-manifest.tsv"
+        ableton_validate_ownership_manifest
+        if ableton_record_owned "$outside" file; then
+            echo "outside path was accepted" >&2
+            exit 91
+        fi
+        ableton_record_owned "$added" file
+        ABLETON_RUNTIME_INSTALLED=1
+        ableton_write_ownership_manifest
+        ableton_validate_ownership_manifest
+    ' _ "$here" > "$publication/out" 2> "$publication/err" \
+    || { sed -n '1,40p' "$publication/err" >&2; fail "ownership manifest publication failed"; }
+publication_manifest="$publication/state/ableton-wine/install-manifest.tsv"
+[ -f "$publication_manifest" ] || fail "ownership manifest was not published"
+untouched="$publication/data/ableton-wine/detect-scale.sh"
+added="$publication/data/ableton-wine/lib/config.sh"
+untouched_digest="$(sha256sum -- "$untouched" | awk '{print $1}')"
+added_digest="$(sha256sum -- "$added" | awk '{print $1}')"
+grep -qxF "$(printf 'file\t%s\t%s' "$untouched" "$untouched_digest")" \
+    "$publication_manifest" \
+    || fail "publication dropped an untouched allowed non-runtime row"
+grep -qxF "$(printf 'file\t%s\t%s' "$added" "$added_digest")" \
+    "$publication_manifest" \
+    || fail "publication omitted the newly owned file"
+[ "$(awk -F '\t' '$1=="runtime" { n++ } END { print n+0 }' \
+        "$publication_manifest")" -eq 1 ] \
+    || fail "publication did not reduce runtime ownership to one row"
+awk -F '\t' -v p="$publication/runtime-current" \
+    '$1=="runtime" && $2==p && NF==3 { found=1 } END { exit !found }' \
+    "$publication_manifest" \
+    || fail "publication did not record the configured runtime"
+! grep -qF "$publication/home/stale-runtime-" "$publication_manifest" \
+    || fail "publication retained a stale runtime row"
+ok "publication keeps untouched files and replaces stale runtimes with one configured row"
 
 echo "All project-file installer tests passed."

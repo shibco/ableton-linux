@@ -81,6 +81,34 @@ stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 ABLETON_PROJECT_ASSUME_YES="$assume_yes"
 export ABLETON_PROJECT_ASSUME_YES
 
+# The library's project-file helpers intentionally implement the manual,
+# dated-backup workflow used by direct tools and its focused tests. Public
+# installation instead publishes each fixed output atomically and records
+# ownership only after that publication succeeds.
+ableton_install_project_file()
+{
+    local mode="$1" source="$2" target="$3" kind="${4:-file}"
+    local prestate_policy="${5:-preserve-local}"
+    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
+    if ! ableton_install_file "$mode" "$source" "$target" "$kind" "$prestate_policy"; then
+        echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    fi
+    return 0
+}
+
+ableton_install_project_symlink()
+{
+    local source="$1" target="$2"
+    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
+    if { [ ! -e "$source" ] && [ ! -L "$source" ]; } \
+       || ! ableton_install_symlink "$source" "$target"; then
+        echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    fi
+    return 0
+}
+
 if [ "$operation" != install ] || { [ "$validate_only" -eq 0 ] && [ "$dry_run" -eq 0 ]; }; then
     ableton_install_lock_acquire
 fi
@@ -389,6 +417,7 @@ stage=""
 component_commit_started=0
 runtime_core_committed=0
 optional_files_ready=0
+manifest_publication_failed=0
 cleanup_preview_scratch()
 {
     local stage_name=""
@@ -435,7 +464,7 @@ cleanup()
         restore_error="temporary runtime cleanup failed"
         rc=1
     fi
-    if [ "$rc" -ne 0 ] \
+    if [ "$rc" -ne 0 ] && [ "$manifest_publication_failed" -eq 0 ] \
        && { [ "$runtime_core_committed" -eq 1 ] || [ "$optional_files_ready" -eq 1 ]; }; then
         if [ "$runtime_core_committed" -eq 1 ]; then
             echo "!! Wine is ready. Run the installer again to retry shortcuts or Ableton Link files." >&2 || true
@@ -932,7 +961,7 @@ install_integration()
         fi
         if [ -n "$mime_stage" ] && [ -f "$mime_stage/mimeapps.list" ]; then
             mime_failures_before="$ABLETON_OPTIONAL_FILE_FAILURES"
-            ableton_install_project_file 644 "$mime_stage/mimeapps.list" "$mimeapps_file"
+            ableton_install_project_file 644 "$mime_stage/mimeapps.list" "$mimeapps_file" config
             [ "$ABLETON_OPTIONAL_FILE_FAILURES" -eq "$mime_failures_before" ] \
                 || mime_setup_ok=0
         fi
@@ -1029,7 +1058,7 @@ install_link_assets()
     if [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] \
        && tmp="$(mktemp "${TMPDIR:-/tmp}/ableton-link-service.XXXXXX")" \
        && render_link_unit > "$tmp"; then
-        ableton_install_project_file 644 "$tmp" "$installed_unit"
+        ableton_install_project_file 644 "$tmp" "$installed_unit" config
     elif [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ]; then
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
         echo "!! copy failed: generated Ableton Link service -> $installed_unit" >&2 || true
@@ -1144,6 +1173,19 @@ if [ "$postcommit_runtime_panel" -eq 1 ]; then
                 || true ;;
     esac
 fi
+
+# The installed-file list is the final publication for every public component
+# run. It always names the configured runtime once, while file/config/symlink
+# rows come only from successful fixed-path publications above.
+ABLETON_RUNTIME_INSTALLED=1
+export ABLETON_RUNTIME_INSTALLED
+if ! ableton_write_ownership_manifest; then
+    manifest_publication_failed=1
+    echo "!! Ableton was installed, but its installed-file list could not be published." >&2 \
+        || true
+    exit 1
+fi
+
 if [ "$ABLETON_OPTIONAL_FILES_BACKED_UP" -gt 0 ]; then
     ui_status i_backed_up_files "$ABLETON_OPTIONAL_FILES_BACKED_UP"
 fi

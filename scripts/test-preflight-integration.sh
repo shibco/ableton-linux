@@ -1155,7 +1155,7 @@ ok "UNINSTALL/PACKAGING: mutable data is checked separately and support ships on
 # DOCS: user-facing command documentation names every flag, its values, the
 # confirmed 128 default, persistence, and Escape navigation.
 for flag in audio-buffer shortcuts dpi audio-threads rt power; do
-    rg -q -- "--$flag" "$root/INSTALLER.md" "$root/README.md" \
+    grep -q -- "--$flag" "$root/INSTALLER.md" "$root/README.md" \
         || fail "documentation omits --$flag"
 done
 for allowed_values in \
@@ -1165,7 +1165,7 @@ for allowed_values in \
     'auto.*off.*1.*63|Automatic.*Let Live decide.*1.*63' \
     'rt.*auto.*off|Real-time.*Automatic.*Normal' \
     'power.*performance.*balanced.*off|Power.*Performance.*Balanced.*change'; do
-    rg -qi "$allowed_values" "$root/INSTALLER.md" "$root/README.md" \
+    grep -Eqi -- "$allowed_values" "$root/INSTALLER.md" "$root/README.md" \
         || fail "documentation omits allowed values matching: $allowed_values"
 done
 rg -qi '128.*default|default.*128' "$root/INSTALLER.md" "$root/README.md" \

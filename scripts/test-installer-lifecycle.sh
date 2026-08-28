@@ -670,6 +670,66 @@ run_isolated "$base" bash "$here/installer.sh" uninstall --yes > "$base/out" 2> 
     || fail "uninstall.sh closes its step exactly once (exit $status)"
 ok "the uninstall handover keeps one step open at a time"
 
+# The dispatcher normalizes every uninstall request to exactly one scope flag.
+# All three pairwise conflicts are rejected before uninstall.sh can run.
+base="$(new_env uninstall-scope-dispatch)"
+dispatcher="$base/dispatcher"
+mkdir -p -- "$dispatcher"
+cp -- "$here/installer.sh" "$dispatcher/installer.sh"
+cp -a -- "$here/lib" "$dispatcher/lib"
+cat > "$dispatcher/uninstall.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+: > "${ABLETON_TEST_UNINSTALL_HANDOFF:?}"
+for argument do
+    printf '%s\n' "$argument" >> "$ABLETON_TEST_UNINSTALL_HANDOFF"
+done
+EOF
+chmod +x "$dispatcher/uninstall.sh"
+
+assert_uninstall_scope_handoff()
+{
+    local name="$1" expected="$2"
+    shift 2
+    rm -f -- "$base/handoff"
+    run_isolated "$base" env ABLETON_TEST_UNINSTALL_HANDOFF="$base/handoff" \
+        bash "$dispatcher/installer.sh" uninstall "$@" \
+        >"$base/$name.out" 2>"$base/$name.err" \
+        || fail "$name was rejected before the uninstall handoff"
+    mapfile -t handed_off < "$base/handoff"
+    [ "${#handed_off[@]}" -eq 1 ] && [ "${handed_off[0]}" = "$expected" ] \
+        || fail "$name did not hand off exactly one normalized scope flag"
+}
+
+assert_uninstall_scope_handoff no-flag --keep-prefix
+assert_uninstall_scope_handoff keep-prefix --keep-prefix --keep-prefix
+assert_uninstall_scope_handoff prefix-only --prefix-only --prefix-only
+assert_uninstall_scope_handoff delete-prefix --delete-prefix --delete-prefix
+
+assert_uninstall_scope_conflict()
+{
+    local name="$1"
+    shift
+    local status=0
+    rm -f -- "$base/handoff"
+    run_isolated "$base" env ABLETON_TEST_UNINSTALL_HANDOFF="$base/handoff" \
+        bash "$dispatcher/installer.sh" uninstall "$@" \
+        >"$base/$name.out" 2>"$base/$name.err" || status=$?
+    [ "$status" -eq 2 ] || fail "$name did not return the parse-error status"
+    grep -qi 'conflict' "$base/$name.err" \
+        || fail "$name was not identified as a scope conflict"
+    [ ! -e "$base/handoff" ] \
+        || fail "$name reached uninstall.sh before its conflict was rejected"
+}
+
+assert_uninstall_scope_conflict keep-prefix-prefix-only \
+    --keep-prefix --prefix-only
+assert_uninstall_scope_conflict keep-prefix-delete-prefix \
+    --keep-prefix --delete-prefix
+assert_uninstall_scope_conflict prefix-only-delete-prefix \
+    --prefix-only --delete-prefix
+ok "uninstall dispatch normalizes three exclusive scopes and rejects every pair"
+
 base="$(new_env conflict)"
 if run_isolated "$base" bash "$here/installer.sh" install --no-link --link=off --skip-live-install >"$base/out" 2>"$base/err"; then
     fail "conflicting Link options fail"
@@ -1974,162 +2034,206 @@ if run_isolated "$base" bash -c '
 fi
 ok "fresh Wine setup falls back to 100% only for automatic display detection"
 
-# Optional project files use one fixed, deliberately simple mapping rule.
-# Existing destinations are handled only by the user's Overwrite/Overwrite all/Keep/Abort
-# choice. Replaced objects move into one inert, dated backup tree for the run.
+# Public integration publishes the exact successful outputs it owns. The
+# low-level manual-backup path has its separate focused helper suite.
+prepare_manifest_integration_fixture()
+{
+    local fixture="$1"
+    mkdir -p -- "$fixture/runtime/bin" \
+        "$fixture/runtime/share/applications" \
+        "$fixture/runtime/share/icons/hicolor/scalable/apps" \
+        "$fixture/fakebin"
+    cat > "$fixture/runtime/bin/pipeasio-settings" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+    chmod +x "$fixture/runtime/bin/pipeasio-settings"
+    cat > "$fixture/runtime/share/applications/pipeasio-settings.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=PipeASIO Settings
+Exec=pipeasio-settings
+Icon=pipeasio
+EOF
+    printf '<svg xmlns="http://www.w3.org/2000/svg"/>\n' \
+        > "$fixture/runtime/share/icons/hicolor/scalable/apps/pipeasio.svg"
+    printf 'pipeasio-panel: built\n' \
+        > "$fixture/runtime/ABLETON-WINE-BUILD-INFO.txt"
+    printf '#!/bin/sh\nexit 0\n' > "$fixture/external-linkd"
+    chmod +x "$fixture/external-linkd"
+    cat > "$fixture/fakebin/xdg-mime" <<'EOF'
+#!/bin/sh
+set -eu
+[ "${1:-}" = default ] && [ "$#" -ge 3 ] || exit 2
+desktop="$2"
+shift 2
+file="${XDG_CONFIG_HOME:?}/mimeapps.list"
+mkdir -p -- "$(dirname "$file")"
+[ -e "$file" ] || printf '[Default Applications]\n' > "$file"
+for type do
+    grep -qF "$type=" "$file" || printf '%s=%s\n' "$type" "$desktop" >> "$file"
+done
+EOF
+    printf '#!/bin/sh\nexit 0\n' > "$fixture/fakebin/update-mime-database"
+    printf '#!/bin/sh\nexit 0\n' > "$fixture/fakebin/update-desktop-database"
+    chmod +x "$fixture/fakebin/xdg-mime" \
+        "$fixture/fakebin/update-mime-database" \
+        "$fixture/fakebin/update-desktop-database"
+}
 
-base="$(new_env project-file-overwrite)"
-project_target="$base/data/ableton-wine/lib/config.sh"
-mkdir -p -- "$(dirname "$project_target")"
-printf 'original project destination\n' > "$project_target"
-printf 'o\n' | run_isolated "$base" bash "$here/install.sh" --integration-only \
-    >"$base/out" 2>"$base/err" \
-    || fail "Overwrite did not complete project-file deployment"
-cmp -s -- "$here/lib/config.sh" "$project_target" \
-    || fail "Overwrite did not install the selected project file"
-grep -qxF "$project_target exists." "$base/err" \
-    || fail "existing project destination prompt did not name its target"
-grep -qF '│  ├─ QUESTION: Some files from an earlier installation already exist.' "$base/out" \
-    || fail "existing project destination did not show the overwrite choices"
-backup_root="$base/state/ableton-wine/backups"
-project_backup="$(find "$backup_root" -type f -name 'config.sh.bak-*' -print -quit 2>/dev/null || true)"
-[ -n "$project_backup" ] \
-    || fail "Overwrite did not create a central project-file backup"
-grep -qxF 'original project destination' "$project_backup" \
-    || fail "central project-file backup does not contain the displaced file"
-printf '%s\n' "$(basename "$project_backup")" \
-    | grep -Eq '^config[.]sh[.]bak-[0-9]{8}T[0-9]{6}Z$' \
-    || fail "project-file backup does not have the required dated name"
-[ "$(find "$backup_root" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ] \
-    || fail "one project-file deployment created more than one run directory"
-[ ! -e "$project_target.bak" ] && [ ! -L "$project_target.bak" ] \
-    || fail "project-file deployment created an adjacent backup"
-[ ! -e "$base/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/state/ableton-wine/install-prestate.tsv" ] \
-    && [ ! -e "$base/state/ableton-wine/install-prestate" ] \
-    || fail "project-file deployment created persistent ownership or prestate data"
-cp -- "$project_backup" "$base/first-project-backup.before"
-run_isolated "$base" bash "$here/install.sh" --integration-only --yes \
-    >"$base/update.out" 2>"$base/update.err" \
-    || fail "a second project-file deployment failed"
-cmp -s -- "$base/first-project-backup.before" "$project_backup" \
-    || fail "a later run reconsidered or changed an inert backup"
-[ "$(find "$backup_root" -type f -name 'config.sh.bak-*' | wc -l)" -eq 2 ] \
-    || fail "an unchanged existing destination was not backed up on the next run"
-[ "$(find "$backup_root" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 2 ] \
-    || fail "separate deployments did not use separate per-run backup directories"
-ok "Overwrite moves each existing destination into one inert dated run backup"
+run_manifest_integration()
+{
+    local fixture="$1"
+    shift
+    run_isolated "$fixture" env PATH="$fixture/fakebin:$PATH" \
+        ABLETON_WINE_ROOT="$fixture/runtime" \
+        ABLETON_LINKD="$fixture/external-linkd" "$@" \
+        bash "$here/install.sh" --integration-only --link-assets-only --yes
+}
 
-base="$(new_env project-file-keep)"
-project_target="$base/data/ableton-wine/lib/config.sh"
-next_project_target="$base/data/ableton-wine/lib/lifecycle.sh"
-mkdir -p -- "$(dirname "$project_target")"
-printf 'keep this destination\n' > "$project_target"
-printf 'k\n' | run_isolated "$base" bash "$here/install.sh" --integration-only \
-    >"$base/out" 2>"$base/err" \
-    || fail "Keep stopped the remaining project-file mappings"
-grep -qxF 'keep this destination' "$project_target" \
-    || fail "Keep changed the selected destination"
-cmp -s -- "$here/lib/lifecycle.sh" "$next_project_target" \
-    || fail "Keep prevented the next project file from being installed"
-grep -qF "Kept existing file unchanged: $project_target." "$base/out" \
-    || fail "Keep did not report the destination it kept"
-if find "$base/state/ableton-wine/backups" -type f -name 'config.sh.bak-*' \
-        -print -quit 2>/dev/null | grep -q .; then
-    fail "Keep created a backup for an untouched destination"
+validate_manifest_integration_state()
+{
+    local fixture="$1"
+    run_isolated "$fixture" env ABLETON_WINE_ROOT="$fixture/runtime" \
+        ABLETON_LINKD="$fixture/external-linkd" bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        . "$1/lib/manifest.sh"
+        ableton_config_init repair
+        ableton_validate_ownership_manifest
+        ableton_validate_prestate_store
+    ' _ "$here"
+}
+
+assert_published_object()
+{
+    local manifest="$1" kind="$2" path="$3" digest="$4" description="$5"
+    local row
+    row="$(printf '%s\t%s\t%s' "$kind" "$path" "$digest")"
+    [ "$(grep -cFx -- "$row" "$manifest")" -eq 1 ] \
+        || fail "$description is not published once with its exact digest"
+}
+
+base="$(new_env manifest-integration)"
+prepare_manifest_integration_fixture "$base"
+unit="$base/config/systemd/user/ableton-linkd.service"
+mimeapps="$base/config/mimeapps.list"
+mkdir -p -- "$(dirname "$unit")"
+printf 'foreign generated-unit destination\n' > "$unit"
+cp -- "$unit" "$base/foreign-unit.before"
+printf '[Default Applications]\ntext/plain=foreign.desktop\n' > "$mimeapps"
+run_manifest_integration "$base" >"$base/out" 2>"$base/err" \
+    || { sed -n '1,60p' "$base/err" >&2; fail "integration inventory was not published"; }
+manifest="$base/state/ableton-wine/install-manifest.tsv"
+prestate="$base/state/ableton-wine/install-prestate.tsv"
+[ -f "$manifest" ] && [ ! -L "$manifest" ] \
+    || fail "integration did not publish a regular ownership manifest"
+validate_manifest_integration_state "$base" \
+    || fail "integration published invalid manifest or prestate data"
+
+project_file="$base/data/ableton-wine/lib/config.sh"
+project_digest="$(sha256sum -- "$project_file" | awk '{print $1}')"
+assert_published_object "$manifest" file "$project_file" "$project_digest" \
+    "a successful project file"
+
+panel_link="$base/home/.local/bin/pipeasio-settings"
+panel_target="$base/runtime/bin/pipeasio-settings"
+panel_digest="$({ printf 'symlink\0'; printf '%s' "$panel_target"; } \
+    | sha256sum | awk '{print $1}')"
+[ -L "$panel_link" ] && [ "$(readlink -- "$panel_link")" = "$panel_target" ] \
+    || fail "integration did not create the PipeASIO symlink fixture"
+assert_published_object "$manifest" symlink "$panel_link" "$panel_digest" \
+    "a successful project symlink"
+
+mime_digest="$(sha256sum -- "$mimeapps" | awk '{print $1}')"
+unit_digest="$(sha256sum -- "$unit" | awk '{print $1}')"
+assert_published_object "$manifest" config "$mimeapps" "$mime_digest" \
+    "the MIME application configuration"
+assert_published_object "$manifest" config "$unit" "$unit_digest" \
+    "the generated systemd unit"
+
+unit_id="$(printf '%s' "$unit" | sha256sum | awk '{print $1}')"
+unit_backup="$base/state/ableton-wine/install-prestate/$unit_id"
+grep -qxF "$(printf 'present\t%s\t%s' "$unit" "$unit_backup")" "$prestate" \
+    || fail "the first foreign systemd unit is not indexed as pre-install state"
+cmp -s -- "$base/foreign-unit.before" "$unit_backup" \
+    || fail "the saved first foreign systemd unit changed"
+cp -- "$prestate" "$base/prestate.before"
+cp -a -- "$unit_backup" "$base/unit-backup.before"
+printf 'user edit after the first managed generation\n' > "$unit"
+run_manifest_integration "$base" >"$base/update.out" 2>"$base/update.err" \
+    || fail "a second integration publication failed"
+if ! cmp -s -- "$base/prestate.before" "$prestate" \
+   || ! cmp -s -- "$base/unit-backup.before" "$unit_backup"; then
+    fail "a later integration replaced the first saved foreign object"
 fi
-ok "Keep leaves one destination unchanged and continues the fixed mapping list"
+validate_manifest_integration_state "$base" \
+    || fail "updated integration state is invalid"
+ok "integration publishes exact file, config and symlink outputs and keeps first prestate"
 
-base="$(new_env project-file-cancel)"
-project_target="$base/data/ableton-wine/lib/config.sh"
-next_project_target="$base/data/ableton-wine/lib/lifecycle.sh"
-mkdir -p -- "$(dirname "$project_target")"
-printf 'cancel before this destination\n' > "$project_target"
-cancel_status=0
-printf 'a\n' | run_isolated "$base" bash "$here/install.sh" --integration-only \
-    >"$base/out" 2>"$base/err" || cancel_status=$?
-[ "$cancel_status" -eq 4 ] \
-    || fail "Abort did not return the dedicated optional-work status"
-grep -qxF 'cancel before this destination' "$project_target" \
-    || fail "Abort changed the selected destination"
-[ ! -e "$next_project_target" ] && [ ! -L "$next_project_target" ] \
-    || fail "Abort did not stop the remaining project-file mappings"
-grep -qF "cancelled before replacing $project_target" "$base/err" \
-    || fail "Abort did not report the destination where it stopped"
-ok "Abort leaves the destination untouched and stops optional deployment"
-
-base="$(new_env project-file-backup-failure)"
-project_target="$base/data/ableton-wine/lib/config.sh"
-next_project_target="$base/data/ableton-wine/lib/lifecycle.sh"
-mkdir -p -- "$(dirname "$project_target")" "$base/fakebin"
-printf 'destination survives failed backup\n' > "$project_target"
-cat > "$base/fakebin/mv" <<'EOF'
+# One failed output is omitted while independent successes are still published;
+# the public optional-status path makes that partial failure observable.
+base="$(new_env manifest-output-failure)"
+prepare_manifest_integration_fixture "$base"
+cat > "$base/fakebin/cp" <<'EOF'
 #!/bin/sh
 for argument do
-    [ "$argument" != "${ABLETON_TEST_FAIL_BACKUP_SOURCE:?}" ] || exit 73
+    [ "$argument" != "${ABLETON_TEST_FAIL_SOURCE:?}" ] || exit 74
 done
-exec /usr/bin/mv "$@"
+exec /usr/bin/cp "$@"
 EOF
-chmod 755 "$base/fakebin/mv"
-backup_status=0
-run_isolated "$base" env PATH="$base/fakebin:$PATH" \
-    ABLETON_TEST_FAIL_BACKUP_SOURCE="$project_target" \
+cat > "$base/fakebin/install" <<'EOF'
+#!/bin/sh
+for argument do
+    [ "$argument" != "${ABLETON_TEST_FAIL_SOURCE:?}" ] || exit 74
+done
+exec /usr/bin/install "$@"
+EOF
+chmod +x "$base/fakebin/cp" "$base/fakebin/install"
+partial_status=0
+run_manifest_integration "$base" \
+    ABLETON_TEST_FAIL_SOURCE="$here/lib/lifecycle.sh" \
     ABLETON_INTERNAL_OPTIONAL_STATUS=1 \
-    bash "$here/install.sh" --integration-only --yes \
-    >"$base/out" 2>"$base/err" || backup_status=$?
-[ "$backup_status" -eq 3 ] \
-    || fail "backup failure did not return the optional retry status"
-grep -qxF 'destination survives failed backup' "$project_target" \
-    || fail "backup failure changed its destination"
-cmp -s -- "$here/lib/lifecycle.sh" "$next_project_target" \
-    || fail "backup failure prevented later project-file copies"
-grep -qF "backup failed; left destination untouched: $project_target ->" "$base/err" \
-    || fail "backup failure did not name the untouched destination"
-ok "backup failure leaves that destination untouched and continues"
+    >"$base/out" 2>"$base/err" || partial_status=$?
+[ "$partial_status" -eq 3 ] \
+    || fail "a failed project output did not return the optional retry status"
+manifest="$base/state/ableton-wine/install-manifest.tsv"
+validate_manifest_integration_state "$base" \
+    || fail "a partial integration published invalid state"
+successful_target="$base/data/ableton-wine/lib/config.sh"
+failed_target="$base/data/ableton-wine/lib/lifecycle.sh"
+grep -qF "$(printf 'file\t%s\t' "$successful_target")" "$manifest" \
+    || fail "a successful output was lost after another output failed"
+! grep -qF "$(printf '\t%s\t' "$failed_target")" "$manifest" \
+    || fail "a failed output was recorded as installed"
+ok "partial integration records only successful outputs and returns nonzero"
 
-base="$(new_env project-file-copy-failure)"
-project_target="$base/data/ableton-wine/lib/config.sh"
-next_project_target="$base/data/ableton-wine/lib/lifecycle.sh"
-mkdir -p -- "$(dirname "$project_target")" "$base/fakebin"
-printf 'move this before the failed copy\n' > "$project_target"
-cat > "$base/fakebin/cp" <<'EOF'
+# Publication itself is atomic: a failed final rename is nonzero and leaves the
+# last validated generation byte-for-byte intact.
+base="$(new_env manifest-publication-failure)"
+prepare_manifest_integration_fixture "$base"
+run_manifest_integration "$base" >"$base/first.out" 2>"$base/first.err" \
+    || fail "manifest publication fixture did not complete its first generation"
+manifest="$base/state/ableton-wine/install-manifest.tsv"
+cp -- "$manifest" "$base/manifest.before"
+cat > "$base/fakebin/mv" <<'EOF'
 #!/bin/sh
 last=""
 for argument do last="$argument"; done
-[ "$last" != "${ABLETON_TEST_FAIL_COPY_TARGET:?}" ] || exit 74
-exec /usr/bin/cp "$@"
+[ "$last" != "${ABLETON_TEST_FAIL_MANIFEST:?}" ] || exit 73
+exec /usr/bin/mv "$@"
 EOF
-chmod 755 "$base/fakebin/cp"
-copy_status=0
-run_isolated "$base" env PATH="$base/fakebin:$PATH" \
-    ABLETON_TEST_FAIL_COPY_TARGET="$project_target" \
-    ABLETON_INTERNAL_OPTIONAL_STATUS=1 \
-    bash "$here/install.sh" --integration-only --yes \
-    >"$base/out" 2>"$base/err" || copy_status=$?
-[ "$copy_status" -eq 3 ] \
-    || fail "copy failure did not return the optional retry status"
-[ ! -e "$project_target" ] && [ ! -L "$project_target" ] \
-    || fail "copy failure automatically restored the displaced destination"
-copy_backup="$(find "$base/state/ableton-wine/backups" -type f \
-    -name 'config.sh.bak-*' -print -quit 2>/dev/null || true)"
-if [ -z "$copy_backup" ] \
-   || ! grep -qxF 'move this before the failed copy' "$copy_backup"; then
-    fail "copy failure did not leave the inert manual backup in place"
-fi
-cmp -s -- "$here/lib/lifecycle.sh" "$next_project_target" \
-    || fail "copy failure prevented later project-file copies"
-grep -qF "copy failed: $here/lib/config.sh -> $project_target" "$base/err" \
-    || fail "copy failure did not report the actual source and destination"
-[ ! -e "$base/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/state/ableton-wine/install-prestate.tsv" ] \
-    && [ ! -e "$base/state/ableton-wine/install-prestate" ] \
-    || fail "copy failure created persistent recovery bookkeeping"
-if [ -d "$base/state/ableton-wine/transactions" ] \
-   && find "$base/state/ableton-wine/transactions" -mindepth 1 -print -quit \
-        | grep -q .; then
-    fail "copy failure created an optional transaction journal"
-fi
-ok "copy failure names the path, continues, and never restores completed work"
+chmod +x "$base/fakebin/mv"
+publication_status=0
+run_manifest_integration "$base" ABLETON_TEST_FAIL_MANIFEST="$manifest" \
+    >"$base/out" 2>"$base/err" || publication_status=$?
+[ "$publication_status" -ne 0 ] \
+    || fail "a failed manifest publication was reported as success"
+cmp -s -- "$base/manifest.before" "$manifest" \
+    || fail "a failed manifest publication changed the live generation"
+validate_manifest_integration_state "$base" \
+    || fail "a failed publication left invalid live state"
+ok "manifest publication failure is nonzero and preserves the prior valid generation"
 
 base="$(new_env uninstall-safety)"
 if run_isolated "$base" env ABLETON_WINEPREFIX=/ ABLETON_WINE_ROOT="$base/runtime" \

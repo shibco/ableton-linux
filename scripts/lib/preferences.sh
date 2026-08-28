@@ -484,9 +484,14 @@ ableton_preferences_write()
 ableton_preferences_remove()
 {
     local path="${1:?preference path is required}" expected="${2:?generation token is required}"
+    local remover="${3:-}"
     ableton_preferences_valid "$path" || return 1
     _ableton_token_matches "$path" "$expected" || return 1
-    rm -f -- "$path"
+    if [ -n "$remover" ]; then
+        "$remover" "$path"
+    else
+        rm -f -- "$path"
+    fi
 }
 
 _ableton_pipeasio_analyse()

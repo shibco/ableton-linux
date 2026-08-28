@@ -41,7 +41,7 @@ Usage:
   installer prefix create|update [--prefix PATH] [--live-major 11|12] [--dry-run]
   installer prefix repair-live11 [--prefix PATH] [--dry-run]
   installer link enable [--mode=session|always] | disable | status
-  installer uninstall [--keep-prefix|--delete-prefix] [--yes] [--dry-run]
+  installer uninstall [--keep-prefix|--prefix-only|--delete-prefix] [--yes] [--dry-run]
   installer plan COMMAND ...
 
 Compatibility aliases (deprecated, conflicts are errors):
@@ -74,6 +74,7 @@ cli_link=""
 link_mode_option=""
 delete_prefix=0
 keep_prefix=0
+prefix_only=0
 compat_mode=""
 compat_link=""
 compat_no_launch=0
@@ -179,6 +180,7 @@ while [ $# -gt 0 ]; do
         --yes|-y) assume_yes=1 ;;
         --dry-run) dry_run=1 ;;
         --keep-prefix) keep_prefix=1 ;;
+        --prefix-only) prefix_only=1 ;;
         --delete-prefix) delete_prefix=1 ;;
         --runtime-only)
             [ -z "$compat_mode" ] || { echo "!! conflicting compatibility mode flags" >&2; exit 2; }
@@ -257,7 +259,14 @@ esac
     echo "!! --link needs off, session, always, or keep" >&2; exit 2; }
 [ "$mode_seen" -eq 0 ] || [ -n "$link_mode_option" ] || {
     echo "!! --mode needs session or always" >&2; exit 2; }
-[ "$delete_prefix" -eq 0 ] || [ "$keep_prefix" -eq 0 ] || { echo "!! --keep-prefix and --delete-prefix conflict" >&2; exit 2; }
+uninstall_scope_count=$((delete_prefix + keep_prefix + prefix_only))
+[ "$uninstall_scope_count" -le 1 ] || {
+    echo "!! --keep-prefix, --prefix-only, and --delete-prefix conflict" >&2
+    exit 2
+}
+if [ "$command_name" = uninstall ] && [ "$uninstall_scope_count" -eq 0 ]; then
+    keep_prefix=1
+fi
 case "$cli_major" in ''|11|12) ;; *) echo "!! --live-major must be 11 or 12" >&2; exit 2 ;; esac
 case "$cli_link" in ''|off|session|always|keep) ;; *) echo "!! --link must be off, session, always, or keep" >&2; exit 2 ;; esac
 case "$link_mode_option" in ''|session|always) ;; *) echo "!! --mode must be session or always" >&2; exit 2 ;; esac
@@ -317,33 +326,33 @@ fi
 # rejected here instead of becoming order-dependent or silent no-ops.
 case "$command_name:$subcommand" in
     install:)
-        [ "$delete_prefix$keep_prefix" = 00 ] || invalid_option "prefix-retention options"
+        [ "$delete_prefix$keep_prefix$prefix_only" = 000 ] || invalid_option "prefix-retention options"
         [ -z "$link_mode_option" ] || invalid_option --mode ;;
     update:)
         [ -z "$live_payload" ] || invalid_option --live-installer
         [ "$skip_live" -eq 0 ] || invalid_option --skip-live-install
-        [ "$delete_prefix$keep_prefix" = 00 ] || invalid_option "prefix-retention options"
+        [ "$delete_prefix$keep_prefix$prefix_only" = 000 ] || invalid_option "prefix-retention options"
         [ -z "$link_mode_option" ] || invalid_option --mode ;;
     runtime:install)
         [ -z "$live_payload$cli_prefix$cli_major$cli_link$link_mode_option" ] || invalid_option "non-runtime options"
-        [ "$skip_live$delete_prefix$keep_prefix" = 000 ] || invalid_option "non-runtime options" ;;
+        [ "$skip_live$delete_prefix$keep_prefix$prefix_only" = 0000 ] || invalid_option "non-runtime options" ;;
     prefix:create|prefix:update)
         [ -z "$live_payload$cli_link$link_mode_option" ] || invalid_option "non-prefix options"
-        [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] || invalid_option "non-prefix options" ;;
+        [ "$skip_live$delete_prefix$keep_prefix$prefix_only$assume_yes" = 00000 ] || invalid_option "non-prefix options" ;;
     prefix:repair-live11)
         [ -z "$live_payload$cli_runtime$cli_major$cli_link$link_mode_option" ] \
             || invalid_option "non-repair options"
-        [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] \
+        [ "$skip_live$delete_prefix$keep_prefix$prefix_only$assume_yes" = 00000 ] \
             || invalid_option "non-repair options" ;;
     link:enable)
         if [ -n "$cli_link" ] && { [ "$explicit_command" -eq 1 ] || [ "$compat_link" != session ]; }; then
             invalid_option --link
         fi
         [ -z "$live_payload$cli_prefix$cli_runtime$cli_major" ] || invalid_option "non-Link options"
-        [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] || invalid_option "non-Link options" ;;
+        [ "$skip_live$delete_prefix$keep_prefix$prefix_only$assume_yes" = 00000 ] || invalid_option "non-Link options" ;;
     link:disable|link:status)
         [ -z "$live_payload$cli_prefix$cli_runtime$cli_major$cli_link$link_mode_option" ] || invalid_option options
-        [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] || invalid_option options ;;
+        [ "$skip_live$delete_prefix$keep_prefix$prefix_only$assume_yes" = 00000 ] || invalid_option options ;;
     uninstall:)
         [ -z "$live_payload$cli_major$cli_link$link_mode_option" ] || invalid_option "non-uninstall options"
         [ "$skip_live" -eq 0 ] || invalid_option --skip-live-install ;;
@@ -706,6 +715,7 @@ case "$command_name:$subcommand" in
         args=()
         [ "$delete_prefix" -eq 0 ] || args+=(--delete-prefix)
         [ "$keep_prefix" -eq 0 ] || args+=(--keep-prefix)
+        [ "$prefix_only" -eq 0 ] || args+=(--prefix-only)
         [ "$assume_yes" -eq 0 ] || args+=(--yes)
         [ "$dry_run" -eq 0 ] || args+=(--dry-run)
         ui_step_end ok

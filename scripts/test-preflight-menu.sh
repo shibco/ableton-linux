@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PTY contract for the state-aware action menu and six sequential pre-flight
+# PTY coverage for the state-aware action menu and six sequential pre-flight
 # questions. Behaviour IDs map to notes/PREFLIGHT-SETTINGS-TEST-MATRIX.md.
 set -euo pipefail
 
@@ -65,6 +65,17 @@ tar -cf "$work/payload.tar" -C "$kit" .
 cat "$work/payload.tar" >> "$work/installer.run"
 chmod +x "$work/installer.run"
 
+# A cancelled uninstall scope must return before the self-extracting wrapper
+# asks tar to unpack anything. Delegated cases still use the real tar.
+mkdir -p -- "$work/fakebin"
+real_tar="$(type -P tar)"
+cat > "$work/fakebin/tar" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "${STUB_TAR_LOG:?}"
+exec "${STUB_REAL_TAR:?}" "$@"
+EOF
+chmod +x "$work/fakebin/tar"
+
 wait_for()   # output literal [minimum count]
 {
     local out="$1" literal="$2" minimum="${3:-1}" i=0 count=0
@@ -122,27 +133,68 @@ normalize_terminal()   # raw output normalized output
 
 run_tty()   # name home driver-function
 {
-    local name="$1" home="$2" driver="$3" out before after delegation
+    local name="$1" home="$2" driver="$3" command="${4:-}" scope="${5:-}"
+    local out before after delegation tar_log
     out="$work/$name.raw"
     before="$work/$name.home.before"
     after="$work/$name.home.after"
     delegation="$work/$name.home.delegation"
-    rm -f -- "$work/$name.args" "$delegation"
+    tar_log="$work/$name.tar"
+    rm -f -- "$work/$name.args" "$delegation" "$tar_log"
     : > "$out"
     snapshot_home "$home" "$before"
     # shellcheck disable=SC2094,SC2016 # child expands path; driver polls transcript
-    env -i PATH="$PATH" HOME="$home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm \
+    env -i PATH="$work/fakebin:$PATH" HOME="$home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm \
         SHELL=/bin/bash NO_COLOR=1 ABLETON_UI_PROMPT_TIMEOUT=30 \
         STUB_ARGS_FILE="$work/$name.args" PREFLIGHT_INSTALLER="$work/installer.run" \
+        PREFLIGHT_COMMAND="$command" PREFLIGHT_SCOPE="$scope" \
+        STUB_TAR_LOG="$tar_log" STUB_REAL_TAR="$real_tar" \
         STUB_SNAPSHOT_HELPER="$snapshot_helper" \
         STUB_HOME_SNAPSHOT_BEFORE="$before" \
         STUB_HOME_SNAPSHOT_AT_DELEGATION="$delegation" \
-        script -qfec 'stty rows 80 cols 120; status=0; sh "$PREFLIGHT_INSTALLER" || status=$?; echo @@DONE@@:$status; exit "$status"' /dev/null \
+        script -qfec 'stty rows 80 cols 120; set --; [ -z "$PREFLIGHT_COMMAND" ] || set -- "$PREFLIGHT_COMMAND"; [ -z "$PREFLIGHT_SCOPE" ] || set -- "$@" "$PREFLIGHT_SCOPE"; status=0; sh "$PREFLIGHT_INSTALLER" "$@" || status=$?; echo @@DONE@@:$status; exit "$status"' /dev/null \
         < <("$driver" "$out") > "$out" 2>&1 || true
     assert_home_unchanged "$name" "$home" "$before" "$after"
     normalize_terminal "$out" "$work/$name.txt"
     grep -qF '@@DONE@@:0' "$out" \
         || fail "$name did not finish through the expected successful/cancelled wrapper path"
+}
+
+wait_for_uninstall_scope()   # raw-output; stop quickly if an old wrapper delegates
+{
+    local out="$1" i=0
+    while [ "$i" -lt 200 ]; do
+        grep -aqF '(Default)' "$out" 2>/dev/null && return 0
+        if grep -aqF '@@DELEGATED@@' "$out" 2>/dev/null \
+           || grep -aqF '@@DONE@@' "$out" 2>/dev/null; then
+            return 1
+        fi
+        sleep 0.05
+        i=$((i + 1))
+    done
+    return 1
+}
+
+assert_uninstall_scope_set()   # run-name
+{
+    local name="$1" start="${2:-after-action}" actual="$work/$1.uninstall-scopes"
+    local expected="$work/$1.uninstall-scopes.expected"
+    awk -v start="$start" '
+        BEGIN { after_action=(start == "direct") }
+        /Choose an action:/ { after_action=1; next }
+        after_action && /@@(DELEGATED|DONE)@@/ { exit }
+        after_action && /> / && /\[[[:alpha:]]\]/ {
+            line=$0
+            sub(/^.*> /, "", line)
+            gsub(/\[[[:alpha:]]\]/, "", line)
+            print line
+        }
+    ' "$work/$name.txt" > "$actual"
+    printf '%s\n' 'Runtime only (Default)' 'Prefix only' 'All' 'Exit' > "$expected"
+    if ! cmp -s -- "$expected" "$actual"; then
+        diff -u -- "$expected" "$actual" >&2 || true
+        fail "$name does not expose exactly the four uninstall scopes in order"
+    fi
 }
 
 run_notty()   # name home [installer arguments...]
@@ -444,6 +496,45 @@ assert_action_set healthy \
     '> [U]pdate (or press Enter)' '> [R]einstall' \
     '> Remo[v]e Ableton Linux' '> [Q]uit'
 ok "ACT-HEALTHY: a configured custom-prefix install offers Update, Reinstall, Remove and Quit"
+
+# installer.run uninstall presents exactly the requested four choices.
+drive_direct_uninstall()
+{
+    local out="$1"
+    wait_for_uninstall_scope "$out" || return 0
+    case "$uninstall_scope_answer" in
+        runtime) printf '\n' ;;
+        prefix) printf 'Prefix only\n' ;;
+        all) printf 'All\n' ;;
+        exit) printf 'Exit\n' ;;
+    esac
+    if [ "$uninstall_scope_answer" = exit ]; then
+        wait_for "$out" '@@DONE@@'
+    else
+        wait_for "$out" '@@DELEGATED@@'
+        wait_for "$out" '@@DONE@@'
+    fi
+}
+
+for uninstall_scope_answer in runtime prefix all exit; do
+    name="uninstall-scope-$uninstall_scope_answer"
+    run_tty "$name" "$healthy" drive_direct_uninstall uninstall
+    assert_uninstall_scope_set "$name" direct
+    case "$uninstall_scope_answer" in
+        runtime) expected='uninstall --keep-prefix' ;;
+        prefix) expected='uninstall --prefix-only' ;;
+        all) expected='uninstall --delete-prefix' ;;
+        exit)
+            [ ! -e "$work/$name.args" ] \
+                || fail "Exit from uninstall scopes invokes the embedded installer"
+            [ ! -e "$work/$name.tar" ] \
+                || fail "Exit from uninstall scopes extracts the embedded payload"
+            continue ;;
+    esac
+    [ "$(cat "$work/$name.args")" = "$expected" ] \
+        || fail "$uninstall_scope_answer did not delegate $expected"
+done
+ok "REMOVE-SCOPES: installer.run uninstall routes Runtime, Prefix, All and Exit"
 
 # ACT-INCOMPLETE: recognised ownership without a complete registry can be
 # reinstalled or removed, but cannot be updated as though healthy.

@@ -167,8 +167,15 @@ ableton_launcher_path_allowed()
 ableton_managed_path_allowed()
 {
     local kind="$1" path="$2" data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
+    local config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
     case "$kind" in file|config|symlink) ;; *) return 1 ;; esac
     if ableton_launcher_path_allowed "$path"; then return 0; fi
+    if [ "$kind" = config ]; then
+        case "$path" in
+            "$config_root/mimeapps.list"|\
+            "$config_root/systemd/user/ableton-linkd.service") return 0 ;;
+        esac
+    fi
     case "$path" in
         *.bak) ableton_launcher_path_allowed "${path%.bak}" && return 0 ;;
     esac
@@ -176,6 +183,7 @@ ableton_managed_path_allowed()
         "$ABLETON_DATA_HOME/lib/config.sh"|"$ABLETON_DATA_HOME/lib/lifecycle.sh"|\
         "$ABLETON_DATA_HOME/lib/live-options.sh"|"$ABLETON_DATA_HOME/lib/manifest.sh"|\
         "$ABLETON_DATA_HOME/lib/pipeasio.sh"|"$ABLETON_DATA_HOME/lib/preferences.sh"|\
+        "$ABLETON_DATA_HOME/lib/ui.sh"|\
         "$ABLETON_DATA_HOME/detect-scale.sh"|"$ABLETON_DATA_HOME/detect-theme.sh"|\
         "$ABLETON_DATA_HOME/shortcut-hold.sh"|"$ABLETON_DATA_HOME/setup-realtime.sh"|\
         "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/check-ntsync.sh"|\
@@ -1777,12 +1785,14 @@ ableton_write_ownership_manifest()
     local manifest="$ABLETON_STATE_HOME/install-manifest.tsv" tmp kind path digest
     ableton_mark_state_home || return 1
     tmp="$(mktemp "$ABLETON_STATE_HOME/.manifest.XXXXXX")" || return 1
-    # Preserve records for components this invocation did not touch.  Touched
-    # paths are replaced below by their new digest.
+    # Preserve records for components this invocation did not touch. Touched
+    # paths are replaced below by their new digest. Runtime ownership is a
+    # singleton, so every historical runtime row is retired before the
+    # configured runtime is appended below.
     if [ -f "$manifest" ] && [ ! -L "$manifest" ] \
        && ableton_validate_ownership_manifest "$manifest" >/dev/null 2>&1; then
         while IFS=$'\t' read -r kind path digest; do
-            case "$kind" in file|config|symlink|runtime) ;; *) continue ;; esac
+            case "$kind" in file|config|symlink) ;; *) continue ;; esac
             [ -n "$path" ] || continue
             [ -z "${ABLETON_MANIFEST_TOUCHED[$path]+x}" ] || continue
             printf '%s\t%s\t%s\n' "$kind" "$path" "$digest" >> "$tmp" \
@@ -1803,8 +1813,8 @@ ableton_write_ownership_manifest()
     fi
     if ! sort -u "$tmp" -o "$tmp" \
        || ! chmod 600 "$tmp" \
-       || ! mv -f -- "$tmp" "$manifest" \
-       || ! ableton_validate_ownership_manifest "$manifest"; then
+       || ! ableton_validate_ownership_manifest "$tmp" \
+       || ! mv -T -f -- "$tmp" "$manifest"; then
         rm -f -- "$tmp"
         return 1
     fi

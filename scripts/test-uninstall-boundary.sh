@@ -1,284 +1,91 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Minimal public boundary for the manifest-driven uninstaller.
+set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
-ABLETON_PROTOCOL_DESKTOP_ID=io.github.shibco.ableton-linux.protocol.desktop
-ABLETON_AUZ_DESKTOP_ID=io.github.shibco.ableton-linux.auz.desktop
-authoritative_support_relatives=(
-    VERSION
-    lib/config.sh lib/lifecycle.sh lib/live-options.sh lib/manifest.sh
-    lib/pipeasio.sh lib/preferences.sh lib/ui.sh
-    detect-scale.sh detect-theme.sh shortcut-hold.sh setup-realtime.sh
-    audio-report.sh check-ntsync.sh rollback.sh ntsyncprobe.exe
-    pipewire-version-probe setsyscolors.exe learnheal.exe
-    "$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID"
-    ableton-linkd ableton-linkctl setup-link.sh ableton-linkd.service
-)
-work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-uninstall-boundary-test.XXXXXX")"
+work="$(mktemp -d /tmp/ableton-uninstall-test.XXXXXX)"
+failures=0
+cases=0
+reported_failures=0
+children=()
+TEST_FAIL_TOOL=
+TEST_LEAVE_TOOL=
+
 cleanup()
 {
-    case "${work:-}" in
-        "${TMPDIR:-/tmp}"/ableton-uninstall-boundary-test.*) rm -rf -- "$work" ;;
-    esac
+    local pid exe
+    for pid in "${children[@]}"; do
+        exe="$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)"
+        case "$exe" in "$work"/*) kill "$pid" 2>/dev/null || true ;; esac
+        wait "$pid" 2>/dev/null || true
+    done
+    case "$work" in /tmp/ableton-uninstall-test.*) /bin/rm -rf -- "$work" ;; esac
 }
-trap cleanup EXIT
+trap cleanup EXIT HUP INT TERM
 
-fail()
+check()
 {
-    printf 'not ok - %s\n' "$1" >&2
-    exit 1
+    local message="$1"
+    shift
+    if ! "$@"; then
+        printf 'not ok - %s: %s\n' "$CASE" "$message" >&2
+        failures=$((failures + 1))
+    fi
 }
 
-pass=0
-ok()
+done_case()
 {
-    pass=$((pass + 1))
-    printf 'ok - %s\n' "$1"
+    cases=$((cases + 1))
+    if [ "$failures" -eq "$reported_failures" ]; then
+        printf 'ok - %s\n' "$CASE"
+    fi
+    reported_failures="$failures"
 }
 
-kit="$work/kit/scripts"
-mkdir -p -- "$kit/lib"
-[ -r "$here/lib/preferences.sh" ] \
-    || fail "scripts/lib/preferences.sh exists for uninstall boundary tests"
-cp -- "$here/installer.sh" "$here/uninstall.sh" "$kit/"
-cp -- "$here/detect-scale.sh" "$here/detect-theme.sh" \
-    "$here/shortcut-hold.sh" "$here/check-ntsync.sh" \
-    "$here/ableton-linkctl" "$here/ableton-linkd.service" "$kit/"
-mkdir -p -- "$kit/../tools"
-cp -- "$here/../tools/setsyscolors.exe" "$here/../tools/learnheal.exe" \
-    "$kit/../tools/"
-cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" \
-    "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" \
-    "$here/lib/preferences.sh" "$here/lib/ui.sh" \
-    "$kit/lib/"
-cat > "$kit/setup-link.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-case "${1:-}" in
-    plan-disable) exit "${TEST_LINK_PLAN_RC:-0}" ;;
-    disable) exit "${TEST_LINK_DISABLE_RC:-0}" ;;
-    *) exit 2 ;;
-esac
-EOF
-cat > "$kit/install.sh" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-chmod 755 "$kit/setup-link.sh" "$kit/install.sh"
+contains() { grep -qiF -- "$2" "$1/out" || grep -qiF -- "$2" "$1/err"; }
+not_in_log() { ! grep -qF -- "$2" "$1"; }
 
-new_fixture()
+mkdir -p -- "$work/corebin"
+for tool in awk basename bash cat chmod cmp cp cut dirname env find flock grep \
+            head id ln mkdir mktemp mv od readlink realpath rm sed sha256sum sleep \
+            sort stat tail tput tr wc; do
+    path="$(type -P "$tool" 2>/dev/null || true)"
+    [ -z "$path" ] || ln -s -- "$path" "$work/corebin/$tool"
+done
+
+digest()
 {
-    local base="$work/$1"
-    mkdir -p -- "$base/home" "$base/tmp" "$base/xdg/config" \
-        "$base/xdg/data" "$base/xdg/state/ableton-wine" \
-        "$base/xdg/cache" "$base/xdg/run" "$base/runtime" "$base/fakebin"
+    if [ -L "$1" ]; then
+        { printf 'symlink\0'; readlink -n -- "$1"; } | sha256sum | awk '{print $1}'
+    else
+        sha256sum -- "$1" | awk '{print $1}'
+    fi
+}
+
+fixture()
+{
+    local base="$work/$1" state="$work/$1/xdg/state/ableton-wine"
+    mkdir -p -- "$base/home/.local/bin" "$base/xdg/config/ableton-wine" \
+        "$base/xdg/data/ableton-wine" "$state" "$base/xdg/cache" \
+        "$base/xdg/run" "$base/tmp" "$base/runtime/bin" \
+        "$base/prefix/drive_c" "$base/fakebin" "$base/trash"
     printf 'format=1\nname=wine-d2d1-nspa-11.13\n' \
         > "$base/runtime/.ableton-linux-runtime"
-    printf 'format=1\nowner=ableton-linux\n' \
-        > "$base/xdg/state/ableton-wine/.ableton-linux-state"
-    cat > "$base/fakebin/rm" <<'EOF'
-#!/usr/bin/env bash
-set -u
-for argument in "$@"; do
-    if [ -n "${ABLETON_TEST_RM_LOG:-}" ]; then
-        printf '%s\n' "$argument" >> "$ABLETON_TEST_RM_LOG"
-    fi
-    if [ "${FAIL_ADOPTION_CLEANUP:-0}" -eq 1 ]; then
-        case "$argument" in
-            */transactions/uninstall-adopt.*) exit 75 ;;
-        esac
-    fi
-    if [ -n "${CORRUPT_STATE_AFTER_TARGET:-}" ] \
-       && [ "$argument" = "$CORRUPT_STATE_AFTER_TARGET" ]; then
-        /bin/rm "$@" || exit $?
-        if [ -n "${CORRUPT_STATE_REPLACEMENT:-}" ]; then
-            /bin/cp -- "$CORRUPT_STATE_REPLACEMENT" "${CORRUPT_STATE_FILE:?}"
-        else
-            printf 'changed during uninstall\n' > "${CORRUPT_STATE_FILE:?}"
-        fi
-        exit 0
-    fi
-    if [ -n "${FAIL_RM_TARGET:-}" ] && [ "$argument" = "$FAIL_RM_TARGET" ]; then
-        if [ "${FAIL_RM_REMOVE_FIRST:-0}" -eq 1 ]; then
-            /bin/rm "$@" || exit $?
-        fi
-        exit "${FAIL_RM_RC:-73}"
-    fi
-done
-exec /bin/rm "$@"
+    printf 'runtime\n' > "$base/runtime/bin/payload"
+    printf 'format=1\nprefix=%s\n' "$base/prefix" \
+        > "$base/prefix/.ableton-linux-prefix"
+    printf 'prefix\n' > "$base/prefix/drive_c/payload"
+    printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
+    cat > "$base/xdg/config/ableton-wine/config" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$base/runtime
+prefix=$base/prefix
+live_major=12
+link_mode=off
+linkd=$base/xdg/data/ableton-wine/ableton-linkd
 EOF
-    cat > "$base/fakebin/find" <<'EOF'
-#!/usr/bin/env bash
-set -u
-for argument in "$@"; do
-    if [ -n "${FAIL_FIND_TARGET:-}" ] && [ "$argument" = "$FAIL_FIND_TARGET" ]; then
-        exit "${FAIL_FIND_RC:-74}"
-    fi
-done
-exec /usr/bin/find "$@"
-EOF
-    cat > "$base/fakebin/xdg-mime" <<'EOF'
-#!/usr/bin/env bash
-set -u
-if [ "${1:-}" = query ] && [ "${2:-}" = default ]; then
-    rc="${TEST_XDG_QUERY_RC:-0}"
-    [ "$rc" -eq 0 ] || exit "$rc"
-    printf '%s\n' "${TEST_XDG_DEFAULT:-foreign.desktop}"
-    exit 0
-fi
-if [ "${1:-}" = default ]; then
-    exit "${TEST_XDG_SET_RC:-0}"
-fi
-exit 2
-EOF
-    cat > "$base/fakebin/update-mime-database" <<'EOF'
-#!/usr/bin/env bash
-exit "${TEST_MIME_CACHE_RC:-0}"
-EOF
-    cat > "$base/fakebin/update-desktop-database" <<'EOF'
-#!/usr/bin/env bash
-exit "${TEST_DESKTOP_CACHE_RC:-0}"
-EOF
-    cat > "$base/fakebin/systemctl" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-    chmod 755 "$base/fakebin/"*
-    printf '%s\n' "$base"
-}
-
-run_uninstall()
-{
-    local base="$1" mode="$2"
-    shift 2
-    env HOME="$base/home" \
-        XDG_CONFIG_HOME="$base/xdg/config" \
-        XDG_DATA_HOME="$base/xdg/data" \
-        XDG_STATE_HOME="$base/xdg/state" \
-        XDG_CACHE_HOME="$base/xdg/cache" \
-        XDG_RUNTIME_DIR="$base/xdg/run" \
-        TMPDIR="$base/tmp" \
-        PATH="$base/fakebin:$PATH" \
-        ABLETON_WINE_ROOT="$base/runtime" \
-        ABLETON_WINEPREFIX="$base/prefix" \
-        ABLETON_LINK_MODE=off \
-        ABLETON_SHORTCUTS=preserve \
-        "$@" bash "$kit/uninstall.sh" "$mode" --yes
-}
-
-run_integration_install()
-{
-    local base="$1"
-    env HOME="$base/home" \
-        XDG_CONFIG_HOME="$base/xdg/config" \
-        XDG_DATA_HOME="$base/xdg/data" \
-        XDG_STATE_HOME="$base/xdg/state" \
-        XDG_CACHE_HOME="$base/xdg/cache" \
-        XDG_RUNTIME_DIR="$base/xdg/run" \
-        TMPDIR="$base/tmp" \
-        PATH="$base/fakebin:$PATH" \
-        ABLETON_WINE_ROOT="$base/runtime" \
-        ABLETON_WINEPREFIX="$base/prefix" \
-        ABLETON_LINK_MODE=off \
-        ABLETON_SHORTCUTS=preserve \
-        bash "$here/install.sh" --integration-only --yes
-}
-
-assert_warning_contract()
-{
-    local error_file="$1" retry_expected="${2:-yes}" retry_count
-    grep -q '^!! warning:' "$error_file" \
-        || fail "optional failure did not produce a warning"
-    retry_count="$(grep -c '^   Retry:' "$error_file" || true)"
-    if [ "$retry_expected" = yes ]; then
-        [ "$retry_count" -eq 1 ] \
-            || fail "retained retry support did not print exactly one final retry command"
-    elif [ "$retry_count" -ne 0 ]; then
-        fail "advisory cleanup warning printed a retry command without retained support"
-    fi
-    if grep -Eiw 'gate|journal|generation|CAS' "$error_file" >/dev/null; then
-        fail "warning exposed internal lifecycle terminology"
-    fi
-}
-
-run_public_uninstall()
-{
-    local base="$1"
-    env HOME="$base/home" \
-        XDG_CONFIG_HOME="$base/xdg/config" \
-        XDG_DATA_HOME="$base/xdg/data" \
-        XDG_STATE_HOME="$base/xdg/state" \
-        XDG_CACHE_HOME="$base/xdg/cache" \
-        XDG_RUNTIME_DIR="$base/xdg/run" \
-        TMPDIR="$base/tmp" \
-        PATH="$base/fakebin:$PATH" \
-        ABLETON_LINK_MODE=off ABLETON_SHORTCUTS=preserve \
-        bash "$kit/installer.sh" uninstall \
-            --runtime-root "$base/runtime" --prefix "$base/prefix" \
-            --keep-prefix --yes
-}
-
-state_path()
-{
-    printf '%s/xdg/state/ableton-wine\n' "$1"
-}
-
-make_legacy_runtime_without_state()
-{
-    local base="$1" runtime pe_hash unix_hash
-    runtime="$base/home/.local/opt/wine-d2d1-nspa-11.13"
-    rm -f -- "$base/xdg/state/ableton-wine/.ableton-linux-state"
-    rmdir -- "$base/xdg/state/ableton-wine"
-    mkdir -p -- "$base/home/.local/share/ableton-wine" \
-        "$base/home/.local/bin" "$runtime/bin" \
-        "$runtime/lib/wine/x86_64-windows" \
-        "$runtime/lib/wine/x86_64-unix"
-    printf '2025.01.01.1\n' > "$base/home/.local/share/ableton-wine/VERSION"
-    printf '#!/bin/sh\n# Ableton Live launcher for the patched Wine stack\n' \
-        > "$base/home/.local/bin/ableton-live"
-    printf '#!/bin/sh\nexit 0\n' > "$runtime/bin/wine"
-    printf '#!/bin/sh\nexit 0\n' > "$runtime/bin/wineserver"
-    chmod 755 "$base/home/.local/bin/ableton-live" \
-        "$runtime/bin/wine" "$runtime/bin/wineserver"
-    printf 'legacy PE fixture\n' \
-        > "$runtime/lib/wine/x86_64-windows/pipeasio64.dll"
-    printf 'legacy Unix fixture\n' \
-        > "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so"
-    pe_hash="$(sha256sum -- "$runtime/lib/wine/x86_64-windows/pipeasio64.dll")"
-    pe_hash="${pe_hash%% *}"
-    unix_hash="$(sha256sum -- "$runtime/lib/wine/x86_64-unix/pipeasio64.dll.so")"
-    unix_hash="${unix_hash%% *}"
-    printf 'dist-version: 2025.01.01.1\npipeasio-pe: %s\npipeasio-unix: %s\n' \
-        "$pe_hash" "$unix_hash" > "$runtime/ABLETON-WINE-BUILD-INFO.txt"
-    printf '%s\n' "$runtime"
-}
-
-prepare_optional_inventory_fixture()
-{
-    local base="$1" digest state
-    state="$(state_path "$base")"
-    TEST_INVENTORY_DESKTOP="$base/xdg/data/applications/ableton-live.desktop"
-    TEST_EXTRA_RUNTIME="$base/older-recorded-runtime"
-    mkdir -p -- "$(dirname "$TEST_INVENTORY_DESKTOP")" "$TEST_EXTRA_RUNTIME" \
-        "$base/xdg/config"
-    printf 'generated desktop fixture\n' > "$TEST_INVENTORY_DESKTOP"
-    printf '[Default Applications]\nx-scheme-handler/ableton=%s\n' \
-        "$ABLETON_PROTOCOL_DESKTOP_ID" > "$base/xdg/config/mimeapps.list"
-    printf 'format=1\nname=wine-d2d1-nspa-11.13\n' \
-        > "$TEST_EXTRA_RUNTIME/.ableton-linux-runtime"
-    digest="$(sha256sum -- "$TEST_INVENTORY_DESKTOP")"
-    digest="${digest%% *}"
-    printf 'file\t%s\t%s\nruntime\t%s\twine-d2d1-nspa-11.13\n' \
-        "$TEST_INVENTORY_DESKTOP" "$digest" "$TEST_EXTRA_RUNTIME" \
-        > "$state/install-manifest.tsv"
-}
-
-write_uninstall_preferences()   # base [format]
-{
-    local base="$1" format="${2:-1}"
-    mkdir -p -- "$base/xdg/config/ableton-wine"
-    if [ "$format" = 1 ]; then
-        cat > "$base/xdg/config/ableton-wine/preferences" <<'EOF'
+    cat > "$base/xdg/config/ableton-wine/preferences" <<'EOF'
 # ableton-linux launcher preferences; managed by the installer
 format=1
 shortcuts=preserve
@@ -287,1061 +94,374 @@ audio_threads=off
 rt=off
 power=balanced
 EOF
-    else
-        printf '# ableton-linux launcher preferences; managed by the installer\nformat=%s\n' \
-            "$format" > "$base/xdg/config/ableton-wine/preferences"
-    fi
-    chmod 600 "$base/xdg/config/ableton-wine/preferences"
+    printf '#!/bin/sh\n# Ableton Live launcher for the patched Wine stack\n' \
+        > "$base/home/.local/bin/ableton-live"
+    chmod 755 "$base/home/.local/bin/ableton-live"
+    printf '2026.08.28.1\n' > "$base/xdg/data/ableton-wine/VERSION"
+    printf 'leave me\n' > "$base/home/.local/bin/user-tool"
+    ln -s -- "$base/runtime/bin/pipeasio-settings" \
+        "$base/home/.local/bin/pipeasio-settings"
+    {
+        printf 'file\t%s\t%s\n' "$base/home/.local/bin/ableton-live" \
+            "$(digest "$base/home/.local/bin/ableton-live")"
+        printf 'file\t%s\t%s\n' "$base/xdg/data/ableton-wine/VERSION" \
+            "$(digest "$base/xdg/data/ableton-wine/VERSION")"
+        printf 'symlink\t%s\t%s\n' "$base/home/.local/bin/pipeasio-settings" \
+            "$(digest "$base/home/.local/bin/pipeasio-settings")"
+        printf 'runtime\t%s\twine-d2d1-nspa-11.13\n' "$base/runtime"
+    } > "$state/install-manifest.tsv"
+    chmod 600 "$base/xdg/config/ableton-wine/"* "$state/"*
+    : > "$base/trash.log"
+    : > "$base/rm.log"
+    printf '%s\n' "$base"
 }
 
-# Optional installer settings cannot veto removal when the public dispatcher
-# has already supplied exact runtime/prefix paths. Runtime ownership remains
-# the deletion authority; the malformed settings are preserved for inspection.
-base="$(new_fixture malformed-installer-settings)"
-config="$base/xdg/config/ableton-wine/config"
-mkdir -p -- "$(dirname "$config")"
-printf '# ableton-linux installer configuration; managed by the installer\nformat=1\nobsolete_key=value\n' \
-    > "$config"
-cp -- "$config" "$base/config.before"
-run_public_uninstall "$base" > "$base/out" 2> "$base/err" \
-    || fail "malformed optional settings blocked public uninstall with exact targets"
-[ ! -e "$base/runtime" ] \
-    && cmp -s -- "$config" "$base/config.before" \
-    && [ -f "$(state_path "$base")/.ableton-linux-state" ] \
-    || fail "public uninstall changed malformed settings or retained the exact runtime"
-grep -qF "installer settings at $config" "$base/err" \
-    || fail "preserved malformed installer settings were not reported"
-assert_warning_contract "$base/err"
-ok "malformed optional settings cannot veto public uninstall with exact core targets"
-
-# Cache cleanup is best effort and is not used by runtime installation. A
-# non-directory cache object must therefore survive without blocking even a
-# public runtime plan.
-base="$(new_fixture cache-object-runtime-plan)"
-printf 'foreign cache object\n' > "$base/xdg/cache/ableton-wine"
-env HOME="$base/home" \
-    XDG_CONFIG_HOME="$base/xdg/config" \
-    XDG_DATA_HOME="$base/xdg/data" \
-    XDG_STATE_HOME="$base/xdg/state" \
-    XDG_CACHE_HOME="$base/xdg/cache" \
-    XDG_RUNTIME_DIR="$base/xdg/run" \
-    TMPDIR="$base/tmp" PATH="$base/fakebin:$PATH" \
-    ABLETON_WINEPREFIX="$base/prefix" ABLETON_LINK_MODE=off \
-    ABLETON_SHORTCUTS=preserve \
-    bash "$kit/installer.sh" runtime install \
-        --runtime-root "$base/runtime" --yes --dry-run \
-        > "$base/out" 2> "$base/err" \
-    || fail "foreign cache object blocked a public runtime plan"
-grep -qxF 'foreign cache object' "$base/xdg/cache/ableton-wine" \
-    || fail "public runtime plan changed the unrelated cache object"
-ok "unrelated cache objects cannot gate public runtime work"
-
-# Current installs no longer save the desktop default they replaced. Their
-# dry-run must say that only Ableton Linux defaults will be cleared, rather
-# than claiming every file-opening default will be left unchanged.
-base="$(new_fixture snapshot-free-mime-plan)"
-printf 'runtime\t%s\twine-d2d1-nspa-11.13\n' "$base/runtime" \
-    > "$(state_path "$base")/install-manifest.tsv"
-env HOME="$base/home" \
-    XDG_CONFIG_HOME="$base/xdg/config" \
-    XDG_DATA_HOME="$base/xdg/data" \
-    XDG_STATE_HOME="$base/xdg/state" \
-    XDG_CACHE_HOME="$base/xdg/cache" \
-    XDG_RUNTIME_DIR="$base/xdg/run" \
-    TMPDIR="$base/tmp" PATH="$base/fakebin:$PATH" \
-    ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
-    ABLETON_LINK_MODE=off ABLETON_SHORTCUTS=preserve \
-    bash "$kit/uninstall.sh" --keep-prefix --yes --dry-run \
-    > "$base/out" 2> "$base/err" \
-    || fail "snapshot-free current uninstall plan failed"
-grep -qF 'Clear only the file-opening defaults that name Ableton Linux' "$base/out" \
-    || fail "snapshot-free current uninstall plan misdescribed MIME cleanup"
-if grep -qF 'Leave file-opening defaults unchanged' "$base/out"; then
-    fail "snapshot-free current uninstall plan claimed its own defaults were untouched"
-fi
-ok "snapshot-free current uninstall plans describe their narrow MIME cleanup truthfully"
-
-# Mutable launcher preferences are separate from authoritative support. Remove
-# one exact valid record, but retain malformed/future/indirect objects and a
-# valid record that changes after uninstall's initial inspection.
-base="$(new_fixture valid-launcher-preferences)"
-write_uninstall_preferences "$base"
-run_uninstall "$base" --keep-prefix "ABLETON_TEST_RM_LOG=$base/rm.log" \
-    >"$base/out" 2>"$base/err" \
-    || fail "valid launcher preference cleanup failed"
-[ ! -e "$base/xdg/config/ableton-wine/preferences" ] \
-    || fail "valid unchanged launcher preferences survive uninstall"
-runtime_rm_line="$(grep -nFx "$base/runtime" "$base/rm.log" | head -n1 | cut -d: -f1)"
-preferences_rm_line="$(grep -nFx "$base/xdg/config/ableton-wine/preferences" \
-    "$base/rm.log" | head -n1 | cut -d: -f1)"
-[ -n "$runtime_rm_line" ] && [ -n "$preferences_rm_line" ] \
-    && [ "$runtime_rm_line" -lt "$preferences_rm_line" ] \
-    || fail "launcher preferences are removed before core runtime ownership is retired"
-
-base="$(new_fixture valid-launcher-preferences-delete-prefix)"
-mkdir -p -- "$base/prefix"
-printf 'format=1\nprefix=%s\n' "$base/prefix" \
-    > "$base/prefix/.ableton-linux-prefix"
-printf 'registry fixture\n' > "$base/prefix/system.reg"
-write_uninstall_preferences "$base"
-run_uninstall "$base" --delete-prefix "ABLETON_TEST_RM_LOG=$base/rm.log" \
-    >"$base/out" 2>"$base/err" \
-    || fail "valid launcher preference cleanup with prefix removal failed"
-preferences="$base/xdg/config/ableton-wine/preferences"
-[ ! -e "$base/runtime" ] && [ ! -e "$base/prefix" ] && [ ! -e "$preferences" ] \
-    || fail "valid preferences survive or precede requested core removal"
-runtime_rm_line="$(grep -nFx "$base/runtime" "$base/rm.log" | head -n1 | cut -d: -f1)"
-prefix_rm_line="$(grep -nFx "$base/prefix" "$base/rm.log" | head -n1 | cut -d: -f1)"
-preferences_rm_line="$(grep -nFx "$preferences" "$base/rm.log" | head -n1 | cut -d: -f1)"
-[ -n "$runtime_rm_line" ] && [ -n "$prefix_rm_line" ] \
-    && [ -n "$preferences_rm_line" ] \
-    && [ "$runtime_rm_line" -lt "$preferences_rm_line" ] \
-    && [ "$prefix_rm_line" -lt "$preferences_rm_line" ] \
-    || fail "launcher preferences are removed before runtime and requested prefix"
-
-base="$(new_fixture malformed-launcher-preferences)"
-write_uninstall_preferences "$base"
-printf 'unknown=value\n' >> "$base/xdg/config/ableton-wine/preferences"
-before="$(sha256sum "$base/xdg/config/ableton-wine/preferences")"
-run_uninstall "$base" --keep-prefix >"$base/out" 2>"$base/err" \
-    || fail "malformed launcher preferences block core uninstall"
-[ ! -e "$base/runtime" ] \
-    || fail "malformed launcher preferences turn core uninstall into a no-op"
-[ "$(sha256sum "$base/xdg/config/ableton-wine/preferences")" = "$before" ] \
-    || fail "malformed launcher preferences are not preserved byte-for-byte"
-
-base="$(new_fixture future-launcher-preferences)"
-write_uninstall_preferences "$base" 2
-before="$(sha256sum "$base/xdg/config/ableton-wine/preferences")"
-run_uninstall "$base" --keep-prefix >"$base/out" 2>"$base/err" \
-    || fail "future launcher preferences block core uninstall"
-[ ! -e "$base/runtime" ] \
-    || fail "future launcher preferences turn core uninstall into a no-op"
-[ "$(sha256sum "$base/xdg/config/ableton-wine/preferences")" = "$before" ] \
-    || fail "future launcher preferences are not preserved byte-for-byte"
-
-base="$(new_fixture symlink-launcher-preferences)"
-write_uninstall_preferences "$base"
-mv -- "$base/xdg/config/ableton-wine/preferences" "$base/external-preferences"
-ln -s -- "$base/external-preferences" "$base/xdg/config/ableton-wine/preferences"
-before="$(sha256sum "$base/external-preferences")"
-run_uninstall "$base" --keep-prefix >"$base/out" 2>"$base/err" \
-    || fail "symlinked launcher preferences block core uninstall"
-[ ! -e "$base/runtime" ] \
-    || fail "symlinked launcher preferences turn core uninstall into a no-op"
-[ -L "$base/xdg/config/ableton-wine/preferences" ] \
-    && [ "$(sha256sum "$base/external-preferences")" = "$before" ] \
-    || fail "uninstall follows or removes symlinked launcher preferences"
-
-base="$(new_fixture directory-launcher-preferences)"
-mkdir -p -- "$base/xdg/config/ableton-wine/preferences"
-printf 'directory sentinel\n' > "$base/xdg/config/ableton-wine/preferences/keep"
-run_uninstall "$base" --keep-prefix >"$base/out" 2>"$base/err" \
-    || fail "directory launcher preferences block core uninstall"
-[ ! -e "$base/runtime" ] \
-    || fail "directory launcher preferences turn core uninstall into a no-op"
-grep -qxF 'directory sentinel' "$base/xdg/config/ableton-wine/preferences/keep" \
-    || fail "uninstall recurses into a launcher-preferences directory"
-
-base="$(new_fixture raced-launcher-preferences)"
-write_uninstall_preferences "$base"
-preferences="$base/xdg/config/ableton-wine/preferences"
-cat > "$base/replacement-preferences" <<'EOF'
-# ableton-linux launcher preferences; managed by the installer
-format=1
-shortcuts=take
-dpi=auto
-audio_threads=auto
-rt=auto
-power=performance
-EOF
-run_uninstall "$base" --keep-prefix \
-    "CORRUPT_STATE_AFTER_TARGET=$base/runtime" \
-    "CORRUPT_STATE_FILE=$preferences" \
-    "CORRUPT_STATE_REPLACEMENT=$base/replacement-preferences" \
-    "ABLETON_TEST_RM_LOG=$base/rm.log" \
-    >"$base/out" 2>"$base/err" \
-    || fail "changed launcher preferences block core uninstall"
-[ ! -e "$base/runtime" ] \
-    || fail "changed launcher preferences turn core uninstall into a no-op"
-cmp -s -- "$base/replacement-preferences" "$preferences" \
-    || fail "uninstall removes a different valid preference record written during the run"
-runtime_rm_line="$(grep -nFx "$base/runtime" "$base/rm.log" | head -n1 | cut -d: -f1)"
-[ -n "$runtime_rm_line" ] \
-    || fail "preference-race fixture did not reach core runtime removal"
-! grep -qxF "$preferences" "$base/rm.log" \
-    || fail "uninstall removes preferences before core or retries after their generation changed"
-ok "uninstall removes only exact valid unchanged launcher preferences"
-
-# Exercise the real integration support tree so an ordinary clean uninstall does
-# not acquire a warning merely because a generated support path is present.
-base="$(new_fixture clean-integration)"
-run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
-    || fail "could not create a full integration fixture"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "clean full integration uninstall failed"
-[ ! -e "$base/runtime" ] \
-    && [ ! -e "$(state_path "$base")" ] \
-    && [ ! -e "$base/xdg/data/ableton-wine" ] \
-    && [ ! -e "$base/xdg/config/ableton-wine/config" ] \
-    || fail "clean full integration uninstall retained managed state"
-if grep -q '^!! warning:' "$base/err"; then
-    fail "clean full integration uninstall emitted an optional-failure warning"
-fi
-grep -qF '│  ┃ 2/2 ╏ REMOVE ABLETON LINUX ┃' "$base/out" \
-    && grep -qF '│  └─ Step 2 Complete! ✓' "$base/out" \
-    || fail "clean full integration uninstall did not report complete success"
-ok "clean full integration uninstall removes all managed state without warnings"
-
-# A valid older manifest can coexist with the snapshot-free support bundle
-# after an update. Fixed project paths remain authoritative, while an unlisted
-# file and an explicitly configured external Link daemon stay untouched.
-base="$(new_fixture authoritative-support-upgrade)"
-run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
-    || fail "could not create an authoritative support fixture"
-support="$base/xdg/data/ableton-wine"
-for relative in "${authoritative_support_relatives[@]}"; do
-    mkdir -p -- "$(dirname "$support/$relative")"
-    printf 'modified project support\n' > "$support/$relative"
-done
-rm -f -- "$support/ableton-linkctl"
-ln -s -- "$base/missing-linkctl" "$support/ableton-linkctl"
-printf 'foreign support sentinel\n' > "$support/user-notes.txt"
-printf 'external Link daemon\n' > "$base/external-linkd"
-config_path="$support/lib/config.sh"
-config_hash="$(printf '%s' "$config_path" | sha256sum)"
-config_backup="$(state_path "$base")/install-prestate/${config_hash%% *}"
-mkdir -p -- "$(dirname "$config_backup")"
-printf 'earlier config sentinel\n' > "$config_backup"
-printf 'present\t%s\t%s\n' "$config_path" "$config_backup" \
-    > "$(state_path "$base")/install-prestate.tsv"
-printf 'file\t%s\t%064d\nruntime\t%s\twine-d2d1-nspa-11.13\n' \
-    "$config_path" 0 "$base/runtime" \
-    > "$(state_path "$base")/install-manifest.tsv"
-run_uninstall "$base" --keep-prefix "ABLETON_LINKD=$base/external-linkd" \
-    > "$base/out" 2> "$base/err" \
-    || fail "manifest-present authoritative support cleanup failed"
-mapfile -t support_files < <(find "$support" \( -type f -o -type l \) | sort)
-[ "${#support_files[@]}" -eq 1 ] && [ "${support_files[0]}" = "$support/user-notes.txt" ] \
-    || fail "authoritative cleanup retained listed support or removed an unlisted file"
-grep -qxF 'foreign support sentinel' "$support/user-notes.txt" \
-    && grep -qxF 'external Link daemon' "$base/external-linkd" \
-    || fail "authoritative cleanup changed an unlisted or external path"
-for relative in "${authoritative_support_relatives[@]}"; do
-    grep -qF "$support/$relative" "$base/out" \
-        || fail "authoritative cleanup did not report removing $relative"
-done
-! grep -qF "Restored your earlier file at $config_path" "$base/out" \
-    || fail "authoritative manifest cleanup restored obsolete prestate"
-if grep -q '^!! warning:' "$base/err"; then
-    fail "authoritative manifest cleanup emitted a stale preservation warning"
-fi
-[ ! -e "$(state_path "$base")" ] \
-    || fail "successful authoritative manifest cleanup retained retry state"
-ok "manifest upgrades remove fixed support paths and preserve unlisted paths"
-
-# A failed fixed-path removal is warning-only and keeps retry state; a direct
-# retry removes the same path and retires that state.
-base="$(new_fixture authoritative-support-retry)"
-run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
-    || fail "could not create an authoritative retry fixture"
-support_target="$base/xdg/data/ableton-wine/lib/ui.sh"
-run_uninstall "$base" --keep-prefix FAIL_RM_TARGET="$support_target" \
-    > "$base/first.out" 2> "$base/first.err" \
-    || fail "fixed support removal failure made uninstall fail"
-[ -f "$support_target" ] || fail "failed support removal did not retain its target"
-[ -f "$(state_path "$base")/.ableton-linux-state" ] \
-    || fail "failed support removal did not retain retry ownership state"
-grep -qF "an Ableton Linux file remains at $support_target" "$base/first.err" \
-    || fail "failed support removal did not name its target"
-assert_warning_contract "$base/first.err"
-run_uninstall "$base" --keep-prefix > "$base/retry.out" 2> "$base/retry.err" \
-    || fail "fixed support cleanup retry failed"
-[ ! -e "$support_target" ] && [ ! -L "$support_target" ] \
-    && [ ! -e "$(state_path "$base")" ] \
-    || fail "fixed support cleanup retry retained its target or retry state"
-ok "fixed support removal failures remain directly retryable"
-
-# Fixed-path cleanup is authoritative for files and links, never recursive.
-base="$(new_fixture authoritative-support-directory)"
-run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
-    || fail "could not create a non-recursive support fixture"
-support_target="$base/xdg/data/ableton-wine/lib/ui.sh"
-rm -f -- "$support_target"
-mkdir -p -- "$support_target"
-printf 'directory sentinel\n' > "$support_target/keep"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "non-empty support directory made core uninstall fail"
-grep -qxF 'directory sentinel' "$support_target/keep" \
-    || fail "fixed support cleanup recursed into a directory"
-grep -qF "an Ableton Linux file remains at $support_target" "$base/err" \
-    || fail "non-empty fixed support path was not reported"
-assert_warning_contract "$base/err"
-ok "fixed support cleanup never recurses into directories"
-
-# Per-run overwrite backups are inert manual recovery files. Uninstall keeps
-# them byte-for-byte and removes the independently managed runtime as usual.
-base="$(new_fixture inert-installer-backups)"
-backup_root="$(state_path "$base")/backups"
-backup="$backup_root/20260827T000000Z.test/home/user/.local/bin/ableton-live.bak-20260827T000000Z"
-mkdir -p -- "$(dirname "$backup")"
-printf 'manual recovery sentinel\n' > "$backup"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "manual installer backup made uninstall fail"
-[ ! -e "$base/runtime" ] \
-    || fail "manual installer backup retained the runtime"
-grep -qxF 'manual recovery sentinel' "$backup" \
-    || fail "uninstall changed or removed a manual installer backup"
-grep -qF "kept manual installer backups at $backup_root" "$base/out" \
-    || fail "uninstall did not report the retained manual backups"
-ok "uninstall leaves per-run installer backups for manual recovery"
-
-# Legacy marker adoption creates a short-lived transaction under state. The
-# uninstall must mark that directory before using it, so its own transaction
-# cannot later be mistaken for foreign state after core removal succeeds.
-base="$(new_fixture legacy-adoption-state)"
-legacy_runtime="$(make_legacy_runtime_without_state "$base")"
-run_uninstall "$base" --keep-prefix "ABLETON_WINE_ROOT=$legacy_runtime" \
-    > "$base/out" 2> "$base/err" \
-    || fail "legacy adoption's own support state made uninstall fail"
-[ ! -e "$legacy_runtime" ] \
-    || fail "legacy adoption support-state handling retained the runtime"
-legacy_state="$(state_path "$base")"
-if [ -e "$legacy_state" ] || [ -L "$legacy_state" ]; then
-    if [ ! -d "$legacy_state" ] || [ -L "$legacy_state" ]; then
-        fail "legacy adoption retained unsafe support state"
-    fi
-    grep -qxF 'owner=ableton-linux' "$legacy_state/.ableton-linux-state" \
-        || fail "legacy adoption retained unmarked support state"
-fi
-ok "legacy adoption never rejects support state created by the uninstall itself"
-
-# Pre-manifest installers left their generated support bundle at the historical
-# HOME path, independent of XDG_DATA_HOME. Exact packaged copies and the
-# VERSION record corroborated by the legacy launcher are safe to retire.
-base="$(new_fixture clean-legacy-support)"
-legacy_runtime="$(make_legacy_runtime_without_state "$base")"
-legacy_data="$base/home/.local/share/ableton-wine"
-for legacy_helper in \
-    detect-scale.sh detect-theme.sh shortcut-hold.sh check-ntsync.sh \
-    setup-link.sh ableton-linkctl ableton-linkd.service; do
-    cp -- "$kit/$legacy_helper" "$legacy_data/$legacy_helper"
-done
-cp -- "$kit/../tools/setsyscolors.exe" "$legacy_data/setsyscolors.exe"
-cp -- "$kit/../tools/learnheal.exe" "$legacy_data/learnheal.exe"
-cat > "$legacy_data/wine-protocol-ableton.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Exec=$base/home/.local/bin/ableton-live %u
-MimeType=x-scheme-handler/ableton;
-NoDisplay=true
-EOF
-run_uninstall "$base" --keep-prefix "ABLETON_WINE_ROOT=$legacy_runtime" \
-    > "$base/out" 2> "$base/err" \
-    || fail "clean legacy support-file removal failed"
-[ ! -e "$legacy_runtime" ] && [ ! -L "$legacy_runtime" ] \
-    && [ ! -e "$legacy_data" ] && [ ! -L "$legacy_data" ] \
-    && [ ! -e "$base/home/.local/bin/ableton-live" ] \
-    || fail "clean legacy uninstall retained recognised project support files"
-if grep -q '^!! warning:' "$base/err"; then
-    fail "clean legacy support-file removal emitted a warning"
-fi
-grep -qF '│  ┃ 2/2 ╏ REMOVE ABLETON LINUX ┃' "$base/out" \
-    && grep -qF '│  └─ Step 2 Complete! ✓' "$base/out" \
-    || fail "clean legacy support-file removal did not report complete success"
-ok "clean legacy uninstall retires exactly recognised historical support files"
-
-# Explicit Ableton support paths are authoritative even for pre-manifest
-# installs. Local changes at those paths do not turn them into foreign files.
-base="$(new_fixture modified-legacy-support)"
-legacy_runtime="$(make_legacy_runtime_without_state "$base")"
-legacy_data="$base/home/.local/share/ableton-wine"
-cp -- "$kit/detect-scale.sh" "$legacy_data/detect-scale.sh"
-printf '\n# local modification\n' >> "$legacy_data/detect-scale.sh"
-run_uninstall "$base" --keep-prefix "ABLETON_WINE_ROOT=$legacy_runtime" \
-    > "$base/out" 2> "$base/err" \
-    || fail "modified legacy support file made core uninstall fail"
-[ ! -e "$legacy_data/detect-scale.sh" ] && [ ! -L "$legacy_data/detect-scale.sh" ] \
-    || fail "legacy uninstall preserved a modified authoritative support file"
-[ ! -e "$legacy_runtime" ] \
-    || fail "modified legacy support file retained the recognised runtime"
-! grep -qF "kept a modified or unrecognised older support file at $legacy_data/detect-scale.sh" \
-    "$base/err" || fail "removed legacy support was reported as preserved"
-ok "legacy uninstall removes modified authoritative support files"
-
-# Publishing the adopted ownership marker is the legacy migration commit. If
-# its disposable transaction directory cannot be removed afterward, the exact
-# core-complete record must make the residue non-blocking on the next run.
-base="$(new_fixture legacy-adoption-cleanup-retry)"
-legacy_runtime="$(make_legacy_runtime_without_state "$base")"
-legacy_foreign_desktop="$base/xdg/data/applications/ableton-live.desktop"
-mkdir -p -- "$(dirname "$legacy_foreign_desktop")"
-printf 'foreign desktop fixture\n' > "$legacy_foreign_desktop"
-run_uninstall "$base" --keep-prefix \
-    "ABLETON_WINE_ROOT=$legacy_runtime" FAIL_ADOPTION_CLEANUP=1 \
-    > "$base/first.out" 2> "$base/first.err" \
-    || fail "legacy adoption cleanup residue made completed runtime removal fail"
-[ ! -e "$legacy_runtime" ] \
-    || fail "legacy adoption cleanup residue retained the adopted runtime"
-legacy_state="$(state_path "$base")"
-legacy_adoption_txn="$(find "$legacy_state/transactions" -mindepth 1 -maxdepth 1 \
-    -type d -name 'uninstall-adopt.*' -print -quit)"
-[ -n "$legacy_adoption_txn" ] \
-    && [ -f "$legacy_adoption_txn/active" ] \
-    && cmp -s -- "$legacy_adoption_txn/core-complete" \
-        <(printf 'format=1\ncore=complete\n') \
-    || fail "legacy adoption cleanup residue lacked its completed-core proof"
-/bin/rm -f -- "$legacy_foreign_desktop"
-run_uninstall "$base" --keep-prefix "ABLETON_WINE_ROOT=$legacy_runtime" \
-    > "$base/retry.out" 2> "$base/retry.err" \
-    || fail "completed legacy adoption cleanup residue blocked a direct retry"
-[ ! -e "$legacy_state" ] && [ ! -L "$legacy_state" ] \
-    || fail "legacy adoption retry retained disposable support state"
-ok "completed legacy adoption cleanup residue cannot block a direct retry"
-
-# Installed-file lists authorize only optional cleanup. Malformed text and
-# binary/unreadable content must preserve every listed object while independently
-# validated configured runtime/prefix removal continues.
-for inventory_case in \
-    manifest-malformed manifest-binary manifest-unreadable \
-    manifest-unmarked-extra \
-    prestate-malformed prestate-binary prestate-unreadable; do
-    base="$(new_fixture "optional-$inventory_case")"
-    state="$(state_path "$base")"
-    prepare_optional_inventory_fixture "$base"
-    mode=--keep-prefix
-    case "$inventory_case" in
-        manifest-malformed)
-            printf 'file\t/\t%064d\n' 0 >> "$state/install-manifest.tsv"
-            mkdir -p -- "$base/prefix"
-            printf 'format=1\nprefix=%s\n' "$base/prefix" \
-                > "$base/prefix/.ableton-linux-prefix"
-            printf 'registry fixture\n' > "$base/prefix/system.reg"
-            mode=--delete-prefix
-            ;;
-        manifest-binary)
-            printf '\0binary installed-file data\n' >> "$state/install-manifest.tsv"
-            ;;
-        manifest-unreadable)
-            rm -f -- "$state/install-manifest.tsv"
-            ln -s -- /dev/null "$state/install-manifest.tsv"
-            ;;
-        manifest-unmarked-extra)
-            rm -f -- "$TEST_EXTRA_RUNTIME/.ableton-linux-runtime"
-            printf 'foreign runtime bytes\n' > "$TEST_EXTRA_RUNTIME/sentinel"
-            ;;
-        prestate-malformed)
-            printf 'present\t%s\t%s/not-a-saved-copy\n' \
-                "$TEST_INVENTORY_DESKTOP" "$state" > "$state/install-prestate.tsv"
-            ;;
-        prestate-binary)
-            printf '\0binary saved-file data\n' > "$state/install-prestate.tsv"
-            ;;
-        prestate-unreadable)
-            ln -s -- /dev/null "$state/install-prestate.tsv"
-            ;;
-    esac
-    run_uninstall "$base" "$mode" TEST_LINK_DISABLE_RC=73 \
-        > "$base/out" 2> "$base/err" \
-        || fail "$inventory_case vetoed independently validated core removal"
-    [ ! -e "$base/runtime" ] \
-        || fail "$inventory_case retained the configured runtime"
-    if [ "$mode" = --delete-prefix ] && [ -e "$base/prefix" ]; then
-        fail "$inventory_case retained the requested validated prefix"
-    fi
-    [ -e "$TEST_INVENTORY_DESKTOP" ] && [ -e "$TEST_EXTRA_RUNTIME" ] \
-        || fail "$inventory_case removed an object from untrusted optional information"
-    grep -qxF "x-scheme-handler/ableton=$ABLETON_PROTOCOL_DESKTOP_ID" \
-        "$base/xdg/config/mimeapps.list" \
-        || fail "$inventory_case changed a desktop default from untrusted optional information"
-    grep -q "installer's file list could not be trusted" "$base/err" \
-        || fail "$inventory_case warning did not identify why optional files remain"
-    if grep -q 'Link integration may still be enabled' "$base/err"; then
-        fail "$inventory_case attempted Link cleanup from untrusted optional information"
-    fi
-    assert_warning_contract "$base/err"
-done
-ok "malformed optional file lists never veto configured runtime or requested-prefix removal"
-
-# An unfinished core operation remains a real stop condition.
-base="$(new_fixture active-core-recovery)"
-mkdir -p -- "$(state_path "$base")/transactions/install.active"
-: > "$(state_path "$base")/transactions/install.active/active"
-if run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err"; then
-    fail "uninstall ignored unfinished installer recovery"
-fi
-[ -e "$base/runtime/.ableton-linux-runtime" ] \
-    || fail "active recovery refusal happened after runtime deletion"
-grep -q 'earlier installation stopped before recovery finished' "$base/err" \
-    || fail "active recovery refusal was not explicit"
-ok "unfinished core recovery remains fatal before removal"
-
-# Unrecognised optional support state cannot invalidate an exact runtime target.
-base="$(new_fixture malformed-support-state)"
-printf 'foreign support state\n' > "$(state_path "$base")/.ableton-linux-state"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "unrecognised optional support state made core removal fail"
-[ ! -e "$base/runtime" ] || fail "unrecognised support state retained the runtime"
-[ -e "$(state_path "$base")/.ableton-linux-state" ] \
-    || fail "unrecognised support state was deleted"
-grep -q 'support files were left unchanged' "$base/err" \
-    || fail "unrecognised support state warning did not identify what remains"
-assert_warning_contract "$base/err"
-ok "unrecognised support state is warning-only"
-
-# The support path itself is optional cleanup. A regular file there is neither
-# owned directory state nor a reason to retain an independently proven runtime.
-base="$(new_fixture regular-support-state-root)"
-state="$(state_path "$base")"
-rm -rf -- "$state"
-printf 'foreign support-state root\n' > "$state"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "regular optional support-state root made core removal fail"
-[ ! -e "$base/runtime" ] \
-    || fail "regular optional support-state root retained the runtime"
-grep -qxF 'foreign support-state root' "$state" \
-    || fail "regular optional support-state root was changed"
-grep -q 'support files were left unchanged' "$base/err" \
-    || fail "regular optional support-state root was not reported"
-assert_warning_contract "$base/err"
-ok "a non-directory optional support path cannot veto runtime removal"
-
-# A configured support root may overlap a kept core tree after manual settings
-# edits. Do not inspect its transaction-looking children as installer recovery,
-# and never recursively clean the overlapping tree as optional state.
-base="$(new_fixture overlapping-support-prefix)"
-mkdir -p -- "$base/prefix/transactions/foreign-run"
-printf 'format=1\nowner=ableton-linux\n' \
-    > "$base/prefix/.ableton-linux-state"
-printf 'kept prefix sentinel\n' > "$base/prefix/user-data"
-: > "$base/prefix/transactions/foreign-run/active"
-run_uninstall "$base" --keep-prefix "ABLETON_STATE_HOME=$base/prefix" \
-    > "$base/out" 2> "$base/err" \
-    || fail "overlapping optional support state made runtime removal fail"
-[ ! -e "$base/runtime" ] \
-    || fail "overlapping optional support state retained the runtime"
-grep -qxF 'kept prefix sentinel' "$base/prefix/user-data" \
-    && [ -e "$base/prefix/transactions/foreign-run/active" ] \
-    || fail "optional state cleanup changed the overlapping kept prefix"
-grep -q 'path overlaps the Wine runtime or prefix' "$base/err" \
-    || fail "overlapping optional support state was not reported"
-assert_warning_contract "$base/err"
-ok "overlapping optional support state is skipped without gating core removal"
-
-# Current installs do not retain the default an authoritative project ID
-# replaced. Uninstall still removes only those exact IDs and preserves every
-# unrelated mimeapps.list entry.
-base="$(new_fixture snapshot-free-mime)"
-rm -f -- "$base/fakebin/xdg-mime" "$base/fakebin/update-mime-database" \
-    "$base/fakebin/update-desktop-database"
-mkdir -p -- "$base/xdg/data/applications" "$base/xdg/config"
-cat > "$base/xdg/data/applications/third-party.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=Third Party
-Exec=/usr/bin/true %f
-EOF
-cat > "$base/xdg/config/mimeapps.list" <<'EOF'
-[Default Applications]
-x-scheme-handler/ableton=third-party.desktop
-text/plain=third-party.desktop
-EOF
-run_integration_install "$base" > "$base/install.out" 2> "$base/install.err" \
-    || fail "could not create a snapshot-free MIME fixture"
-grep -qxF "x-scheme-handler/ableton=$ABLETON_PROTOCOL_DESKTOP_ID" \
-    "$base/xdg/config/mimeapps.list" \
-    || fail "integration fixture did not install its scheme-handler default"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "snapshot-free MIME cleanup made uninstall fail"
-if grep -Eq "=($ABLETON_PROTOCOL_DESKTOP_ID|$ABLETON_AUZ_DESKTOP_ID|ableton-live[.]desktop|max9[.]desktop|wine-protocol-c74max[.]desktop)$" \
-    "$base/xdg/config/mimeapps.list"; then
-    fail "snapshot-free uninstall left a default naming a removed project entry"
-fi
-grep -qxF 'text/plain=third-party.desktop' "$base/xdg/config/mimeapps.list" \
-    || fail "snapshot-free MIME cleanup changed an unrelated default"
-! grep -q '^x-scheme-handler/ableton=third-party.desktop$' \
-    "$base/xdg/config/mimeapps.list" \
-    || fail "snapshot-free MIME cleanup invented restoration data it did not retain"
-ok "snapshot-free uninstall clears exact project defaults and preserves unrelated MIME entries"
-
-# Link shutdown is helpful cleanup, not authority to remove a proven runtime.
-base="$(new_fixture optional-link)"
-run_uninstall "$base" --keep-prefix TEST_LINK_DISABLE_RC=73 \
-    > "$base/out" 2> "$base/err" \
-    || fail "Link cleanup failure made uninstall fail"
-[ ! -e "$base/runtime" ] || fail "Link cleanup failure retained the runtime"
-[ -e "$(state_path "$base")" ] \
-    || fail "Link cleanup failure discarded the support files needed to retry"
-grep -q 'Ableton Link integration may still be enabled' "$base/err" \
-    || fail "Link cleanup warning did not identify what remains"
-assert_warning_contract "$base/err"
-ok "Link cleanup failure is warning-only and retains retry support"
-
-# Generated desktop helpers are optional. A readable helper with broken shell
-# syntax must be reported without letting a bare source command abort uninstall.
-base="$(new_fixture shortcut-helper-source)"
-mkdir -p -- "$base/xdg/data/ableton-wine"
-cat > "$base/xdg/data/ableton-wine/shortcut-hold.sh" <<'EOF'
-# GNOME shortcut hold
-if this helper is incomplete
-EOF
-: > "$(state_path "$base")/hold-v2"
-cat > "$base/fakebin/gsettings" <<'EOF'
+trash_tool()
+{
+    local base="$1" name="$2"
+    cat > "$base/fakebin/$name" <<'EOF'
 #!/usr/bin/env bash
-exit 0
-EOF
-chmod 755 "$base/fakebin/gsettings"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "broken optional shortcut helper made uninstall fail"
-[ ! -e "$base/runtime" ] || fail "broken shortcut helper retained the runtime"
-grep -q 'shortcut restoration was skipped' "$base/err" \
-    || fail "broken shortcut helper warning did not identify what remains"
-assert_warning_contract "$base/err"
-ok "broken generated shortcut helper is warning-only"
-
-# Failure to inspect a legacy panel shortcut is optional and must leave the
-# shortcut untouched while core removal proceeds.
-base="$(new_fixture panel-ownership-query)"
-state="$(state_path "$base")"
-panel="$base/home/.local/bin/pipeasio-settings"
-mkdir -p -- "$(dirname "$panel")" "$base/xdg/data/ableton-wine"
-ln -s -- "$base/runtime/bin/pipeasio-settings" "$panel"
-printf '2026.01.01.1\n' > "$base/xdg/data/ableton-wine/VERSION"
-printf 'runtime\t%s\twine-d2d1-nspa-11.13\n' "$base/runtime" \
-    > "$state/install-manifest.tsv"
-cat > "$base/fakebin/awk" <<'EOF'
-#!/usr/bin/env bash
-case "$*" in
-    *'$2==p && ($1=="file" || $1=="config" || $1=="symlink")'*) exit 77 ;;
+set -u
+tool="$(basename "$0")"
+target=""
+for arg in "$@"; do
+    case "$arg" in "$TEST_ROOT"|"$TEST_ROOT"/*) target="$arg"; break ;; esac
+done
+[ -n "$target" ] || exit 98
+case "$tool" in
+    gio) [ "$1" = trash ] || exit 96 ;;
+    trash-put) [ "$#" -eq 1 ] || exit 96 ;;
+    kioclient) [ "$1" = move ] && [ "$3" = trash:/ ] || exit 96 ;;
+    *) exit 96 ;;
 esac
-exec /usr/bin/awk "$@"
+printf '%s\t%s\n' "$tool" "$target" >> "$TEST_TRASH_LOG"
+if [ "$TEST_FAIL_TOOL" = "$tool" ]; then exit 73; fi
+if [ "$TEST_LEAVE_TOOL" = "$tool" ]; then exit 0; fi
+count="$(wc -l < "$TEST_TRASH_LOG")"
+/bin/mv -- "$target" "$TEST_TRASH_SINK/$count"
 EOF
-chmod 755 "$base/fakebin/awk"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "panel ownership-query failure made uninstall fail"
-[ ! -e "$base/runtime" ] || fail "panel ownership-query failure retained the runtime"
-[ -L "$panel" ] || fail "panel ownership-query failure removed its optional shortcut"
-grep -q 'PipeASIO Settings shortcuts were left unchanged' "$base/err" \
-    || fail "panel ownership-query warning did not identify what remains"
-assert_warning_contract "$base/err"
-ok "legacy panel ownership-query failure is warning-only"
+    chmod 755 "$base/fakebin/$name"
+}
 
-# A corrupt optional MIME snapshot cannot veto removal of the runtime.
-base="$(new_fixture invalid-mime-state)"
-printf 'application/x-not-owned\tforeign.desktop\n' \
-    > "$(state_path "$base")/mime-prestate.tsv"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "invalid MIME state made uninstall fail"
-[ ! -e "$base/runtime" ] || fail "invalid MIME state retained the runtime"
-[ -e "$(state_path "$base")/mime-prestate.tsv" ] \
-    || fail "invalid MIME state was discarded before it could be reviewed"
-grep -q 'File-opening defaults were left unchanged because the saved settings' "$base/err" \
-    || fail "invalid MIME state warning was not explicit"
-assert_warning_contract "$base/err"
-ok "invalid MIME restoration state is warning-only"
-
-# Backend query failure is also optional and must retain the exact saved value.
-base="$(new_fixture mime-query)"
-printf 'application/x-ableton-live-set\tforeign.desktop\n' \
-    > "$(state_path "$base")/mime-prestate.tsv"
-run_uninstall "$base" --keep-prefix TEST_XDG_QUERY_RC=77 \
-    > "$base/out" 2> "$base/err" \
-    || fail "MIME query failure made uninstall fail"
-[ ! -e "$base/runtime" ] || fail "MIME query failure retained the runtime"
-grep -qx $'application/x-ableton-live-set\tforeign.desktop' \
-    "$(state_path "$base")/mime-prestate.tsv" \
-    || fail "MIME query failure discarded the saved default"
-grep -q 'could not be checked' "$base/err" \
-    || fail "MIME query warning did not identify the failed operation"
-assert_warning_contract "$base/err"
-ok "MIME backend failure is warning-only"
-
-# A recognisable project file is removed authoritatively; an opaque changed
-# file at another managed path is preserved without blocking core removal.
-base="$(new_fixture authoritative-and-foreign)"
-desktop="$base/xdg/data/applications/ableton-live.desktop"
-opaque="$base/xdg/data/applications/max9.desktop"
-mkdir -p -- "$(dirname "$desktop")" "$(dirname "$opaque")"
-cat > "$desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Locally renamed Ableton Live
-Comment=Music production and performance
-Exec=$base/home/.local/bin/ableton-live %f
-MimeType=application/x-ableton-live-set;application/x-ableton-live-clip;application/x-ableton-live-pack;
-EOF
-printf 'foreign opaque bytes\n' > "$opaque"
-zero_digest="$(printf '%064d' 0)"
-printf 'file\t%s\t%s\nfile\t%s\t%s\n' \
-    "$desktop" "$zero_digest" "$opaque" "$zero_digest" \
-    > "$(state_path "$base")/install-manifest.tsv"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "preserved foreign integration file made uninstall fail"
-[ ! -e "$desktop" ] \
-    || fail "recognisable project desktop file was not removed authoritatively"
-grep -qxF 'foreign opaque bytes' "$opaque" \
-    || fail "unrecognised opaque file was removed"
-[ ! -e "$base/runtime" ] \
-    || fail "preserved foreign integration file retained the runtime"
-grep -qF "kept an unrecognised or user-modified file at $opaque" "$base/err" \
-    || fail "preserved foreign integration file was not reported"
-assert_warning_contract "$base/err"
-ok "recognisable project files are removed while foreign data is preserved"
-
-# Snapshot-free launcher replacement has one two-path ownership relation: the
-# canonical path is generated, while its adjacent .bak contains the displaced
-# user object. A failed cleanup must remain retryable without deleting either
-# copy, and the retry must recognise an already-restored launcher.
-base="$(new_fixture adjacent-launcher-retry)"
-state="$(state_path "$base")"
-panel_command="$base/home/.local/bin/pipeasio-settings"
-panel_desktop="$base/xdg/data/applications/pipeasio-settings.desktop"
-mkdir -p -- "$base/runtime/bin" "$(dirname "$panel_command")" \
-    "$(dirname "$panel_desktop")"
-printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/pipeasio-settings"
-chmod 755 "$base/runtime/bin/pipeasio-settings"
-ln -s -- "$base/runtime/bin/pipeasio-settings" "$panel_command"
-printf '[Desktop Entry]\nName=PipeASIO Settings\n' > "$panel_desktop"
-printf '#!/bin/sh\necho displaced-user-command\n' > "${panel_command}.bak"
-chmod 755 "${panel_command}.bak"
-printf '[Desktop Entry]\nName=Displaced user desktop\n' > "${panel_desktop}.bak"
-cp -- "${panel_command}.bak" "$base/command.before"
-cp -- "${panel_desktop}.bak" "$base/desktop.before"
-command_digest="$({ printf 'symlink\0'; readlink -n -- "$panel_command"; } \
-    | sha256sum | awk '{print $1}')"
-desktop_digest="$(sha256sum -- "$panel_desktop")"
-desktop_digest="${desktop_digest%% *}"
-command_backup_digest="$(sha256sum -- "${panel_command}.bak")"
-command_backup_digest="${command_backup_digest%% *}"
-desktop_backup_digest="$(sha256sum -- "${panel_desktop}.bak")"
-desktop_backup_digest="${desktop_backup_digest%% *}"
-# Put each backup row first to prove record order cannot delete the recovery
-# copy before the canonical launcher is considered.
-printf 'file\t%s\t%s\nsymlink\t%s\t%s\nfile\t%s\t%s\nfile\t%s\t%s\nruntime\t%s\twine-d2d1-nspa-11.13\n' \
-    "${panel_command}.bak" "$command_backup_digest" \
-    "$panel_command" "$command_digest" \
-    "${panel_desktop}.bak" "$desktop_backup_digest" \
-    "$panel_desktop" "$desktop_digest" "$base/runtime" \
-    > "$state/install-manifest.tsv"
-run_uninstall "$base" --keep-prefix FAIL_RM_TARGET="${panel_command}.bak" \
-    > "$base/first.out" 2> "$base/first.err" \
-    || fail "saved-launcher cleanup failure made uninstall fail"
-cmp -s -- "$base/command.before" "$panel_command" \
-    || fail "saved command was not restored before its cleanup failure"
-cmp -s -- "$base/desktop.before" "$panel_desktop" \
-    || fail "saved desktop was not restored"
-[ -f "${panel_command}.bak" ] \
-    || fail "failed saved-command cleanup did not retain its retry copy"
-[ ! -e "${panel_desktop}.bak" ] && [ ! -L "${panel_desktop}.bak" ] \
-    || fail "successful saved-desktop cleanup retained its extra copy"
-[ ! -e "$base/runtime" ] \
-    || fail "saved-launcher cleanup failure retained the configured runtime"
-assert_warning_contract "$base/first.err"
-run_uninstall "$base" --keep-prefix > "$base/retry.out" 2> "$base/retry.err" \
-    || fail "saved-launcher cleanup retry failed"
-if ! cmp -s -- "$base/command.before" "$panel_command" \
-   || ! cmp -s -- "$base/desktop.before" "$panel_desktop"; then
-    fail "saved-launcher cleanup retry changed a restored user launcher"
-fi
-[ ! -e "${panel_command}.bak" ] && [ ! -L "${panel_command}.bak" ] \
-    || fail "saved-launcher cleanup retry retained the extra command copy"
-if grep -q '^!! warning:' "$base/retry.err"; then
-    fail "idempotent saved-launcher cleanup retry emitted a warning"
-fi
-ok "adjacent launcher backups restore user objects and retry idempotently"
-
-# If the canonical launcher changed after installation, neither it nor its exact
-# saved earlier launcher is disposable project state.
-base="$(new_fixture modified-adjacent-launcher)"
-state="$(state_path "$base")"
-panel_desktop="$base/xdg/data/applications/pipeasio-settings.desktop"
-mkdir -p -- "$(dirname "$panel_desktop")"
-printf '[Desktop Entry]\nName=Generated panel\n' > "$panel_desktop"
-generated_digest="$(sha256sum -- "$panel_desktop")"
-generated_digest="${generated_digest%% *}"
-printf '[Desktop Entry]\nName=Saved foreign panel\n' > "${panel_desktop}.bak"
-saved_digest="$(sha256sum -- "${panel_desktop}.bak")"
-saved_digest="${saved_digest%% *}"
-printf 'file\t%s\t%s\nfile\t%s\t%s\n' \
-    "$panel_desktop" "$generated_digest" \
-    "${panel_desktop}.bak" "$saved_digest" \
-    > "$state/install-manifest.tsv"
-printf '[Desktop Entry]\nName=User modified after install\n' > "$panel_desktop"
-cp -- "$panel_desktop" "$base/modified.before"
-cp -- "${panel_desktop}.bak" "$base/saved.before"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "modified canonical launcher made uninstall fail"
-if ! cmp -s -- "$base/modified.before" "$panel_desktop" \
-   || ! cmp -s -- "$base/saved.before" "${panel_desktop}.bak"; then
-    fail "modified launcher cleanup deleted or changed foreign data"
-fi
-[ ! -e "$base/runtime" ] \
-    || fail "modified launcher retained the configured runtime"
-[ "$(grep -cF "kept the user-modified launcher at $panel_desktop" "$base/err")" -eq 1 ] \
-    || fail "modified launcher pair did not produce exactly one preservation warning"
-assert_warning_contract "$base/err"
-ok "modified canonical and saved launchers are both preserved with one warning"
-
-# Older installations may have a persistent pre-install copy for both the
-# canonical launcher and a foreign object that already occupied <name>.bak.
-# Those explicit records take precedence over the snapshot-free pair fallback.
-base="$(new_fixture persistent-launcher-prestate)"
-state="$(state_path "$base")"
-panel_desktop="$base/xdg/data/applications/pipeasio-settings.desktop"
-mkdir -p -- "$(dirname "$panel_desktop")" "$state/install-prestate"
-printf '[Desktop Entry]\nName=Generated panel\n' > "$panel_desktop"
-printf '[Desktop Entry]\nName=Displaced canonical\n' > "${panel_desktop}.bak"
-canonical_digest="$(sha256sum -- "$panel_desktop")"
-canonical_digest="${canonical_digest%% *}"
-adjacent_digest="$(sha256sum -- "${panel_desktop}.bak")"
-adjacent_digest="${adjacent_digest%% *}"
-canonical_id="$(printf '%s' "$panel_desktop" | sha256sum | awk '{print $1}')"
-adjacent_id="$(printf '%s' "${panel_desktop}.bak" | sha256sum | awk '{print $1}')"
-printf '[Desktop Entry]\nName=Original canonical\n' \
-    > "$state/install-prestate/$canonical_id"
-printf '[Desktop Entry]\nName=Original foreign backup\n' \
-    > "$state/install-prestate/$adjacent_id"
-printf 'present\t%s\t%s\npresent\t%s\t%s\n' \
-    "$panel_desktop" "$state/install-prestate/$canonical_id" \
-    "${panel_desktop}.bak" "$state/install-prestate/$adjacent_id" \
-    > "$state/install-prestate.tsv"
-printf 'file\t%s\t%s\nfile\t%s\t%s\n' \
-    "$panel_desktop" "$canonical_digest" \
-    "${panel_desktop}.bak" "$adjacent_digest" \
-    > "$state/install-manifest.tsv"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "persistent launcher prestate made uninstall fail"
-grep -qxF 'Name=Original canonical' "$panel_desktop" \
-    || fail "persistent prestate did not restore the original canonical launcher"
-grep -qxF 'Name=Original foreign backup' "${panel_desktop}.bak" \
-    || fail "persistent prestate did not restore a pre-existing foreign .bak"
-[ ! -e "$base/runtime" ] \
-    || fail "persistent launcher prestate retained the configured runtime"
-ok "persistent launcher prestate preserves a pre-existing foreign backup"
-
-# A failed optional file removal is judged by its postcondition and reported;
-# it must not be reclassified as a runtime failure.
-base="$(new_fixture integration-removal)"
-desktop="$base/xdg/data/applications/ableton-live.desktop"
-mkdir -p -- "$(dirname "$desktop")"
-printf 'managed desktop bytes\n' > "$desktop"
-desktop_digest="$(sha256sum -- "$desktop")"
-desktop_digest="${desktop_digest%% *}"
-printf 'file\t%s\t%s\n' "$desktop" "$desktop_digest" \
-    > "$(state_path "$base")/install-manifest.tsv"
-run_uninstall "$base" --keep-prefix FAIL_RM_TARGET="$desktop" \
-    > "$base/out" 2> "$base/err" \
-    || fail "project file removal failure made uninstall fail"
-[ -f "$desktop" ] || fail "file-removal failure fixture unexpectedly disappeared"
-[ ! -e "$base/runtime" ] || fail "project file removal failure retained the runtime"
-grep -qF "an Ableton Linux file remains at $desktop" "$base/err" \
-    || fail "remaining project file was not identified"
-assert_warning_contract "$base/err"
-ok "project integration removal failure is warning-only"
-
-# Cache rebuild tools are advisory after the desktop files have been handled.
-base="$(new_fixture desktop-cache)"
-mkdir -p -- "$base/xdg/data/applications"
-run_uninstall "$base" --keep-prefix TEST_DESKTOP_CACHE_RC=71 \
-    > "$base/out" 2> "$base/err" \
-    || fail "desktop cache failure made uninstall fail"
-[ ! -e "$base/runtime" ] || fail "desktop cache failure retained the runtime"
-grep -q 'desktop application cache could not be refreshed' "$base/err" \
-    || fail "desktop cache warning did not identify what remains stale"
-assert_warning_contract "$base/err" no
-ok "desktop cache refresh failure is warning-only"
-
-# Cleanup of the manifest, state tree, and managed config is optional after the
-# runtime has gone. Each injected command failure must leave a retryable object.
-for cleanup_kind in manifest state config; do
-    base="$(new_fixture "cleanup-$cleanup_kind")"
-    state="$(state_path "$base")"
-    target=""
-    failure_setting=""
-    case "$cleanup_kind" in
-        manifest)
-            printf 'runtime\t%s\twine-d2d1-nspa-11.13\n' "$base/runtime" \
-                > "$state/install-manifest.tsv"
-            target="$state/install-manifest.tsv"
-            ;;
-        state)
-            target="$state"
-            failure_setting="FAIL_FIND_TARGET=$target"
-            ;;
-        config)
-            mkdir -p -- "$base/xdg/config/ableton-wine"
-            cat > "$base/xdg/config/ableton-wine/config" <<EOF
-# ableton-linux installer configuration; managed by the installer
-format=1
-runtime_root=$base/runtime
-prefix=$base/prefix
-live_major=
-link_mode=off
-linkd=$base/xdg/data/ableton-wine/ableton-linkd
-EOF
-            target="$base/xdg/config/ableton-wine/config"
-            ;;
+guarded_rm()
+{
+    local base="$1"
+    cat > "$base/fakebin/rm" <<'EOF'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+    case "$arg" in
+        -*) ;;
+        "$TEST_ROOT"|"$TEST_ROOT"/*) ;;
+        *) printf 'rm escaped fixture: %s\n' "$arg" >&2; exit 97 ;;
     esac
-    [ -n "$failure_setting" ] || failure_setting="FAIL_RM_TARGET=$target"
-    run_uninstall "$base" --keep-prefix "$failure_setting" \
-        > "$base/out" 2> "$base/err" \
-        || fail "$cleanup_kind cleanup failure made uninstall fail"
-    [ ! -e "$base/runtime" ] \
-        || fail "$cleanup_kind cleanup failure retained the runtime"
-    [ -e "$target" ] || [ -L "$target" ] \
-        || fail "$cleanup_kind cleanup fixture did not remain for retry"
-    if [ "$cleanup_kind" = state ]; then
-        grep -qxF 'owner=ableton-linux' "$state/.ableton-linux-state" \
-            || fail "partial state cleanup removed its retry ownership marker"
-    fi
-    assert_warning_contract "$base/err"
 done
-ok "manifest, state, and configuration cleanup failures are warning-only"
+printf '%s\n' "$*" >> "$TEST_RM_LOG"
+exec /bin/rm "$@"
+EOF
+    chmod 755 "$base/fakebin/rm"
+}
 
-# Optional support-state ownership may change after core removal. That skips
-# recursive support cleanup and reports residue without changing the core result.
-base="$(new_fixture post-core-state-change)"
-state="$(state_path "$base")"
-run_uninstall "$base" --keep-prefix \
-    CORRUPT_STATE_AFTER_TARGET="$base/runtime" \
-    CORRUPT_STATE_FILE="$state/.ableton-linux-state" \
-    > "$base/out" 2> "$base/err" \
-    || fail "post-core support-state ownership change made uninstall fail"
-[ ! -e "$base/runtime" ] || fail "post-core support-state change retained the runtime"
-grep -qxF 'changed during uninstall' "$state/.ableton-linux-state" \
-    || fail "post-core support-state fixture was not retained"
-grep -q 'installer could not confirm that it created their directory' "$base/err" \
-    || fail "post-core support-state warning did not identify why cleanup was skipped"
-assert_warning_contract "$base/err"
-ok "post-core support-state safety failures are warning-only"
+run_uninstall()
+{
+    local base="$1"
+    shift
+    RUN_RC=0
+    env -i HOME="$base/home" USER=test LOGNAME=test \
+        XDG_CONFIG_HOME="$base/xdg/config" XDG_DATA_HOME="$base/xdg/data" \
+        XDG_STATE_HOME="$base/xdg/state" XDG_CACHE_HOME="$base/xdg/cache" \
+        XDG_RUNTIME_DIR="$base/xdg/run" TMPDIR="$base/tmp" \
+        PATH="$base/fakebin:$work/corebin" LANG=C.UTF-8 TERM=dumb SHELL=/bin/bash \
+        ABLETON_UI_ACTION=uninstall ABLETON_UI_PROMPT_TIMEOUT=1 \
+        TEST_ROOT="$base" TEST_TRASH_LOG="$base/trash.log" \
+        TEST_TRASH_SINK="$base/trash" TEST_RM_LOG="$base/rm.log" \
+        TEST_FAIL_TOOL="$TEST_FAIL_TOOL" TEST_LEAVE_TOOL="$TEST_LEAVE_TOOL" \
+        /bin/bash "$here/uninstall.sh" "$@" > "$base/out" 2> "$base/err" \
+        || RUN_RC=$?
+}
 
-# An older runtime from valid optional information is best-effort. Its removal
-# failure cannot displace successful removal of the configured runtime.
-base="$(new_fixture extra-runtime-removal)"
-state="$(state_path "$base")"
-extra_runtime="$base/extra-runtime"
-mkdir -p -- "$extra_runtime"
-printf 'format=1\nname=wine-d2d1-nspa-11.13\n' \
-    > "$extra_runtime/.ableton-linux-runtime"
-printf 'runtime\t%s\twine-d2d1-nspa-11.13\nruntime\t%s\twine-d2d1-nspa-11.13\n' \
-    "$base/runtime" "$extra_runtime" > "$state/install-manifest.tsv"
-run_uninstall "$base" --keep-prefix FAIL_RM_TARGET="$extra_runtime" \
-    > "$base/out" 2> "$base/err" \
-    || fail "older recorded runtime removal failure made uninstall fail"
-[ ! -e "$base/runtime" ] || fail "older runtime failure retained the configured runtime"
-[ -e "$extra_runtime/.ableton-linux-runtime" ] \
-    || fail "older runtime failure fixture unexpectedly disappeared"
-grep -q 'older Wine runtime remains' "$base/err" \
-    || fail "older runtime residue was not identified"
-assert_warning_contract "$base/err"
-ok "older recorded runtime removal failure is warning-only"
+report_present()
+{
+    local label
+    check "report has its own heading" contains "$1" "What remains"
+    for label in Runtime Prefix "Linux integration" "Installer settings" "Shared state"; do
+        check "report includes $label status" contains "$1" "$label:"
+    done
+}
 
-# A command can report failure after reaching the requested end state (for
-# example, a wrapper's bookkeeping error). The verified outcome is authoritative.
-base="$(new_fixture runtime-status-only-failure)"
-run_uninstall "$base" --keep-prefix \
-    FAIL_RM_TARGET="$base/runtime" FAIL_RM_REMOVE_FIRST=1 \
-    > "$base/out" 2> "$base/err" \
-    || fail "runtime command status overrode a successful deletion outcome"
-[ ! -e "$base/runtime" ] \
-    || fail "status-only runtime failure fixture did not reach the deletion outcome"
-grep -qF '│  ┃ 2/2 ╏ REMOVE ABLETON LINUX ┃' "$base/out" \
-    && grep -qF '│  └─ Step 2 Complete! ✓' "$base/out" \
-    || fail "successful runtime deletion outcome was not reported as complete"
-ok "runtime deletion is classified by postcondition, not command status alone"
+report_says() { check "$2 status is $3" contains "$1" "$2: $3"; }
 
-# Output is presentation, not a removal gate.  A broken stdout consumer must
-# not interrupt the already-authorised runtime/prefix sequence or make its
-# verified completion report failure.
-base="$(new_fixture presentation-output-failure)"
-extra_runtime="$base/extra-runtime"
-mkdir -p -- "$extra_runtime" "$base/prefix"
-printf 'format=1\nname=wine-d2d1-nspa-11.13\n' \
-    > "$extra_runtime/.ableton-linux-runtime"
-printf 'format=1\nprefix=%s\n' "$base/prefix" \
-    > "$base/prefix/.ableton-linux-prefix"
-printf 'registry fixture\n' > "$base/prefix/system.reg"
-printf 'runtime\t%s\twine-d2d1-nspa-11.13\nruntime\t%s\twine-d2d1-nspa-11.13\n' \
-    "$base/runtime" "$extra_runtime" \
-    > "$(state_path "$base")/install-manifest.tsv"
-run_uninstall "$base" --delete-prefix > /dev/full 2> "$base/err" \
-    || fail "presentation output failure made verified removals fail"
-[ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
-    && [ ! -e "$extra_runtime" ] && [ ! -L "$extra_runtime" ] \
-    && [ ! -e "$base/prefix" ] && [ ! -L "$base/prefix" ] \
-    || fail "presentation output failure interrupted verified removals"
-ok "presentation output cannot interrupt or fail verified removals"
+before_in_log()
+{
+    local log="$1" first="$2" second="$3" a b
+    a="$(awk -F '\t' -v p="$first" '$2==p { print NR; exit }' "$log")"
+    b="$(awk -F '\t' -v p="$second" '$2==p { print NR; exit }' "$log")"
+    [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
+}
 
-# Ignoring presentation writes must not hide a core deletion failure.
-base="$(new_fixture presentation-output-with-runtime-failure)"
-if run_uninstall "$base" --keep-prefix FAIL_RM_TARGET="$base/runtime" \
-    > /dev/full 2> "$base/err"; then
-    fail "presentation output handling hid a runtime deletion failure"
+CASE="Runtime only removes integration and runtime"
+base="$(fixture runtime)"
+trash_tool "$base" gio
+TEST_FAIL_TOOL=
+run_uninstall "$base" --keep-prefix --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "runtime removed" test ! -e "$base/runtime"
+check "launcher removed" test ! -e "$base/home/.local/bin/ableton-live"
+check "prefix remains" test -d "$base/prefix"
+check "settings remain" test -f "$base/xdg/config/ableton-wine/config"
+check "state remains for partial scope" test -f \
+    "$base/xdg/state/ableton-wine/install-manifest.tsv"
+check "integration precedes runtime" before_in_log "$base/trash.log" \
+    "$base/home/.local/bin/ableton-live" "$base/runtime"
+check "manifest version removed" test ! -e "$base/xdg/data/ableton-wine/VERSION"
+check "manifest symlink removed" test ! -L "$base/home/.local/bin/pipeasio-settings"
+check "unmanifested file remains" test -f "$base/home/.local/bin/user-tool"
+check "preferences remain" test -f "$base/xdg/config/ableton-wine/preferences"
+report_present "$base"
+report_says "$base" Runtime Removed
+report_says "$base" Prefix Remains
+report_says "$base" "Linux integration" Removed
+report_says "$base" "Installer settings" Remains
+report_says "$base" "Shared state" Remains
+done_case
+
+CASE="Prefix only removes only the prefix"
+base="$(fixture prefix)"
+trash_tool "$base" gio
+run_uninstall "$base" --prefix-only --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "prefix removed" test ! -e "$base/prefix"
+check "runtime remains" test -d "$base/runtime"
+check "integration remains" test -e "$base/home/.local/bin/ableton-live"
+check "preferences remain" test -f "$base/xdg/config/ableton-wine/preferences"
+check "state remains" test -f "$base/xdg/state/ableton-wine/install-manifest.tsv"
+report_present "$base"
+report_says "$base" Runtime Remains
+report_says "$base" Prefix Removed
+report_says "$base" "Linux integration" Remains
+done_case
+
+CASE="All removes state last"
+base="$(fixture all)"
+trash_tool "$base" gio
+run_uninstall "$base" --delete-prefix --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "runtime removed" test ! -e "$base/runtime"
+check "prefix removed" test ! -e "$base/prefix"
+check "integration removed" test ! -e "$base/home/.local/bin/ableton-live"
+check "settings removed" test ! -e "$base/xdg/config/ableton-wine/config"
+check "preferences removed" test ! -e "$base/xdg/config/ableton-wine/preferences"
+check "state removed" test ! -e "$base/xdg/state/ableton-wine"
+check "integration precedes runtime" before_in_log "$base/trash.log" \
+    "$base/home/.local/bin/ableton-live" "$base/runtime"
+check "runtime precedes prefix" before_in_log "$base/trash.log" \
+    "$base/runtime" "$base/prefix"
+check "settings precede shared state" before_in_log "$base/trash.log" \
+    "$base/xdg/config/ableton-wine/config" "$base/xdg/state/ableton-wine"
+check "prefix precedes shared state" before_in_log "$base/trash.log" \
+    "$base/prefix" "$base/xdg/state/ableton-wine"
+check "unmanifested file remains" test -f "$base/home/.local/bin/user-tool"
+report_present "$base"
+report_says "$base" Runtime Removed
+report_says "$base" Prefix Removed
+report_says "$base" "Linux integration" Removed
+report_says "$base" "Installer settings" Removed
+report_says "$base" "Shared state" Removed
+done_case
+
+for bad in missing-manifest unrelated-path runtime-mismatch runtime-marker \
+           prefix-marker state-marker unsafe-runtime; do
+    CASE="Unsafe ownership data is refused: $bad"
+    base="$(fixture "bad-$bad")"
+    trash_tool "$base" gio
+    args=(--keep-prefix --yes)
+    case "$bad" in
+        missing-manifest)
+            rm -- "$base/xdg/state/ableton-wine/install-manifest.tsv" ;;
+        unrelated-path)
+            printf 'file\t%s\t%s\n' "$base/unrelated" \
+                0000000000000000000000000000000000000000000000000000000000000000 \
+                >> "$base/xdg/state/ableton-wine/install-manifest.tsv" ;;
+        runtime-mismatch)
+            sed -i "s|^runtime\t$base/runtime\t|runtime\t$base/elsewhere\t|" \
+                "$base/xdg/state/ableton-wine/install-manifest.tsv" ;;
+        runtime-marker)
+            printf 'format=1\nname=foreign\n' \
+                > "$base/runtime/.ableton-linux-runtime" ;;
+        prefix-marker)
+            printf 'format=1\nprefix=/foreign\n' \
+                > "$base/prefix/.ableton-linux-prefix"
+            args=(--prefix-only --yes) ;;
+        state-marker)
+            printf 'format=1\nowner=foreign\n' \
+                > "$base/xdg/state/ableton-wine/.ableton-linux-state" ;;
+        unsafe-runtime)
+            sed -i 's|^runtime_root=.*|runtime_root=/|' \
+                "$base/xdg/config/ableton-wine/config"
+            sed -i 's|^runtime\t[^\t]*\t|runtime\t/\t|' \
+                "$base/xdg/state/ableton-wine/install-manifest.tsv" ;;
+    esac
+    run_uninstall "$base" "${args[@]}"
+    check "fails" test "$RUN_RC" -ne 0
+    check "nothing was sent to Trash" test ! -s "$base/trash.log"
+    check "runtime remains" test -d "$base/runtime"
+    check "prefix remains" test -d "$base/prefix"
+    done_case
+done
+
+CASE="Changed manifest file is preserved and reported"
+base="$(fixture changed)"
+trash_tool "$base" gio
+printf 'user replacement\n' > "$base/home/.local/bin/ableton-live"
+run_uninstall "$base" --keep-prefix --yes
+check "safe preservation succeeds" test "$RUN_RC" -eq 0
+check "replacement remains" grep -qxF "user replacement" \
+    "$base/home/.local/bin/ableton-live"
+check "replacement was not offered to Trash" not_in_log "$base/trash.log" \
+    "$base/home/.local/bin/ableton-live"
+check "change is reported" contains "$base" "changed"
+check "state remains to describe it" test -d "$base/xdg/state/ableton-wine"
+done_case
+
+start_process()
+{
+    local image="$1" prefix="$2"
+    mkdir -p -- "$(dirname "$image")"
+    cp -- "$(type -P sleep)" "$image"
+    chmod 755 "$image"
+    WINEPREFIX="$prefix" "$image" 30 >/dev/null 2>&1 &
+    PROCESS_PID=$!
+    children+=("$PROCESS_PID")
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ "$(readlink -f -- "/proc/$PROCESS_PID/exe" 2>/dev/null || true)" = "$image" ] \
+            && tr '\0' '\n' < "/proc/$PROCESS_PID/environ" 2>/dev/null \
+                | grep -qxF "WINEPREFIX=$prefix" && return 0
+        sleep 0.02
+    done
+    return 1
+}
+
+CASE="Relevant runtime process refuses removal"
+base="$(fixture busy-runtime)"
+trash_tool "$base" gio
+start_process "$base/runtime/bin/wine" "$base/other-prefix"
+run_uninstall "$base" --keep-prefix --yes
+check "fails" test "$RUN_RC" -ne 0
+check "nothing was trashed" test ! -s "$base/trash.log"
+check "runtime remains" test -d "$base/runtime"
+kill "$PROCESS_PID" 2>/dev/null || true
+wait "$PROCESS_PID" 2>/dev/null || true
+done_case
+
+CASE="Unrelated Wine prefix process does not block removal"
+base="$(fixture unrelated-process)"
+trash_tool "$base" gio
+start_process "$base/foreign/wine" "$base/other-prefix"
+run_uninstall "$base" --prefix-only --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "selected prefix removed" test ! -e "$base/prefix"
+kill "$PROCESS_PID" 2>/dev/null || true
+wait "$PROCESS_PID" 2>/dev/null || true
+done_case
+
+CASE="Relevant prefix process refuses removal"
+base="$(fixture busy-prefix)"
+trash_tool "$base" gio
+start_process "$base/foreign/wine" "$base/prefix"
+run_uninstall "$base" --prefix-only --yes
+check "fails" test "$RUN_RC" -ne 0
+check "nothing was trashed" test ! -s "$base/trash.log"
+check "prefix remains" test -d "$base/prefix"
+kill "$PROCESS_PID" 2>/dev/null || true
+wait "$PROCESS_PID" 2>/dev/null || true
+done_case
+
+for available in all trash-put kde; do
+    CASE="Trash selection: $available"
+    base="$(fixture "trash-$available")"
+    case "$available" in
+        all)
+            trash_tool "$base" gio
+            trash_tool "$base" trash-put
+            trash_tool "$base" kioclient
+            expected=gio ;;
+        trash-put)
+            trash_tool "$base" trash-put
+            trash_tool "$base" kioclient
+            expected=trash-put ;;
+        kde)
+            trash_tool "$base" kioclient
+            expected=kioclient ;;
+    esac
+    run_uninstall "$base" --prefix-only --yes
+    check "succeeds" test "$RUN_RC" -eq 0
+    check "selects expected tool" test "$(cut -f1 "$base/trash.log" | head -n 1)" = "$expected"
+    check "uses only the selected tool" test "$(wc -l < "$base/trash.log")" -eq 1
+    done_case
+done
+
+CASE="Detected Trash failure stops without fallback"
+base="$(fixture trash-failure)"
+trash_tool "$base" gio
+trash_tool "$base" trash-put
+TEST_FAIL_TOOL=gio
+run_uninstall "$base" --keep-prefix --yes
+TEST_FAIL_TOOL=
+check "fails" test "$RUN_RC" -ne 0
+check "failed target remains" test -e "$base/home/.local/bin/ableton-live"
+check "later runtime remains" test -d "$base/runtime"
+check "prefix remains" test -d "$base/prefix"
+check "fallback was not attempted" not_in_log "$base/trash.log" "trash-put"
+check "state remains for retry" test -d "$base/xdg/state/ableton-wine"
+report_present "$base"
+done_case
+
+CASE="Trash success must actually remove the target"
+base="$(fixture trash-left-target)"
+trash_tool "$base" gio
+trash_tool "$base" trash-put
+TEST_LEAVE_TOOL=gio
+run_uninstall "$base" --prefix-only --yes
+TEST_LEAVE_TOOL=
+check "fails" test "$RUN_RC" -ne 0
+check "prefix remains" test -d "$base/prefix"
+check "fallback was not attempted" not_in_log "$base/trash.log" "trash-put"
+check "state remains for retry" test -d "$base/xdg/state/ableton-wine"
+done_case
+
+CASE="No Trash tool warns before permanent deletion"
+base="$(fixture permanent)"
+guarded_rm "$base"
+run_uninstall "$base" --keep-prefix --yes
+check "approved deletion succeeds" test "$RUN_RC" -eq 0
+check "runtime removed" test ! -e "$base/runtime"
+check "warning says permanent" contains "$base" "permanent"
+check "no Trash command ran" test ! -s "$base/trash.log"
+done_case
+
+CASE="Permanent deletion can be declined"
+base="$(fixture permanent-decline)"
+guarded_rm "$base"
+run_uninstall "$base" --keep-prefix < /dev/null
+check "decline exits without an error" test "$RUN_RC" -eq 0
+check "runtime remains" test -d "$base/runtime"
+check "warning says permanent" contains "$base" "permanent"
+check "runtime was not passed to rm" not_in_log "$base/rm.log" "$base/runtime"
+done_case
+
+CASE="Prefix deletion has a separate confirmation"
+base="$(fixture prefix-confirm)"
+trash_tool "$base" gio
+run_uninstall "$base" --prefix-only < /dev/null
+check "decline exits without an error" test "$RUN_RC" -eq 0
+check "prefix remains" test -d "$base/prefix"
+check "a separate prefix question is shown" contains "$base" \
+    "QUESTION: Delete the Wine prefix"
+check "nothing was trashed" test ! -s "$base/trash.log"
+done_case
+
+if [ "$failures" -ne 0 ]; then
+    printf 'FAIL: %d failed assertions across %d cases\n' "$failures" "$cases" >&2
+    exit 1
 fi
-[ -e "$base/runtime" ] \
-    || fail "runtime failure fixture unexpectedly disappeared with broken output"
-grep -q 'runtime removal is incomplete' "$base/err" \
-    || fail "broken output obscured the real runtime deletion failure"
-ok "presentation output handling preserves core deletion failures"
-
-# Runtime and requested-prefix deletion are the core operation and stay fatal.
-base="$(new_fixture runtime-removal)"
-write_uninstall_preferences "$base"
-preferences="$base/xdg/config/ableton-wine/preferences"
-preferences_before="$(sha256sum "$preferences")"
-if run_uninstall "$base" --keep-prefix FAIL_RM_TARGET="$base/runtime" \
-    > "$base/out" 2> "$base/err"; then
-    fail "uninstall succeeded while the runtime remained"
-fi
-[ -e "$base/runtime" ] || fail "runtime failure fixture unexpectedly disappeared"
-[ -e "$(state_path "$base")" ] \
-    || fail "runtime failure discarded support files needed to retry"
-[ "$(sha256sum "$preferences")" = "$preferences_before" ] \
-    || fail "runtime deletion failure removes or changes launcher preferences"
-grep -q 'runtime removal is incomplete' "$base/err" \
-    || fail "runtime removal failure was not explicit"
-grep -q '^   Retry:' "$base/err" \
-    || fail "runtime removal failure did not print a retry command"
-ok "runtime deletion failure remains fatal"
-
-base="$(new_fixture prefix-removal)"
-mkdir -p -- "$base/prefix"
-printf 'format=1\nprefix=%s\n' "$base/prefix" \
-    > "$base/prefix/.ableton-linux-prefix"
-printf 'registry fixture\n' > "$base/prefix/system.reg"
-write_uninstall_preferences "$base"
-preferences="$base/xdg/config/ableton-wine/preferences"
-preferences_before="$(sha256sum "$preferences")"
-if run_uninstall "$base" --delete-prefix FAIL_RM_TARGET="$base/prefix" \
-    > "$base/out" 2> "$base/err"; then
-    fail "uninstall succeeded while the requested prefix remained"
-fi
-[ -e "$base/prefix" ] || fail "prefix failure fixture unexpectedly disappeared"
-[ ! -e "$base/runtime" ] || fail "prefix failure occurred before runtime removal"
-[ -e "$(state_path "$base")" ] \
-    || fail "prefix failure discarded support files needed to retry"
-[ "$(sha256sum "$preferences")" = "$preferences_before" ] \
-    || fail "requested-prefix deletion failure removes or changes launcher preferences"
-grep -q 'prefix removal is incomplete' "$base/err" \
-    || fail "prefix removal failure was not explicit"
-grep -q '^   Retry:' "$base/err" \
-    || fail "prefix removal failure did not print a retry command"
-ok "requested-prefix deletion failure remains fatal"
-
-# A suggestive sibling name is never delete authority, but the foreign sibling
-# is optional and cannot veto removal of the exact configured runtime.
-base="$(new_fixture rollback-ownership)"
-mkdir -p -- "$base/runtime-rollback-unrecognised"
-printf 'foreign saved runtime\n' > "$base/runtime-rollback-unrecognised/sentinel"
-run_uninstall "$base" --keep-prefix > "$base/out" 2> "$base/err" \
-    || fail "unmarked saved-runtime sibling made uninstall fail"
-[ ! -e "$base/runtime" ] \
-    || fail "unmarked saved-runtime sibling retained the configured runtime"
-grep -qxF 'foreign saved runtime' "$base/runtime-rollback-unrecognised/sentinel" \
-    || fail "unmarked saved-runtime sibling was removed"
-grep -q 'unrecognised saved Wine runtime was left unchanged' "$base/err" \
-    || fail "saved-runtime preservation warning was not explicit"
-assert_warning_contract "$base/err"
-ok "unrecognised saved-runtime siblings are preserved without vetoing core removal"
-
-printf '1..%d\n' "$pass"
+printf 'PASS: %d minimal uninstall boundary cases\n' "$cases"
