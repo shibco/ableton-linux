@@ -79,30 +79,17 @@ icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 mime_root="${XDG_DATA_HOME:-$HOME/.local/share}/mime"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 ABLETON_PROJECT_ASSUME_YES="$assume_yes"
-export ABLETON_PROJECT_ASSUME_YES
+ABLETON_RECORD_PROJECT_FILES=1
+export ABLETON_PROJECT_ASSUME_YES ABLETON_RECORD_PROJECT_FILES
 
-# The library's project-file helpers intentionally implement the manual,
-# dated-backup workflow used by direct tools and its focused tests. Public
-# installation instead publishes each fixed output atomically and records
-# ownership only after that publication succeeds.
-ableton_install_project_file()
+# Shared configuration files use atomic prestate so uninstall can put back the
+# exact file that occupied their fixed path. Ordinary project files keep the
+# installer's existing overwrite prompt and dated backups.
+ableton_install_generated_config()
 {
-    local mode="$1" source="$2" target="$3" kind="${4:-file}"
-    local prestate_policy="${5:-preserve-local}"
+    local mode="$1" source="$2" target="$3"
     [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
-    if ! ableton_install_file "$mode" "$source" "$target" "$kind" "$prestate_policy"; then
-        echo "!! copy failed: $source -> $target" >&2 || true
-        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
-    fi
-    return 0
-}
-
-ableton_install_project_symlink()
-{
-    local source="$1" target="$2"
-    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
-    if { [ ! -e "$source" ] && [ ! -L "$source" ]; } \
-       || ! ableton_install_symlink "$source" "$target"; then
+    if ! ableton_install_file "$mode" "$source" "$target" config; then
         echo "!! copy failed: $source -> $target" >&2 || true
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
     fi
@@ -961,7 +948,7 @@ install_integration()
         fi
         if [ -n "$mime_stage" ] && [ -f "$mime_stage/mimeapps.list" ]; then
             mime_failures_before="$ABLETON_OPTIONAL_FILE_FAILURES"
-            ableton_install_project_file 644 "$mime_stage/mimeapps.list" "$mimeapps_file" config
+            ableton_install_generated_config 644 "$mime_stage/mimeapps.list" "$mimeapps_file"
             [ "$ABLETON_OPTIONAL_FILE_FAILURES" -eq "$mime_failures_before" ] \
                 || mime_setup_ok=0
         fi
@@ -1058,7 +1045,7 @@ install_link_assets()
     if [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] \
        && tmp="$(mktemp "${TMPDIR:-/tmp}/ableton-link-service.XXXXXX")" \
        && render_link_unit > "$tmp"; then
-        ableton_install_project_file 644 "$tmp" "$installed_unit" config
+        ableton_install_generated_config 644 "$tmp" "$installed_unit"
     elif [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ]; then
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
         echo "!! copy failed: generated Ableton Link service -> $installed_unit" >&2 || true

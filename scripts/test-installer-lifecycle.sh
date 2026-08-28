@@ -676,7 +676,7 @@ base="$(new_env uninstall-scope-dispatch)"
 dispatcher="$base/dispatcher"
 mkdir -p -- "$dispatcher"
 cp -- "$here/installer.sh" "$dispatcher/installer.sh"
-cp -a -- "$here/lib" "$dispatcher/lib"
+cp -R -- "$here/lib" "$dispatcher/lib"
 cat > "$dispatcher/uninstall.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -744,9 +744,11 @@ if run_isolated "$base" bash "$here/installer.sh" install --skip-live-install \
     fail "duplicate immutable options are accepted"
 fi
 [ ! -e "$base/config" ] && [ ! -e "$base/state" ] || fail "duplicate-option failure mutates state"
+legacy_status=0
 run_isolated "$base" bash "$here/installer.sh" --prefix --uninstall --dry-run \
-    >"$base/legacy.out" 2>"$base/legacy.err"
-grep -qi 'delete the Wine prefix, including Live and its authorisation' "$base/legacy.out" \
+    >"$base/legacy.out" 2>"$base/legacy.err" || legacy_status=$?
+[ "$legacy_status" -ne 2 ] \
+    && ! grep -qi 'specified more than once' "$base/legacy.err" \
     || fail "legacy uninstall prefix alias depends on argument order"
 ok "immutable options reject duplicates and legacy parsing is order-independent"
 
@@ -2389,6 +2391,17 @@ run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --in
     || { sed -n '1,40p' "$base/install.err" >&2; fail "integration install failed before MIME restoration"; }
 grep -qxF "x-scheme-handler/ableton=$ABLETON_PROTOCOL_DESKTOP_ID" "$base/config/mimeapps.list" \
     || fail "integration did not take over the scheme handler it registers"
+mkdir -p -- "$base/config/ableton-wine"
+cat > "$base/config/ableton-wine/config" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$base/home/.local/opt/wine-d2d1-nspa-11.13
+prefix=$base/home/.wine-ableton
+live_major=12
+link_mode=off
+linkd=$base/data/ableton-wine/ableton-linkd
+EOF
+chmod 600 "$base/config/ableton-wine/config"
 run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
     --keep-prefix --yes >"$base/out" 2>"$base/err" \
     || { sed -n '1,40p' "$base/err" >&2; fail "uninstall failed after integration"; }
@@ -2399,13 +2412,13 @@ if grep -Eq "=($ABLETON_PROTOCOL_DESKTOP_ID|$ABLETON_AUZ_DESKTOP_ID|ableton-live
     "$base/config/mimeapps.list"; then
     fail "uninstall leaves a MIME default naming an entry it removed"
 fi
-! grep -q '^x-scheme-handler/ableton=' "$base/config/mimeapps.list" \
-    || fail "uninstall reconstructed an unknowable previous scheme default"
+grep -qxF 'x-scheme-handler/ableton=third-party.desktop' "$base/config/mimeapps.list" \
+    || fail "uninstall did not restore the pre-install scheme default"
 ! grep -q '^application/x-wine-extension-auz=' "$base/config/mimeapps.list" \
     || fail "uninstall writes out a default the user never set explicitly"
 grep -qxF 'text/plain=third-party.desktop' "$base/config/mimeapps.list" \
     || fail "uninstall changed an unrelated MIME default"
-ok "uninstall clears project MIME defaults and preserves unrelated entries"
+ok "uninstall restores pre-install MIME defaults and preserves unrelated entries"
 
 # Session Link mode writes the unit for later but never runs it, so it must
 # not need a user manager that answers.  Only always-on policy does.

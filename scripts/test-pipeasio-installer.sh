@@ -504,12 +504,14 @@ run_isolated "$base" env \
     && [ ! -e "$base/xdg/data/applications/pipeasio-settings.desktop" ] \
     && [ ! -e "$base/xdg/data/icons/hicolor/scalable/apps/pipeasio.svg" ] \
     || fail "direct runtime-only reconcile created previously absent panel shortcuts"
-[ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "direct runtime-only reconcile created obsolete ownership records"
+grep -qxF "$(printf 'runtime\t%s\twine-d2d1-nspa-11.13' "$base/runtime")" \
+    "$base/xdg/state/ableton-wine/install-manifest.tsv" \
+    || fail "direct runtime-only install did not publish its runtime ownership"
+[ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
+    || fail "direct runtime-only install created unrelated file prestate"
 grep -qF 'The Wine runtime is ready.' "$base/out" \
     || fail "direct runtime-only install did not print its simple outcome"
-ok "direct runtime-only install leaves previously absent panel paths alone without ownership records"
+ok "direct runtime-only install leaves absent panel paths alone and records its runtime"
 
 # Repair-mode parsing keeps safe, unambiguous values from this project's file
 # even when an obsolete field makes the whole generation invalid. CLI values
@@ -603,17 +605,13 @@ for config_kind in foreign-regular symlink directory; do
                 && grep -qxF 'foreign directory sentinel' "$config_backup/sentinel" \
                 || fail "directory settings backup changed the displaced tree" ;;
     esac
-    [ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-        && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-        || fail "$config_kind settings replacement created obsolete ownership records"
 done
 ok "settings objects cannot gate Wine and are moved to inert backups before replacement"
 
-# Runtime-only work does not use prefix, desktop-data, installer-settings,
-# persistent-state, or launcher roots for its core promotion. Foreign objects
-# at any of those optional paths must survive while Wine still commits; the
-# post-core panel/config repair may warn and skip them.
-for optional_root in prefix data config state bin; do
+# Runtime-only work does not use prefix, desktop-data, installer-settings, or
+# launcher roots for its core promotion. State now holds the required runtime
+# manifest; the other optional paths can still be foreign without gating Wine.
+for optional_root in prefix data config bin; do
     base="$(new_env "runtime-unrelated-${optional_root}-root")"
     make_runtime_only_kit "$base"
     foreign_root="$base/foreign-$optional_root-root"
@@ -622,7 +620,6 @@ for optional_root in prefix data config state bin; do
         prefix) root_var=ABLETON_WINEPREFIX ;;
         data) root_var=ABLETON_DATA_HOME ;;
         config) root_var=ABLETON_CONFIG_HOME ;;
-        state) root_var=ABLETON_STATE_HOME ;;
         bin) root_var=ABLETON_BIN_HOME ;;
     esac
     run_isolated "$base" env PATH="$base/fakebin:$PATH" \
@@ -713,9 +710,6 @@ panel_backup="$(find "$base/xdg/state/ableton-wine/backups" \
 [ -f "$base/xdg/data/applications/pipeasio-settings.desktop" ] \
     && [ -f "$base/xdg/data/icons/hicolor/scalable/apps/pipeasio.svg" ] \
     || fail "panel replacement did not continue through the remaining fixed paths"
-[ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "panel replacement created obsolete ownership records"
 ok "direct runtime panel repair runs postcommit with one inert backup"
 
 base="$(new_env optional-panel-payload-warning)"
@@ -979,9 +973,6 @@ foreign_backup="$(find "$base/xdg/state/ableton-wine/backups" \
 cmp -s -- "$base/kit/scripts/lib/lifecycle.sh" \
     "$base/xdg/data/ableton-wine/lib/lifecycle.sh" \
     || fail "one failed support file blocked a later independent repair"
-[ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "mixed-mode optional copy created obsolete ownership records"
 [ -f "$base/runtime/.ableton-linux-runtime" ] \
     && [ ! -e "$base/runtime/.ableton-linux-rollback/old-sentinel" ] \
     || fail "mixed-mode optional failure restored the previous runtime"
@@ -1063,9 +1054,6 @@ foreign_backup="$(find "$base/xdg/state/ableton-wine/backups" \
 [ -n "$foreign_backup" ] \
     && cmp -s -- "$base/foreign-helper.before" "$foreign_backup" \
     || fail "broken diagnostics lost the inert displaced-file backup"
-[ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "broken diagnostics created obsolete ownership records"
 if find "$base/tmp" -type f -name active -print -quit 2>/dev/null | grep -q .; then
     fail "broken component diagnostics left its private transaction active"
 fi
@@ -1510,9 +1498,6 @@ live_options="$base/xdg/data/ableton-wine/lib/live-options.sh"
     || fail "The installer writes the audio thread settings script with mode 644."
 cmp -s -- "$here/lib/live-options.sh" "$live_options" \
     || fail "The installed audio thread settings script matches its source file."
-[ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "built panel created obsolete ownership records"
 ok "built panel installs its fixed paths under custom XDG roots"
 
 user_panel_target="$base/user-retargeted-pipeasio-settings"
@@ -1544,9 +1529,6 @@ case "$panel_command_backup:$panel_desktop_backup" in
     "${panel_backup_runs[0]}"/*:"${panel_backup_runs[0]}"/*) ;;
     *) fail "panel replacements escaped their per-run backup directory" ;;
 esac
-[ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "panel replacement created obsolete ownership records"
 ok "PipeASIO panel paths are moved to the central backup tree and replaced"
 
 for durable_tool in audio-report.sh setup-realtime.sh rollback.sh; do
@@ -1678,29 +1660,10 @@ grep -qxF 'cancel before replacing this command' "$panel_command" \
     || fail "panel Cancel unwound an earlier completed integration copy"
 [ ! -e "$panel_desktop" ] && [ ! -e "$panel_icon" ] \
     || fail "panel Cancel did not stop later panel mappings"
-[ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "panel choices created obsolete ownership records"
 ok "Cancel stops later panel mappings without unwinding earlier copies"
 
-base="$(new_env unsafe-uninstall-no-state)"
-mkdir -p -- "$base/unrecognised-runtime"
-printf 'foreign runtime\n' > "$base/unrecognised-runtime/foreign"
-if run_isolated "$base" env \
-    ABLETON_WINE_ROOT="$base/unrecognised-runtime" \
-    ABLETON_WINEPREFIX="$base/prefix" ABLETON_LINK_MODE=off \
-    bash "$here/uninstall.sh" --keep-prefix --yes \
-    >"$base/out" 2>"$base/err"; then
-    fail "unsafe uninstall accepted an unrecognised custom runtime"
-fi
-[ ! -e "$base/xdg/state/ableton-wine/.ableton-linux-state" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine" ] \
-    || fail "unsafe uninstall refusal created an installer state marker"
-[ -f "$base/unrecognised-runtime/foreign" ] \
-    || fail "unsafe uninstall refusal changed the unrecognised runtime"
-grep -qF 'The Wine runtime was not deleted because the installer could not confirm that it created it:' "$base/err" \
-    || fail "unsafe uninstall refusal was not explicit"
-ok "unsafe uninstall refuses before creating or claiming installer state"
+# The minimal uninstaller has its own focused ownership, process, Trash, and
+# scope boundary suite in test-uninstall-boundary.sh.
 
 make_registry_runtime()
 {
@@ -1766,19 +1729,6 @@ EOF
     chmod 755 "$runtime/bin/wine" "$runtime/bin/wineserver" "$base/fakebin/systemctl"
 }
 
-run_registry_uninstall()
-{
-    local base="$1"
-    shift
-    run_isolated "$base" env \
-        PATH="$base/fakebin:$PATH" \
-        ABLETON_WINE_ROOT="$base/runtime" \
-        ABLETON_WINEPREFIX="$base/prefix" \
-        ABLETON_LINK_MODE=off \
-        ABLETON_TEST_REGISTRY_LOG="$base/registry.log" \
-        ABLETON_TEST_REGISTRY_STATE="$base/registry-present" \
-        "$@" bash "$here/uninstall.sh" --keep-prefix --yes
-}
 
 make_rollback_fixture()
 {
@@ -2197,119 +2147,10 @@ EOF
 done
 ok "postcommit recovery-directory cleanup failures preserve committed state and never claim restoration"
 
-base="$(new_env retained-prefix-unregister)"
-make_registry_runtime "$base"
-run_registry_uninstall "$base" env ABLETON_TEST_REGISTRY_STICKY=0 \
-    >"$base/out" 2>"$base/err" || fail "retained-prefix uninstall failed after successful unregistration"
-[ -e "$base/prefix/system.reg" ] || fail "retained-prefix uninstall deleted the prefix"
-[ ! -e "$base/runtime" ] || fail "successful retained-prefix uninstall kept the runtime"
-[ ! -e "$base/registry-present" ] || fail "retained-prefix uninstall left PipeASIO registered"
-grep -Fq '{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}' "$base/registry.log" \
-    || fail "retained-prefix uninstall did not query the PipeASIO CLSID"
-! grep -Fq '{48D0C522-BFCC-45CC-8B84-17F25F33E6E8}' "$base/registry.log" \
-    || fail "retained-prefix uninstall touched the legacy WineASIO CLSID"
-ok "retained-prefix uninstall unregisters and verifies PipeASIO before deleting runtime"
-
-base="$(new_env retained-prefix-refusal)"
-make_registry_runtime "$base"
-if run_registry_uninstall "$base" env ABLETON_TEST_REGISTRY_STICKY=1 \
-    >"$base/out" 2>"$base/err"; then
-    fail "uninstall succeeded while PipeASIO registration remained"
-fi
-[ -e "$base/runtime/.ableton-linux-runtime" ] \
-    || fail "failed unregistration still deleted the runtime"
-[ -e "$base/prefix/system.reg" ] && [ -e "$base/registry-present" ] \
-    || fail "failed unregistration changed retained prefix state"
-ok "failed PipeASIO unregistration preserves runtime and retained prefix"
-
-base="$(new_env retained-prefix-query-failure)"
-make_registry_runtime "$base"
-if run_registry_uninstall "$base" env ABLETON_TEST_REGISTRY_STICKY=1 \
-    ABLETON_TEST_REGISTRY_QUERY_BROKEN=1 >"$base/out" 2>"$base/err"; then
-    fail "uninstall accepted failed registry queries as proof of PipeASIO absence"
-fi
-[ -e "$base/runtime/.ableton-linux-runtime" ] \
-    && [ -e "$base/prefix/system.reg" ] && [ -e "$base/registry-present" ] \
-    || fail "registry verification failure did not retain runtime and prefix state"
-grep -qF 'removal could not be verified' "$base/err" \
-    || fail "registry control-query failure was not reported"
-ok "failed registry control query cannot authorize retained-prefix runtime deletion"
 
 
-base="$(new_env literal-runtime-sibling)"
-literal_runtime="$base/runtime[1]"
-literal_rollback="$base/runtime[1]-rollback-owned"
-glob_collision="$base/runtime1-rollback-foreign"
-mkdir -p -- "$literal_runtime" "$literal_rollback" "$glob_collision" \
-    "$base/xdg/state/ableton-wine" "$base/fakebin"
-for candidate in "$literal_runtime" "$literal_rollback" "$glob_collision"; do
-    printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$candidate/.ableton-linux-runtime"
-done
-printf 'foreign sibling must survive\n' > "$glob_collision/foreign"
-printf 'runtime\t%s\twine-d2d1-nspa-11.13\n' "$literal_runtime" \
-    > "$base/xdg/state/ableton-wine/install-manifest.tsv"
-printf 'format=1\nowner=ableton-linux\n' \
-    > "$base/xdg/state/ableton-wine/.ableton-linux-state"
-install_fake_host_tools "$base"
-run_isolated "$base" env PATH="$base/fakebin:$PATH" \
-    ABLETON_WINE_ROOT="$literal_runtime" ABLETON_WINEPREFIX="$base/prefix" \
-    ABLETON_LINK_MODE=off bash "$here/uninstall.sh" --keep-prefix --yes \
-    >"$base/out" 2>"$base/err" || fail "literal-runtime uninstall fixture failed"
-[ ! -e "$literal_runtime" ] && [ ! -e "$literal_rollback" ] \
-    || fail "uninstall did not remove the literal managed runtime family"
-[ -f "$glob_collision/foreign" ] \
-    || fail "runtime basename metacharacters selected an unrelated sibling"
-ok "uninstall matches custom runtime rollback siblings by literal basename"
 
 
-run_direct_uninstall()
-{
-    local base="$1" mode="${2:---keep-prefix}"
-    if [ ! -x "$base/fakebin/systemctl" ] || [ ! -x "$base/fakebin/xdg-mime" ]; then
-        install_fake_host_tools "$base"
-    fi
-    run_isolated "$base" env PATH="$base/fakebin:$PATH" \
-        ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
-        ABLETON_LINK_MODE=off \
-        ABLETON_TEST_REGISTRY_LOG="$base/registry.log" \
-        ABLETON_TEST_REGISTRY_STATE="$base/registry-present" \
-        bash "$here/uninstall.sh" "$mode" --yes
-}
-
-for marker_kind in runtime prefix state; do
-    base="$(new_env "nul-$marker_kind-marker")"
-    make_registry_runtime "$base"
-    printf 'runtime sentinel\n' > "$base/runtime/sentinel"
-    printf 'prefix sentinel\n' > "$base/prefix/sentinel"
-    printf 'state sentinel\n' > "$base/xdg/state/ableton-wine/sentinel"
-    mode=--keep-prefix
-    case "$marker_kind" in
-        runtime) printf '\0' >> "$base/runtime/.ableton-linux-runtime" ;;
-        prefix) printf '\0' >> "$base/prefix/.ableton-linux-prefix"; mode=--delete-prefix ;;
-        state) printf '\0' >> "$base/xdg/state/ableton-wine/.ableton-linux-state" ;;
-    esac
-    if [ "$marker_kind" = state ]; then
-        run_direct_uninstall "$base" "$mode" >"$base/out" 2>"$base/err" \
-            || fail "damaged optional state marker blocked exact runtime removal"
-        [ ! -e "$base/runtime" ] && [ ! -L "$base/runtime" ] \
-            || fail "damaged optional state marker retained the configured runtime"
-        grep -qxF 'prefix sentinel' "$base/prefix/sentinel" \
-            && grep -qxF 'state sentinel' "$base/xdg/state/ableton-wine/sentinel" \
-            || fail "damaged optional state marker changed retained prefix or support data"
-        grep -qF 'Ableton Linux support files were left unchanged because their directory is not recognised:' \
-            "$base/err" || fail "damaged optional state marker did not produce its warning"
-    else
-        if run_direct_uninstall "$base" "$mode" >"$base/out" 2>"$base/err"; then
-            fail "uninstall accepted a $marker_kind marker with trailing NUL"
-        fi
-        if ! grep -qxF 'runtime sentinel' "$base/runtime/sentinel" \
-           || ! grep -qxF 'prefix sentinel' "$base/prefix/sentinel" \
-           || ! grep -qxF 'state sentinel' "$base/xdg/state/ableton-wine/sentinel"; then
-            fail "$marker_kind marker refusal changed an owned tree"
-        fi
-    fi
-done
-ok "runtime and prefix markers remain fatal while damaged optional state is retained with a warning"
 
 
 
@@ -2436,25 +2277,6 @@ diff -qr --no-dereference --exclude=.ableton-linux-runtime \
     || fail "legacy runtime rollback retained promotion state or retired the outer marker"
 ok "runtime promotion rollback preserves committed legacy adoption and restores every other runtime object"
 
-base="$(new_env legacy-runtime-uninstall)"
-make_legacy_default_runtime "$base"
-install_fake_host_tools "$base"
-run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_LINK_MODE=off \
-    bash "$here/uninstall.sh" --keep-prefix --yes >"$base/out" 2>"$base/err" \
-    || fail "optional support-state cleanup reported failure after removing a canonical legacy runtime"
-[ ! -e "$base/home/.local/opt/wine-d2d1-nspa-11.13" ] \
-    || fail "uninstall retained the adopted canonical legacy runtime"
-legacy_uninstall_state="$base/xdg/state/ableton-wine"
-if [ -e "$legacy_uninstall_state" ] || [ -L "$legacy_uninstall_state" ]; then
-    [ -d "$legacy_uninstall_state" ] && [ ! -L "$legacy_uninstall_state" ] \
-        && cmp -s -- "$legacy_uninstall_state/.ableton-linux-state" \
-            <(printf 'format=1\nowner=ableton-linux\n') \
-        || fail "optional legacy-uninstall cleanup retained unsafe unmarked state"
-    grep -Eq 'Ableton Linux support (files|state).*(remain|retained)|support directory changed.*retained' \
-        "$base/out" "$base/err" \
-        || fail "retained optional legacy-uninstall state was not reported"
-fi
-ok "canonical legacy-runtime removal succeeds even when optional support-state cleanup remains"
 
 
 base="$(new_env legacy-prefix-adopt)"
@@ -2945,9 +2767,6 @@ link_backup="$(find "$base/xdg/state/ableton-wine/backups" \
     -type f -name 'ableton-linkd.bak-*' -print -quit)"
 [ -n "$link_backup" ] && grep -qxF 'foreign Link helper' "$link_backup" \
     || fail "Link support did not retain the displaced helper as an inert backup"
-[ ! -e "$base/xdg/state/ableton-wine/install-manifest.tsv" ] \
-    && [ ! -e "$base/xdg/state/ableton-wine/install-prestate.tsv" ] \
-    || fail "Link support created obsolete ownership records"
 ok "Link support uses fixed destinations and inert central backups"
 
 printf 'PASS: %s focused PipeASIO installer checks\n' "$pass"

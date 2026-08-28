@@ -185,8 +185,12 @@ mapfile -t support_backups < <(find "$state/backups" -type f \
     || fail "Overwrite did not create exactly one dated backup"
 grep -qxF 'older generated support bytes' "${support_backups[0]}" \
     || fail "Overwrite backup does not contain the displaced file"
-[ ! -e "$state/install-manifest.tsv" ] && [ ! -e "$state/install-prestate.tsv" ] \
-    || fail "simple integration created ownership or prestate records"
+support_digest="$(sha256sum -- "$private_support" | awk '{print $1}')"
+grep -qxF "$(printf 'file\t%s\t%s' "$private_support" "$support_digest")" \
+    "$state/install-manifest.tsv" \
+    || fail "simple integration did not record the installed support file"
+[ ! -e "$state/install-prestate.tsv" ] \
+    || fail "ordinary support-file overwrite created automatic prestate"
 [ "$(awk -F '\t' '$1 == "x-scheme-handler/ableton" { print $2 }' "$base/mime-defaults.tsv")" = "$protocol_id" ] \
     || fail "installer does not pin the project protocol handler"
 [ "$(awk -F '\t' '$1 == "application/x-wine-extension-auz" { print $2 }' "$base/mime-defaults.tsv")" = "$auz_id" ] \

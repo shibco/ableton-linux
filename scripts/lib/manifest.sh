@@ -1608,6 +1608,10 @@ ableton_install_project_file()
     elif ! chmod "$mode" "$target"; then
         echo "!! chmod failed: $target (mode $mode)" >&2 || true
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    elif [ "${ABLETON_RECORD_PROJECT_FILES:-0}" = 1 ] \
+       && ! ableton_record_owned "$target" file; then
+        echo "!! ownership record failed: $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
     fi
     return 0
 }
@@ -1624,6 +1628,10 @@ ableton_install_project_symlink()
     ableton_prepare_project_destination "$source" "$target" || return 0
     if ! ln -s -- "$source" "$target"; then
         echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    elif [ "${ABLETON_RECORD_PROJECT_FILES:-0}" = 1 ] \
+       && ! ableton_record_owned "$target" symlink; then
+        echo "!! ownership record failed: $target" >&2 || true
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
     fi
     return 0
