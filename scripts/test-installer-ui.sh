@@ -14,20 +14,6 @@ fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 command -v script >/dev/null 2>&1 || fail "script(1) from util-linux is available for the terminal checks"
 [ -r "$ui_lib" ] || fail "scripts/lib/ui.sh exists"
 mkdir -p "$work/home"
-wrapper_bin="$work/wrapper-bin"
-mkdir -p -- "$wrapper_bin"
-cat > "$wrapper_bin/pgrep" <<'EOF'
-#!/bin/sh
-[ "$*" = '-x wineserver' ] || exit 2
-exit 1
-EOF
-cat > "$wrapper_bin/pkill" <<'EOF'
-#!/bin/sh
-printf 'unexpected pkill from installer-ui wrapper test\n' >&2
-exit 97
-EOF
-chmod +x "$wrapper_bin/pgrep" "$wrapper_bin/pkill"
-
 # A fixed environment: no inherited terminal, width, charset, or timeout.
 run_static()
 {
@@ -822,7 +808,7 @@ menu_case()
     local keys="$1" out="$2"; shift 2
     rm -f "$work/stub-args"
     : > "$out"
-    env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash \
+    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash \
         STUB_ARGS_FILE="$work/stub-args" "$@" \
         script -qfec "stty rows 40 cols 100; sh $work/kit.run; echo exit=\$?" /dev/null \
         < <(for _ in $(seq 300); do grep -aq 'Choose an action:' "$out" 2>/dev/null && break; sleep 0.05; done
@@ -876,12 +862,12 @@ grep -q 'exit=2' "$work/menu-bad.out" || fail "an unknown key exits 2"
 vt "$work/menu-bad.out" | grep 'Unknown action: ?' >/dev/null || fail "an unknown key is named"
 vt "$work/menu-bad.out" | grep '│   Failed │' >/dev/null || fail "an unknown key ends as a failed run"
 rm -f "$work/stub-args"
-env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm STUB_ARGS_FILE="$work/stub-args" \
+env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm STUB_ARGS_FILE="$work/stub-args" \
     sh "$work/kit.run" < /dev/null > "$work/menu-notty.out" 2>&1 || fail "a run without a terminal takes the default"
 grep -qx 'update' "$work/stub-args" || fail "stdin off a terminal takes the default action without reading"
 ! grep -q 'Choose an action' "$work/menu-notty.out" || fail "stdin off a terminal never prompts"
 : > "$work/menu-ascii.out"
-env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C TERM=xterm SHELL=/bin/bash STUB_ARGS_FILE="$work/stub-args" \
+env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C TERM=xterm SHELL=/bin/bash STUB_ARGS_FILE="$work/stub-args" \
     script -qfec "stty rows 40 cols 100; sh $work/kit.run update; echo $done_marker" /dev/null \
     < <(feed "$work/menu-ascii.out" "$done_marker") > "$work/menu-ascii.out" 2>&1 || true
 ! LC_ALL=C grep -q $'[\x80-\xff]' "$work/menu-ascii.out" \
@@ -909,7 +895,7 @@ EOF
 build_stub_run "$work/kit-fail.run"
 rm -f "$work"/ableton-linux-installer-*.log
 : > "$work/fail.raw"
-env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash \
+env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash \
     script -qfec "stty rows 40 cols 100; sh $work/kit-fail.run update; echo exit=\$?" /dev/null \
     < <(feed "$work/fail.raw" 'exit=[0-9]') > "$work/fail.raw" 2>&1 || true
 grep -q 'exit=3' "$work/fail.raw" || fail "the child's exit status passes through"
@@ -923,10 +909,10 @@ grep -q '^  > boom from the child$' "$work/fail.screen" || fail "the child's err
 log="$(ls -t "$work"/ableton-linux-installer-*.log 2>/dev/null | head -1)"
 [ -n "$log" ] || fail "the .run wrote its log beside itself"
 grep -q '^\[ERR\] .*boom from the child' "$log" || fail "the child's error is in the log as ERR"
-grep -q '├─ Copy the embedded kit' "$log" && grep -q 'Step 2 Failed!' "$log" \
-    || fail "the log holds the rendered tree without escapes"
+! grep -q 'Copy the embedded kit\|Step 2 Failed!' "$log" \
+    || fail "the log repeats the rendered tree"
 ! LC_ALL=C grep -q $'\033' "$log" || fail "the log has no escape sequences"
-ok "a failing child closes its item and step, and its error reaches the log and footer"
+ok "a failing child closes its item and step, and its raw error reaches the log and footer"
 
 # T14: Ctrl-C during a running item, and a parent that vanishes under its
 # spinner.
@@ -944,7 +930,7 @@ EOF
 build_stub_run "$work/kit-int.run"
 rm -f "$work/marker"
 : > "$work/int.raw"
-env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash STUB_MARKER="$work/marker" \
+env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash STUB_MARKER="$work/marker" \
     script -qfec "stty rows 40 cols 100; sh $work/kit-int.run update; echo exit=\$?" /dev/null \
     < <(for _ in $(seq 300); do [ -e "$work/marker" ] && break; sleep 0.1; done; sleep 0.5
         feed "$work/int.raw" 'exit=[0-9]' $'\003') > "$work/int.raw" 2>&1 || true
@@ -956,7 +942,7 @@ sleep 1
 ! pgrep -f "sleep $hold" > /dev/null 2>&1 || fail "no task is left behind after an interrupt"
 rm -f "$work/marker"
 : > "$work/orphan.raw"
-env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash STUB_MARKER="$work/marker" \
+env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash STUB_MARKER="$work/marker" \
     script -qfec "stty rows 40 cols 100; sh $work/kit-int.run update; echo $done_marker" /dev/null \
     < <(for _ in $(seq 300); do [ -e "$work/marker" ] && break; sleep 0.1; done; sleep 0.5
         kill -9 "$(cat "$work/marker")" 2>/dev/null; feed "$work/orphan.raw" "$done_marker") > "$work/orphan.raw" 2>&1 &

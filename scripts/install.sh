@@ -637,48 +637,43 @@ if [ "$dry_run" -eq 1 ]; then
     exit 0
 fi
 
-# Direct component use receives the same gate as the wrapper. Validation and
-# dry-run remain usable without a running daemon; Link/integration-only work
-# carries no PipeASIO driver replacement and is not gated.
+# Validation and dry-run remain usable without a running daemon.
 if [ "$want_runtime" -eq 1 ]; then
     ableton_pipewire_preflight "$candidate/bin/pipewire-version-probe" "installing PipeASIO"
 fi
 
-runtime_pids_all()
-{
-    local proc pid
-    for proc in /proc/[0-9]*; do
-        pid="${proc#/proc/}"
-        ableton_pid_uses_runtime "$pid" && printf '%s\n' "$pid"
-    done
-    return 0
-}
-
 stop_runtime_clients()
 {
-    local all scoped foreign pid
-    all="$(runtime_pids_all)"
-    [ -n "$all" ] || return 0
-    scoped="$(ableton_prefix_pids)"
-    foreign=""
-    for pid in $all; do
-        case " $scoped " in *" $pid "*) ;; *) foreign="$foreign $pid" ;; esac
-    done
-    if [ -n "$foreign" ]; then
-        echo "!! runtime is used by another Wine prefix (PIDs:$foreign); close it before updating" >&2
+    local pids pid deadline
+    pids="$(ableton_runtime_pids)"
+    [ -n "$pids" ] || return 0
+    if [ ! -t 0 ]; then
+        echo "!! Wine is running. Run the installer in a terminal so it can ask before stopping Wine." >&2
         return 1
     fi
-    echo "!! the selected prefix has running Wine clients: $(tr ' ' '\n' <<< "$scoped" | sed '/^$/d' | paste -sd, -)" >&2
-    if [ "$assume_yes" -ne 1 ]; then
-        if [ -t 0 ]; then
-            ui_question i_q_stop_clients l q_stop_prefix_end q_stop_prefix_leave
-            [ "$UI_ANSWER" = e ] || return 1
-        else
-            echo "!! refusing without --yes in a noninteractive session" >&2
-            return 1
-        fi
-    fi
-    ableton_stop_prefix || { echo "!! could not stop all scoped Wine clients" >&2; return 1; }
+    ui_question q_stop_wine_title n q_stop_wine_yes q_stop_wine_no
+    [ "$UI_ANSWER" = y ] || return 1
+
+    for pid in $pids; do
+        ableton_pid_uses_runtime "$pid" && kill "$pid" 2>/dev/null || true
+    done
+    deadline=$((SECONDS + 30))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        pids="$(ableton_runtime_pids)"
+        [ -n "$pids" ] || return 0
+        sleep 0.1
+    done
+    for pid in $pids; do
+        ableton_pid_uses_runtime "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+    deadline=$((SECONDS + 5))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        pids="$(ableton_runtime_pids)"
+        [ -n "$pids" ] || return 0
+        sleep 0.1
+    done
+    echo "!! Wine did not stop within 35 seconds." >&2
+    return 1
 }
 
 promote_runtime()

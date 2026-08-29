@@ -790,24 +790,26 @@ env WINEPREFIX="$base/foreign-prefix" "$base/runtime/bin/wine-client" 60 &
 foreign_runtime_pid=$!
 sleep 0.1
 runtime_update_succeeded=0
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+if printf 'y\n' | run_isolated "$base" env PATH="$base/fakebin:$PATH" \
     ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
     PROBE_CLIENT=1.4.2 PROBE_DAEMON=1.4.2 \
-    bash "$base/kit/scripts/install.sh" --runtime-only --yes \
+    script -qfec "bash '$base/kit/scripts/install.sh' --runtime-only --yes" /dev/null \
     >"$base/out" 2>"$base/err"; then
     runtime_update_succeeded=1
 fi
-kill -0 "$foreign_runtime_pid" 2>/dev/null \
-    || fail "runtime refusal killed a foreign-prefix process"
-kill "$foreign_runtime_pid" 2>/dev/null || true
+if kill -0 "$foreign_runtime_pid" 2>/dev/null; then
+    kill "$foreign_runtime_pid" 2>/dev/null || true
+    wait "$foreign_runtime_pid" 2>/dev/null || true
+    fail "approval left a foreign-prefix Wine process running"
+fi
 wait "$foreign_runtime_pid" 2>/dev/null || true
-[ "$runtime_update_succeeded" -eq 0 ] \
-    || fail "runtime promotion continued after refusing a foreign-prefix client"
-[ -f "$base/runtime/old-generation" ] \
-    || fail "foreign-prefix refusal replaced the live runtime anyway"
-grep -qF 'runtime is used by another Wine prefix' "$base/err" \
-    || fail "foreign-prefix runtime refusal lost its original cause"
-ok "runtime-client refusal cannot be ignored by a later promotion"
+[ "$runtime_update_succeeded" -eq 1 ] \
+    || fail "runtime promotion stopped after the user approved the Wine-process question"
+[ ! -f "$base/runtime/old-generation" ] \
+    || fail "approval left the previous runtime generation in place"
+grep -qF 'STOP ALL RUNNING WINE PROCESSES' "$base/out" \
+    || fail "--yes bypassed the Wine-process question"
+ok "runtime update asks before stopping every client that uses the runtime"
 
 base="$(new_env runtime-scratch-cleanup-warning)"
 make_runtime_only_kit "$base"

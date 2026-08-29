@@ -1,7 +1,7 @@
 #!/bin/sh
 # shellcheck shell=bash
 # Ableton Linux self-extracting installer transport. The wrapper reports the
-# host, records the complete run, and unpacks the embedded kit. Installation
+# host, records stdout and stderr, and unpacks the embedded kit. Installation
 # policy remains in the packaged scripts/installer.sh. Everything on screen is
 # drawn by the renderer inlined below at build time (scripts/lib/ui.sh).
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
@@ -26,7 +26,7 @@ short_help()
 
 # The log lives beside the .run so it exists even when setup stops before the
 # Wine runtime is created. A read-only installer directory falls back to the
-# temporary directory, and the exact path is always printed at exit.
+# temporary directory, and its path is printed at exit.
 run_id="$(date '+%Y%m%dT%H%M%S')-$$"
 log_name="ableton-linux-installer-$run_id.log"
 log_path="$media_dir/$log_name"
@@ -36,7 +36,9 @@ if ! (umask 077; : > "$log_path") 2>/dev/null; then
         log_path=/dev/null
     fi
 fi
-export ABLETON_INSTALLER_LOG="$log_path"
+# The saved log records wrapper events and the child process's stdout and
+# stderr. The renderer writes only to the terminal.
+export ABLETON_INSTALLER_LOG=/dev/null
 
 log_event()
 {
@@ -47,9 +49,8 @@ log_event()
     return 0
 }
 
-# Everything the scripts print raw goes to the log only, one timestamped
-# record per line. The screen belongs to the renderer, which writes to the
-# terminal directly and logs its own lines.
+# Everything the scripts print goes to the log, one timestamped record per
+# line. The renderer writes the installer tree only to the terminal.
 mirror_stream()
 {
     local stream="$1" line level stamp
@@ -119,14 +120,14 @@ cleanup()
     trap '' PIPE
     elapsed=$((SECONDS - started_at))
     warn_count="$(grep -Ec \
-        '^\[WARN\] +.*\[ableton-linux\]\[installer\]\[(stdout|stderr|ui)\] ' \
+        '^\[WARN\] +.*\[ableton-linux\]\[installer\]\[(stdout|stderr)\] ' \
         "$log_path" 2>/dev/null || true)"
     case "$warn_count" in ''|*[!0-9]*) warn_count=0 ;; esac
     if [ "$rc" -eq 0 ]; then
         outcome=complete
         [ "$cancelled" -eq 0 ] || outcome=cancelled
         logged_errors="$(grep -Ec \
-            '^\[ERR\] +.*\[ableton-linux\]\[installer\]\[(stdout|stderr|ui)\] ' \
+            '^\[ERR\] +.*\[ableton-linux\]\[installer\]\[(stdout|stderr)\] ' \
             "$log_path" 2>/dev/null || true)"
         case "$logged_errors" in ''|*[!0-9]*) logged_errors=0 ;; esac
         warn_count=$((warn_count + logged_errors))
@@ -142,7 +143,7 @@ cleanup()
             case " ${errors[*]-} " in *" $error "*) continue ;; esac
             errors+=("$error")
         done < <(sed -n \
-            's/^\[ERR\]  [^[]*\[ableton-linux\]\[installer\]\[\(stdout\|stderr\|ui\)\] //p' \
+            's/^\[ERR\]  [^[]*\[ableton-linux\]\[installer\]\[\(stdout\|stderr\)\] //p' \
             "$log_path" 2>/dev/null)
         [ "${#errors[@]}" -gt 0 ] || errors=("Installer exited with status $rc.")
     fi
@@ -696,30 +697,6 @@ if [ "$selected_action" = extract ]; then
     ui_step_begin s_extract
 else
     ui_step_begin s_prepare
-fi
-
-if { [ "$selected_action" = install ] || [ "$selected_action" = update ]; } \
-   && { pgrep -x wineserver >/dev/null 2>&1 \
-        || pgrep -x wineserver64 >/dev/null 2>&1; }; then
-    if [ ! -t 0 ]; then
-        printf '!! Wine is running. Run the installer in a terminal so it can ask before stopping Wine.\n' >&2
-        exit 1
-    fi
-    ui_question q_stop_wine_title n q_stop_wine_yes q_stop_wine_no
-    if [ "$UI_ANSWER" != y ]; then
-        cancelled=1; launch_hint=0; exit 0
-    fi
-    pkill -x wineserver >/dev/null 2>&1 || true
-    pkill -x wineserver64 >/dev/null 2>&1 || true
-    if ! timeout 30 sh -c '
-        while pgrep -x wineserver >/dev/null 2>&1 \
-           || pgrep -x wineserver64 >/dev/null 2>&1; do
-            sleep 0.1
-        done
-    '; then
-        printf '!! Wine did not stop within 30 seconds.\n' >&2
-        exit 1
-    fi
 fi
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/ableton-installer.XXXXXX")" || {

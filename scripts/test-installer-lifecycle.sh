@@ -3,19 +3,6 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-installer-test.XXXXXX")"
-wrapper_bin="$work/wrapper-bin"
-mkdir -p -- "$wrapper_bin"
-cat > "$wrapper_bin/pgrep" <<'EOF'
-#!/bin/sh
-[ "$*" = '-x wineserver' ] || exit 2
-exit 1
-EOF
-cat > "$wrapper_bin/pkill" <<'EOF'
-#!/bin/sh
-printf 'unexpected pkill from installer-lifecycle wrapper test\n' >&2
-exit 97
-EOF
-chmod +x "$wrapper_bin/pgrep" "$wrapper_bin/pkill"
 # Checks that expect an installer run to succeed redirect its diagnostics into
 # the per-case log, so set -e ends the suite on an unexpected non-zero exit
 # with no failure line, leaving make's exit code as the only evidence.  Report
@@ -456,7 +443,7 @@ tar -cf "$base/payload.tar" -C "$kit" .
     --payload-sha "$(sha256sum "$base/payload.tar" | awk '{print $1}')" > "$base/kit.run" \
     || fail "make-installer.sh renders the .run header for the suite"
 cat "$base/payload.tar" >> "$base/kit.run"
-run_isolated "$base" env PATH="$wrapper_bin:$PATH" STUB_EXIT=0 STUB_PATH_FILE="$base/installer-path" \
+run_isolated "$base" env PATH="$PATH" STUB_EXIT=0 STUB_PATH_FILE="$base/installer-path" \
     sh "$base/kit.run" >"$base/out" 2>"$base/err" \
     || fail "a successful delegated install exits zero through the .run header"
 grep -qF '│  ┃ 2/8 ╏ CHECK THE HOST AND THE REQUEST ┃' "$base/out" \
@@ -467,7 +454,7 @@ grep -qF '│  └─ Step 1 Complete! ✓' "$base/out" \
 grep -qF 'Launch Ableton Live via your desktop applications launcher' "$base/out" \
     || fail "a successful install ends with the launch hint"
 status=0
-run_isolated "$base" env PATH="$wrapper_bin:$PATH" STUB_EXIT=42 STUB_PATH_FILE="$base/installer-path" \
+run_isolated "$base" env PATH="$PATH" STUB_EXIT=42 STUB_PATH_FILE="$base/installer-path" \
     sh "$base/kit.run" >>"$base/out" 2>>"$base/err" || status=$?
 [ "$status" -eq 42 ] || fail "a delegated install failure code passes through the .run header"
 grep -q '^│ Ableton-Linux Install v. suite-check *│ Complete │$' "$base/out" \
@@ -476,8 +463,6 @@ grep -q '^│ Ableton-Linux Install v. suite-check *│   Failed │$' "$base/ou
     || fail "failed .run output omitted its failure footer"
 grep -qF '  > delegated installer failed with status 42.' "$base/out" \
     || fail "failed .run output omitted its line-by-line error"
-grep -qF '  > Copy the embedded kit 𐄂' "$base/out" \
-    || fail "failed .run output omitted a marked task failure"
 ! grep -qF '  > ordinary stderr context.' "$base/out" \
     || fail "failed .run output mislabeled informational stderr as an error"
 ! grep -q '^!! \|^🛈 ' "$base/out" \
@@ -492,10 +477,8 @@ grep -qF 'Saved a log of this operation at' "$base/out" \
 grep -qF '[ableton-linux][installer][stdout]    backup: /known/recovery/path' \
     "$base"/ableton-linux-installer-*.log \
     || fail "the .run log omitted a successful backup path"
-grep -qF '[OK]   ' "$base"/ableton-linux-installer-*.log \
-    && grep -q '\[OK\] .*Copy the embedded kit' "$base"/ableton-linux-installer-*.log \
-    && grep -q '\[ERR\] .*Copy the embedded kit 𐄂' "$base"/ableton-linux-installer-*.log \
-    || fail "marked task results have the wrong log severity"
+! grep -qF '[ableton-linux][installer][ui]' "$base"/ableton-linux-installer-*.log \
+    || fail "the .run log repeats the rendered installer tree"
 grep -qF '[WARN] ' "$base"/ableton-linux-installer-*.log \
     && grep -qF 'recoverable stub warning' "$base"/ableton-linux-installer-*.log \
     || fail "a recoverable successful-run warning remained an error in the log"
@@ -522,7 +505,7 @@ printf '%s\n' 'pw-cli' 'Linked with libpipewire 1.6.8'
 exec /usr/bin/seq 1 100000
 EOF
 chmod +x "$base/fakebin/lspci" "$base/fakebin/pw-cli"
-run_isolated "$base" env PATH="$base/fakebin:$wrapper_bin:$PATH" STUB_EXIT=0 \
+run_isolated "$base" env PATH="$base/fakebin:$PATH" STUB_EXIT=0 \
     STUB_PATH_FILE="$base/installer-path" sh "$work/run-header/kit.run" \
     > "$base/out" 2> "$base/err" \
     || fail "large host-report output stopped the .run wrapper"
@@ -593,7 +576,7 @@ cat > "$base/fakebin/rm" <<'EOF'
 exec /usr/bin/rm "$@"
 EOF
 chmod +x "$base/fakebin/dd" "$base/fakebin/tar" "$base/fakebin/rm"
-run_isolated "$base" env PATH="$base/fakebin:$wrapper_bin:$PATH" STUB_EXIT=0 \
+run_isolated "$base" env PATH="$base/fakebin:$PATH" STUB_EXIT=0 \
     STUB_PATH_FILE="$base/installer-path" sh "$work/run-header/kit.run" \
     >"$base/out" 2>/dev/full \
     || fail "cleanup output failure changed a successful .run result"

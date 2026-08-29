@@ -212,17 +212,7 @@ case "$target" in
 esac
 exec /bin/rm "$@"
 EOF
-cat > "$tmp/failing-rm/pgrep" <<'EOF'
-#!/bin/sh
-[ "$*" = '-x wineserver' ] || exit 2
-exit 1
-EOF
-cat > "$tmp/failing-rm/pkill" <<'EOF'
-#!/bin/sh
-printf 'unexpected pkill from release-policy wrapper test\n' >&2
-exit 97
-EOF
-chmod +x "$tmp/failing-rm/rm" "$tmp/failing-rm/pgrep" "$tmp/failing-rm/pkill"
+chmod +x "$tmp/failing-rm/rm"
 
 set +e
 PATH="$tmp/failing-rm:$PATH" TMPDIR="$tmp/wrapper-tmp" \

@@ -54,12 +54,13 @@ You can pass the same choices to `install` and `update`:
 ## Logs and backups
 
 Everything the scripts print outside the installer display, including every
-`!!` error, goes to the log named at the end of the run. The log sits next to
-the `.run` file, or in your temporary directory when that folder is read-only.
+`!!` error, goes to the log named at the end of the run. The installer tree is
+not copied into the log. The log sits next to the `.run` file, or in your
+temporary directory when that folder is read-only.
 
 When an ordinary support file already exists, the installer asks whether to
 overwrite all files, keep the originals, or abort. The installer selects
-Overwrite all after five seconds. It moves each replaced file to a dated folder
+Overwrite all after 30 seconds. It moves each replaced file to a dated folder
 under `~/.local/state/ableton-wine/backups/`.
 
 Shared configuration files use saved earlier copies under

@@ -320,7 +320,6 @@ declare -A UI_TEXT=(
     [i_plan_link]='Install or update Ableton Link support'
     [i_plan_link_external]='Use the configured Ableton Link helper and leave it unchanged: %s'
     [i_plan_backups]='Back up each replaced project file under %s/backups'
-    [i_q_stop_clients]='STOP PROGRAMS USING THE ABLETON-LINUX PREFIX'
     [i_setup_launchers]='Set up Ableton launchers and desktop shortcuts'
     [i_refresh_desktop_menus]='Refresh desktop menus and file associations'
     [i_install_link_files]='Install Ableton Link support files'
