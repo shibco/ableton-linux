@@ -870,6 +870,16 @@ cat > "$base/run-quiesce" <<EOF
 set -euo pipefail
 . "$here/lib/lifecycle.sh"
 ableton_config_init
+if [ "\${ABLETON_TEST_BACKGROUND:-0}" -eq 1 ]; then
+    ableton_prefix_unknown_holders() { printf '123\tBackground.exe\n'; }
+fi
+if [ "\${ABLETON_TEST_APPROVED_STOP:-0}" -eq 1 ]; then
+    ableton_stop_runtime_clients()
+    {
+        printf 'stop\n' >> "\${ABLETON_TEST_LOG:?}"
+        [ "\${ABLETON_TEST_UNKILLABLE:-0}" -eq 1 ] || rm -f -- "\${ABLETON_TEST_BUSY:?}"
+    }
+fi
 status=0
 ableton_prefix_quiesce "\$@" || status=\$?
 printf 'rc=%s\n' "\$status"
@@ -897,16 +907,15 @@ grep -qx -- "-w prefix=$base/prefix" "$base/log" || fail "the wait names the con
 ok "a quiet prefix is waited for once and never stopped"
 
 : > "$base/busy"
-run_quiesce
-grep -qx 'rc=0' "$base/out" || fail "a stopped straggler reports success"
-[ "$(quiesce_calls)" = "-w -k -w " ] || fail "a held prefix is stopped and waited for again"
-grep -q 'holding the prefix open' "$base/out" || fail "stopping the prefix is reported"
-ok "a straggler holding the prefix open is stopped, not made fatal"
+run_quiesce ABLETON_TEST_BACKGROUND=1 ABLETON_TEST_APPROVED_STOP=1
+grep -qx 'rc=0' "$base/out" || fail "an approved background-process stop reports success"
+[ "$(quiesce_calls)" = "stop " ] || fail "background process detection waited before requesting a stop"
+ok "a detected background program requests approval before waiting"
 
 : > "$base/busy"
-run_quiesce ABLETON_TEST_UNKILLABLE=1
+run_quiesce ABLETON_TEST_APPROVED_STOP=1 ABLETON_TEST_UNKILLABLE=1
 grep -qx 'rc=3' "$base/out" || fail "a surviving straggler is reported as still busy"
-[ "$(quiesce_calls)" = "-w -k -w " ] || fail "a surviving straggler is not waited for a third time"
+[ "$(quiesce_calls)" = "-w stop -w " ] || fail "a surviving straggler is not waited for a third time"
 ok "a straggler that survives the stop is reported, and the wait stays bounded"
 
 # setup-prefix.sh continues past a straggler and must stop on a wait that could not
@@ -925,9 +934,9 @@ ok "only an expired wait stops the prefix; any other failure is passed back"
 
 # setup-prefix.sh waits on its staging prefix, which is not the configured one.
 : > "$base/busy"
-run_quiesce "$base/runtime" "$base/staging-prefix"
+run_quiesce ABLETON_TEST_APPROVED_STOP=1 "$base/runtime" "$base/staging-prefix"
 grep -qx 'rc=0' "$base/out" || fail "an explicitly named prefix is quiesced"
-grep -qx -- "-k prefix=$base/staging-prefix" "$base/log" || fail "the stop names the prefix it was given"
+[ "$(quiesce_calls)" = "-w stop -w " ] || fail "the named prefix is stopped after its wait expires"
 ! grep -q -- "prefix=$base/prefix\$" "$base/log" || fail "a named prefix displaces the configured one"
 ok "the runtime and prefix a caller names override the configured pair"
 

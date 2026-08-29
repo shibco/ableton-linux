@@ -642,40 +642,6 @@ if [ "$want_runtime" -eq 1 ]; then
     ableton_pipewire_preflight "$candidate/bin/pipewire-version-probe" "installing PipeASIO"
 fi
 
-stop_runtime_clients()
-{
-    local pids pid deadline
-    pids="$(ableton_runtime_pids)"
-    [ -n "$pids" ] || return 0
-    if [ ! -t 0 ]; then
-        echo "!! Wine is running. Run the installer in a terminal so it can ask before stopping Wine." >&2
-        return 1
-    fi
-    ui_question q_stop_wine_title n q_stop_wine_yes q_stop_wine_no
-    [ "$UI_ANSWER" = y ] || return 1
-
-    for pid in $pids; do
-        ableton_pid_uses_runtime "$pid" && kill "$pid" 2>/dev/null || true
-    done
-    deadline=$((SECONDS + 30))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        pids="$(ableton_runtime_pids)"
-        [ -n "$pids" ] || return 0
-        sleep 0.1
-    done
-    for pid in $pids; do
-        ableton_pid_uses_runtime "$pid" && kill -KILL "$pid" 2>/dev/null || true
-    done
-    deadline=$((SECONDS + 5))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        pids="$(ableton_runtime_pids)"
-        [ -n "$pids" ] || return 0
-        sleep 0.1
-    done
-    echo "!! Wine did not stop within 35 seconds." >&2
-    return 1
-}
-
 promote_runtime()
 {
     local target="$ABLETON_WINE_ROOT" parent backup safe marker marker_tmp record
@@ -704,7 +670,7 @@ promote_runtime()
         [ ! -e "$backup" ] && [ ! -L "$backup" ] \
             || { echo "!! transaction backup already exists: $backup" >&2; return 1; }
     fi
-    stop_runtime_clients || return 1
+    ableton_stop_runtime_clients || return 1
     # Mark and verify the staged tree before it can become the live runtime.
     marker="$candidate/.ableton-linux-runtime"
     [ ! -e "$marker" ] && [ ! -L "$marker" ] || {

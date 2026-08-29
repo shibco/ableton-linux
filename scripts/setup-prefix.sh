@@ -394,8 +394,7 @@ ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "configuring 
 # through Live installation, so any later failure can restore the old prefix.
 . "$here/lib/lifecycle.sh"
 if ableton_prefix_busy; then
-    echo "!! Close Live, Max, and other Wine programs before updating the ableton-linux prefix." >&2 || true
-    exit 1
+    ableton_stop_runtime_clients || exit 1
 fi
 final_prefix="$WINEPREFIX"
 final_parent="$(dirname "$final_prefix")"
