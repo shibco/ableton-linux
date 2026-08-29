@@ -468,6 +468,7 @@ render_preflight_question()
         0)
             ui_heading q_buffer_title
             ui_note q_buffer_explanation
+            ui_note q_buffer_explanation_2
             case "$selected" in 64|128|256|512|1024) ;; *)
                 preflight_option "$selected" 128 q_buffer_custom "$selected" ;;
             esac
@@ -479,11 +480,13 @@ render_preflight_question()
         1)
             ui_heading q_shortcuts_title
             ui_note q_shortcuts_explanation
+            ui_note q_shortcuts_explanation_2
             preflight_option take take q_shortcuts_take
             preflight_option preserve take q_shortcuts_preserve ;;
         2)
             ui_heading q_dpi_title
             ui_note q_dpi_explanation
+            ui_note q_dpi_explanation_2
             preflight_option auto auto q_dpi_auto
             preflight_option 100 auto q_dpi_100
             preflight_option fractional auto q_dpi_fractional
@@ -491,6 +494,8 @@ render_preflight_question()
         3)
             ui_heading q_threads_title
             ui_note q_threads_explanation
+            ui_note q_threads_explanation_2
+            ui_note q_threads_explanation_3
             preflight_option auto auto q_threads_auto
             preflight_option off auto q_threads_off
             case "$selected" in auto|off)
@@ -500,11 +505,14 @@ render_preflight_question()
         4)
             ui_heading q_rt_title
             ui_note q_rt_explanation
+            ui_note q_rt_explanation_2
+            ui_note q_rt_explanation_3
             preflight_option auto auto q_rt_auto
             preflight_option off auto q_rt_off ;;
         5)
             ui_heading q_power_title
             ui_note q_power_explanation
+            ui_note q_power_explanation_2
             preflight_option performance performance q_power_performance
             preflight_option balanced performance q_power_balanced
             preflight_option off performance q_power_off ;;
@@ -521,6 +529,7 @@ trim_answer()
 collect_preflight()
 {
     local answer value
+    local -a prompt_choices=('1-5' 'A/P' 'A/N/F/P' 'A/L/1-63' 'A/N' 'P/B/D')
     load_preflight_values
     initial=("$initial_buffer" "$initial_shortcuts" "$initial_dpi" \
         "$initial_threads" "$initial_rt" "$initial_power")
@@ -529,7 +538,7 @@ collect_preflight()
     q_index=0
     while [ "$q_index" -lt 6 ]; do
         render_preflight_question
-        ui_preflight_read
+        ui_preflight_read "${prompt_choices[q_index]}"
         if [ "$UI_ANSWER" = $'\033' ]; then
             if [ "$q_index" -eq 0 ]; then return 10; fi
             q_index=$((q_index - 1))
@@ -546,7 +555,7 @@ collect_preflight()
             0:3|0:256) value=256 ;; 0:4|0:512) value=512 ;;
             0:5|0:1024) value=1024 ;;
             1:a|1:assign|1:take) value=take ;; 1:p|1:preserve) value=preserve ;;
-            2:a|2:auto|2:automatic) value=auto ;; 2:1|2:100|2:100%) value=100 ;;
+            2:a|2:auto|2:automatic) value=auto ;; 2:n|2:normal|2:1|2:100|2:100%) value=100 ;;
             2:f|2:fractional) value=fractional ;; 2:p|2:preserve) value=preserve ;;
             3:a|3:auto|3:automatic) value=auto ;; 3:l|3:off) value=off ;;
             3:*)
@@ -556,7 +565,7 @@ collect_preflight()
                 fi ;;
             4:a|4:auto|4:automatic) value=auto ;; 4:n|4:normal|4:off) value=off ;;
             5:p|5:performance) value=performance ;; 5:b|5:balanced) value=balanced ;;
-            5:o|5:off|5:none) value=off ;;
+            5:d|5:don\'t\ change|5:dont\ change|5:o|5:off|5:none) value=off ;;
         esac
         if [ -z "$value" ]; then
             if [ "$q_index" -eq 3 ]; then ui_note q_threads_invalid; else ui_note q_choice_invalid; fi
@@ -690,12 +699,27 @@ else
 fi
 
 if { [ "$selected_action" = install ] || [ "$selected_action" = update ]; } \
-   && pgrep -x wineserver >/dev/null 2>&1; then
+   && { pgrep -x wineserver >/dev/null 2>&1 \
+        || pgrep -x wineserver64 >/dev/null 2>&1; }; then
+    if [ ! -t 0 ]; then
+        printf '!! Wine is running. Run the installer in a terminal so it can ask before stopping Wine.\n' >&2
+        exit 1
+    fi
     ui_question q_stop_wine_title n q_stop_wine_yes q_stop_wine_no
     if [ "$UI_ANSWER" != y ]; then
         cancelled=1; launch_hint=0; exit 0
     fi
     pkill -x wineserver >/dev/null 2>&1 || true
+    pkill -x wineserver64 >/dev/null 2>&1 || true
+    if ! timeout 30 sh -c '
+        while pgrep -x wineserver >/dev/null 2>&1 \
+           || pgrep -x wineserver64 >/dev/null 2>&1; do
+            sleep 0.1
+        done
+    '; then
+        printf '!! Wine did not stop within 30 seconds.\n' >&2
+        exit 1
+    fi
 fi
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/ableton-installer.XXXXXX")" || {

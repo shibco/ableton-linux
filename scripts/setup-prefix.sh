@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-user step 2: create or refresh the Ableton Wine prefix. Idempotent.
+# End-user step 2: create or refresh the ableton-linux prefix. Idempotent.
 # Ships no Ableton Live payload and no license; standalone setup can run the
 # user's own ableton_live*.zip download (~/Proprietary by default) - strictly opt-in
 # via ABLETON_LIVE_AUTOINSTALL=1, otherwise the manual steps are printed.
@@ -133,39 +133,39 @@ prefix_transaction_preflight()
         [ -f "$record" ] && [ ! -L "$record" ] && [ -r "$record" ] \
             && ableton_file_has_no_nul "$record" \
             && [ "$(wc -l < "$record")" -eq 1 ] || {
-            echo "!! The saved Wine prefix recovery data is unsafe or invalid." >&2 || true; return 1; }
+            echo "!! The saved ableton-linux prefix recovery data is unsafe or invalid." >&2 || true; return 1; }
         IFS=$'\t' read -r target backup extra < "$record" || {
-            echo "!! The saved Wine prefix recovery data could not be read." >&2 || true; return 1; }
+            echo "!! The saved ableton-linux prefix recovery data could not be read." >&2 || true; return 1; }
         [ -z "$extra" ] && [ -n "$target" ] && [ -n "$backup" ] || {
-            echo "!! The saved Wine prefix recovery data is malformed." >&2 || true; return 1; }
+            echo "!! The saved ableton-linux prefix recovery data is malformed." >&2 || true; return 1; }
         safe="$(ableton_path_is_safe_delete_target "$target")" || {
-            echo "!! The saved Wine prefix path is unsafe: $target" >&2 || true; return 1; }
+            echo "!! The saved ableton-linux prefix path is unsafe: $target" >&2 || true; return 1; }
         [ "$target" = "$safe" ] \
             && [ "$safe" = "$(ableton_realpath_m "$ABLETON_WINEPREFIX")" ] || {
-            echo "!! The saved Wine prefix does not match this installation: $target" >&2 || true
+            echo "!! The saved ableton-linux prefix doesn't match this installation: $target" >&2 || true
             return 1
         }
         if [ -e "$safe" ] || [ -L "$safe" ]; then
             if ! { [ -d "$safe" ] && [ ! -L "$safe" ] \
                    && ableton_prefix_marker_valid "$safe" "$safe"; }; then
-                echo "!! The Wine prefix selected for recovery is not recognized: $safe" >&2 || true
+                echo "!! The ableton-linux prefix selected for recovery is not recognized: $safe" >&2 || true
                 return 1
             fi
         fi
         if [ "$backup" != absent ]; then
             expected_backup="$safe.transaction-${txn##*/}"
             backup_safe="$(ableton_path_is_safe_delete_target "$backup")" || {
-                echo "!! The saved previous Wine prefix path is unsafe: $backup" >&2 || true; return 1; }
+                echo "!! The saved previous ableton-linux prefix path is unsafe: $backup" >&2 || true; return 1; }
             [ "$backup" = "$expected_backup" ] && [ "$backup" = "$backup_safe" ] || {
-                echo "!! The saved previous Wine prefix is in the wrong place: $backup" >&2 || true; return 1; }
+                echo "!! The saved previous ableton-linux prefix is in the wrong place: $backup" >&2 || true; return 1; }
             if [ -e "$backup" ] || [ -L "$backup" ]; then
                 if ! { [ -d "$backup" ] && [ ! -L "$backup" ] \
                        && ableton_prefix_marker_valid "$backup" "$safe"; }; then
-                    echo "!! The saved previous Wine prefix is not recognized: $backup" >&2 || true
+                    echo "!! The saved previous ableton-linux prefix is not recognized: $backup" >&2 || true
                     return 1
                 fi
             elif [ "$mode" != commit ]; then
-                echo "!! The saved previous Wine prefix is missing: $backup" >&2 || true
+                echo "!! The saved previous ableton-linux prefix is missing: $backup" >&2 || true
                 return 1
             fi
         fi
@@ -204,15 +204,15 @@ prefix_transaction_rollback()
     prefix_transaction_preflight "$txn" || return 1
     if [ -r "$txn/prefix.tsv" ]; then
         IFS=$'\t' read -r target backup < "$txn/prefix.tsv" || {
-            echo "!! The saved Wine prefix recovery data could not be read." >&2 || true
+            echo "!! The saved ableton-linux prefix recovery data could not be read." >&2 || true
             return 1
         }
         if ! safe="$(ableton_path_is_safe_delete_target "$target")"; then
-            echo "!! The saved Wine prefix path is unsafe: $target" >&2 || true
+            echo "!! The saved ableton-linux prefix path is unsafe: $target" >&2 || true
             rc=1; layout_ok=0
         elif [ "$target" != "$safe" ] \
              || [ "$safe" != "$(ableton_realpath_m "$ABLETON_WINEPREFIX")" ]; then
-            echo "!! The saved Wine prefix does not match this installation: $target" >&2 || true
+            echo "!! The saved ableton-linux prefix doesn't match this installation: $target" >&2 || true
             rc=1; layout_ok=0
         fi
         if [ "$layout_ok" -eq 1 ] && [ "$backup" != absent ]; then
@@ -221,16 +221,16 @@ prefix_transaction_rollback()
                || [ "$backup" != "$expected_backup" ] || [ "$backup" != "$backup_safe" ] \
                || [ ! -d "$backup" ] || [ -L "$backup" ] \
                || ! ableton_prefix_marker_valid "$backup" "$safe"; then
-                echo "!! The saved previous Wine prefix is missing, misplaced, or not recognized: $backup" >&2 || true
+                echo "!! The saved previous ableton-linux prefix is missing, misplaced, or not recognized: $backup" >&2 || true
                 rc=1; layout_ok=0
             fi
         fi
         if [ "$layout_ok" -eq 1 ] && [ -e "$safe" ]; then
             if [ -L "$safe" ]; then
-                echo "!! Recovery stopped because the Wine prefix path is a link: $safe" >&2 || true
+                echo "!! Recovery stopped because the ableton-linux prefix path is a link: $safe" >&2 || true
                 rc=1; layout_ok=0
             elif ! ableton_prefix_marker_valid "$safe" "$safe"; then
-                echo "!! Recovery stopped because this Wine prefix was not created by Ableton Linux: $safe" >&2 || true
+                echo "!! Recovery stopped because this ableton-linux prefix was not created by Ableton Linux: $safe" >&2 || true
                 rc=1; layout_ok=0
             elif ! rm -rf -- "$safe"; then
                 rc=1; layout_ok=0
@@ -267,14 +267,14 @@ prefix_transaction_commit()
     prefix_transaction_commit_preflight "$txn" || return 1
     if [ -r "$txn/prefix.tsv" ]; then
         IFS=$'\t' read -r target backup < "$txn/prefix.tsv" || {
-            echo "!! The saved Wine prefix cleanup data could not be read." >&2 || true
+            echo "!! The saved ableton-linux prefix cleanup data could not be read." >&2 || true
             return 1
         }
         if [ "$backup" != absent ] && [ -e "$backup" ]; then
-            safe="$(ableton_path_is_safe_delete_target "$backup")" || { echo "!! The saved previous Wine prefix path is unsafe: $backup" >&2 || true; return 1; }
-            [ ! -L "$safe" ] || { echo "!! Cleanup stopped because the saved previous Wine prefix is a link: $safe" >&2 || true; return 1; }
+            safe="$(ableton_path_is_safe_delete_target "$backup")" || { echo "!! The saved previous ableton-linux prefix path is unsafe: $backup" >&2 || true; return 1; }
+            [ ! -L "$safe" ] || { echo "!! Cleanup stopped because the saved previous ableton-linux prefix is a link: $safe" >&2 || true; return 1; }
             ableton_prefix_marker_valid "$safe" "$target" || {
-                echo "!! Cleanup stopped because the saved previous Wine prefix is not recognized: $safe" >&2 || true
+                echo "!! Cleanup stopped because the saved previous ableton-linux prefix is not recognized: $safe" >&2 || true
                 return 1
             }
             prefix_commit_started=1
@@ -317,7 +317,7 @@ if [ "$validate_only" -eq 1 ]; then
         [ -x "$WINE_ROOT/bin/wine" ] || { echo "!! Patched Wine was not found at $WINE_ROOT" >&2 || true; exit 1; }
     fi
     if [ "$refresh" -eq 1 ]; then
-        [ -f "$WINEPREFIX/system.reg" ] || { echo "!! --refresh needs an existing Wine prefix at $WINEPREFIX" >&2 || true; exit 2; }
+        [ -f "$WINEPREFIX/system.reg" ] || { echo "!! --refresh needs an existing ableton-linux prefix at $WINEPREFIX" >&2 || true; exit 2; }
     fi
     ui_status p_settings_valid
     exit 0
@@ -332,10 +332,10 @@ ableton_install_lock_acquire
 if [ "$post_first_run" -eq 1 ]; then
     ableton_install_lock_acquire
     safe_repair_prefix="$(ableton_path_is_safe_delete_target "$WINEPREFIX")" || {
-        echo "!! The Wine prefix path is unsafe: $WINEPREFIX" >&2 || true; exit 2; }
+        echo "!! The ableton-linux prefix path is unsafe: $WINEPREFIX" >&2 || true; exit 2; }
     if ! { [ "$safe_repair_prefix" = "$WINEPREFIX" ] && [ ! -L "$WINEPREFIX" ] \
            && ableton_prefix_marker_valid "$WINEPREFIX" "$WINEPREFIX"; }; then
-        echo "!! Live 11 repair stopped because this Wine prefix was not created by Ableton Linux." >&2 || true
+        echo "!! Live 11 repair stopped because this ableton-linux prefix was not created by Ableton Linux." >&2 || true
         exit 2
     fi
     . "$here/lib/lifecycle.sh"
@@ -343,7 +343,7 @@ if [ "$post_first_run" -eq 1 ]; then
         echo "!! Close Live, Max, and other Wine programs before running the Live 11 repair." >&2 || true
         exit 1
     fi
-    [ -f "$WINEPREFIX/system.reg" ] || { echo "!! No Wine prefix was found at $WINEPREFIX for Live 11 repair." >&2 || true; exit 2; }
+    [ -f "$WINEPREFIX/system.reg" ] || { echo "!! No ableton-linux prefix was found at $WINEPREFIX for Live 11 repair." >&2 || true; exit 2; }
     moved=0
     move_failed=0
     for maxpref in "$WINEPREFIX"/drive_c/users/*/"AppData/Roaming/Cycling '74/Max 8/Settings/maxpreferences.maxpref"; do
@@ -394,15 +394,15 @@ ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "configuring 
 # through Live installation, so any later failure can restore the old prefix.
 . "$here/lib/lifecycle.sh"
 if ableton_prefix_busy; then
-    echo "!! Close Live, Max, and other Wine programs before updating the Wine prefix." >&2 || true
+    echo "!! Close Live, Max, and other Wine programs before updating the ableton-linux prefix." >&2 || true
     exit 1
 fi
 final_prefix="$WINEPREFIX"
 final_parent="$(dirname "$final_prefix")"
 final_name="$(basename "$final_prefix")"
 safe_final="$(ableton_path_is_safe_delete_target "$final_prefix")" || {
-    echo "!! The Wine prefix path is unsafe: $final_prefix" >&2 || true; exit 2; }
-[ ! -L "$final_prefix" ] || { echo "!! The Wine prefix path must not be a link: $final_prefix" >&2 || true; exit 2; }
+    echo "!! The ableton-linux prefix path is unsafe: $final_prefix" >&2 || true; exit 2; }
+[ ! -L "$final_prefix" ] || { echo "!! The ableton-linux prefix path must not be a link: $final_prefix" >&2 || true; exit 2; }
 if [ -e "$final_prefix" ] && ! ableton_prefix_marker_valid "$final_prefix" "$safe_final"; then
     if ableton_legacy_default_prefix_valid "$final_prefix"; then
         # Adopt it here, before any transaction opens. The run below moves this
@@ -412,11 +412,11 @@ if [ -e "$final_prefix" ] && ! ableton_prefix_marker_valid "$final_prefix" "$saf
         # the commit then fails with the backup unrecognised.
         adopt_marker="$final_prefix/.ableton-linux-prefix"
         [ ! -L "$adopt_marker" ] && [ ! -e "$adopt_marker" ] || {
-            echo "!! The existing Wine prefix was left unchanged because its Ableton Linux setup record is not a regular file: $adopt_marker" >&2 || true
+            echo "!! The existing ableton-linux prefix was left unchanged because its Ableton Linux setup record is not a regular file: $adopt_marker" >&2 || true
             exit 2
         }
         adopt_tmp="$(mktemp "$final_prefix/.prefix-marker.XXXXXX")" || {
-            echo "!! The existing Wine prefix is not writable: $final_prefix" >&2 || true; exit 2; }
+            echo "!! The existing ableton-linux prefix is not writable: $final_prefix" >&2 || true; exit 2; }
         if ! printf 'format=1\nprefix=%s\n' "$safe_final" > "$adopt_tmp" \
            || ! chmod 600 "$adopt_tmp" \
            || ! mv -T -f -- "$adopt_tmp" "$adopt_marker" \
@@ -425,12 +425,12 @@ if [ -e "$final_prefix" ] && ! ableton_prefix_marker_valid "$final_prefix" "$saf
             # ableton_legacy_default_prefix_valid stops recognising the prefix,
             # so a half-written one would refuse every later run as well.
             rm -f -- "$adopt_tmp" "$adopt_marker"
-            echo "!! The existing Wine prefix could not be prepared safely: $final_prefix" >&2 || true
+            echo "!! The existing ableton-linux prefix could not be prepared safely: $final_prefix" >&2 || true
             exit 2
         fi
         ui_status p_using_existing_prefix "$final_prefix"
     else
-        echo "!! This Wine prefix was left unchanged because the installer could not confirm that it created it: $final_prefix" >&2 || true
+        echo "!! This ableton-linux prefix was left unchanged because the installer could not confirm that it created it: $final_prefix" >&2 || true
         echo "!! Choose a different prefix, or move this one aside and run setup again." >&2 || true
         exit 2
     fi
@@ -461,14 +461,14 @@ cleanup_unstarted_prefix_transaction()
         rm -rf -- "$transaction_dir" || restore_ok=0
     fi
     if [ "$restore_ok" -ne 1 ]; then
-        echo "!! Wine prefix setup failed, and recovery did not finish. Keep the files at $transaction_dir and report the problem." >&2 || true
+        echo "!! The ableton-linux prefix setup failed, and recovery did not finish. Keep the files at $transaction_dir and report the problem." >&2 || true
     fi
     exit "$rc"
 }
 trap cleanup_unstarted_prefix_transaction EXIT
 if [ -e "$final_prefix" ]; then
     ableton_adopt_prefix_marker "$final_prefix" "$safe_final" || {
-        echo "!! This Wine prefix was left unchanged because it was not created by Ableton Linux: $final_prefix" >&2 || true
+        echo "!! This ableton-linux prefix was left unchanged because it was not created by Ableton Linux: $final_prefix" >&2 || true
         exit 2
     }
 fi
@@ -485,12 +485,12 @@ prefix_cleanup()
     set +e
     if [ "$rc" -ne 0 ]; then
         if [ "$prefix_core_ready" -eq 1 ]; then
-            echo "!! The Wine prefix is ready, but old recovery files may remain at $transaction_dir." >&2 || true
+            echo "!! The ableton-linux prefix is ready, but old recovery files may remain at $transaction_dir." >&2 || true
             rc=0
         elif [ "$prefix_commit_started" -eq 1 ]; then
             printf 'status=committed-cleanup-incomplete\nprefix=%s\nexit=%s\n' \
                 "$final_prefix" "$rc" > "$transaction_dir/COMMITTED_CLEANUP_FAILURE" 2>/dev/null || true
-            echo "!! The Wine prefix is ready, but old recovery files remain at $transaction_dir." >&2 || true
+            echo "!! The ableton-linux prefix is ready, but old recovery files remain at $transaction_dir." >&2 || true
             rc=0
         elif [ "$prefix_promoted" -eq 1 ]; then
             if ! prefix_transaction_rollback "$transaction_dir"; then
@@ -501,7 +501,7 @@ prefix_cleanup()
                 restore_error="staged prefix cleanup failed"
             fi
             if ! prefix_transaction_rollback "$transaction_dir"; then
-                restore_error="${restore_error}${restore_error:+; }Wine prefix recovery failed"
+                restore_error="${restore_error}${restore_error:+; }ableton-linux prefix recovery failed"
             fi
         fi
         if [ "$rc" -ne 0 ] && [ "$prefix_commit_started" -ne 1 ]; then
@@ -510,9 +510,9 @@ prefix_cleanup()
                 "$final_prefix" "$rc" "$restoration_complete" "$restore_error" \
                 > "$transaction_dir/prefix-failure" || true
             if [ "$restoration_complete" = yes ]; then
-                echo "!! Wine prefix setup failed. The previous prefix is back in place." >&2 || true
+                echo "!! The ableton-linux prefix setup failed. The previous prefix is back in place." >&2 || true
             else
-                echo "!! Wine prefix setup failed, and the previous prefix could not be fully restored: $restore_error" >&2 || true
+                echo "!! The ableton-linux prefix setup failed, and the previous prefix could not be fully restored: $restore_error" >&2 || true
                 echo "!! Keep the recovery files at $transaction_dir and report the problem." >&2 || true
             fi
         fi
@@ -684,7 +684,7 @@ strip_options_txt() {
 fresh_prefix=0
 [ -f "$WINEPREFIX/system.reg" ] || fresh_prefix=1
 if [ "$refresh" -eq 1 ] && [ "$fresh_prefix" -eq 1 ]; then
-    echo "!! --refresh needs an existing Wine prefix at $WINEPREFIX. Run without --refresh to create one." >&2 || true
+    echo "!! --refresh needs an existing ableton-linux prefix at $WINEPREFIX. Run without --refresh to create one." >&2 || true
     exit 2
 fi
 
@@ -727,7 +727,7 @@ case "$dpi_mode" in
                 if [ "$have" = "$block" ]; then
                     ui_status p_scale_already_configured "$scale"
                 else
-                    echo "!! Display scale $scale differs from this Wine prefix's current settings ($have)." >&2 || true
+                    echo "!! Display scale $scale differs from the current settings for this ableton-linux prefix ($have)." >&2 || true
                     echo "!! Existing settings were kept. To change them, rerun with ABLETON_DPI_MODE=$block." >&2 || true
                 fi
             fi
@@ -1573,7 +1573,7 @@ ui_item_end ok
 # succeeded.  The original remains beside it until the outer transaction commits.
 prefix_marker="$WINEPREFIX/.ableton-linux-prefix"
 if [ -L "$prefix_marker" ] || { [ -e "$prefix_marker" ] && [ ! -f "$prefix_marker" ]; }; then
-    echo "!! The prepared Wine prefix is missing a valid Ableton Linux setup record." >&2 || true
+    echo "!! The prepared ableton-linux prefix is missing a valid Ableton Linux setup record." >&2 || true
     exit 1
 fi
 prefix_marker_tmp="$(mktemp "$WINEPREFIX/.prefix-marker.XXXXXX")"
@@ -1583,14 +1583,14 @@ if ! printf 'format=1\nprefix=%s\n' "$final_prefix" > "$prefix_marker_tmp" \
    || [ -e "$prefix_marker_tmp" ] || [ ! -f "$prefix_marker" ] || [ -L "$prefix_marker" ] \
    || ! ableton_prefix_marker_valid "$WINEPREFIX" "$final_prefix"; then
     rm -f -- "$prefix_marker_tmp"
-    echo "!! The prepared Wine prefix could not be marked safely." >&2 || true
+    echo "!! The prepared ableton-linux prefix could not be marked safely." >&2 || true
     exit 1
 fi
 prefix_backup=absent
 if [ -e "$final_prefix" ]; then
     prefix_backup="$final_prefix.transaction-${transaction_dir##*/}"
     [ ! -e "$prefix_backup" ] && [ ! -L "$prefix_backup" ] \
-        || { echo "!! An old Wine prefix recovery directory already exists: $prefix_backup" >&2 || true; exit 1; }
+        || { echo "!! An old ableton-linux prefix recovery directory already exists: $prefix_backup" >&2 || true; exit 1; }
 fi
 # Revalidate both names immediately before the rename. New project launchers
 # share the global installation lock, but a direct stock-Wine command or a
@@ -1625,7 +1625,7 @@ if [ "$own_prefix_transaction" -eq 1 ]; then
 fi
 if ! ableton_promote_directory "$WINEPREFIX" "$final_prefix" "$prefix_backup" \
         "$transaction_dir/prefix.tsv"; then
-    echo "!! The prepared Wine prefix could not be put into place." >&2 || true
+    echo "!! The prepared ableton-linux prefix could not be put into place." >&2 || true
     exit 1
 fi
 prefix_promoted=1
@@ -1635,11 +1635,11 @@ if [ "$own_prefix_transaction" -eq 1 ]; then
     ableton_mark_transaction_core_complete "$transaction_dir" 2>/dev/null || true
     if prefix_transaction_commit "$transaction_dir"; then
         if ! rm -rf -- "$transaction_dir"; then
-            echo "!! The Wine prefix is ready, but old recovery files remain at $transaction_dir." >&2 || true
+            echo "!! The ableton-linux prefix is ready, but old recovery files remain at $transaction_dir." >&2 || true
         fi
     else
         rm -f -- "$transaction_dir/active" 2>/dev/null || true
-        echo "!! The Wine prefix is ready, but old recovery files remain at $transaction_dir." >&2 || true
+        echo "!! The ableton-linux prefix is ready, but old recovery files remain at $transaction_dir." >&2 || true
     fi
 fi
 

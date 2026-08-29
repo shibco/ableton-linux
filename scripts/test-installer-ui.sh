@@ -163,7 +163,7 @@ ui_blank; ui_heading h_action; ui_blank
 ui_menu_option m_update default
 ui_menu_option m_reinstall
 ui_menu_option m_remove
-ui_menu_option m_exit
+ui_menu_option m_quit
 ui_blank
 ui_step_begin s_validate
 ui_item_begin i_copy
@@ -189,7 +189,7 @@ chmod +x "$work/fixture-golden.sh"
 
 # The golden is the template rendered for one fixed run. It is literal on
 # purpose: a dictionary or layout edit must change this text deliberately.
-# The "Which one?: " line ends with one space (B6); the heredoc keeps it.
+# The live cursor leaves one space between the question prompt and input.
 cat > "$work/golden-static.txt" <<'EOF'
 ╒══════════════════════════╤═════════════════╕
 │  ABLETON-LINUX INSTALLER ┊ v 2026.08.28.1  │
@@ -211,7 +211,7 @@ cat > "$work/golden-static.txt" <<'EOF'
 │  > [U]pdate (or press Enter)
 │  > [R]einstall
 │  > Remo[v]e Ableton Linux
-│  > E[x]it
+│  > [Q]uit
 │
 ├──┲━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 │  ┃ 2/8 ╏ CHECK THE HOST AND THE REQUEST ┃
@@ -224,7 +224,8 @@ cat > "$work/golden-static.txt" <<'EOF'
 │  ├─ Check the embedded kit
 │  │  > The kit is intact.
 │  │
-│  │  🛈 Less than 10 GiB is free for Wine, the prefix, and Live.
+│  │  🛈 Less than 10 GiB is free for the Wine runtime, the ableton-linux
+│  │    prefix, and Live.
 │  │
 │  │  ⚠ Ableton Linux currently requires an x86_64 host.
 │  │  𐄂 Failed.
@@ -237,14 +238,14 @@ cat > "$work/golden-static.txt" <<'EOF'
 │  │
 │  ├─ Extract the embedded kit ✓
 │  │
-│  ├─ QUESTION: Some files from an earlier installation already exist.
+│  ├─ FILES FROM AN EARLIER INSTALLATION ALREADY EXIST
 │  │
 │  │  > [O]verwrite all (Default)
 │  │  > [K]eep originals
 │  │  > [A]bort
 │  │
-│  │  Which one?: 
 │  │  (Press Enter for default or wait 5 seconds)
+│  │  Please choose [O/K/A]:
 │  │
 │  └─ Step 3 Complete! ✓
 │
@@ -258,7 +259,7 @@ cat > "$work/golden-static.txt" <<'EOF'
 │ Errors:                                  │        0 │
 ├┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┴┈┈┈┈┈┈┈┈┈┈┤
 │ runtime: /home/theo/.local/opt/wine-d2d1-nspa-11.13 │
-│ prefix: /home/theo/.wine-ableton                    │
+│ ableton-linux prefix: /home/theo/.wine-ableton      │
 ╘═════════════════════════════════════════════════════╛
 
 Launch Ableton Live via your desktop applications launcher or in the terminal:
@@ -277,7 +278,8 @@ Need help?
 Saved a log of this operation at
   ~/Downloads/ableton-linux-installer-x.log
 EOF
-grep -q '^│  │  Which one?: $' "$work/golden-static.txt" || fail "the golden keeps the prompt's trailing space"
+grep -q '^│  │  Please choose \[O/K/A\]:$' "$work/golden-static.txt" \
+    || fail "the golden keeps the question prompt"
 
 # T1: static rendering is byte for byte the template.
 run_static bash "$work/fixture-golden.sh" < /dev/null > "$work/static.out" 2> "$work/static.err" \
@@ -433,7 +435,7 @@ ui_step_end ok
 EOF
 run_pty_raw 40 80 "$work/settled-detail.raw" bash "$work/fixture-settled-detail.sh"
 vt "$work/settled-detail.raw" > "$work/settled-detail.screen"
-if ! grep -q '^│  ├─ Copy the existing Wine prefix ✓$' "$work/settled-detail.screen" \
+if ! grep -q '^│  ├─ Copy the existing ableton-linux prefix ✓$' "$work/settled-detail.screen" \
    || ! grep -q '^│  │  > Display scaling is already set for scale 1.33333$' "$work/settled-detail.screen"; then
     fail "a completed prefix copy keeps the vertical line beside its scaling detail"
 fi
@@ -491,9 +493,10 @@ run_pty_raw 40 80 "$work/question.raw" env ANSWER_FILE="$work/answer-tty" bash "
 awk -v a="$start" -v b="$EPOCHREALTIME" 'BEGIN { exit !(b - a >= 0.9 && b - a <= 6) }' \
     || fail "a silent terminal waits for the timeout"
 grep -qx 'answer=o' "$work/answer-tty" || fail "the timeout returns the default answer"
-vt "$work/question.raw" | grep '^│  │  Which one?:' >/dev/null || fail "the prompt line is drawn above the hint"
-vt "$work/question.raw" | grep '^│  │  (Press Enter for default or wait 1 seconds)' >/dev/null \
-    || fail "the hint names the timeout"
+question_hint_line="$(vt "$work/question.raw" | grep -n '^│  │  (Press Enter for default or wait 1 seconds)' | cut -d: -f1)"
+question_prompt_line="$(vt "$work/question.raw" | grep -n '^│  │  Please choose \[O/K/A\]:' | cut -d: -f1)"
+[ "$question_prompt_line" -eq $((question_hint_line + 1)) ] \
+    || fail "the question hint is immediately above its prompt"
 ! has_frame "$work/question.raw" || fail "a question shows no spinner while it waits for input"
 start="$EPOCHREALTIME"
 run_static env ANSWER_FILE="$work/answer-eof" bash "$work/fixture-question.sh" < /dev/null > /dev/null 2>&1 \
@@ -509,7 +512,8 @@ grep -qx 'answer=k' "$work/answer-word" || fail "a whole-word answer maps to its
 printf 'maybe\nA\n' | run_static env ANSWER_FILE="$work/answer-retry" bash "$work/fixture-question.sh" > "$work/retry.out" 2>&1 \
     || fail "an unknown answer is asked again"
 grep -qx 'answer=a' "$work/answer-retry" || fail "the answer after a retry is honoured"
-[ "$(grep -c 'Which one?:' "$work/retry.out")" -eq 2 ] || fail "an unknown answer repeats the prompt once"
+[ "$(grep -c 'Please choose \[O/K/A\]:' "$work/retry.out")" -eq 2 ] \
+    || fail "an unknown answer repeats the prompt once"
 ok "timed questions honour the timeout, EOF, piped keys, whole words, and retries"
 
 # T9: step numbers and names come from the table, in table order, for
@@ -614,7 +618,7 @@ while IFS= read -r line; do
 done < <(grep '^[╞├│╘]' "$work/footer-long.out")
 grep -q '^│ runtime: …[^ ]*wine-d2d1-nspa-11.13-rebuilt-2026 *│$' "$work/footer-long.out" \
     || fail "an overlong path is shortened from the left so its tail survives"
-grep -q '^│ prefix: /home/someone/.wine-ableton *│$' "$work/footer-long.out" \
+grep -q '^│ ableton-linux prefix: /home/someone/.wine-ableton *│$' "$work/footer-long.out" \
     || fail "a short row in a widened footer keeps its border"
 ok "the footer renders every status, widens to the terminal, and shortens long paths"
 

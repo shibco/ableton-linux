@@ -1623,7 +1623,7 @@ if ! printf 'Keep\n' | run_component_install "$base" "$base/runtime" --integrati
 fi
 grep -qxF "$panel_command exists." "$base/err" \
     || fail "panel Keep prompt did not name its destination"
-grep -qF '│  ├─ QUESTION: Some files from an earlier installation already exist.' "$base/out" \
+grep -qF '│  ├─ FILES FROM AN EARLIER INSTALLATION ALREADY EXIST' "$base/out" \
     || fail "panel Keep choice did not show the required prompt"
 grep -qxF 'keep this panel command' "$panel_command" \
     || fail "panel Keep choice changed its destination"
@@ -1652,7 +1652,7 @@ printf 'a\n' | run_component_install "$base" "$base/runtime" --integration-only 
 [ "$cancel_status" -eq 4 ] || fail "panel Cancel did not return the cancellation status"
 grep -qxF "$panel_command exists." "$base/err" \
     || fail "panel Cancel prompt did not name its destination"
-grep -qF '│  ├─ QUESTION: Some files from an earlier installation already exist.' "$base/out" \
+grep -qF '│  ├─ FILES FROM AN EARLIER INSTALLATION ALREADY EXIST' "$base/out" \
     || fail "panel Cancel choice did not show the required prompt"
 grep -qxF 'cancel before replacing this command' "$panel_command" \
     || fail "panel Cancel choice changed its destination"
@@ -2579,7 +2579,7 @@ run_isolated "$base" env BASH_ENV="$base/hide-cabextract.bash" \
     ABLETON_RUNTIME_PENDING=1 \
     bash "$here/setup-prefix.sh" --refresh --validate >"$base/out" 2>"$base/err" \
     || fail "unused cabextract or missing default settings blocked prefix refresh validation"
-grep -qF -- 'Wine prefix settings are valid' "$base/out" \
+grep -qF -- 'ableton-linux prefix settings are valid' "$base/out" \
     || fail "direct prefix validation did not reach its successful result"
 grep -qxF "runtime_root=$base/runtime" "$config_path" \
     || fail "prefix validation changed the project settings it only needed to read"

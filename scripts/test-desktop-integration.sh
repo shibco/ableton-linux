@@ -177,7 +177,7 @@ cmp -s -- "$here/setup-realtime.sh" "$private_support" \
     || fail "installer removes a foreign globally named handler"
 grep -qxF "$private_support exists." "$base/err" \
     || fail "existing support file prompt did not name its destination"
-grep -qF '│  ├─ QUESTION: Some files from an earlier installation already exist.' "$base/out" \
+grep -qF '│  ├─ FILES FROM AN EARLIER INSTALLATION ALREADY EXIST' "$base/out" \
     || fail "existing support file did not ask for an overwrite choice"
 mapfile -t support_backups < <(find "$state/backups" -type f \
     -name 'setup-realtime.sh.bak-*')
@@ -314,7 +314,7 @@ grep -qF 'Kept existing file unchanged:' "$base/out" \
     || fail "Keep was not reported as an unchanged result"
 ! grep -qF 'Launchers, shortcuts, and file support are ready.' "$base/out" \
     || fail "Keep was falsely reported as a fully applied update"
-grep -qF '│  ├─ QUESTION: Some files from an earlier installation already exist.' "$base/out" \
+grep -qF '│  ├─ FILES FROM AN EARLIER INSTALLATION ALREADY EXIST' "$base/out" \
     || fail "the overwrite question is rendered inside the tree"
 ok "Keep leaves one destination unchanged and continues the fixed mapping loop"
 

@@ -134,10 +134,10 @@ The packer builds the `.run` header from `scripts/setup-run-header.sh` and inser
 
 ## Current configuration
 
-The installer saves the runtime root, Wine prefix, selected Live major version, and Link mode. For these values, a command-line option overrides an exported `ABLETON_*` variable, which overrides the saved XDG configuration and then the default.
+The installer saves the runtime root, the ableton-linux prefix, the selected Live major version, and the Link mode. For these values, a command-line option overrides an exported `ABLETON_*` variable, which overrides the saved XDG configuration and then the default.
 
 - `ABLETON_WINE_ROOT` selects the Wine runtime. The default is `~/.local/opt/wine-d2d1-nspa-11.13`; the Nix package's launchers and shipped scripts default to their own store path instead.
-- `ABLETON_WINEPREFIX` selects the Wine prefix. The default is `~/.wine-ableton`.
+- `ABLETON_WINEPREFIX` selects the ableton-linux prefix. The default is `~/.wine-ableton`.
 - `ABLETON_LIVE_VERSION=11|12` selects a Live major version for the launcher.
 - `ABLETON_LINK_MODE=off|session|always` controls when Ableton Link runs.
 

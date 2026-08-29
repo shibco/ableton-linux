@@ -20,7 +20,7 @@ usage()
 Usage: uninstall.sh [--keep-prefix | --prefix-only | --delete-prefix] [--yes] [--dry-run]
 
   --keep-prefix    remove Linux integration and the Wine runtime (default)
-  --prefix-only    remove only the Wine prefix
+  --prefix-only    remove only the ableton-linux prefix
   --delete-prefix  remove Linux integration, runtime, prefix, and installer state
 EOF
 }
@@ -191,7 +191,7 @@ verify_prefix()
     path_exists "$ABLETON_WINEPREFIX" || return 0
     [ -d "$ABLETON_WINEPREFIX" ] && [ ! -L "$ABLETON_WINEPREFIX" ] \
         && ableton_prefix_marker_valid "$ABLETON_WINEPREFIX" "$ABLETON_WINEPREFIX" || {
-        fail "The Wine prefix marker names a different prefix: $ABLETON_WINEPREFIX"
+        fail "The ableton-linux prefix marker names a different prefix: $ABLETON_WINEPREFIX"
         return 1
     }
 }

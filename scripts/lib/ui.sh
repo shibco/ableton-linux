@@ -75,7 +75,7 @@ declare -A UI_TEXT=(
     [w_not_x86_64]='Ableton Linux currently requires an x86_64 host.'
     [w_missing_command]='Required command is missing: %s.'       # name
     [w_temp_small]='Temporary storage is too small for the embedded installer kit.'
-    [w_home_small]='Less than 10 GiB is free for Wine, the prefix, and Live.'
+    [w_home_small]='Less than 10 GiB is free for the Wine runtime, the ableton-linux prefix, and Live.'
     [w_no_display]='No graphical desktop display was detected; Live cannot open without one.'
     [w_pipewire_unknown]='PipeWire could not be identified; the installer will run its bundled compatibility check before changing audio support.'
     [w_pipewire_old]='PipeWire %s is older than the required %s.' # found, floor
@@ -91,19 +91,19 @@ declare -A UI_TEXT=(
     [m_default_hint]=' (or press Enter)'
     [m_prompt]='Choose an action:'
     [m_unknown]='Unknown action: %s'                              # answer
-    [m_uninstall_scope]='Choose what to remove'
-    [m_uninstall_runtime]='Runtime only[R]'
-    [m_uninstall_prefix]='Prefix only[P]'
-    [m_uninstall_all]='All[A]'
-    [m_uninstall_exit]='Exit[E]'
-    [m_uninstall_prompt]='Choose an uninstall scope:'
+    [m_uninstall_scope]='WHAT DO YOU WANT TO REMOVE'
+    [m_uninstall_runtime]='[R]untime only'
+    [m_uninstall_prefix]='[P]refix only'
+    [m_uninstall_all]='[A]ll'
+    [m_uninstall_exit]='[E]xit'
+    [m_uninstall_prompt]='Please choose [R/P/A/E]:'
     [m_uninstall_unknown]='Unknown uninstall scope: %s'            # answer
     [label_update]='Update'
     [label_install]='Install'
     [label_reinstall]='Reinstall'
     [label_remove]='Remove'
     [label_runtime]='Install Wine runtime'
-    [label_prefix]='Wine prefix %s'                               # subcommand
+    [label_prefix]='ableton-linux prefix %s'                      # subcommand
     [label_link]='Ableton Link %s'                                # subcommand
     [label_extract]='Extract installer kit'
     [label_plan]='Show installation plan'
@@ -111,74 +111,81 @@ declare -A UI_TEXT=(
     # ---- Live installer candidates --------------------------------------------
     [c_item]='[%s] %s'                                            # number, file name
     [c_dir]='%s'                                                  # directory
-    [c_prompt]='Which one?:'
+    [c_prompt]='Please choose a number:'
     [c_hint]='(Press Enter for [1] or wait %s seconds)'          # seconds
     [c_none]='No Ableton Live installer was found in %s. Copy the Live download next to the installer, or run with --live-installer FILE or --skip-live-install.'
     [c_invalid]='No valid installer was selected.'
 
     # ---- questions inside a step ----------------------------------------------
-    [q_title]='QUESTION: %s'                                      # title
     [q_default_tag]=' (Default)'
-    [q_prompt]='Which one?:'
+    [q_prompt]='Please choose [%s]:'                              # choices
     [q_hint]='(Press Enter for default or wait %s seconds)'      # seconds
     [q_current_tag]=' (Current)'
-    [q_back_hint]='Press Esc to go back'
-    [q_buffer_title]='1/6 Audio buffer'
-    [q_buffer_explanation]='Lower numbers reduce audio delay; higher numbers are less likely to crackle.'
+    [q_back_hint]='(Press Esc for previous setting)'
+    [q_buffer_title]='1/6 SET DEFAULT AUDIO BUFFER'
+    [q_buffer_explanation]='A lower default audio buffer reduces audio latency but can cause distortion during playback.'
+    [q_buffer_explanation_2]='You can change this default later using pipeasio-settings.'
     [q_buffer_64]='[1] 64 frames'
     [q_buffer_128]='[2] 128 frames'
     [q_buffer_256]='[3] 256 frames'
     [q_buffer_512]='[4] 512 frames'
     [q_buffer_1024]='[5] 1024 frames'
     [q_buffer_custom]='%s frames'
-    [q_shortcuts_title]='2/6 Keyboard shortcuts'
-    [q_shortcuts_explanation]='On GNOME, Assign to Live lets Live use conflicting desktop shortcuts until Live closes.'
-    [q_shortcuts_take]='[A] Assign to Live'
-    [q_shortcuts_preserve]='[P] Preserve desktop shortcuts'
-    [q_dpi_title]='3/6 Display scaling'
-    [q_dpi_explanation]='Automatic matches your desktop; 100%% is normal, Fractional suits scaled displays, and Preserve changes nothing.'
-    [q_dpi_auto]='[A] Automatic'
-    [q_dpi_100]='[1] 100%%'
-    [q_dpi_fractional]='[F] Fractional'
-    [q_dpi_preserve]='[P] Preserve'
-    [q_threads_title]='4/6 Audio workers'
-    [q_threads_explanation]='Automatic chooses how many workers suit your CPU; Let Live decide uses Live'\''s own setting, or enter 1–63 yourself.'
-    [q_threads_auto]='[A] Automatic'
-    [q_threads_off]='[L] Let Live decide'
-    [q_threads_custom]='[1-63] Enter a custom value from 1 to 63'
+    [q_shortcuts_title]='2/6 ENABLE KEYBOARD SHORTCUTS'
+    [q_shortcuts_explanation]='Determine whether Live can take over system shortcuts,'
+    [q_shortcuts_explanation_2]='to remain faithful to your Live keyboard shortcut muscle memory.'
+    [q_shortcuts_take]='[A]ssign to Live'
+    [q_shortcuts_preserve]='[P]reserve desktop shortcuts'
+    [q_dpi_title]='3/6 SET LIVE DISPLAY SCALING'
+    [q_dpi_explanation]='Changes how Live will be displayed on your montior.'
+    [q_dpi_explanation_2]='You almost always want '\''Automatic,'\'' unless your system has a particular quirk.'
+    [q_dpi_auto]='[A]utomatic'
+    [q_dpi_100]='[N]ormal (100%%)'
+    [q_dpi_fractional]='[F]ractional'
+    [q_dpi_preserve]='[P]reserve (Don'\''t change under any circumstance)'
+    [q_threads_title]='4/6 SET AUDIO WORKER LIMIT'
+    [q_threads_explanation]='Balances the available amount of computational power set aside for Live.'
+    [q_threads_explanation_2]='Automatic is our optimisation work. Live is optimised for Windows.'
+    [q_threads_explanation_3]='Depending on your CPU, more may not always be better!'
+    [q_threads_auto]='[A]utomatic'
+    [q_threads_off]='[L]et Live decide (Not recommended)'
+    [q_threads_custom]='[1-63] Specify a custom limit (1 to 63)'
     [q_threads_value]='%s workers'
     [q_threads_invalid]='Choose Automatic, Let Live decide, or a number from 1 to 63.'
-    [q_rt_title]='5/6 Real-time scheduling'
-    [q_rt_explanation]='Automatic uses higher CPU priority when allowed and Normal uses standard priority; neither changes permissions.'
-    [q_rt_auto]='[A] Automatic'
-    [q_rt_off]='[N] Normal scheduling'
-    [q_power_title]='6/6 Power profile'
-    [q_power_explanation]='Performance favors speed, Balanced saves power, and Don'\''t change keeps the current mode while Live or Max is open.'
-    [q_power_performance]='[P] Performance'
-    [q_power_balanced]='[B] Balanced'
-    [q_power_off]='[O] Don'\''t change'
+    [q_rt_title]='5/6 TOGGLE REAL-TIME SCHEDULING'
+    [q_rt_explanation]='Another optimisation that prioritises Live and audio on your system.'
+    [q_rt_explanation_2]='Change this to normal if you are struggling with performance or issues with'
+    [q_rt_explanation_3]='your system.'
+    [q_rt_auto]='[A]utomatic'
+    [q_rt_off]='[N]ormal scheduling'
+    [q_power_title]='6/6 SET POWER MANAGEMENT'
+    [q_power_explanation]='For convenience, this project can automatically manage your linux machine'\''s power profile'
+    [q_power_explanation_2]='while Live is open and running.'
+    [q_power_performance]='[P]erformance'
+    [q_power_balanced]='[B]alanced'
+    [q_power_off]='[D]on'\''t change'
     [q_choice_invalid]='Choose one of the listed options.'
-    [q_overwrite_title]='Some files from an earlier installation already exist.'
+    [q_overwrite_title]='FILES FROM AN EARLIER INSTALLATION ALREADY EXIST'
     [q_overwrite_all]='[O]verwrite all'
     [q_keep]='[K]eep originals'
     [q_abort]='[A]bort'
     [q_overwrite_chosen]='Existing files will be moved to %s before they are replaced.'   # backup dir
     [q_keep_chosen]='Existing files are kept unchanged; new files are written only where nothing exists.'
     [q_abort_chosen]='Stopping before any existing file is replaced.'
-    [q_stop_prefix_title]='A program is still using the Wine prefix.'
-    [q_stop_prefix_end]='[E]nd every program in the prefix'
-    [q_stop_prefix_leave]='[L]eave it running'
-    [q_stop_wine_title]='Wine processes are still running. Quit them before continuing?'
-    [q_stop_wine_yes]='[Y]es - quit them and continue'
-    [q_stop_wine_no]='[N]o - exit the installer'
+    [q_stop_prefix_title]='STOP PROGRAMS USING THE ABLETON-LINUX PREFIX'
+    [q_stop_prefix_end]='[E]nd every program in the ableton-linux prefix'
+    [q_stop_prefix_leave]='[L]eave the ableton-linux prefix running'
+    [q_stop_wine_title]='STOP ALL RUNNING WINE PROCESSES'
+    [q_stop_wine_yes]='[Y]es, stop them and continue'
+    [q_stop_wine_no]='[N]o, exit the installer'
 
     # ---- steps ----------------------------------------------------------------
     [s_prepare]='Prepare the installer kit'
     [s_validate]='Check the host and the request'
     [s_runtime_install]='Install the Wine runtime'
     [s_runtime_update]='Update the Wine runtime'
-    [s_prefix_create]='Prepare the Wine prefix'
-    [s_prefix_update]='Update the Wine prefix'
+    [s_prefix_create]='Prepare the ableton-linux prefix'
+    [s_prefix_update]='Update the ableton-linux prefix'
     [s_prefix_repair]='Repair Live 11 preferences'
     [s_live]='Install Ableton Live'
     [s_launchers]='Install launchers and shortcuts'
@@ -191,7 +198,7 @@ declare -A UI_TEXT=(
     [s_finish_install]='Finish the installation'
     [s_finish_update]='Finish the update'
     [s_finish_runtime]='Finish the Wine runtime install'
-    [s_finish_prefix]='Finish the Wine prefix setup'
+    [s_finish_prefix]='Finish the ableton-linux prefix setup'
     [s_finish_link]='Finish the Ableton Link change'
     [s_complete]='Step %s Complete!'                              # number
     [s_failed]='Step %s Failed!'                                  # number
@@ -226,7 +233,7 @@ declare -A UI_TEXT=(
     [f_warnings]='Warnings:'
     [f_errors]='Errors:'
     [f_runtime]='runtime:'
-    [f_prefix]='prefix:'
+    [f_prefix]='ableton-linux prefix:'
 
     # ---- tail (plain text after the footer) -----------------------------------
     [t_launch]='Launch Ableton Live via your desktop applications launcher or in the terminal:'
@@ -253,11 +260,11 @@ declare -A UI_TEXT=(
     # Keys start with the script: d_ installer.sh, i_ install.sh,
     # p_ setup-prefix.sh, l_ setup-link.sh, u_ uninstall.sh, m_ manifest.sh,
     # pa_ pipeasio.sh.
-    [d_plan_prefix_update_line]='Update the Ableton Wine prefix at %s'   # prefix
-    [d_plan_prefix_create_line]='Create the Ableton Wine prefix at %s'   # prefix
+    [d_plan_prefix_update_line]='Update the ableton-linux prefix at %s'  # prefix
+    [d_plan_prefix_create_line]='Create the ableton-linux prefix at %s'  # prefix
     [d_sum_updated]='Ableton is updated'
     [d_sum_live_installed]='Ableton Live %s is installed'                # major
-    [d_sum_runtime_prefix_ready]='The Ableton runtime and Wine prefix are ready'
+    [d_sum_runtime_prefix_ready]='The Ableton runtime and ableton-linux prefix are ready'
     [d_deprecated_option]='%s is deprecated; use %s instead.'             # old, new
     [i_integration_partial]='Some shortcuts or support files could not be updated.'
     [i_kept_files]='Kept %s existing files unchanged.'                   # count
@@ -265,13 +272,13 @@ declare -A UI_TEXT=(
     [m_kept_file]='Kept existing file unchanged: %s.'                    # path
     [d_link_files_retry]='Some Ableton Link support files need another try.'
     [d_settings_kept]='Saved settings were kept unchanged.'
-    [d_prefix_held_unknown]='The Live installer finished, but a program is still using its Wine prefix:'
-    [d_prefix_held_background]='The Live installer finished; a background program is still using its Wine prefix.'
-    [d_prefix_held_hint]='You can leave it running. To stop every program in the prefix instead, run:'
+    [d_prefix_held_unknown]='The Live installer finished, but a program is still using its ableton-linux prefix:'
+    [d_prefix_held_background]='The Live installer finished; a background program is still using its ableton-linux prefix.'
+    [d_prefix_held_hint]='You can leave it running. To stop every program in the ableton-linux prefix, run:'
     [m_overwrite_all_failed]='Overwrite all could not be saved for this installer run. This file was left unchanged.'
     # -- scripts/installer.sh --
-    [d_plan_prefix_create]='Create the Wine prefix %s using the runtime at %s'
-    [d_plan_prefix_update]='Update the Ableton Wine prefix at %s'
+    [d_plan_prefix_create]='Create the ableton-linux prefix %s using the runtime at %s'
+    [d_plan_prefix_update]='Update the ableton-linux prefix at %s'
     [d_plan_repair_live11]='Move aside stale Live 11 Max preferences in %s'
     [d_plan_pipeasio_config]='Configure PipeASIO at %s/pipeasio/config.ini'
     [d_plan_run_live_installer]='Run the Live %s installer: %s'
@@ -284,19 +291,19 @@ declare -A UI_TEXT=(
     [d_run_live_installer]='Run the Live installer (up to %s seconds)'
     [d_prefix_holder_entry]='%s (pid %s)'
     [d_prefix_held_command]='WINEPREFIX=%s %s/bin/wineserver -k'
-    [d_prefix_programs_stopped]='Stopped the programs in the prefix'
+    [d_prefix_programs_stopped]='Stopped the programs in the ableton-linux prefix'
     [d_prefix_programs_left]='Left them running; the next update may ask you to close them'
     [d_link_configured_mode]='Ableton Link is set to %s mode'
     [d_settings_ready]='Saved settings are ready'
     [d_sum_runtime_installed]='The Wine runtime is installed'
     [d_sum_runtime_path]='Runtime: %s'
-    [d_sum_prefix_path]='Prefix: %s'
+    [d_sum_prefix_path]='ableton-linux prefix: %s'
     [d_sum_shortcuts_retry]='Desktop shortcuts need another try'
     [d_sum_link_retry]='Link is unchanged; you can retry its setup'
     [d_settings_retry]='Saved settings need another try'
     [d_sum_recovery_files_remain]='Old recovery files remain at %s'
-    [d_sum_prefix_ready]='The Wine prefix is ready'
-    [d_sum_prefix_updated]='The Wine prefix is updated'
+    [d_sum_prefix_ready]='The ableton-linux prefix is ready'
+    [d_sum_prefix_updated]='The ableton-linux prefix is updated'
     [d_sum_command_completed]='%s%s completed'
     # -- scripts/install.sh --
     [i_check_wine_package]='Check the Wine package %s'
@@ -313,7 +320,7 @@ declare -A UI_TEXT=(
     [i_plan_link]='Install or update Ableton Link support'
     [i_plan_link_external]='Use the configured Ableton Link helper and leave it unchanged: %s'
     [i_plan_backups]='Back up each replaced project file under %s/backups'
-    [i_q_stop_clients]='Stop every program in this prefix (including Live or Max)?'
+    [i_q_stop_clients]='STOP PROGRAMS USING THE ABLETON-LINUX PREFIX'
     [i_setup_launchers]='Set up Ableton launchers and desktop shortcuts'
     [i_refresh_desktop_menus]='Refresh desktop menus and file associations'
     [i_install_link_files]='Install Ableton Link support files'
@@ -327,11 +334,11 @@ declare -A UI_TEXT=(
     [i_hint_realtime_setup]='Realtime setup: %s/setup-realtime.sh'
     [i_hint_rollback]='Restore previous Wine version: %s/rollback.sh'
     # -- scripts/setup-prefix.sh --
-    [p_using_existing_prefix]='Using the existing Wine prefix at %s'
-    [p_settings_valid]='Wine prefix settings are valid'
+    [p_using_existing_prefix]='Using the existing ableton-linux prefix at %s'
+    [p_settings_valid]='ableton-linux prefix settings are valid'
     [p_repair_moved]='Max preferences moved aside; Max regenerates them on next start'
     [p_repair_nothing]='No Live 11 Max preferences needed repair'
-    [p_copy_existing_prefix]='Copy the existing Wine prefix'
+    [p_copy_existing_prefix]='Copy the existing ableton-linux prefix'
     [p_options_line_removed]='Removed %s from %s'
     [p_options_file_removed]='Removed %s because it contained only %s'
     [p_scale_detected]='Detected display scale %s (%s); applying %s scaling settings'
@@ -339,7 +346,7 @@ declare -A UI_TEXT=(
     [p_scale_undetected_existing]='Display scale could not be detected, so existing settings were kept'
     [p_zip_live_major]='%s is Live %s; preparing its required Windows support files'
     [p_prepare_wine]='Prepare Wine at %s'
-    [p_update_prefix_files]='Update Wine prefix files'
+    [p_update_prefix_files]='Update ableton-linux prefix files'
     [p_keep_fonts_support]='Keep the installed Windows fonts and support files'
     [p_install_fonts_support]='Install Windows fonts and support files for Live %s'
     [p_using_bundled_cache]='Using the bundled dependency cache'
@@ -377,7 +384,7 @@ declare -A UI_TEXT=(
     [p_live_unpacking]='Unpacking %s'
     [p_live_installer_window]='Starting the Ableton installer. Follow the installer window'
     [p_live_installing]='Installing Ableton Live. This can take a few minutes'
-    [p_prefix_ready]='Ableton Wine prefix is ready'
+    [p_prefix_ready]='The ableton-linux prefix is ready'
     [p_wine_ready_at]='Wine is ready at %s'
     [p_remaining_steps_licensed]='Remaining steps (you supply your own license):'
     [p_remaining_step1_installed]='1. Live is installed; nothing more to supply here'
@@ -439,26 +446,26 @@ declare -A UI_TEXT=(
     # -- scripts/uninstall.sh --
     [u_component_integration]='Remove Linux integration'
     [u_component_runtime]='Remove the Wine runtime'
-    [u_component_prefix]='Remove the Wine prefix'
+    [u_component_prefix]='Remove the ableton-linux prefix'
     [u_component_settings]='Remove installer settings'
     [u_component_state]='Remove shared state'
     [u_moved_to_trash]='Moved to Trash: %s'
     [u_deleted_permanently]='Permanently deleted: %s'
     [u_changed_path]='The installed file or link differs from the recorded version: %s'
     [u_kept_changed]='Left the changed file or link in place: %s'
-    [u_q_remove_changed]='The file or link changed after installation. Remove it?'
+    [u_q_remove_changed]='REMOVE THE CHANGED FILE OR LINK'
     [u_q_remove_changed_yes]='[R]emove this path'
     [u_q_remove_changed_no]='[K]eep this path'
     [u_no_trash]='No supported Trash tool is available; removal would permanently delete files.'
-    [u_q_permanent]='Permanently delete the selected files?'
+    [u_q_permanent]='PERMANENTLY DELETE THE SELECTED FILES'
     [u_q_permanent_yes]='[D]elete permanently'
     [u_q_permanent_no]='[K]eep everything'
-    [u_q_delete_prefix]='Delete the Wine prefix? This removes Live and its Wine-side authorisation'
-    [u_q_delete_yes]='[D]elete the Wine prefix'
-    [u_q_delete_no]='[K]eep the Wine prefix'
+    [u_q_delete_prefix]='REMOVE LIVE, ITS AUTHORISATION, AND THE ABLETON-LINUX PREFIX'
+    [u_q_delete_yes]='[D]elete the ableton-linux prefix'
+    [u_q_delete_no]='[K]eep the ableton-linux prefix'
     [u_report_heading]='What remains'
     [u_report_runtime]='Runtime: %s'
-    [u_report_prefix]='Prefix: %s'
+    [u_report_prefix]='ableton-linux prefix: %s'
     [u_report_integration]='Linux integration: %s'
     [u_report_settings]='Installer settings: %s'
     [u_report_state]='Shared state: %s'
@@ -505,8 +512,9 @@ if [ -z "${ABLETON_UI_CHARSET:-}" ]; then
     esac
 fi
 export ABLETON_UI_CHARSET
-UI_SPINNER_PID=""
-export UI_SPINNER_PID
+UI_SPINNER_PID="${UI_SPINNER_PID:-}"
+UI_SPINNER_OWNER_PID="${UI_SPINNER_OWNER_PID:-}"
+export UI_SPINNER_PID UI_SPINNER_OWNER_PID
 
 # ---- state of this process ------------------------------------------------
 UI_READY=0
@@ -840,12 +848,13 @@ ui_preflight_option()   # key, default|current|plain, [args]
 
 # Read a normal line, except that a bare Escape is accepted immediately.  A
 # line-oriented read cannot implement the documented one-key back navigation.
-ui_preflight_read()
+ui_preflight_read()   # displayed choices
 {
-    local first="" rest="" rc=0
+    local choices="$1" first="" rest="" rc=0
     ui__init
+    ui_blank
     ui_note q_back_hint
-    ui_prompt q_prompt
+    ui_prompt q_prompt "$choices"
     UI_READ_ACTIVE=1
     IFS= read -r -n 1 first || rc=$?
     if [ "$rc" -eq 0 ] && [ -n "$first" ] && [ "$first" != $'\033' ]; then
@@ -874,7 +883,7 @@ ui_prompt()   # key: a prompt on the trunk, no newline; the caller reads
     ui__log INFO "$UI_G  $UI_R"
 }
 
-# A trunk-level question: prompt line, hint line, the answer typed on the
+# A trunk-level question: hint line, prompt line, and the answer typed on the
 # prompt line. UI_ANSWER contains the raw answer; EOF and the timeout leave it
 # empty.
 ui_ask()   # prompt key, hint key, hint args
@@ -884,7 +893,7 @@ ui_ask()   # prompt key, hint key, hint args
     ui__text "$1"; prompt="$UI_R"; shift
     ui__text "$@"; hint="$UI_R"
     ui__g trunk; t="$UI_G"
-    ui__read_inline "$t  $prompt " "$t  $hint"
+    ui__read_inline "$t  $prompt" "$t  $hint"
 }
 
 ui__timeout()   # -> UI_R seconds, minimum 1
@@ -894,18 +903,16 @@ ui__timeout()   # -> UI_R seconds, minimum 1
     [ "$UI_R" -ge 1 ] || UI_R=1
 }
 
-# Print the prompt line and the hint line, then read the answer on the
-# prompt line. Live rendering moves the cursor back up; static rendering
-# reads after both lines.
-ui__read_inline()   # prompt line (with trailing space), hint line
+# Print the hint and prompt, then read the answer on the prompt line.
+ui__read_inline()   # prompt line, hint line
 {
     local prompt="$1" hint="$2" seconds rc=0
     ui__timeout; seconds="$UI_R"
     UI_ANSWER=""
-    ui__emit "$prompt" INFO wait
     ui__emit "$hint" INFO wait
+    ui__emit "$prompt" INFO wait
     if [ "$UI_LIVE" -eq 1 ]; then
-        ui__screen $'\033[2A\r'"$(printf '\033[%sC' "${#prompt}")"
+        ui__screen $'\033[1A\r'"$(printf '\033[%sC' "$(( ${#prompt} + 1 ))")"
     fi
     UI_READ_ACTIVE=1
     IFS= read -r -t "$seconds" UI_ANSWER || rc=$?
@@ -913,7 +920,6 @@ ui__read_inline()   # prompt line (with trailing space), hint line
     if [ "$rc" -ne 0 ]; then UI_ANSWER=""; fi
     if [ "$UI_LIVE" -eq 1 ]; then
         [ "$rc" -eq 0 ] || ui__screen $'\n'
-        ui__screen $'\033[1B\r'
     fi
     ui__log INFO "answer: ${UI_ANSWER:-(default)}"
     return 0
@@ -1064,7 +1070,7 @@ ui__item_open()   # title text, [wait]: settle the previous block, draw the titl
         else
             ui__decorate active "$line"
             ui__screen "$UI_R"$'\033[?25l'
-            UI_RUN_ACTIVE=1; UI_SPINNER_KIND=title
+            UI_RUN_ACTIVE=1; UI_SPINNER_KIND=title; UI_SPINNER_OWNER_PID=$$
             ui__spinner "$$" "$line" "" 0 &
             UI_SPINNER_PID=$!
         fi
@@ -1211,6 +1217,7 @@ ui__stop_spinner()
         kill "$UI_SPINNER_PID" 2>/dev/null || true
         wait "$UI_SPINNER_PID" 2>/dev/null || true
         UI_SPINNER_PID=""
+        UI_SPINNER_OWNER_PID=""
     fi
 }
 
@@ -1253,7 +1260,7 @@ ui__start_detail_spinner()
     line="${UI_R% }"
     ui__decorate active "$line"
     ui__screen "$UI_R"$'\033[?25l'
-    UI_RUN_ACTIVE=1; UI_SPINNER_KIND=detail
+    UI_RUN_ACTIVE=1; UI_SPINNER_KIND=detail; UI_SPINNER_OWNER_PID=$$
     ui__spinner "$$" "$line" "" 0 &
     UI_SPINNER_PID=$!
     UI_R="$saved"
@@ -1299,7 +1306,7 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
         UI_ITEM_LAST=1; UI_ITEM_ROWS="$UI_ROWS"; UI_ITEM_COLS="$UI_COLS"; UI_ITEM_LINES=1
         ui__decorate active "$line"
         ui__screen "$UI_R"$'\033[?25l'
-        UI_RUN_ACTIVE=1; UI_SPINNER_KIND=run
+        UI_RUN_ACTIVE=1; UI_SPINNER_KIND=run; UI_SPINNER_OWNER_PID=$$
         ui__spinner "$$" "$line" "$progress" "$total" &
         UI_SPINNER_PID=$!
         "$@" || rc=$?
@@ -1337,11 +1344,17 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
 # lands in UI_ANSWER. An unknown answer repeats the prompt.
 ui_question()
 {
-    local title_key="$1" default="$2" key text letter label prefix prompt hint seconds
+    local title_key="$1" default="$2" key text letter label prefix prompt hint seconds choices
     local -a letters=() labels=()
     shift 2
     ui__init
-    ui__text "$title_key"; ui__text q_title "$UI_R"
+    if [ "$UI_RUN_ACTIVE" -eq 0 ] && [ -n "$UI_SPINNER_PID" ] \
+       && [ "$UI_SPINNER_OWNER_PID" = "$PPID" ] \
+       && [ "$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$UI_SPINNER_PID/status" 2>/dev/null)" = "$PPID" ]; then
+        ui__stop_spinner
+        ui__screen $'\r\033[2K\033[?25h'
+    fi
+    ui__text "$title_key"
     ui__item_open "$UI_R" wait
     ui__detail_blank
     for key in "$@"; do
@@ -1354,11 +1367,13 @@ ui_question()
     done
     ui__detail_blank
     ui__timeout; seconds="$UI_R"
-    ui__text q_prompt; prompt="$UI_R"
+    printf -v choices '/%s' "${letters[@]}"
+    choices="${choices#/}"
+    ui__text q_prompt "${choices^^}"; prompt="$UI_R"
     ui__text q_hint "$seconds"; hint="$UI_R"
     while :; do
         ui__detail_prefix; prefix="$UI_R"
-        ui__read_inline "$prefix$prompt " "$prefix$hint"
+        ui__read_inline "$prefix$prompt" "$prefix$hint"
         UI_ITEM_LINES=$((UI_ITEM_LINES + 2))
         text="${UI_ANSWER,,}"
         text="${text#"${text%%[![:space:]]*}"}"; text="${text%"${text##*[![:space:]]}"}"

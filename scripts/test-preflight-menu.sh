@@ -76,8 +76,12 @@ exec "${STUB_REAL_TAR:?}" "$@"
 EOF
 cat > "$work/fakebin/pgrep" <<'EOF'
 #!/bin/sh
-[ "$*" = '-x wineserver' ] || exit 2
-exit "${STUB_PGREP_RC:-1}"
+[ ! -s "${STUB_PKILL_LOG:?}" ] || exit 1
+case "$*" in
+    '-x wineserver') exit "${STUB_PGREP_RC:-1}" ;;
+    '-x wineserver64') exit "${STUB_PGREP64_RC:-1}" ;;
+    *) exit 2 ;;
+esac
 EOF
 cat > "$work/fakebin/pkill" <<'EOF'
 #!/bin/sh
@@ -161,7 +165,8 @@ run_tty()   # name home driver-function
         STUB_ARGS_FILE="$work/$name.args" PREFLIGHT_INSTALLER="$work/installer.run" \
         PREFLIGHT_COMMAND="$command" PREFLIGHT_SCOPE="$scope" \
         STUB_TAR_LOG="$tar_log" STUB_REAL_TAR="$real_tar" \
-        STUB_PGREP_RC="${STUB_PGREP_RC:-1}" STUB_PKILL_LOG="$pkill_log" \
+        STUB_PGREP_RC="${STUB_PGREP_RC:-1}" \
+        STUB_PGREP64_RC="${STUB_PGREP64_RC:-1}" STUB_PKILL_LOG="$pkill_log" \
         STUB_SNAPSHOT_HELPER="$snapshot_helper" \
         STUB_HOME_SNAPSHOT_BEFORE="$before" \
         STUB_HOME_SNAPSHOT_AT_DELEGATION="$delegation" \
@@ -199,11 +204,10 @@ assert_uninstall_scope_set()   # run-name
         after_action && /> / && /\[[[:alpha:]]\]/ {
             line=$0
             sub(/^.*> /, "", line)
-            gsub(/\[[[:alpha:]]\]/, "", line)
             print line
         }
     ' "$work/$name.txt" > "$actual"
-    printf '%s\n' 'Runtime only (Default)' 'Prefix only' 'All' 'Exit' > "$expected"
+    printf '%s\n' '[R]untime only (Default)' '[P]refix only' '[A]ll' '[E]xit' > "$expected"
     if ! cmp -s -- "$expected" "$actual"; then
         diff -u -- "$expected" "$actual" >&2 || true
         fail "$name does not expose exactly the four uninstall scopes in order"
@@ -227,25 +231,27 @@ run_notty()   # name home [installer arguments...]
         STUB_HOME_SNAPSHOT_BEFORE="$before" \
         STUB_HOME_SNAPSHOT_AT_DELEGATION="$delegation" \
         STUB_TAR_LOG="$tar_log" STUB_REAL_TAR="$real_tar" \
-        STUB_PGREP_RC="${STUB_PGREP_RC:-1}" STUB_PKILL_LOG="$pkill_log" \
+        STUB_PGREP_RC="${STUB_PGREP_RC:-1}" \
+        STUB_PGREP64_RC="${STUB_PGREP64_RC:-1}" STUB_PKILL_LOG="$pkill_log" \
         sh "$work/installer.run" "$@" \
         </dev/null > "$work/$name.out" 2>&1 || status=$?
     assert_home_unchanged "$name" "$home" "$before" "$after"
-    [ "$status" -eq 0 ] || fail "$name exited with status $status"
+    [ "$status" -eq "${NOTTY_EXPECT_STATUS:-0}" ] \
+        || fail "$name exited with status $status"
 }
 
 answer_default_questions()   # output; assumes action was already selected
 {
     local out="$1" i
     local -a questions=(
-        '1/6 Audio buffer' '2/6 Keyboard shortcuts' '3/6 Display scaling' \
-        '4/6 Audio workers' '5/6 Real-time scheduling' '6/6 Power profile'
+        '1/6 SET DEFAULT AUDIO BUFFER' '2/6 ENABLE KEYBOARD SHORTCUTS' '3/6 SET LIVE DISPLAY SCALING' \
+        '4/6 SET AUDIO WORKER LIMIT' '5/6 TOGGLE REAL-TIME SCHEDULING' '6/6 SET POWER MANAGEMENT'
     )
     for i in "${!questions[@]}"; do
         wait_for "$out" "${questions[$i]}"
         # Wait for the complete current menu before inspecting the frontier or
         # sending input. No later heading or delegation may already be visible.
-        wait_for "$out" 'Press Esc to go back' "$((i + 1))"
+        wait_for "$out" '(Press Esc for previous setting)' "$((i + 1))"
         assert_straight_frontier "$out" "$i" "${questions[@]}"
         printf '\n'
     done
@@ -271,7 +277,7 @@ drive_wine_cancel()
     local out="$1"
     wait_for "$out" 'Choose an action:'; printf '\n'
     answer_default_questions "$out"
-    wait_for "$out" 'Wine processes are still running. Quit them before continuing?'
+    wait_for "$out" 'STOP ALL RUNNING WINE PROCESSES'
     [ ! -s "$work/wine-cancel.pkill" ] \
         || fail 'the wrapper killed wineserver before the user answered'
     printf '\n'
@@ -283,7 +289,7 @@ drive_wine_stop()
     local out="$1"
     wait_for "$out" 'Choose an action:'; printf '\n'
     answer_default_questions "$out"
-    wait_for "$out" 'Wine processes are still running. Quit them before continuing?'
+    wait_for "$out" 'STOP ALL RUNNING WINE PROCESSES'
     [ ! -s "$work/wine-stop.pkill" ] \
         || fail 'the wrapper killed wineserver before the user answered'
     printf 'y\n'
@@ -388,7 +394,7 @@ assert_adjacent_question()   # normalized-output heading explanation option... h
     local transcript="$1" heading="$2" line expected index=-1 count=0 i
     shift 2
     local -a lines=()
-    mapfile -t lines < <(sed '/^[[:space:]]*$/d' "$transcript")
+    mapfile -t lines < <(sed -e '/^[[:space:]]*$/d' -e '/^│$/d' "$transcript")
     for i in "${!lines[@]}"; do
         case "${lines[$i]}" in
             *"$heading") index="$i"; count=$((count + 1)) ;;
@@ -420,8 +426,8 @@ assert_strict_heading_order()   # normalized-output
     local transcript="$1" heading line previous=0 delegated_line
     local -a matches=()
     local -a headings=(
-        '1/6 Audio buffer' '2/6 Keyboard shortcuts' '3/6 Display scaling'
-        '4/6 Audio workers' '5/6 Real-time scheduling' '6/6 Power profile'
+        '1/6 SET DEFAULT AUDIO BUFFER' '2/6 ENABLE KEYBOARD SHORTCUTS' '3/6 SET LIVE DISPLAY SCALING'
+        '4/6 SET AUDIO WORKER LIMIT' '5/6 TOGGLE REAL-TIME SCHEDULING' '6/6 SET POWER MANAGEMENT'
     )
     for heading in "${headings[@]}"; do
         mapfile -t matches < <(grep -nF -- "$heading" "$transcript" || true)
@@ -447,7 +453,7 @@ assert_immediate_back_transition()   # run-name target-index
     local hint_occurrence=$((target + 1)) start end segment
     local expected="${matrix_questions[$((target - 1))]}"
     segment="$work/$name.back-transition"
-    start="$(grep -nF 'Press Esc to go back' "$transcript" \
+    start="$(grep -nF '(Press Esc for previous setting)' "$transcript" \
         | sed -n "${hint_occurrence}p" | cut -d: -f1 || true)"
     end="$(grep -nF "$expected" "$transcript" \
         | sed -n '2p' | cut -d: -f1 || true)"
@@ -475,10 +481,12 @@ assert_strict_heading_order "$work/fresh-defaults.txt"
 [ "$(cat "$work/fresh-defaults.args")" = install ] \
     || fail "fresh defaults do not route to installer install without synthetic overrides"
 fresh_transcript="$work/fresh-defaults.txt"
-assert_adjacent_question "$fresh_transcript" '1/6 Audio buffer' \
-    'Lower numbers reduce audio delay; higher numbers are less likely to crackle.' \
-    '64 frames' '128 frames (Default)' '256 frames' '512 frames' '1024 frames' \
-    'Press Esc to go back'
+assert_adjacent_question "$fresh_transcript" '1/6 SET DEFAULT AUDIO BUFFER' \
+    'A lower default audio buffer reduces audio latency but can cause distortion during playback.' \
+    'You can change this default later using pipeasio-settings.' \
+    '[1] 64 frames' '[2] 128 frames (Default)' '[3] 256 frames' \
+    '[4] 512 frames' '[5] 1024 frames' \
+    '(Press Esc for previous setting)'
 
 # A typed choice must appear before Enter is pressed. Silent input makes some
 # terminals display a padlock and gives no visible response to the key.
@@ -486,19 +494,19 @@ drive_visible_choice()
 {
     local out="$1" i
     local -a remaining=(
-        '2/6 Keyboard shortcuts' '3/6 Display scaling' '4/6 Audio workers'
-        '5/6 Real-time scheduling' '6/6 Power profile'
+        '2/6 ENABLE KEYBOARD SHORTCUTS' '3/6 SET LIVE DISPLAY SCALING' '4/6 SET AUDIO WORKER LIMIT'
+        '5/6 TOGGLE REAL-TIME SCHEDULING' '6/6 SET POWER MANAGEMENT'
     )
     wait_for "$out" 'Choose an action:'; printf '\n'
-    wait_for "$out" '1/6 Audio buffer'
-    wait_for "$out" 'Press Esc to go back'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER'
+    wait_for "$out" '(Press Esc for previous setting)'
     printf '2'
-    wait_for "$out" 'Which one?: 2'
+    wait_for "$out" 'Please choose [1-5]: 2'
     : > "$work/visible-choice.seen"
     printf '\n'
     for i in "${!remaining[@]}"; do
         wait_for "$out" "${remaining[$i]}"
-        wait_for "$out" 'Press Esc to go back' "$((i + 2))"
+        wait_for "$out" '(Press Esc for previous setting)' "$((i + 2))"
         printf '\n'
     done
     wait_for "$out" '@@DELEGATED@@'
@@ -508,43 +516,62 @@ run_tty visible-choice "$fresh" drive_visible_choice
 [ -e "$work/visible-choice.seen" ] \
     || fail "a typed pre-flight choice stays hidden until Enter"
 ok "pre-flight choices appear while the user types"
-assert_adjacent_question "$fresh_transcript" '2/6 Keyboard shortcuts' \
-    'On GNOME, Assign to Live lets Live use conflicting desktop shortcuts until Live closes.' \
-    'Assign to Live (Default)' 'Preserve desktop shortcuts' \
-    'Press Esc to go back'
-assert_adjacent_question "$fresh_transcript" '3/6 Display scaling' \
-    'Automatic matches your desktop; 100% is normal, Fractional suits scaled displays, and Preserve changes nothing.' \
-    'Automatic (Default)' '100%' 'Fractional' 'Preserve' \
-    'Press Esc to go back'
-assert_adjacent_question "$fresh_transcript" '4/6 Audio workers' \
-    "Automatic chooses how many workers suit your CPU; Let Live decide uses Live's own setting, or enter 1–63 yourself." \
-    'Automatic (Default)' 'Let Live decide' 'Enter a custom value from 1 to 63' \
-    'Press Esc to go back'
-assert_adjacent_question "$fresh_transcript" '5/6 Real-time scheduling' \
-    'Automatic uses higher CPU priority when allowed and Normal uses standard priority; neither changes permissions.' \
-    'Automatic (Default)' 'Normal scheduling' \
-    'Press Esc to go back'
-assert_adjacent_question "$fresh_transcript" '6/6 Power profile' \
-    "Performance favors speed, Balanced saves power, and Don't change keeps the current mode while Live or Max is open." \
-    'Performance (Default)' 'Balanced' "Don't change" \
-    'Press Esc to go back'
+assert_adjacent_question "$fresh_transcript" '2/6 ENABLE KEYBOARD SHORTCUTS' \
+    'Determine whether Live can take over system shortcuts,' \
+    'to remain faithful to your Live keyboard shortcut muscle memory.' \
+    '[A]ssign to Live (Default)' '[P]reserve desktop shortcuts' \
+    '(Press Esc for previous setting)'
+assert_adjacent_question "$fresh_transcript" '3/6 SET LIVE DISPLAY SCALING' \
+    'Changes how Live will be displayed on your montior.' \
+    "You almost always want 'Automatic,' unless your system has a particular quirk." \
+    '[A]utomatic (Default)' '[N]ormal (100%)' '[F]ractional' \
+    "[P]reserve (Don't change under any circumstance)" \
+    '(Press Esc for previous setting)'
+assert_adjacent_question "$fresh_transcript" '4/6 SET AUDIO WORKER LIMIT' \
+    'Balances the available amount of computational power set aside for Live.' \
+    'Automatic is our optimisation work. Live is optimised for Windows.' \
+    'Depending on your CPU, more may not always be better!' \
+    '[A]utomatic (Default)' '[L]et Live decide (Not recommended)' \
+    '[1-63] Specify a custom limit (1 to 63)' \
+    '(Press Esc for previous setting)'
+assert_adjacent_question "$fresh_transcript" '5/6 TOGGLE REAL-TIME SCHEDULING' \
+    'Another optimisation that prioritises Live and audio on your system.' \
+    'Change this to normal if you are struggling with performance or issues with' \
+    'your system.' \
+    '[A]utomatic (Default)' '[N]ormal scheduling' \
+    '(Press Esc for previous setting)'
+assert_adjacent_question "$fresh_transcript" '6/6 SET POWER MANAGEMENT' \
+    "For convenience, this project can automatically manage your linux machine's power profile" \
+    'while Live is open and running.' \
+    '[P]erformance (Default)' '[B]alanced' "[D]on't change" \
+    '(Press Esc for previous setting)'
 for semantic in \
-    '1/6 Audio buffer' '2/6 Keyboard shortcuts' '3/6 Display scaling' \
-    '4/6 Audio workers' '5/6 Real-time scheduling' '6/6 Power profile' \
-    'Lower numbers reduce audio delay; higher numbers are less likely to crackle.' \
-    'On GNOME, Assign to Live lets Live use conflicting desktop shortcuts until Live closes.' \
-    'Automatic matches your desktop; 100% is normal, Fractional suits scaled displays, and Preserve changes nothing.' \
-    "Automatic chooses how many workers suit your CPU; Let Live decide uses Live's own setting, or enter 1–63 yourself." \
-    'Automatic uses higher CPU priority when allowed and Normal uses standard priority; neither changes permissions.' \
-    "Performance favors speed, Balanced saves power, and Don't change keeps the current mode while Live or Max is open." \
-    '64 frames' '128 frames (Default)' '256 frames' '512 frames' '1024 frames' \
-    'Assign to Live (Default)' 'Preserve desktop shortcuts' '100%' 'Fractional' 'Preserve' \
-    'Let Live decide' 'Enter a custom value from 1 to 63' 'Normal scheduling' \
-    'Performance (Default)' 'Balanced' "Don't change"; do
+    '1/6 SET DEFAULT AUDIO BUFFER' '2/6 ENABLE KEYBOARD SHORTCUTS' '3/6 SET LIVE DISPLAY SCALING' \
+    '4/6 SET AUDIO WORKER LIMIT' '5/6 TOGGLE REAL-TIME SCHEDULING' '6/6 SET POWER MANAGEMENT' \
+    'A lower default audio buffer reduces audio latency but can cause distortion during playback.' \
+    'You can change this default later using pipeasio-settings.' \
+    'Determine whether Live can take over system shortcuts,' \
+    'to remain faithful to your Live keyboard shortcut muscle memory.' \
+    'Changes how Live will be displayed on your montior.' \
+    "You almost always want 'Automatic,' unless your system has a particular quirk." \
+    'Balances the available amount of computational power set aside for Live.' \
+    'Automatic is our optimisation work. Live is optimised for Windows.' \
+    'Depending on your CPU, more may not always be better!' \
+    'Another optimisation that prioritises Live and audio on your system.' \
+    'Change this to normal if you are struggling with performance or issues with' \
+    "For convenience, this project can automatically manage your linux machine's power profile" \
+    'while Live is open and running.' \
+    '[1] 64 frames' '[2] 128 frames (Default)' '[3] 256 frames' \
+    '[4] 512 frames' '[5] 1024 frames' \
+    '[A]ssign to Live (Default)' '[P]reserve desktop shortcuts' \
+    '[N]ormal (100%)' '[F]ractional' \
+    "[P]reserve (Don't change under any circumstance)" \
+    '[L]et Live decide (Not recommended)' '[1-63] Specify a custom limit (1 to 63)' \
+    '[N]ormal scheduling' '[P]erformance (Default)' '[B]alanced' "[D]on't change"; do
     assert_semantic_count "$fresh_transcript" "$semantic" 1
 done
-assert_semantic_count "$fresh_transcript" 'Automatic (Default)' 3
-assert_semantic_count "$fresh_transcript" 'Press Esc to go back' 6
+assert_semantic_count "$fresh_transcript" '[A]utomatic (Default)' 3
+assert_semantic_count "$fresh_transcript" '(Press Esc for previous setting)' 6
 [ "$(grep -Ec '[[:digit:]]+/6 ' "$fresh_transcript")" -eq 6 ] \
     || fail "the straight path renders a missing or seventh numbered question"
 [ "$(grep -cF '@@DELEGATED@@' "$fresh_transcript")" -eq 1 ] \
@@ -562,32 +589,32 @@ STUB_PGREP_RC=0 run_tty wine-cancel "$fresh" drive_wine_cancel
 [ ! -s "$work/wine-cancel.pkill" ] \
     || fail 'declining the Wine-process question killed wineserver'
 
-STUB_PGREP_RC=0 run_tty wine-stop "$fresh" drive_wine_stop
-[ "$(cat "$work/wine-stop.pkill")" = '-x wineserver' ] \
-    || fail 'approval used a command other than pkill -x wineserver'
+STUB_PGREP64_RC=0 run_tty wine-stop "$fresh" drive_wine_stop
+[ "$(cat "$work/wine-stop.pkill")" = $'-x wineserver\n-x wineserver64' ] \
+    || fail 'approval did not stop both Wine server names'
 [ "$(cat "$work/wine-stop.args")" = install ] \
     || fail 'approval stopped before the install began'
-ok "WINE QUESTION: approval runs pkill -x wineserver once"
+ok "WINE QUESTION: approval stops both Wine server names"
 
 drive_delayed_choice()
 {
     local out="$1" i
     local -a questions=(
-        '2/6 Keyboard shortcuts' '3/6 Display scaling' '4/6 Audio workers'
-        '5/6 Real-time scheduling' '6/6 Power profile'
+        '2/6 ENABLE KEYBOARD SHORTCUTS' '3/6 SET LIVE DISPLAY SCALING' '4/6 SET AUDIO WORKER LIMIT'
+        '5/6 TOGGLE REAL-TIME SCHEDULING' '6/6 SET POWER MANAGEMENT'
     )
     wait_for "$out" 'Choose an action:'; printf '\n'
-    wait_for "$out" '1/6 Audio buffer'
-    wait_for "$out" 'Press Esc to go back'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER'
+    wait_for "$out" '(Press Esc for previous setting)'
     sleep 2
-    if grep -aqF '2/6 Keyboard shortcuts' "$out"; then
+    if grep -aqF '2/6 ENABLE KEYBOARD SHORTCUTS' "$out"; then
         : > "$work/preflight-timed-out"
         return
     fi
     printf '3\n'
     for i in "${!questions[@]}"; do
         wait_for "$out" "${questions[$i]}"
-        wait_for "$out" 'Press Esc to go back' "$((i + 2))"
+        wait_for "$out" '(Press Esc for previous setting)' "$((i + 2))"
         printf '\n'
     done
     wait_for "$out" '@@DONE@@'
@@ -681,12 +708,12 @@ drive_all_choices()
 {
     local out="$1"
     wait_for "$out" 'Choose an action:'; printf 'i\n'
-    wait_for "$out" '1/6 Audio buffer'; printf '4\n'
-    wait_for "$out" '2/6 Keyboard shortcuts'; printf 'p\n'
-    wait_for "$out" '3/6 Display scaling'; printf '1\n'
-    wait_for "$out" '4/6 Audio workers'; printf '16\n'
-    wait_for "$out" '5/6 Real-time scheduling'; printf 'n\n'
-    wait_for "$out" '6/6 Power profile'; printf 'b\n'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER'; printf '4\n'
+    wait_for "$out" '2/6 ENABLE KEYBOARD SHORTCUTS'; printf 'p\n'
+    wait_for "$out" '3/6 SET LIVE DISPLAY SCALING'; printf 'n\n'
+    wait_for "$out" '4/6 SET AUDIO WORKER LIMIT'; printf '16\n'
+    wait_for "$out" '5/6 TOGGLE REAL-TIME SCHEDULING'; printf 'n\n'
+    wait_for "$out" '6/6 SET POWER MANAGEMENT'; printf 'b\n'
     wait_for "$out" '@@DONE@@'
 }
 run_tty all-choices "$fresh" drive_all_choices
@@ -710,13 +737,13 @@ drive_option_matrix()
     done
     wait_for "$out" '@@DONE@@'
 }
-matrix_questions=('1/6 Audio buffer' '2/6 Keyboard shortcuts' \
-                  '3/6 Display scaling' '4/6 Audio workers' \
-                  '5/6 Real-time scheduling' '6/6 Power profile')
+matrix_questions=('1/6 SET DEFAULT AUDIO BUFFER' '2/6 ENABLE KEYBOARD SHORTCUTS' \
+                  '3/6 SET LIVE DISPLAY SCALING' '4/6 SET AUDIO WORKER LIMIT' \
+                  '5/6 TOGGLE REAL-TIME SCHEDULING' '6/6 SET POWER MANAGEMENT')
 matrix_rows=(
     '1 a a a a p|install --audio-buffer=64'
-    '2 p 1 l n b|install --shortcuts=preserve --dpi=100 --audio-threads=off --rt=off --power=balanced'
-    '3 a f 1 a o|install --audio-buffer=256 --dpi=fractional --audio-threads=1 --power=off'
+    '2 p n l n b|install --shortcuts=preserve --dpi=100 --audio-threads=off --rt=off --power=balanced'
+    '3 a f 1 a d|install --audio-buffer=256 --dpi=fractional --audio-threads=1 --power=off'
     '4 p p 63 n p|install --audio-buffer=512 --shortcuts=preserve --dpi=preserve --audio-threads=63 --rt=off'
     '5 a a 16 a b|install --audio-buffer=1024 --audio-threads=16 --power=balanced'
 )
@@ -739,18 +766,18 @@ drive_back_one()
 {
     local out="$1"
     wait_for "$out" 'Choose an action:'; printf 'i\n'
-    wait_for "$out" '1/6 Audio buffer'; printf '4\n'
-    wait_for "$out" '2/6 Keyboard shortcuts'; printf 'p\n'
-    wait_for "$out" '3/6 Display scaling'; printf '\033'
-    wait_for "$out" '2/6 Keyboard shortcuts' 2; printf 'a\n'
-    wait_for "$out" '3/6 Display scaling' 2; printf 'f\n'
-    wait_for "$out" '4/6 Audio workers'; printf '12\n'
-    wait_for "$out" '5/6 Real-time scheduling'; printf 'n\n'
-    wait_for "$out" '6/6 Power profile'; printf 'b\n'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER'; printf '4\n'
+    wait_for "$out" '2/6 ENABLE KEYBOARD SHORTCUTS'; printf 'p\n'
+    wait_for "$out" '3/6 SET LIVE DISPLAY SCALING'; printf '\033'
+    wait_for "$out" '2/6 ENABLE KEYBOARD SHORTCUTS' 2; printf 'a\n'
+    wait_for "$out" '3/6 SET LIVE DISPLAY SCALING' 2; printf 'f\n'
+    wait_for "$out" '4/6 SET AUDIO WORKER LIMIT'; printf '12\n'
+    wait_for "$out" '5/6 TOGGLE REAL-TIME SCHEDULING'; printf 'n\n'
+    wait_for "$out" '6/6 SET POWER MANAGEMENT'; printf 'b\n'
     wait_for "$out" '@@DONE@@'
 }
 run_tty back-one "$fresh" drive_back_one
-[ "$(grep -aoF '2/6 Keyboard shortcuts' "$work/back-one.raw" | wc -l)" -eq 2 ] \
+[ "$(grep -aoF '2/6 ENABLE KEYBOARD SHORTCUTS' "$work/back-one.raw" | wc -l)" -eq 2 ] \
     || fail "Escape does not return from question 3 to question 2 exactly once"
 [ "$(cat "$work/back-one.args")" = \
   'install --audio-buffer=512 --dpi=fractional --audio-threads=12 --rt=off --power=balanced' ] \
@@ -767,7 +794,7 @@ drive_back_matrix()
         wait_for "$out" "${matrix_questions[$i]}"; printf '\n'
     done
     wait_for "$out" "${matrix_questions[$back_target]}"
-    wait_for "$out" 'Press Esc to go back' "$((back_target + 1))"
+    wait_for "$out" '(Press Esc for previous setting)' "$((back_target + 1))"
     printf '\033'
     wait_for "$out" "${matrix_questions[$((back_target-1))]}" 2; printf '\n'
     for ((i=back_target; i<6; i++)); do
@@ -794,7 +821,7 @@ drive_back_to_actions()
 {
     local out="$1"
     wait_for "$out" 'Choose an action:'; printf 'i\n'
-    wait_for "$out" '1/6 Audio buffer'; printf '\033'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER'; printf '\033'
     wait_for "$out" 'Choose an action:' 2; printf 'q\n'
     wait_for "$out" '@@DONE@@'
 }
@@ -812,16 +839,16 @@ drive_change_action()
 {
     local out="$1"
     wait_for "$out" 'Choose an action:'; printf 'u\n'
-    wait_for "$out" '1/6 Audio buffer'; printf '4\n'
-    wait_for "$out" '2/6 Keyboard shortcuts'; printf '\033'
-    wait_for "$out" '1/6 Audio buffer' 2; printf '\033'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER'; printf '4\n'
+    wait_for "$out" '2/6 ENABLE KEYBOARD SHORTCUTS'; printf '\033'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER' 2; printf '\033'
     wait_for "$out" 'Choose an action:' 2; printf 'r\n'
-    wait_for "$out" '1/6 Audio buffer' 3; printf '\n'
-    wait_for "$out" '2/6 Keyboard shortcuts' 2; printf '\n'
-    wait_for "$out" '3/6 Display scaling'; printf '\n'
-    wait_for "$out" '4/6 Audio workers'; printf '\n'
-    wait_for "$out" '5/6 Real-time scheduling'; printf '\n'
-    wait_for "$out" '6/6 Power profile'; printf '\n'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER' 3; printf '\n'
+    wait_for "$out" '2/6 ENABLE KEYBOARD SHORTCUTS' 2; printf '\n'
+    wait_for "$out" '3/6 SET LIVE DISPLAY SCALING'; printf '\n'
+    wait_for "$out" '4/6 SET AUDIO WORKER LIMIT'; printf '\n'
+    wait_for "$out" '5/6 TOGGLE REAL-TIME SCHEDULING'; printf '\n'
+    wait_for "$out" '6/6 SET POWER MANAGEMENT'; printf '\n'
     wait_for "$out" '@@DONE@@'
 }
 action_reset_home="$work/home-action-reset"
@@ -863,15 +890,15 @@ drive_worker_validation()
 {
     local out="$1"
     wait_for "$out" 'Choose an action:'; printf 'i\n'
-    wait_for "$out" '1/6 Audio buffer'; printf '\n'
-    wait_for "$out" '2/6 Keyboard shortcuts'; printf '\n'
-    wait_for "$out" '3/6 Display scaling'; printf '\n'
-    wait_for "$out" '4/6 Audio workers'; printf '0\n'
+    wait_for "$out" '1/6 SET DEFAULT AUDIO BUFFER'; printf '\n'
+    wait_for "$out" '2/6 ENABLE KEYBOARD SHORTCUTS'; printf '\n'
+    wait_for "$out" '3/6 SET LIVE DISPLAY SCALING'; printf '\n'
+    wait_for "$out" '4/6 SET AUDIO WORKER LIMIT'; printf '0\n'
     wait_for "$out" 'Choose Automatic, Let Live decide, or a number from 1 to 63.'; printf '64\n'
     wait_for "$out" 'Choose Automatic, Let Live decide, or a number from 1 to 63.' 2; printf 'word\n'
     wait_for "$out" 'Choose Automatic, Let Live decide, or a number from 1 to 63.' 3; printf '63\n'
-    wait_for "$out" '5/6 Real-time scheduling'; printf '\n'
-    wait_for "$out" '6/6 Power profile'; printf '\n'
+    wait_for "$out" '5/6 TOGGLE REAL-TIME SCHEDULING'; printf '\n'
+    wait_for "$out" '6/6 SET POWER MANAGEMENT'; printf '\n'
     wait_for "$out" '@@DONE@@'
 }
 run_tty worker-validation "$fresh" drive_worker_validation
@@ -894,9 +921,10 @@ drive_update_defaults()
     answer_defaults "$out"
 }
 run_tty current "$current" drive_update_defaults
-for expected in '2048 frames (Current)' 'Preserve desktop shortcuts (Current)' \
-                'Preserve (Current)' 'Let Live decide (Current)' \
-                'Normal scheduling (Current)' 'Balanced (Current)'; do
+for expected in '2048 frames (Current)' '[P]reserve desktop shortcuts (Current)' \
+                "[P]reserve (Don't change under any circumstance) (Current)" \
+                '[L]et Live decide (Not recommended) (Current)' \
+                '[N]ormal scheduling (Current)' '[B]alanced (Current)'; do
     grep -qF "$expected" "$work/current.raw" || fail "saved/default menu omits $expected"
 done
 [ "$(cat "$work/current.args")" = update ] \
@@ -1090,7 +1118,7 @@ drive_remove()
 run_tty remove-route "$healthy" drive_remove
 [ "$(cat "$work/remove-route.args")" = uninstall ] \
     || fail "Remove does not route directly to uninstall"
-! grep -qF '1/6 Audio buffer' "$work/remove-route.raw" \
+! grep -qF '1/6 SET DEFAULT AUDIO BUFFER' "$work/remove-route.raw" \
     || fail "Remove enters the pre-flight settings questions"
 
 for state_name in healthy incomplete; do
@@ -1108,15 +1136,15 @@ ok "ACT-DEFAULT-ROUTING: Enter/non-TTY defaults and Remove route by installation
 # not ask pre-flight questions. The installer remains the authoritative parser.
 run_notty explicit "$current" update
 [ "$(cat "$work/explicit.args")" = update ] || fail "explicit Update changes arguments"
-! grep -qF '1/6 Audio buffer' "$work/explicit.out" \
+! grep -qF '1/6 SET DEFAULT AUDIO BUFFER' "$work/explicit.out" \
     || fail "an explicit command enters the interactive pre-flight"
 run_notty notty "$fresh"
 [ "$(cat "$work/notty.args")" = install ] || fail "fresh non-TTY does not select Install"
 if grep -qF 'Choose an action:' "$work/notty.out" \
-   || grep -qF '1/6 Audio buffer' "$work/notty.out"; then
+   || grep -qF '1/6 SET DEFAULT AUDIO BUFFER' "$work/notty.out"; then
     fail "non-TTY invocation prompts"
 fi
-STUB_PGREP_RC=0 run_notty wine-notty "$fresh"
+NOTTY_EXPECT_STATUS=1 STUB_PGREP_RC=0 run_notty wine-notty "$fresh"
 [ ! -e "$work/wine-notty.args" ] \
     || fail "a non-terminal Wine question started installer.sh"
 [ ! -s "$work/wine-notty.pkill" ] \
@@ -1129,7 +1157,7 @@ run_notty notty-saved "$current"
 [ "$(sha256sum "$preferences")" = "$before_preferences" ] \
     || fail "non-TTY routing rewrites saved preferences without explicit intent"
 if grep -qF 'Choose an action:' "$work/notty-saved.out" \
-   || grep -qF '1/6 Audio buffer' "$work/notty-saved.out"; then
+   || grep -qF '1/6 SET DEFAULT AUDIO BUFFER' "$work/notty-saved.out"; then
     fail "saved-preference non-TTY invocation prompts"
 fi
 ok "ROUTE-EXPLICIT/NONTTY: explicit and non-terminal runs never enter pre-flight UI"

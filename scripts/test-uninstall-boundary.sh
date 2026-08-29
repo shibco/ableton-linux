@@ -478,7 +478,7 @@ check "uninstaller leaves replacement in place" grep -qxF "user replacement" \
 check "Trash log contains zero entries for replacement" not_in_log "$base/trash.log" \
     "$base/home/.local/bin/ableton-live"
 check "the user is asked about the changed path" contains "$base" \
-    "The file or link changed after installation. Remove it?"
+    "REMOVE THE CHANGED FILE OR LINK"
 check "change is reported" contains "$base" "changed"
 check "uninstaller leaves state for the next attempt" test -d "$base/xdg/state/ableton-wine"
 check "output omits the Link overwrite question" sh -c \
@@ -674,7 +674,7 @@ run_uninstall "$base" --prefix-only < /dev/null
 check "decline exits without an error" test "$RUN_RC" -eq 0
 check "prefix remains" test -d "$base/prefix"
 check "a separate prefix question is shown" contains "$base" \
-    "QUESTION: Delete the Wine prefix"
+    "REMOVE LIVE, ITS AUTHORISATION, AND THE ABLETON-LINUX PREFIX"
 check "nothing was trashed" test ! -s "$base/trash.log"
 done_case
 

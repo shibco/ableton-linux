@@ -1034,9 +1034,9 @@ rollback_all()
             rollback_log=""
         fi
         rollback_log_step "Recovery started for $command_name${subcommand:+ $subcommand} (exit $rc)"
-        rollback_log_step "Checking Wine prefix recovery"
+        rollback_log_step "Checking ableton-linux prefix recovery"
         if ! "$here/setup-prefix.sh" --preflight-rollback "$transaction" >> "$rollback_sink" 2>&1; then
-            restore_error="Wine prefix recovery could not be checked"
+            restore_error="ableton-linux prefix recovery could not be checked"
             rollback_preflight_ok=0
         fi
         rollback_log_step "Checking Wine runtime recovery"
@@ -1044,10 +1044,10 @@ rollback_all()
             restore_error="${restore_error}${restore_error:+; }Wine runtime recovery could not be checked"
             rollback_preflight_ok=0
         fi
-        [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "Restoring Wine prefix"
+        [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "Restoring ableton-linux prefix"
         if [ "$rollback_preflight_ok" -eq 1 ] \
            && ! "$here/setup-prefix.sh" --rollback "$transaction" >> "$rollback_sink" 2>&1; then
-            restore_error="Wine prefix could not be restored"
+            restore_error="ableton-linux prefix could not be restored"
         fi
         [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "Restoring Wine runtime"
         if [ "$rollback_preflight_ok" -eq 1 ] \
@@ -1397,7 +1397,7 @@ EOF
                         "$ABLETON_WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1; then
                         ui_info d_prefix_programs_stopped
                     else
-                        echo "!! Live is installed, but the programs in its Wine prefix could not be stopped." >&2 \
+                        echo "!! Live is installed, but the programs in its ableton-linux prefix could not be stopped." >&2 \
                             || true
                     fi ;;
                 *) ui_info d_prefix_programs_left ;;
@@ -1515,7 +1515,7 @@ if [ "$command_name" = install ] || [ "$command_name" = update ]; then
     elif [ -n "$live_payload" ]; then
         core_outcome="Ableton Live $ABLETON_LIVE_VERSION is installed"
     else
-        core_outcome="The Ableton runtime and Wine prefix are ready"
+        core_outcome="The Ableton runtime and ableton-linux prefix are ready"
     fi
     ABLETON_LINK_MODE="$desired_link"
     ABLETON_SIMPLE_PROJECT_FILES=1
@@ -1606,7 +1606,7 @@ elif [ "$command_name:$subcommand" = prefix:create ] \
      || [ "$command_name:$subcommand" = prefix:update ]; then
     if ! write_installer_config; then
         settings_ready=0
-        echo "!! The Wine prefix is ready, but the installer could not save its location. Run the same command again to retry." >&2 \
+        echo "!! The ableton-linux prefix is ready, but the installer could not save its location. Run the same command again to retry." >&2 \
             || true
     fi
 fi

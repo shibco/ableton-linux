@@ -637,17 +637,14 @@ EOF
 
 save_link_mode()
 {
-    local tmp="" failures_before="$ABLETON_OPTIONAL_FILE_FAILURES"
     [ "$LINK_COORDINATED_ACTION" -ne 1 ] || return 0
-    tmp="$(mktemp "${TMPDIR:-/tmp}/ableton-link-config.XXXXXX")" || return 1
-    if ! ableton_render_config > "$tmp"; then
-        rm -f -- "$tmp" 2>/dev/null || true
-        return 1
+    if [ "${ABLETON_CONFIG_REPAIR_NEEDED:-0}" -eq 1 ]; then
+        [ -f "$ABLETON_CONFIG_FILE" ] && [ ! -L "$ABLETON_CONFIG_FILE" ] \
+            && [ "$(sed -n '1p' "$ABLETON_CONFIG_FILE")" = \
+                '# ableton-linux installer configuration; managed by the installer' ] \
+            || return 1
     fi
-    ableton_install_project_file 600 "$tmp" "$ABLETON_CONFIG_FILE"
-    rm -f -- "$tmp" 2>/dev/null || true
-    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] \
-        && [ "$ABLETON_OPTIONAL_FILE_FAILURES" -eq "$failures_before" ]
+    ableton_write_config
 }
 
 install_unit()

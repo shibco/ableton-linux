@@ -127,12 +127,12 @@ The same choices are available as command options:
 | `--dpi=VALUE` | `auto`, `100`, `fractional`, or `preserve`. The default `auto` matches the detected display scale. |
 | `--audio-threads=VALUE` | `auto`, `off`, or `1` to `63`. The default `auto` selects a worker count; `off` lets Live decide. |
 | `--rt=VALUE` | `auto` uses real-time scheduling when available; `off` uses normal scheduling. The default is `auto`. |
-| `--power=VALUE` | `performance`, `balanced`, or `off`. The default `performance` holds that profile during each Live or Max session. |
+| `--power=VALUE` | `performance`, `balanced`, or `off`. The default uses the performance profile while Live or Max is open. |
 
-Near the end, the installer may name a program still running in the Wine prefix and ask whether to close it. Pressing Enter leaves it running, which is the safe answer if you also have Max or another Wine program open. Live is already installed by that point, so either answer keeps it.
+Near the end, the installer may name a program still running in the ableton-linux prefix and ask whether to close it. Press Enter to leave every program running. Use that choice when Max or another Wine program is open. Live installation finishes before this question, and either answer leaves the installed Live files in place.
 
 A final warning about desktop shortcuts, Link, saved settings, or old recovery
-files also keeps the installed runtime, Wine prefix, and Live. The final summary
+files doesn't remove the installed runtime, ableton-linux prefix, or Live. The final summary
 reports what still needs attention. The [installer warning guide](TROUBLESHOOTING.md#live-installs-and-the-final-summary-asks-for-a-retry)
 explains each result and when an update should be retried.
 
@@ -201,7 +201,7 @@ The command above selects `--keep-prefix`. You can also write the option:
 sh ~/Downloads/install-ableton-latest.run uninstall --keep-prefix
 ```
 
-To remove the Wine prefix, Live, its authorization, and plug-ins installed
+To remove the ableton-linux prefix, Live, its authorization, and plug-ins installed
 inside that prefix as well:
 
 ```bash

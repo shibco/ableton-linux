@@ -1036,7 +1036,7 @@ run_payload_install ABLETON_TEST_WAIT_EXIT=124 || fail "an expired payload wait 
 grep -q '^│  ├─ Ableton Live 12 is installed' "$base/out" \
     || fail "an expired payload wait leaves the install incomplete"
 ! grep -q 'wineserver -k' "$base/calls.log" || fail "the payload step stops the promoted prefix"
-grep -q 'The Live installer finished; a background program is still using its Wine prefix' "$base/out" \
+grep -q 'The Live installer finished; a background program is still using its ableton-linux prefix' "$base/out" \
     || fail "an expired payload wait goes unreported"
 grep -qF -- "$base/runtime/bin/wineserver -k" "$base/out" \
     || fail "the report withholds the command that ends the prefix"

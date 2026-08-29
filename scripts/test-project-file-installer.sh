@@ -23,7 +23,7 @@ mkdir -p -- "$tmp/home" "$tmp/config" "$tmp/data" "$tmp/cache" "$tmp/run"
 cp -- "$here/lib/config.sh" "$tmp/work/new-a"
 cp -- "$here/lib/pipeasio.sh" "$tmp/work/new-b"
 cp -- "$here/lib/lifecycle.sh" "$tmp/work/old"
-question='│  ├─ QUESTION: Some files from an earlier installation already exist.'
+question='│  ├─ FILES FROM AN EARLIER INSTALLATION ALREADY EXIST'
 
 # Every case runs the copy loop the way install.sh does: the renderer and the
 # file helpers are sourced, a step is open, and the answers arrive on stdin.
@@ -207,7 +207,8 @@ LOOP_BODY='
 ' run_loop ABLETON_STATE_HOME="$tmp/state-retry" tmp="$tmp" \
     < <(printf 'maybe\nkeep originals\n') > "$tmp/retry.out" 2>&1 || fail "an invalid answer stopped the loop"
 cmp -s -- "$tmp/work/old" "$tmp/work/retry-target" || fail "the retried answer was not honoured"
-[ "$(grep -c 'Which one?:' "$tmp/retry.out")" -eq 2 ] || fail "an unknown answer repeats the prompt once"
+[ "$(grep -c 'Please choose \[O/K/A\]:' "$tmp/retry.out")" -eq 2 ] \
+    || fail "an unknown answer repeats the prompt once"
 ok "an unknown answer is asked again"
 
 # A backup failure leaves its destination untouched and later copies continue.
