@@ -443,9 +443,7 @@ resolve_payload()
         ui_blank
         for f in "${found[@]}"; do ui_menu_option c_item "$i" "$(basename "$f")"; i=$((i + 1)); done
         ui_blank
-        seconds="${ABLETON_UI_PROMPT_TIMEOUT:-5}"
-        case "$seconds" in ''|*[!0-9]*) seconds=5 ;; esac
-        [ "$seconds" -ge 1 ] || seconds=1
+        ui__timeout; seconds="$UI_R"
         ui_ask c_prompt c_hint "$seconds"
         answer="${UI_ANSWER:-1}"
         case "$answer" in *[!0-9]*) echo "!! $(ui_text c_invalid)" >&2; return 2 ;; esac

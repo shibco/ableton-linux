@@ -898,8 +898,8 @@ ui_ask()   # prompt key, hint key, hint args
 
 ui__timeout()   # -> UI_R seconds, minimum 1
 {
-    UI_R="${ABLETON_UI_PROMPT_TIMEOUT:-5}"
-    case "$UI_R" in ''|*[!0-9]*) UI_R=5 ;; esac
+    UI_R="${ABLETON_UI_PROMPT_TIMEOUT:-30}"
+    case "$UI_R" in ''|*[!0-9]*) UI_R=30 ;; esac
     [ "$UI_R" -ge 1 ] || UI_R=1
 }
 

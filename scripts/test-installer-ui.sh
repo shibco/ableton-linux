@@ -33,7 +33,7 @@ run_static()
 {
     env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm \
         COLUMNS=80 ABLETON_UI_ACTION=install ABLETON_UI_KIT=1 \
-        ABLETON_UI_PROMPT_TIMEOUT=5 UI_LIB="$ui_lib" "$@"
+        UI_LIB="$ui_lib" "$@"
 }
 
 # A real pseudo-terminal. script(1) keeps running until its stdin closes, so
@@ -244,7 +244,7 @@ cat > "$work/golden-static.txt" <<'EOF'
 │  │  > [K]eep originals
 │  │  > [A]bort
 │  │
-│  │  (Press Enter for default or wait 5 seconds)
+│  │  (Press Enter for default or wait 30 seconds)
 │  │  Please choose [O/K/A]:
 │  │
 │  └─ Step 3 Complete! ✓
@@ -359,7 +359,7 @@ vt "$work/live.raw" > "$work/live.screen"
 sed -e '/^│  │  ✓ Done\.$/d' -e '/^│  │  𐄂 Failed\.$/d' \
     -e 's/^│  ├─ Copy the embedded kit$/│  ├─ Copy the embedded kit ✓/' \
     -e 's/^│  ├─ Check the embedded kit$/│  ├─ Check the embedded kit 𐄂/' \
-    -e 's/wait 5 seconds/wait 1 seconds/' \
+    -e 's/wait 30 seconds/wait 1 seconds/' \
     "$work/golden-static.txt" | sed -e 's/[[:space:]]*$//' > "$work/golden-live.txt"
 if ! cmp -s "$work/live.screen" "$work/golden-live.txt"; then
     diff -u "$work/golden-live.txt" "$work/live.screen" | head -40 >&2 || true
@@ -625,13 +625,13 @@ ok "the footer renders every status, widens to the terminal, and shortens long p
 # T12: a non-UTF-8 locale gets the ASCII glyph set with the same structure,
 # and the charset captured by the .run header wins over the current locale.
 env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C TERM=xterm COLUMNS=80 \
-    ABLETON_UI_ACTION=install ABLETON_UI_KIT=1 ABLETON_UI_PROMPT_TIMEOUT=5 UI_LIB="$ui_lib" \
+    ABLETON_UI_ACTION=install ABLETON_UI_KIT=1 ABLETON_UI_PROMPT_TIMEOUT=30 UI_LIB="$ui_lib" \
     bash "$work/fixture-golden.sh" < /dev/null > "$work/ascii.out" 2>&1 || fail "the ASCII fixture ran"
 ! LC_ALL=C grep -q $'[\x80-\xff]' "$work/ascii.out" || fail "a C locale never receives a byte above 127"
 [ "$(wc -l < "$work/ascii.out")" -eq "$(wc -l < "$work/golden-static.txt")" ] \
     || fail "the ASCII rendering has the same line structure as the UTF-8 one"
 env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C ABLETON_UI_CHARSET=utf8 TERM=xterm COLUMNS=80 \
-    ABLETON_UI_ACTION=install ABLETON_UI_KIT=1 ABLETON_UI_PROMPT_TIMEOUT=5 UI_LIB="$ui_lib" \
+    ABLETON_UI_ACTION=install ABLETON_UI_KIT=1 ABLETON_UI_PROMPT_TIMEOUT=30 UI_LIB="$ui_lib" \
     bash "$work/fixture-golden.sh" < /dev/null > "$work/charset-env.out" 2>&1 || fail "the charset override fixture ran"
 cmp -s "$work/charset-env.out" "$work/golden-static.txt" \
     || fail "ABLETON_UI_CHARSET captured by the .run header wins over the current locale"

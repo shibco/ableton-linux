@@ -35,7 +35,7 @@ run_loop()
         XDG_CACHE_HOME="$tmp/cache" XDG_RUNTIME_DIR="$tmp/run" \
         ABLETON_UI_ACTION=install ABLETON_UI_KIT=1 TERM=xterm \
         ABLETON_SIMPLE_PROJECT_FILES=1 \
-        ABLETON_UI_PROMPT_TIMEOUT="${PROMPT_TIMEOUT:-5}" "$@" bash -c '
+        ABLETON_UI_PROMPT_TIMEOUT="${PROMPT_TIMEOUT:-30}" "$@" bash -c '
         . "$1/lib/ui.sh"
         . "$1/lib/manifest.sh"
         ui_step_begin s_launchers
