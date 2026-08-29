@@ -478,8 +478,8 @@ run_pty_raw 40 80 "$work/question.raw" env ANSWER_FILE="$work/answer-tty" bash "
 awk -v a="$start" -v b="$EPOCHREALTIME" 'BEGIN { exit !(b - a >= 0.9 && b - a <= 6) }' \
     || fail "a silent terminal waits for the timeout"
 grep -qx 'answer=o' "$work/answer-tty" || fail "the timeout returns the default answer"
-vt "$work/question.raw" | grep -q '^│  │  Which one?:' || fail "the prompt line is drawn above the hint"
-vt "$work/question.raw" | grep -q '^│  │  (Press Enter for default or wait 1 seconds)' \
+vt "$work/question.raw" | grep '^│  │  Which one?:' >/dev/null || fail "the prompt line is drawn above the hint"
+vt "$work/question.raw" | grep '^│  │  (Press Enter for default or wait 1 seconds)' >/dev/null \
     || fail "the hint names the timeout"
 ! has_frame "$work/question.raw" || fail "a question shows no spinner while it waits for input"
 start="$EPOCHREALTIME"
@@ -764,7 +764,7 @@ ui_step_end ok
 EOF
 PROGRESS_FILE="$work/progress" run_pty_raw 40 80 "$work/progress.raw" env PROGRESS_FILE="$work/progress" bash "$work/fixture-progress.sh"
 LC_ALL=C grep -q '(1 / 2 MiB)' "$work/progress.raw" || fail "the spinner line shows the copied size"
-vt "$work/progress.raw" | grep -q '^│  ├─ Copy the embedded kit ✓$' || fail "the progress title settles without the counter"
+vt "$work/progress.raw" | grep '^│  ├─ Copy the embedded kit ✓$' >/dev/null || fail "the progress title settles without the counter"
 ok "a ui_run with a progress file shows its running size"
 
 # T22: ending twice, or ending with nothing open, changes nothing on screen
@@ -898,7 +898,7 @@ grep -q '^│  Choose an action: q$' "$work/menu-q.screen" || fail "the answer i
 ! grep -q 'Selected:' "$work/menu-q.screen" || fail "the menu no longer prints a Selected line"
 menu_case $'\n\n\n\n\n\n\n' "$work/menu-enter.out"
 grep -qx 'install' "$work/stub-args" || fail "Enter picks the default action (no prefix means install)"
-vt "$work/menu-enter.out" | grep -q '^│  > \[I\]nstall (or press Enter)$' \
+vt "$work/menu-enter.out" | grep '^│  > \[I\]nstall (or press Enter)$' >/dev/null \
     || fail "the default option carries the Enter hint"
 mkdir -p "$work/home/.wine-ableton" "$work/home/.config/ableton-wine"
 printf 'WINE REGISTRY Version 2\n' > "$work/home/.wine-ableton/system.reg"
@@ -916,7 +916,7 @@ EOF
 chmod 600 "$work/home/.config/ableton-wine/config"
 menu_case $'\n\n\n\n\n\n\n' "$work/menu-update.out"
 grep -qx 'update' "$work/stub-args" || fail "Enter picks update when a prefix exists"
-vt "$work/menu-update.out" | grep -q '^│  > \[U\]pdate (or press Enter)$' || fail "update is the default with a prefix"
+vt "$work/menu-update.out" | grep '^│  > \[U\]pdate (or press Enter)$' >/dev/null || fail "update is the default with a prefix"
 for key in u U update; do
     menu_case "$key"$'\n\n\n\n\n\n\n' "$work/menu-$key.out"
     grep -qx 'update' "$work/stub-args" || fail "$key picks update"
@@ -930,8 +930,8 @@ grep -qx 'uninstall' "$work/stub-args" || fail "V picks remove regardless of cas
 menu_case $'?\n' "$work/menu-bad.out"
 [ ! -e "$work/stub-args" ] || fail "an unknown key never reaches the installer"
 grep -q 'exit=2' "$work/menu-bad.out" || fail "an unknown key exits 2"
-vt "$work/menu-bad.out" | grep -q 'Unknown action: ?' || fail "an unknown key is named"
-vt "$work/menu-bad.out" | grep -q '│   Failed │' || fail "an unknown key ends as a failed run"
+vt "$work/menu-bad.out" | grep 'Unknown action: ?' >/dev/null || fail "an unknown key is named"
+vt "$work/menu-bad.out" | grep '│   Failed │' >/dev/null || fail "an unknown key ends as a failed run"
 rm -f "$work/stub-args"
 env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm STUB_ARGS_FILE="$work/stub-args" \
     sh "$work/kit.run" < /dev/null > "$work/menu-notty.out" 2>&1 || fail "a run without a terminal takes the default"
@@ -1006,7 +1006,7 @@ env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHE
     < <(for _ in $(seq 300); do [ -e "$work/marker" ] && break; sleep 0.1; done; sleep 0.5
         feed "$work/int.raw" 'exit=[0-9]' $'\003') > "$work/int.raw" 2>&1 || true
 grep -q 'exit=130' "$work/int.raw" || fail "Ctrl-C exits 130 through the .run header"
-vt "$work/int.raw" | grep -q '│ Interrupted │' || fail "Ctrl-C ends with an Interrupted footer"
+vt "$work/int.raw" | grep '│ Interrupted │' >/dev/null || fail "Ctrl-C ends with an Interrupted footer"
 last_escape="$(LC_ALL=C grep -ao $'\033\\[?25[hl]' "$work/int.raw" | tail -1)"
 [ "$last_escape" = $'\033[?25h' ] || fail "the cursor is visible after an interrupt"
 sleep 1
