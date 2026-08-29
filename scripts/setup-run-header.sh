@@ -689,6 +689,15 @@ else
     ui_step_begin s_prepare
 fi
 
+if { [ "$selected_action" = install ] || [ "$selected_action" = update ]; } \
+   && pgrep -x wineserver >/dev/null 2>&1; then
+    ui_question q_stop_wine_title n q_stop_wine_yes q_stop_wine_no
+    if [ "$UI_ANSWER" != y ]; then
+        cancelled=1; launch_hint=0; exit 0
+    fi
+    pkill -x wineserver >/dev/null 2>&1 || true
+fi
+
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/ableton-installer.XXXXXX")" || {
     printf '!! %s\n' "$(ui_text e_workspace "${TMPDIR:-/tmp}")" >&2
     exit 1

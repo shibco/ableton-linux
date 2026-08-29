@@ -168,6 +168,9 @@ declare -A UI_TEXT=(
     [q_stop_prefix_title]='A program is still using the Wine prefix.'
     [q_stop_prefix_end]='[E]nd every program in the prefix'
     [q_stop_prefix_leave]='[L]eave it running'
+    [q_stop_wine_title]='Wine processes are still running. Quit them before continuing?'
+    [q_stop_wine_yes]='[Y]es - quit them and continue'
+    [q_stop_wine_no]='[N]o - exit the installer'
 
     # ---- steps ----------------------------------------------------------------
     [s_prepare]='Prepare the installer kit'
