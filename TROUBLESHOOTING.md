@@ -87,14 +87,14 @@ updated successfully; one failed path does not undo the other repairs.
 
 Check the final `OK` summary. It shows which optional item needs repair:
 
-- `desktop shortcuts: retry needed` means the core installation is intact, but
+- `Desktop shortcuts need another try` means the core installation is intact, but
   the launchers and application-menu entries need another update
-- `Link: unchanged; setup can be retried` means Live remains installed with the
+- `Link is unchanged; you can retry its setup` means Live remains installed with the
   previous Link setting
-- `saved settings: retry needed` means the current install works and the next
+- `Saved settings need another try` means the current install works and the next
   command needs the same custom path options
-- `old recovery files: remain at ...` means the core install completed and the
-  installer kept files that it could not remove
+- `old recovery files remain at ...` means the core install completed and the
+  installer kept files for a later recovery or removal attempt
 
 Follow the instruction printed with the warning. For desktop shortcuts, run:
 

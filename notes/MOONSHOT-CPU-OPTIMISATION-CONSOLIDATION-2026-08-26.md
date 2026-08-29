@@ -42,7 +42,7 @@ The following table records the final state on 26 August 2026.
 | [276](https://github.com/shibco/ableton-linux/pull/276) | The Pro Audio tool runs a matched profile comparison and restores the original profile. | The user starts each comparison. |
 | [277](https://github.com/shibco/ableton-linux/pull/277) | Wine includes one bounded NTSync alertable wait trial. | The regular Wine wait remains the default. |
 | [278](https://github.com/shibco/ableton-linux/pull/278) | The launcher chooses a reliable automatic Live worker count. | `ABLETON_MAX_AUDIO_THREADS=auto` is the default. |
-| [279](https://github.com/shibco/ableton-linux/pull/279) | The installer preserves launcher and adjacent backup prestate across updates and uninstall. | Regular installer behaviour applies. |
+| [279](https://github.com/shibco/ableton-linux/pull/279) | The release preserved launcher and adjacent backup state across updates and uninstall. The current installer writes displaced ordinary files to dated backup folders. Its uninstaller processes older launcher and adjacent backup records separately. | Regular installer behaviour applies. |
 
 PRs 267 to 269 and 271 to 279 are merged. PR 270 contains this final documentation review.
 

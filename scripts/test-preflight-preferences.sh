@@ -533,9 +533,8 @@ before="$(object_snapshot "$file")"
     || fail "refusing same-inode ABA restoration changes the restored object"
 ok "PREF-ABA: same-byte replacement and restored-byte ABA generations are rejected"
 
-# PREF-REMOVE: uninstall removes only the exact valid format-1 record it
-# inspected. A malformed, future, indirect, or changed object is user data and
-# remains for inspection instead of being guessed at or followed.
+# PREF-REMOVE: the removal helper uses the inspected format-1 record. It leaves
+# a malformed or changed file in place for review.
 base="$(new_home remove)"
 write_fixture "$base" preserve auto off auto balanced
 file="$base/config/ableton-wine/preferences"
@@ -557,7 +556,7 @@ before="$(object_snapshot "$file")"
     || fail "malformed preferences are removed"
 [ "$(object_snapshot "$file")" = "$before" ] \
     || fail "malformed preferences do not remain byte-for-byte for inspection"
-ok "PREF-REMOVE: uninstall removes only exact, valid, generation-matched preferences"
+ok "PREF-REMOVE: the helper removes a valid unchanged preferences record"
 
 # BUFFER-READ: PipeASIO accepts any unique integer from 32 through 8192. The
 # menu may offer fewer presets, but must retain an existing custom value.

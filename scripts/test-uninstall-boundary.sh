@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Minimal public boundary for the manifest-driven uninstaller.
+# Tests for the public uninstaller and its installed-file list.
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -10,6 +10,11 @@ reported_failures=0
 children=()
 TEST_FAIL_TOOL=
 TEST_LEAVE_TOOL=
+RUN_STDIN=/dev/null
+RUN_RUNTIME_SET=0
+RUN_PREFIX_SET=0
+RUN_RUNTIME=
+RUN_PREFIX=
 
 cleanup()
 {
@@ -48,7 +53,7 @@ not_in_log() { ! grep -qF -- "$2" "$1"; }
 mkdir -p -- "$work/corebin"
 for tool in awk basename bash cat chmod cmp cp cut dirname env find flock grep \
             head id ln mkdir mktemp mv od readlink realpath rm sed sha256sum sleep \
-            sort stat tail tput tr wc; do
+            sort stat tail timeout tput tr wc; do
     path="$(type -P "$tool" 2>/dev/null || true)"
     [ -z "$path" ] || ln -s -- "$path" "$work/corebin/$tool"
 done
@@ -116,6 +121,33 @@ EOF
     printf '%s\n' "$base"
 }
 
+use_default_targets()
+{
+    local base="$1"
+    local runtime="$base/home/.local/opt/wine-d2d1-nspa-11.13"
+    local prefix="$base/home/.wine-ableton" state="$base/xdg/state/ableton-wine"
+    mkdir -p -- "$(dirname "$runtime")"
+    mv -- "$base/runtime" "$runtime"
+    mv -- "$base/prefix" "$prefix"
+    printf 'format=1\nprefix=%s\n' "$prefix" > "$prefix/.ableton-linux-prefix"
+    sed -i "s|^runtime_root=.*|runtime_root=$runtime|; s|^prefix=.*|prefix=$prefix|" \
+        "$base/xdg/config/ableton-wine/config"
+    sed -i "s|^runtime\t[^\t]*\t|runtime\t$runtime\t|" "$state/install-manifest.tsv"
+}
+
+write_invalid_config_with_paths()
+{
+    local base="$1"
+    mkdir -p -- "$base/invalid-config-runtime" "$base/invalid-config-prefix"
+    cat > "$base/xdg/config/ableton-wine/config" <<EOF
+# ableton-linux installer configuration; managed by the installer
+format=1
+runtime_root=$base/invalid-config-runtime
+prefix=$base/invalid-config-prefix
+obsolete=malformed
+EOF
+}
+
 trash_tool()
 {
     local base="$1" name="$2"
@@ -162,10 +194,13 @@ EOF
     chmod 755 "$base/fakebin/rm"
 }
 
-run_uninstall()
+run_uninstall_entry()
 {
-    local base="$1"
-    shift
+    local base="$1" entry="$2"
+    local -a target_env=()
+    shift 2
+    [ "$RUN_RUNTIME_SET" -eq 0 ] || target_env+=("ABLETON_WINE_ROOT=$RUN_RUNTIME")
+    [ "$RUN_PREFIX_SET" -eq 0 ] || target_env+=("ABLETON_WINEPREFIX=$RUN_PREFIX")
     RUN_RC=0
     env -i HOME="$base/home" USER=test LOGNAME=test \
         XDG_CONFIG_HOME="$base/xdg/config" XDG_DATA_HOME="$base/xdg/data" \
@@ -176,8 +211,38 @@ run_uninstall()
         TEST_ROOT="$base" TEST_TRASH_LOG="$base/trash.log" \
         TEST_TRASH_SINK="$base/trash" TEST_RM_LOG="$base/rm.log" \
         TEST_FAIL_TOOL="$TEST_FAIL_TOOL" TEST_LEAVE_TOOL="$TEST_LEAVE_TOOL" \
-        /bin/bash "$here/uninstall.sh" "$@" > "$base/out" 2> "$base/err" \
+        ABLETON_INSTALLER_LOG="$base/ui.log" \
+        "${target_env[@]}" /bin/bash "$here/$entry" "$@" \
+        > "$base/out" 2> "$base/err" \
+        < "$RUN_STDIN" \
         || RUN_RC=$?
+}
+
+run_uninstall()
+{
+    local base="$1"
+    shift
+    run_uninstall_entry "$base" uninstall.sh "$@"
+}
+
+run_uninstall_with_targets()
+{
+    local base="$1"
+    RUN_RUNTIME_SET=1
+    RUN_PREFIX_SET=1
+    RUN_RUNTIME="$2"
+    RUN_PREFIX="$3"
+    shift 3
+    run_uninstall "$base" "$@"
+    RUN_RUNTIME_SET=0
+    RUN_PREFIX_SET=0
+}
+
+run_public_uninstall()
+{
+    local base="$1"
+    shift
+    run_uninstall_entry "$base" installer.sh uninstall "$@"
 }
 
 report_present()
@@ -269,6 +334,99 @@ report_says "$base" "Installer settings" Removed
 report_says "$base" "Shared state" Removed
 done_case
 
+CASE="Direct uninstaller uses supplied paths when the config file is missing"
+base="$(fixture direct-missing-config)"
+trash_tool "$base" gio
+rm -- "$base/xdg/config/ableton-wine/config"
+run_uninstall_with_targets "$base" "$base/runtime" "$base/prefix" \
+    --keep-prefix --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "uninstaller removes supplied runtime" test ! -e "$base/runtime"
+check "uninstaller leaves prefix in place" test -d "$base/prefix"
+done_case
+
+CASE="Direct uninstaller uses supplied paths when the config file is invalid"
+base="$(fixture direct-invalid-config)"
+trash_tool "$base" gio
+write_invalid_config_with_paths "$base"
+run_uninstall_with_targets "$base" "$base/runtime" "$base/prefix" \
+    --keep-prefix --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "uninstaller removes supplied runtime" test ! -e "$base/runtime"
+check "uninstaller leaves invalid config runtime in place" test -d "$base/invalid-config-runtime"
+check "uninstaller leaves invalid config prefix in place" test -d "$base/invalid-config-prefix"
+check "invalid config runtime path receives zero ownership markers" test ! -e \
+    "$base/invalid-config-runtime/.ableton-linux-runtime"
+check "invalid config prefix path receives zero ownership markers" test ! -e \
+    "$base/invalid-config-prefix/.ableton-linux-prefix"
+done_case
+
+CASE="Environment runtime path takes priority over config runtime path"
+base="$(fixture explicit-overrides-valid-config)"
+trash_tool "$base" gio
+selected_runtime="$base/selected-runtime"
+mkdir -p -- "$selected_runtime/bin"
+printf 'format=1\nname=wine-d2d1-nspa-11.13\n' \
+    > "$selected_runtime/.ableton-linux-runtime"
+printf 'selected runtime\n' > "$selected_runtime/bin/payload"
+sed -i "s|^runtime\t[^\t]*\t|runtime\t$selected_runtime\t|" \
+    "$base/xdg/state/ableton-wine/install-manifest.tsv"
+run_uninstall_with_targets "$base" "$selected_runtime" "$base/prefix" \
+    --keep-prefix --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "uninstaller removes environment runtime" test ! -e "$selected_runtime"
+check "uninstaller leaves config runtime in place" test -d "$base/runtime"
+done_case
+
+CASE="Installer uses command-line paths when the config file is missing"
+base="$(fixture public-missing-config)"
+trash_tool "$base" gio
+rm -- "$base/xdg/config/ableton-wine/config"
+run_public_uninstall "$base" --keep-prefix --runtime-root "$base/runtime" \
+    --prefix "$base/prefix" --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "installer removes command-line runtime" test ! -e "$base/runtime"
+check "installer leaves prefix in place" test -d "$base/prefix"
+done_case
+
+CASE="Installer uses command-line paths when the config file is invalid"
+base="$(fixture public-invalid-config)"
+trash_tool "$base" gio
+write_invalid_config_with_paths "$base"
+run_public_uninstall "$base" --keep-prefix --runtime-root "$base/runtime" \
+    --prefix "$base/prefix" --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "installer removes command-line runtime" test ! -e "$base/runtime"
+check "installer leaves invalid config runtime in place" test -d "$base/invalid-config-runtime"
+check "installer leaves invalid config prefix in place" test -d "$base/invalid-config-prefix"
+done_case
+
+CASE="Installer uses default paths when the config file is invalid"
+base="$(fixture public-invalid-defaults)"
+trash_tool "$base" gio
+use_default_targets "$base"
+default_runtime="$base/home/.local/opt/wine-d2d1-nspa-11.13"
+write_invalid_config_with_paths "$base"
+run_public_uninstall "$base" --keep-prefix --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "installer removes default runtime" test ! -e "$default_runtime"
+check "installer leaves invalid config runtime in place" test -d "$base/invalid-config-runtime"
+check "installer leaves invalid config prefix in place" test -d "$base/invalid-config-prefix"
+done_case
+
+CASE="Direct uninstaller uses default paths when the config file is invalid"
+base="$(fixture invalid-defaults)"
+trash_tool "$base" gio
+use_default_targets "$base"
+default_runtime="$base/home/.local/opt/wine-d2d1-nspa-11.13"
+write_invalid_config_with_paths "$base"
+run_uninstall "$base" --keep-prefix --yes
+check "succeeds" test "$RUN_RC" -eq 0
+check "uninstaller removes default runtime" test ! -e "$default_runtime"
+check "uninstaller leaves invalid config runtime in place" test -d "$base/invalid-config-runtime"
+check "uninstaller leaves invalid config prefix in place" test -d "$base/invalid-config-prefix"
+done_case
+
 for bad in missing-manifest unrelated-path runtime-mismatch runtime-marker \
            prefix-marker state-marker unsafe-runtime; do
     CASE="Unsafe ownership data is refused: $bad"
@@ -309,18 +467,78 @@ for bad in missing-manifest unrelated-path runtime-mismatch runtime-marker \
     done_case
 done
 
-CASE="Changed manifest file is preserved and reported"
+CASE="Keep answer leaves the changed installed file in place"
 base="$(fixture changed)"
 trash_tool "$base" gio
 printf 'user replacement\n' > "$base/home/.local/bin/ableton-live"
 run_uninstall "$base" --keep-prefix --yes
-check "safe preservation succeeds" test "$RUN_RC" -eq 0
-check "replacement remains" grep -qxF "user replacement" \
+check "uninstaller completes the Keep answer" test "$RUN_RC" -eq 0
+check "uninstaller leaves replacement in place" grep -qxF "user replacement" \
     "$base/home/.local/bin/ableton-live"
-check "replacement was not offered to Trash" not_in_log "$base/trash.log" \
+check "Trash log contains zero entries for replacement" not_in_log "$base/trash.log" \
     "$base/home/.local/bin/ableton-live"
+check "the user is asked about the changed path" contains "$base" \
+    "The file or link changed after installation. Remove it?"
 check "change is reported" contains "$base" "changed"
-check "state remains to describe it" test -d "$base/xdg/state/ableton-wine"
+check "uninstaller leaves state for the next attempt" test -d "$base/xdg/state/ableton-wine"
+check "output omits the Link overwrite question" sh -c \
+    '! grep -qiF "Overwrite it with the project unit?" "$1/out" "$1/err"' _ "$base"
+check "source scan finds zero setup-link.sh invocations in uninstall.sh" sh -c \
+    '! grep -qF "setup-link.sh" "$1/uninstall.sh"' _ "$here"
+done_case
+
+CASE="Remove answer sends the changed file to Trash"
+base="$(fixture changed-remove)"
+trash_tool "$base" gio
+printf 'user replacement\n' > "$base/home/.local/bin/ableton-live"
+printf 'r\n' > "$base/input"
+RUN_STDIN="$base/input"
+run_uninstall "$base" --keep-prefix --yes
+RUN_STDIN=/dev/null
+check "uninstaller completes approved removal" test "$RUN_RC" -eq 0
+check "uninstaller removes replacement" test ! -e "$base/home/.local/bin/ableton-live"
+check "uninstaller sends replacement to Trash" grep -qF \
+    "$base/home/.local/bin/ableton-live" "$base/trash.log"
+report_says "$base" "Linux integration" Removed
+done_case
+
+CASE="Remove answer restores the saved earlier file"
+base="$(fixture changed-saved-file)"
+trash_tool "$base" gio
+target="$base/home/.local/bin/ableton-live"
+state="$base/xdg/state/ableton-wine"
+backup="$state/install-prestate/$(printf '%s' "$target" | sha256sum | awk '{print $1}')"
+mkdir -p -- "$state/install-prestate"
+printf 'original user launcher\n' > "$backup"
+printf 'present\t%s\t%s\n' "$target" "$backup" > "$state/install-prestate.tsv"
+chmod 600 "$state/install-prestate.tsv" "$backup"
+printf 'modified installed launcher\n' > "$target"
+printf 'r\n' > "$base/input"
+RUN_STDIN="$base/input"
+run_uninstall "$base" --keep-prefix --yes
+RUN_STDIN=/dev/null
+check "uninstaller completes approved removal" test "$RUN_RC" -eq 0
+check "uninstaller restores saved user file" grep -qxF 'original user launcher' "$target"
+check "uninstaller sends changed installed file to Trash" grep -qF "$target" "$base/trash.log"
+done_case
+
+CASE="Trash failure stops removal after the chosen program"
+base="$(fixture changed-trash-failure)"
+trash_tool "$base" gio
+trash_tool "$base" trash-put
+printf 'user replacement\n' > "$base/home/.local/bin/ableton-live"
+printf 'r\n' > "$base/input"
+TEST_FAIL_TOOL=gio
+RUN_STDIN="$base/input"
+run_uninstall "$base" --keep-prefix --yes
+RUN_STDIN=/dev/null
+TEST_FAIL_TOOL=
+check "uninstaller returns a failure status" test "$RUN_RC" -ne 0
+check "uninstaller leaves changed path in place" test -e "$base/home/.local/bin/ableton-live"
+check "second Trash program stays unused" not_in_log "$base/trash.log" "trash-put"
+check "runtime stays in place after Trash failure" test -d "$base/runtime"
+check "log marks Linux integration as failed" grep -q \
+    '\[ERR\].*Linux integration' "$base/ui.log"
 done_case
 
 start_process()
@@ -464,4 +682,4 @@ if [ "$failures" -ne 0 ]; then
     printf 'FAIL: %d failed assertions across %d cases\n' "$failures" "$cases" >&2
     exit 1
 fi
-printf 'PASS: %d minimal uninstall boundary cases\n' "$cases"
+printf 'PASS: %d minimal uninstall cases\n' "$cases"

@@ -104,8 +104,8 @@ stdenv.mkDerivation {
         chmod -R u+w $out
         # Both names: Wine resolves pipeasio64.dll to builtin "pipeasio.dll"
         # (from its spec) and looks for the unix half under that name. The
-        # aliases stay RELATIVE symlinks — upstream's CMake install contract,
-        # which build-audit.sh verifies.
+        # aliases stay RELATIVE symlinks. The upstream CMake install requires
+        # these links, and build-audit.sh verifies them.
         for pair in \
           pipeasio64.dll:x86_64-windows \
           pipeasio64.dll.so:x86_64-unix; do
@@ -301,16 +301,14 @@ stdenv.mkDerivation {
         substituteInPlace $out/share/ableton-wine/scripts/check-live-audio.sh \
           --replace-fail '$HOME/.local/bin/ableton-live' "$out/bin/ableton-live"
 
-        # The vendored (pinned) winetricks + payload cache, not nixpkgs' — same
-        # setup path as the tarball install; the Live 12 verbs need no network.
+        # Use the repository's winetricks program and cached files. This matches
+        # the tarball setup path and lets the Live 12 verbs work offline.
         install -m755 ${../vendor/winetricks}       $out/share/ableton-wine/vendor/winetricks
         cp -a ${../vendor/winetricks-cache}         $out/share/ableton-wine/vendor/winetricks-cache
-        # cabextract: winetricks corefonts; unzip: setup-prefix's Live installer
-        # step; update-desktop-database and xdg-mime: the launcher's handler
-        # repair, which otherwise reports them missing on a NixOS that carries
-        # neither, leaving the ableton:// callback unregistered. Kit bin, not
-        # $out/bin — setup-prefix.sh resolves these via its kit-bin PATH
-        # prepend; $out/bin is merged onto user PATHs by profile installs.
+        # cabextract supports winetricks corefonts. unzip extracts the Live
+        # installer. The other 2 programs repair desktop handlers.
+        # Place all 4 programs in kit bin, which setup-prefix adds to PATH.
+        # Profile installs add $out/bin to the user's PATH.
         mkdir -p $out/share/ableton-wine/bin
         ln -s ${cabextract}/bin/cabextract   $out/share/ableton-wine/bin/cabextract
         ln -s ${lib.getBin unzip}/bin/unzip  $out/share/ableton-wine/bin/unzip
@@ -406,13 +404,13 @@ stdenv.mkDerivation {
         runHook postInstall
   '';
 
-  # Stamped after fixup: strip/patchelf rewrite the recorded binaries, so
-  # hashing them any earlier writes records the audit's byte-match rejects.
+  # Run this step after fixup because strip and patchelf change the binaries.
+  # Earlier hashes would differ from the installed files.
   postFixup = ''
-        # -- Builder manifest --
-        # The container records its apt package set here; this build's inputs
-        # are the pinned nix closure, so record those versions instead. Same
-        # contract build-audit.sh checks: sorted, unique, two fields per line.
+        # -- Package list --
+        # The container records apt packages. This Nix build records versioned
+        # inputs from the Nix store. build-audit.sh requires sorted, unique rows
+        # with 2 fields per row.
         printf '%s\n' \
           "ableton-linkd ${ableton-linkd.version}" \
           "cabextract ${cabextract.version}" \
@@ -422,17 +420,14 @@ stdenv.mkDerivation {
           "wine-d2d1-nspa ${wine.version}" \
           | LC_ALL=C sort -u > $out/ABLETON-WINE-BUILD-PACKAGES.txt
 
-        # -- Provenance --
-        # The two files the tarball carries (scripts/container-build.sh), for
-        # the same two reasons: build-audit.sh diffs the stack against
-        # patches/SERIES.sha256 and reads the patch count out of the stamp, and
-        # a bug report can name the runtime it came from. Regenerated from the
-        # patches this build applied, never copied from the manifest — a copy
-        # would only agree with itself.
-        # Same glob as container-build.sh and build-audit.sh's --freeze. A
-        # two-digit prefix glob stops matching at 0100 and would drop that
-        # patch from the stamp while wine.nix still applied it, so the audit
-        # would reject the tree over a stamp that is the only thing wrong.
+        # -- Patch records --
+        # container-build.sh writes the same 2 files into the tarball.
+        # build-audit.sh compares the patch list with patches/SERIES.sha256.
+        # It also reads the patch count and runtime name from the stamp.
+        # Generate both records from the patches applied during this build.
+        # A copied record would only verify itself.
+        # Use the same path pattern as container-build.sh and build-audit.sh.
+        # The 4-digit pattern includes patch 0100 and later patches.
         ( cd ${patchesDir} && sha256sum [0-9][0-9][0-9][0-9]-*.patch performance/*.patch pipeasio/*.patch ) \
           > $out/ABLETON-WINE-PATCH-STACK.txt
         n_wine=$(ls ${patchesDir}/[0-9][0-9][0-9][0-9]-*.patch | wc -l)
@@ -519,11 +514,19 @@ stdenv.mkDerivation {
     # Derived from the source directory, so a helper added upstream is covered
     # without editing this gate. A hardcoded list here missed live-options.sh
     # and reported success while the launcher refused to start.
+    expected_config=$TMPDIR/expected-config.sh
+    cp -- ${../scripts/lib/config.sh} "$expected_config"
+    substituteInPlace "$expected_config" \
+      --replace-fail '$HOME/.local/opt/$ABLETON_RUNTIME_NAME' "$out" \
+      --replace-fail '"''${configured:-$ABLETON_DATA_HOME/ableton-linkd}"' \
+                     "\"\''${configured:-$out/share/ableton-wine/ableton-linkd}\""
     for helper in ${../scripts/lib}/*.sh; do
+      expected=$helper
+      [ "$(basename "$helper")" != config.sh ] || expected=$expected_config
       for d in libexec/lib share/ableton-wine/scripts/lib; do
         [ -r $out/$d/$(basename $helper) ] \
           || { echo "$(basename $helper) is not staged in $d"; exit 1; }
-        cmp -s -- "$helper" "$out/$d/$(basename "$helper")" \
+        cmp -s -- "$expected" "$out/$d/$(basename "$helper")" \
           || { echo "$(basename "$helper") differs in $d"; exit 1; }
       done
     done

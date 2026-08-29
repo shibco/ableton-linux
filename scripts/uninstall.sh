@@ -170,7 +170,7 @@ validate_manifest()
         esac
     done < "$manifest"
     [ "$runtime_count" -eq 1 ] || {
-        fail "the installed-file list must name exactly one Wine runtime"
+        fail "the installed-file list must include one Wine runtime entry"
         return 1
     }
     ableton_validate_prestate_store
@@ -181,7 +181,7 @@ verify_runtime()
     path_exists "$ABLETON_WINE_ROOT" || return 0
     [ -d "$ABLETON_WINE_ROOT" ] && [ ! -L "$ABLETON_WINE_ROOT" ] \
         && ableton_runtime_marker_valid "$ABLETON_WINE_ROOT" "$ABLETON_RUNTIME_NAME" || {
-        fail "The Wine runtime was not deleted because its ownership marker is not exact: $ABLETON_WINE_ROOT"
+        fail "The Wine runtime marker names a different runtime: $ABLETON_WINE_ROOT"
         return 1
     }
 }
@@ -191,7 +191,7 @@ verify_prefix()
     path_exists "$ABLETON_WINEPREFIX" || return 0
     [ -d "$ABLETON_WINEPREFIX" ] && [ ! -L "$ABLETON_WINEPREFIX" ] \
         && ableton_prefix_marker_valid "$ABLETON_WINEPREFIX" "$ABLETON_WINEPREFIX" || {
-        fail "The Wine prefix was not deleted because its ownership marker is not exact: $ABLETON_WINEPREFIX"
+        fail "The Wine prefix marker names a different prefix: $ABLETON_WINEPREFIX"
         return 1
     }
 }
@@ -244,7 +244,7 @@ remove_path()
         *) return 1 ;;
     esac
     if [ "$status" -ne 0 ] || path_exists "$path"; then
-        fail "removal failed for $path; no fallback was attempted"
+        fail "removal stopped at $path after the chosen Trash program failed"
         return 1
     fi
     if [ "$trash_backend" = permanent ]; then
@@ -277,6 +277,11 @@ restore_previous()
     ui_status pa_restored_previous "$path"
 }
 
+remove_installed_path()
+{
+    remove_path "$1" && restore_previous "$1"
+}
+
 live_matches_manifest()
 {
     local kind="$1" path="$2" expected="$3" actual
@@ -306,27 +311,40 @@ remove_integration()
     local manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
     local kind path detail extra
     ui_item_begin u_component_integration
-    while IFS=$'\t' read -r kind path detail extra || [ -n "$kind$path$detail$extra" ]; do
+    while IFS=$'\t' read -r -u 3 kind path detail extra \
+          || [ -n "$kind$path$detail$extra" ]; do
         case "$kind" in file|config|symlink) ;; *) continue ;; esac
         if ! path_exists "$path"; then
             if ! restore_previous "$path"; then
                 ui_item_end fail
-                fail "could not restore the earlier object at $path"
+                fail "restoring the earlier file or link failed at $path"
                 return 1
             fi
         elif live_matches_manifest "$kind" "$path" "$detail"; then
-            if ! remove_path "$path" || ! restore_previous "$path"; then
+            if ! remove_installed_path "$path"; then
                 ui_item_end fail
-                fail "could not remove the managed object at $path"
+                fail "removal failed for the installed file or link at $path"
                 return 1
             fi
         elif live_matches_prestate "$path"; then
             :
         else
-            integration_changed=1
-            ui_status u_kept_changed "$path"
+            ui_status u_changed_path "$path"
+            ui_item_end ok
+            ui_question u_q_remove_changed k u_q_remove_changed_yes u_q_remove_changed_no
+            ui_item_begin u_component_integration
+            if [ "$UI_ANSWER" = r ]; then
+                if ! remove_installed_path "$path"; then
+                    ui_item_end fail
+                    fail "removal failed for the installed file or link at $path"
+                    return 1
+                fi
+            else
+                integration_changed=1
+                ui_status u_kept_changed "$path"
+            fi
         fi
-    done < "$manifest"
+    done 3< "$manifest"
     if [ "$integration_changed" -eq 0 ]; then
         integration_status=Removed
     else
@@ -435,11 +453,14 @@ ableton_require_home || exit 1
 : "${ABLETON_CONFIG_FILE:=$ABLETON_CONFIG_HOME/config}"
 
 config_valid=0
+runtime_from_config=0
+prefix_from_config=0
 ableton_managed_config_valid "$ABLETON_CONFIG_FILE" >/dev/null 2>&1 && config_valid=1
 if [ -n "${ABLETON_WINE_ROOT+x}" ]; then
     raw_runtime="$ABLETON_WINE_ROOT"
 elif [ "$config_valid" -eq 1 ]; then
     raw_runtime="$(ableton_config_file_value runtime_root)"
+    runtime_from_config=1
 else
     raw_runtime="$HOME/.local/opt/$ABLETON_RUNTIME_NAME"
 fi
@@ -447,6 +468,7 @@ if [ -n "${ABLETON_WINEPREFIX+x}" ]; then
     raw_prefix="$ABLETON_WINEPREFIX"
 elif [ "$config_valid" -eq 1 ]; then
     raw_prefix="$(ableton_config_file_value prefix)"
+    prefix_from_config=1
 else
     raw_prefix="$HOME/.wine-ableton"
 fi
@@ -460,8 +482,10 @@ case "$scope" in
 esac
 
 ABLETON_CONFIG_LAYOUT_ROOTS=none
-export ABLETON_CONFIG_LAYOUT_ROOTS
-ableton_config_init strict || exit 1
+ABLETON_WINE_ROOT="$raw_runtime"
+ABLETON_WINEPREFIX="$raw_prefix"
+export ABLETON_CONFIG_LAYOUT_ROOTS ABLETON_WINE_ROOT ABLETON_WINEPREFIX
+ableton_config_init repair || exit 1
 
 case "$scope" in
     runtime)
@@ -476,16 +500,13 @@ case "$scope" in
         layout_roots='runtime prefix data config state bin' ;;
 esac
 
-[ -f "$ABLETON_CONFIG_FILE" ] && [ ! -L "$ABLETON_CONFIG_FILE" ] \
-    && [ -r "$ABLETON_CONFIG_FILE" ] && ableton_managed_config_valid "$ABLETON_CONFIG_FILE" || {
-    fail "the installer configuration is missing or unsafe: $ABLETON_CONFIG_FILE"
+if { [ "$runtime_from_config" -eq 1 ] \
+     && ! configured_path_matches runtime_root "$ABLETON_WINE_ROOT"; } \
+   || { [ "$prefix_from_config" -eq 1 ] \
+        && ! configured_path_matches prefix "$ABLETON_WINEPREFIX"; }; then
+    fail "the installer configuration names a different runtime or prefix"
     exit 1
-}
-configured_path_matches runtime_root "$ABLETON_WINE_ROOT" \
-    && configured_path_matches prefix "$ABLETON_WINEPREFIX" || {
-    fail "the installer configuration does not match the selected runtime and prefix"
-    exit 1
-}
+fi
 ableton_config_validate_layout "$layout_roots" || exit 1
 
 ableton_install_lock_acquire || exit 1
@@ -493,7 +514,7 @@ lock_held=1
 
 [ -d "$ABLETON_STATE_HOME" ] && [ ! -L "$ABLETON_STATE_HOME" ] \
     && ableton_state_marker_valid "$ABLETON_STATE_HOME" || {
-    fail "the shared installer state is missing or has the wrong ownership marker: $ABLETON_STATE_HOME"
+    fail "the shared installer state needs a valid ownership marker: $ABLETON_STATE_HOME"
     exit 1
 }
 validate_manifest || exit 1

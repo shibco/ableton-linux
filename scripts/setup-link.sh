@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Enable, disable, or inspect the single persistent Ableton Link policy.
-# Firewall and service state are recorded under XDG_STATE_HOME so uninstall can
-# reverse only changes made by this project.
+# Firewall and service state are recorded under XDG_STATE_HOME. The disable
+# command reverses changes made by this project.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 for lib in "$here/lib/config.sh" "$here/config.sh" \
@@ -778,8 +778,8 @@ configure_firewall()
                 echo "!! Ableton Link cannot safely track a new ufw rule" >&2
                 return 1
             }
-            # Persist ownership before ufw can make a partial change so a later
-            # disable or uninstall removes only the rule this project attempted.
+            # Record the rule before ufw can make a partial change. A later
+            # disable command can then remove the rule added by this project.
             ableton_sudo_run_bounded 120 ufw allow 20808/udp || true
             rule_state=0
             ufw_link_rule_state || rule_state=$?

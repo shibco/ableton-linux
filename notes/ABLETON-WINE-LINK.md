@@ -1,7 +1,7 @@
 # Configure and test Ableton Link
 
-The installer stores one Link mode for installation, launch, update, and
-removal.
+The installer stores one Link mode for installation, launch, update, and the
+`link disable` command.
 
 ## Select a mode
 
@@ -25,8 +25,9 @@ path with `./scripts/installer.sh`.
 
 Enabling Link can remove the obsolete NetworkManager hook and multicast route
 from early releases, open UDP 20808 in UFW or firewalld, and write a marked
-systemd user unit. The installer records its own firewall change and removes
-only that change during disable or uninstall.
+systemd user unit. The installer records its own firewall change. The
+`link disable` command removes that change. Run `link disable` before uninstall
+when Link opened a firewall port or enabled the user service.
 
 Session mode keeps the user unit disabled. Always mode enables and starts it.
 Installer transactions save the previous firewall, unit, process, file, and

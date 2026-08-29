@@ -24,11 +24,14 @@ sh ~/Downloads/install-ableton-latest.run update
 | `link enable --mode=always` | Starts Link after login and keeps it running. |
 | `link disable` | Turns off Link and removes only the Link files and firewall rule this project added. |
 | `link status` | Shows whether Link is running and whether this project added a firewall rule. |
-| `uninstall --keep-prefix` | Removes this project's Linux support while keeping Live and its authorization. |
-| `uninstall --delete-prefix` | Removes this project, Live, and its authorization. It keeps your Live Sets. |
-| `plan COMMAND` | Checks and shows what another command will do without applying the changes. Replace `COMMAND` with a command such as `update`. |
+| `uninstall --keep-prefix` | Removes recorded Linux files and the Wine runtime. It keeps the Wine prefix, Live, authorization, installer settings, and shared records. |
+| `uninstall --delete-prefix` | Removes recorded Linux files, the runtime, prefix, Live, authorization, and valid installer settings. It keeps Live Sets stored outside the prefix. |
+| `plan COMMAND` | Validates another command while preserving current files. Install and update plans list their actions. Uninstall plans validate selected paths and report component status. |
 | `extract DIR` | Unpacks the installer files without installing them. Replace `DIR` with the folder you want to use. |
 | `help` | Shows the main command list. |
+
+If a recorded Linux file or link changed after installation, uninstall asks
+whether to remove it. Keep is the default answer.
 
 ## Pre-flight choices
 
@@ -54,8 +57,11 @@ Everything the scripts print outside the installer display, including every
 `!!` error, goes to the log named at the end of the run. The log sits next to
 the `.run` file, or in your temporary directory when that folder is read-only.
 
-When files from an earlier installation already exist, the installer asks once
-whether to overwrite all, keep the originals, or abort. If you do not answer
-within five seconds, it overwrites them. Overwritten files move to a dated
-folder under `~/.local/state/ableton-wine/backups/` before the new files are
-written.
+When an ordinary support file already exists, the installer asks whether to
+overwrite all files, keep the originals, or abort. The installer selects
+Overwrite all after five seconds. It moves each replaced file to a dated folder
+under `~/.local/state/ableton-wine/backups/`.
+
+Shared configuration files use saved earlier copies under
+`~/.local/state/ableton-wine/install-prestate/`. Uninstall restores these copies
+after it removes the installer version.

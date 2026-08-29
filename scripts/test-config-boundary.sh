@@ -39,6 +39,7 @@ run_isolated()
         -u ABLETON_CONFIG_FILE -u ABLETON_STATE_HOME \
         -u ABLETON_CACHE_HOME -u ABLETON_BIN_HOME \
         -u ABLETON_LINKD -u ABLETON_LINK_MODE \
+        -u ABLETON_SIMPLE_PROJECT_FILES \
         -u ABLETON_CONFIG_LAYOUT_ROOTS -u ABLETON_CONFIG_REPAIR_MODE \
         -u ABLETON_CONFIG_REPAIR_NEEDED \
         -u ABLETON_CONFIG_SNAPSHOT_PATH -u ABLETON_CONFIG_SNAPSHOT_TOKEN \
@@ -90,6 +91,28 @@ run_isolated "$base" env \
         [ "$ABLETON_CONFIG_SNAPSHOT_VALUES" = "$saved_values" ]
     ' _ "$here" || fail "partial installer-settings snapshot was accepted or caused an unbound-variable exit"
 ok "installer-settings snapshots are complete records under set -u"
+
+# Repair mode records the config file before it requests the install lock.
+# The lock checks the same file again after another process changes it.
+base="$(new_env repair-lock-file-change)"
+config="$base/config/ableton-wine/config"
+mkdir -p -- "$(dirname "$config")"
+printf '# ableton-linux installer configuration; managed by the installer\nformat=1\nruntime_root=%s\nprefix=%s\nobsolete=malformed\n' \
+    "$base/runtime" "$base/prefix" > "$config"
+run_isolated "$base" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ABLETON_CONFIG_LAYOUT_ROOTS=none
+    export ABLETON_CONFIG_LAYOUT_ROOTS
+    ableton_config_init repair
+    [ "$ABLETON_CONFIG_REPAIR_NEEDED" -eq 1 ]
+    printf "changed-after-recording\n" >> "$ABLETON_CONFIG_FILE"
+    ! ableton_install_lock_acquire
+' _ "$here" > "$base/out" 2> "$base/err" \
+    || fail "repair mode accepted a changed config file while it waited for the install lock"
+grep -qF 'installation configuration changed; retry the command' "$base/err" \
+    || fail "repair mode returned the wrong message for a changed config file"
+ok "repair mode checks the recorded config file again before it obtains the install lock"
 
 # Once a caller intentionally enters repair mode, the state marker and settings
 # writer must not re-enter strict mode and reject the same repairable generation.

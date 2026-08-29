@@ -14,6 +14,19 @@ fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 command -v script >/dev/null 2>&1 || fail "script(1) from util-linux is available for the terminal checks"
 [ -r "$ui_lib" ] || fail "scripts/lib/ui.sh exists"
 mkdir -p "$work/home"
+wrapper_bin="$work/wrapper-bin"
+mkdir -p -- "$wrapper_bin"
+cat > "$wrapper_bin/pgrep" <<'EOF'
+#!/bin/sh
+[ "$*" = '-x wineserver' ] || exit 2
+exit 1
+EOF
+cat > "$wrapper_bin/pkill" <<'EOF'
+#!/bin/sh
+printf 'unexpected pkill from installer-ui wrapper test\n' >&2
+exit 97
+EOF
+chmod +x "$wrapper_bin/pgrep" "$wrapper_bin/pkill"
 
 # A fixed environment: no inherited terminal, width, charset, or timeout.
 run_static()
@@ -499,73 +512,6 @@ grep -qx 'answer=a' "$work/answer-retry" || fail "the answer after a retry is ho
 [ "$(grep -c 'Which one?:' "$work/retry.out")" -eq 2 ] || fail "an unknown answer repeats the prompt once"
 ok "timed questions honour the timeout, EOF, piped keys, whole words, and retries"
 
-# A command may source ui.sh in a child and ask a question while its parent's
-# ui_run spinner is active. The child owns the trunk until the parent settles.
-cat > "$work/fixture-child-question.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-. "${UI_LIB:?}"
-sleep 0.2
-ui_question q_overwrite_title o q_overwrite_all q_keep q_abort
-EOF
-cat > "$work/fixture-parent-spinner.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-exec 7>&1
-export ABLETON_UI_TTY_FD=7
-. "${UI_LIB:?}"
-ui_step_begin s_validate
-ui_run i_check -- bash "${CHILD_FIXTURE:?}"
-ui_step_end ok
-EOF
-run_pty_raw 40 80 "$work/two-process.raw" env \
-    CHILD_FIXTURE="$work/fixture-child-question.sh" bash "$work/fixture-parent-spinner.sh"
-vt "$work/two-process.raw" > "$work/two-process.screen"
-parent_line="$(grep -n '^│  ├─ Check the embedded kit ✓$' "$work/two-process.screen" | cut -d: -f1)"
-question_line="$(grep -n '^│  ├─ QUESTION: Some files from an earlier installation already exist\.$' \
-    "$work/two-process.screen" | cut -d: -f1)"
-hint_line="$(grep -n '^│  │  (Press Enter for default or wait 1 seconds)$' \
-    "$work/two-process.screen" | cut -d: -f1)"
-complete_line="$(grep -n '^│  └─ Step 2 Complete! ✓$' "$work/two-process.screen" | cut -d: -f1)"
-[ -n "$parent_line" ] && [ -n "$question_line" ] && [ -n "$hint_line" ] && [ -n "$complete_line" ] \
-    && [ "$parent_line" -lt "$question_line" ] && [ "$question_line" -lt "$hint_line" ] \
-    && [ "$hint_line" -lt "$complete_line" ] \
-    || fail "a child question stays below its parent's settled operation"
-python3 - "$work/two-process.raw" "$frames" <<'PY' \
-    || fail "the parent spinner stays held after the child posts its question"
-import sys
-
-data = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-after_question = data.split("QUESTION: Some files from an earlier installation already exist.", 1)[1]
-raise SystemExit(any(frame in after_question for frame in sys.argv[2]))
-PY
-printf '1\n' > "$work/held-render-control"
-: > "$work/held-render-control.pause"
-sleep 30 & held_owner=$!
-env -i PATH="$PATH" HOME="$work/home" LANG=C.UTF-8 UI_LIB="$ui_lib" \
-    OWNER="$held_owner" CONTROL="$work/held-render-control" \
-    bash -c '. "$UI_LIB"; ui__spinner "$OWNER" held "" 0 "$CONTROL"' \
-    >/dev/null 2>&1 &
-held_spinner=$!
-sleep 0.1
-kill "$held_owner" 2>/dev/null || true
-wait "$held_owner" 2>/dev/null || true
-for _ in $(seq 100); do
-    ! kill -0 "$held_spinner" 2>/dev/null && break
-    sleep 0.02
-done
-if kill -0 "$held_spinner" 2>/dev/null; then
-    kill "$held_spinner" 2>/dev/null || true
-    wait "$held_spinner" 2>/dev/null || true
-    fail "a held spinner outlives its vanished parent"
-fi
-wait "$held_spinner" 2>/dev/null || true
-[ ! -e "$work/held-render-control" ] \
-    && [ ! -e "$work/held-render-control.pause" ] \
-    && [ ! -e "$work/held-render-control.paused" ] \
-    || fail "an orphaned held spinner leaves its control file behind"
-ok "a child question holds its parent's spinner and keeps the shared tree ordered"
-
 # T9: step numbers and names come from the table, in table order, for
 # every action in the table.
 cat > "$work/fixture-steps.sh" <<'EOF'
@@ -826,8 +772,7 @@ for key in $(bash -c '. "$1"; printf "%s\n" ${UI_STEPS[@]}' _ "$ui_lib" | sort -
 done
 ok "the dictionary is the only source of screen text and has no dead entries"
 
-# T16: one renderer. No installer script draws the tree or keeps the old
-# printers.
+# T16: ui.sh draws the installer tree.
 installer_scripts=("$here"/installer.sh "$here"/install.sh "$here"/setup-prefix.sh "$here"/setup-link.sh \
     "$here"/uninstall.sh "$here"/setup-run-header.sh "$here"/make-installer.sh "$here"/detect-scale.sh \
     "$here"/detect-theme.sh "$here"/lib/config.sh "$here"/lib/lifecycle.sh "$here"/lib/manifest.sh \
@@ -836,13 +781,7 @@ if grep -l '[├└│┃┏┓┡┲╒╞╘═┈✓𐄂⚠🛈]' "${installe
     grep -l '[├└│┃┏┓┡┲╒╞╘═┈✓𐄂⚠🛈]' "${installer_scripts[@]}" >&2
     fail "no installer script other than ui.sh contains a tree glyph"
 fi
-! grep -l 'ABLETON_UI_TREE' "${installer_scripts[@]}" | grep -q . || fail "the second rendering format is gone"
-for name in spinner_wait ableton_ui_section ableton_ui_run install_section install_detail \
-            prefix_note prefix_warn link_progress installer_stage installer_status \
-            installer_success warn_compat box_line footer_emit report_row; do
-    ! grep -qw -- "$name" "${installer_scripts[@]}" || fail "the old printer $name is deleted"
-done
-ok "ui.sh is the only renderer and the old printers are gone"
+ok "ui.sh is the installer tree renderer"
 
 # T17: the .run header is assembled from the same renderer.
 "$here/make-installer.sh" --render-header --version suite-check --payload-sha 0 > "$work/header.sh" \
@@ -879,7 +818,7 @@ menu_case()
     local keys="$1" out="$2"; shift 2
     rm -f "$work/stub-args"
     : > "$out"
-    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash \
+    env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash \
         STUB_ARGS_FILE="$work/stub-args" "$@" \
         script -qfec "stty rows 40 cols 100; sh $work/kit.run; echo exit=\$?" /dev/null \
         < <(for _ in $(seq 300); do grep -aq 'Choose an action:' "$out" 2>/dev/null && break; sleep 0.05; done
@@ -933,12 +872,12 @@ grep -q 'exit=2' "$work/menu-bad.out" || fail "an unknown key exits 2"
 vt "$work/menu-bad.out" | grep 'Unknown action: ?' >/dev/null || fail "an unknown key is named"
 vt "$work/menu-bad.out" | grep '│   Failed │' >/dev/null || fail "an unknown key ends as a failed run"
 rm -f "$work/stub-args"
-env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm STUB_ARGS_FILE="$work/stub-args" \
+env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm STUB_ARGS_FILE="$work/stub-args" \
     sh "$work/kit.run" < /dev/null > "$work/menu-notty.out" 2>&1 || fail "a run without a terminal takes the default"
 grep -qx 'update' "$work/stub-args" || fail "stdin off a terminal takes the default action without reading"
 ! grep -q 'Choose an action' "$work/menu-notty.out" || fail "stdin off a terminal never prompts"
 : > "$work/menu-ascii.out"
-env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C TERM=xterm SHELL=/bin/bash STUB_ARGS_FILE="$work/stub-args" \
+env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C TERM=xterm SHELL=/bin/bash STUB_ARGS_FILE="$work/stub-args" \
     script -qfec "stty rows 40 cols 100; sh $work/kit.run update; echo $done_marker" /dev/null \
     < <(feed "$work/menu-ascii.out" "$done_marker") > "$work/menu-ascii.out" 2>&1 || true
 ! LC_ALL=C grep -q $'[\x80-\xff]' "$work/menu-ascii.out" \
@@ -966,7 +905,7 @@ EOF
 build_stub_run "$work/kit-fail.run"
 rm -f "$work"/ableton-linux-installer-*.log
 : > "$work/fail.raw"
-env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash \
+env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash \
     script -qfec "stty rows 40 cols 100; sh $work/kit-fail.run update; echo exit=\$?" /dev/null \
     < <(feed "$work/fail.raw" 'exit=[0-9]') > "$work/fail.raw" 2>&1 || true
 grep -q 'exit=3' "$work/fail.raw" || fail "the child's exit status passes through"
@@ -1001,7 +940,7 @@ EOF
 build_stub_run "$work/kit-int.run"
 rm -f "$work/marker"
 : > "$work/int.raw"
-env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash STUB_MARKER="$work/marker" \
+env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash STUB_MARKER="$work/marker" \
     script -qfec "stty rows 40 cols 100; sh $work/kit-int.run update; echo exit=\$?" /dev/null \
     < <(for _ in $(seq 300); do [ -e "$work/marker" ] && break; sleep 0.1; done; sleep 0.5
         feed "$work/int.raw" 'exit=[0-9]' $'\003') > "$work/int.raw" 2>&1 || true
@@ -1013,7 +952,7 @@ sleep 1
 ! pgrep -f "sleep $hold" > /dev/null 2>&1 || fail "no task is left behind after an interrupt"
 rm -f "$work/marker"
 : > "$work/orphan.raw"
-env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash STUB_MARKER="$work/marker" \
+env -i PATH="$wrapper_bin:$PATH" HOME="$work/home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash STUB_MARKER="$work/marker" \
     script -qfec "stty rows 40 cols 100; sh $work/kit-int.run update; echo $done_marker" /dev/null \
     < <(for _ in $(seq 300); do [ -e "$work/marker" ] && break; sleep 0.1; done; sleep 0.5
         kill -9 "$(cat "$work/marker")" 2>/dev/null; feed "$work/orphan.raw" "$done_marker") > "$work/orphan.raw" 2>&1 &

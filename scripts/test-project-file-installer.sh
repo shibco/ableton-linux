@@ -262,16 +262,19 @@ env -i PATH="$PATH" HOME="$publication/home" TMPDIR="$tmp" \
         ableton_mark_state_home
 
         untouched="$ABLETON_DATA_HOME/detect-scale.sh"
+        changed_path="$ABLETON_DATA_HOME/check-ntsync.sh"
         added="$ABLETON_DATA_HOME/lib/config.sh"
         outside="$HOME/not-an-ableton-output"
         mkdir -p -- "$(dirname "$added")"
         printf "untouched generation\n" > "$untouched"
+        printf "changed after an earlier installed-file list\n" > "$changed_path"
         printf "new generation\n" > "$added"
         printf "foreign\n" > "$outside"
         untouched_digest="$(sha256sum -- "$untouched")"
         untouched_digest="${untouched_digest%% *}"
         cat > "$ABLETON_STATE_HOME/install-manifest.tsv" <<EOF
 file	$untouched	$untouched_digest
+file	$changed_path	0000000000000000000000000000000000000000000000000000000000000000
 runtime	$HOME/stale-runtime-one	$ABLETON_RUNTIME_NAME
 runtime	$HOME/stale-runtime-two	$ABLETON_RUNTIME_NAME
 EOF
@@ -291,11 +294,16 @@ publication_manifest="$publication/state/ableton-wine/install-manifest.tsv"
 [ -f "$publication_manifest" ] || fail "ownership manifest was not published"
 untouched="$publication/data/ableton-wine/detect-scale.sh"
 added="$publication/data/ableton-wine/lib/config.sh"
+changed_path="$publication/data/ableton-wine/check-ntsync.sh"
 untouched_digest="$(sha256sum -- "$untouched" | awk '{print $1}')"
 added_digest="$(sha256sum -- "$added" | awk '{print $1}')"
 grep -qxF "$(printf 'file\t%s\t%s' "$untouched" "$untouched_digest")" \
     "$publication_manifest" \
     || fail "publication dropped an untouched allowed non-runtime row"
+grep -qxF "$(printf 'file\t%s\t%s' "$changed_path" \
+    0000000000000000000000000000000000000000000000000000000000000000)" \
+    "$publication_manifest" \
+    || fail "publication replaced the recorded digest for a file left untouched by the current install"
 grep -qxF "$(printf 'file\t%s\t%s' "$added" "$added_digest")" \
     "$publication_manifest" \
     || fail "publication omitted the newly owned file"
@@ -308,6 +316,6 @@ awk -F '\t' -v p="$publication/runtime-current" \
     || fail "publication did not record the configured runtime"
 ! grep -qF "$publication/home/stale-runtime-" "$publication_manifest" \
     || fail "publication retained a stale runtime row"
-ok "publication keeps untouched files and replaces stale runtimes with one configured row"
+ok "publication keeps recorded digests for untouched files and replaces old runtime rows"
 
 echo "All project-file installer tests passed."

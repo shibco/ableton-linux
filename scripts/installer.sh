@@ -461,6 +461,16 @@ ui_step_begin s_validate
 # Until the transaction handlers take over, an early exit still closes the
 # open step as Failed.
 trap 'ui_cleanup $?' EXIT
+if [ "$command_name" = uninstall ]; then
+    ableton_require_home
+    uninstall_config_home="${ABLETON_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine}"
+    uninstall_config_file="${ABLETON_CONFIG_FILE:-$uninstall_config_home/config}"
+    if ! ableton_managed_config_valid "$uninstall_config_file" >/dev/null 2>&1; then
+        : "${ABLETON_WINE_ROOT:=$HOME/.local/opt/$ABLETON_RUNTIME_NAME}"
+        : "${ABLETON_WINEPREFIX:=$HOME/.wine-ableton}"
+        export ABLETON_WINE_ROOT ABLETON_WINEPREFIX
+    fi
+fi
 ableton_config_init repair
 
 prior_link="$ABLETON_LINK_MODE"

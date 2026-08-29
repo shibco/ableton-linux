@@ -188,25 +188,31 @@ change a launcher default or ask you to select a renamed device again.
 
 ### Uninstalling
 
-To remove this project's runtime and desktop integration while keeping Live and
-its authorization, just run:
+To remove the recorded Linux files and Wine runtime while keeping the Wine
+prefix, Live, authorization, installer settings, and shared records, run:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run uninstall
 ```
 
-If you're really nervous, you can ensure your copy of Live and all of your VSTs remain
-by adding the extra (redundant) flag: 
+The command above selects `--keep-prefix`. You can also write the option:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run uninstall --keep-prefix
 ```
 
-To get rid of everything, including Live, its authorization, and any third-party plugins:
+To remove the Wine prefix, Live, its authorization, and plug-ins installed
+inside that prefix as well:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run uninstall --delete-prefix
 ```
+
+If a recorded Linux file or link changed after installation, uninstall asks
+whether to remove it. Keep is the default answer.
+
+Run `link disable` before uninstall when Link opened a firewall port or enabled
+the user service.
 
 ### Other functionality 
 Our installer supports a range of commands for advanced users or complicated

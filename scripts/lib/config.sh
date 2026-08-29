@@ -673,11 +673,6 @@ ableton_render_config()
     printf 'linkd=%s\n' "$ABLETON_LINKD"
 }
 
-ableton_expected_config_token()
-{
-    ableton_render_config | sha256sum | awk '{print "file:"$1}'
-}
-
 ableton_write_config()
 {
     if [ "${ABLETON_CONFIG_REPAIR_MODE:-0}" = 1 ]; then

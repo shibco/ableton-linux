@@ -14,7 +14,6 @@ declare -gi ABLETON_OPTIONAL_FILES_KEPT=0
 declare -gi ABLETON_OPTIONAL_FILES_BACKED_UP=0
 declare -gi ABLETON_PROJECT_OVERWRITE_ALL=0
 declare -gi ABLETON_PROJECT_KEEP_ALL=0
-declare -gi ABLETON_PUBLICATION_JOURNAL_BROKEN=0
 
 ableton_file_has_no_nul()
 {
@@ -65,16 +64,6 @@ ableton_pr182_custom_link_recorded()
     [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
 }
 
-ableton_pr182_custom_link_owned()
-{
-    local path="$1" manifest digest current
-    ableton_pr182_custom_link_recorded "$path" || return 1
-    manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
-    digest="$(awk -F '\t' -v p="$path" '$1=="file" && $2==p { print $3 }' "$manifest")"
-    current="$(ableton_manifest_digest "$path" 2>/dev/null || true)"
-    [ "$current" = "$digest" ] || return 1
-}
-
 ableton_txn_pr182_custom_link_authorized()
 {
     local path="$1" proof="${ABLETON_TRANSACTION_DIR:-}/pr182-custom-link"
@@ -111,39 +100,6 @@ ableton_txn_pr182_custom_link_authorized()
     count="$(awk -F '\t' -v p="$path" -v d="$digest" \
         '$1=="file" && $2==p && $3==d && NF==3 { n++ } END { print n+0 }' "$manifest")"
     [ "$count" -eq 1 ]
-}
-
-ableton_txn_authorize_pr182_custom_link()
-{
-    local path="$1" proof="$ABLETON_TRANSACTION_DIR/pr182-custom-link" tmp digest current_digest
-    ableton_pr182_custom_link_recorded "$path" || return 1
-    if [ -e "$proof" ] || [ -L "$proof" ]; then
-        ableton_txn_pr182_custom_link_authorized "$path"
-        return
-    fi
-    digest="$(awk -F '\t' -v p="$path" '$1=="file" && $2==p { print $3 }' \
-        "$ABLETON_STATE_HOME/install-manifest.tsv")"
-    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
-    current_digest="$(ableton_manifest_digest "$path")" || return 1
-    tmp="$(mktemp -d "$ABLETON_TRANSACTION_DIR/.pr182-custom-link.XXXXXX")" || return 1
-    if ! printf 'format=1\npath=%s\nrecorded_digest=%s\ncurrent_digest=%s\n' \
-            "$path" "$digest" "$current_digest" > "$tmp/metadata" \
-       || ! cp -- "$ABLETON_CONFIG_FILE" "$tmp/config" \
-       || ! cp -- "$ABLETON_DATA_HOME/VERSION" "$tmp/version" \
-       || ! cp -- "$ABLETON_BIN_HOME/ableton-live" "$tmp/launcher" \
-       || ! cp -- "$ABLETON_STATE_HOME/.ableton-linux-state" "$tmp/state-marker" \
-       || ! cp -- "$ABLETON_STATE_HOME/install-manifest.tsv" "$tmp/manifest" \
-       || ! cp -a -- "$path" "$tmp/object" \
-       || ! chmod 600 "$tmp/metadata" "$tmp/config" "$tmp/version" \
-            "$tmp/launcher" "$tmp/state-marker" "$tmp/manifest" \
-       || ! { [ -L "$tmp/object" ] || chmod 600 "$tmp/object"; } \
-       || ! mv -T -n -- "$tmp" "$proof" \
-       || [ -e "$tmp" ] \
-       || ! ableton_txn_pr182_custom_link_authorized "$path"; then
-        rm -rf -- "$tmp"
-        ableton_config_error "could not seal the historical custom Link ownership proof"
-        return 1
-    fi
 }
 
 ableton_launcher_path_allowed()
@@ -274,7 +230,6 @@ ableton_txn_target_allowed()
         "$config_root/mimeapps.list"|\
         "$ABLETON_STATE_HOME/install-manifest.tsv"|\
         "$ABLETON_STATE_HOME/install-prestate.tsv"|\
-        "$ABLETON_STATE_HOME/mime-prestate.tsv"|\
         "$ABLETON_STATE_HOME/link-firewall"|\
         "$ABLETON_WINE_ROOT/.ableton-linux-runtime"|\
         "$ABLETON_WINEPREFIX/.ableton-linux-prefix") return 0 ;;
@@ -522,45 +477,6 @@ ableton_txn_init()
     mkdir -p -- "$files" || return 1
     if [ ! -e "$active" ]; then : > "$active" || return 1; fi
     if [ ! -e "$journal" ]; then : > "$journal" || return 1; fi
-}
-
-# Generated integration files are independent repairs. Once one publication
-# has reached its final token, retire only that file-level recovery data so a
-# later optional failure cannot undo an earlier successful repair.
-ableton_txn_checkpoint_files()
-{
-    local txn="${ABLETON_TRANSACTION_DIR:-}" journal files tmp key
-    [ -n "$txn" ] || return 0
-    if ! ableton_txn_preflight_commit_files "$txn"; then
-        ABLETON_PUBLICATION_JOURNAL_BROKEN=1
-        echo "!! A support file was updated, but temporary installer data could not be refreshed. Continuing with the installed file." >&2 \
-            || true
-        return 0
-    fi
-    journal="$txn/files.tsv"
-    files="$txn/files"
-    if ! tmp="$(mktemp "$txn/.files.tsv.XXXXXX")"; then
-        ABLETON_PUBLICATION_JOURNAL_BROKEN=1
-        echo "!! A support file was updated, but temporary installer data could not be refreshed. Continuing with the installed file." >&2 \
-            || true
-        return 0
-    fi
-    if ! chmod 600 "$tmp" || ! mv -f -- "$tmp" "$journal"; then
-        rm -f -- "$tmp" 2>/dev/null || true
-        ABLETON_PUBLICATION_JOURNAL_BROKEN=1
-        echo "!! A support file was updated, but temporary installer data could not be refreshed. Continuing with the installed file." >&2 \
-            || true
-        return 0
-    fi
-    for key in "${!ABLETON_TXN_SEEN[@]}"; do
-        case "$key" in "$txn"$'\t'*) unset 'ABLETON_TXN_SEEN[$key]' ;; esac
-    done
-    if ! rm -rf -- "$files" || ! mkdir -p -- "$files"; then
-        ABLETON_PUBLICATION_JOURNAL_BROKEN=1
-        echo "!! A support file was updated, but temporary installer data could not be removed. Continuing with the installed file." >&2 \
-            || true
-    fi
-    return 0
 }
 
 ableton_txn_snapshot()
@@ -828,20 +744,6 @@ ableton_install_state_has_active_transaction()
     return 1
 }
 
-ableton_live_desktop_entry_valid()
-{
-    local file="$1"
-    [ -f "$file" ] && [ ! -L "$file" ] && ableton_file_has_no_nul "$file" || return 1
-    [ "$(grep -c '^\[Desktop Entry\]$' "$file")" -eq 1 ] \
-        && [ "$(grep -c '^Type=Application$' "$file")" -eq 1 ] \
-        && [ "$(grep -c '^Name=.' "$file")" -eq 1 ] \
-        && [ "$(grep -c '^Comment=Music production and performance$' "$file")" -eq 1 ] \
-        && [ "$(grep -cF "Exec=$ABLETON_BIN_HOME/ableton-live %f" "$file")" -eq 1 ] \
-        && [ "$(grep -Ec '^Icon=live-(beta|intro|lite|standard|suite)$' "$file")" -eq 1 ] \
-        && [ "$(grep -Ec '^StartupWMClass=.+[.]exe$' "$file")" -eq 1 ] \
-        && [ "$(grep -c '^MimeType=application/x-ableton-live-set;application/x-ableton-live-clip;application/x-ableton-live-pack;$' "$file")" -eq 1 ]
-}
-
 ableton_object_token()
 {
     local path="$1" digest
@@ -866,13 +768,6 @@ ableton_regular_source_token()
     printf 'file:%s\n' "$digest"
 }
 
-ableton_symlink_text_token()
-{
-    local digest
-    digest="$({ printf 'symlink\0'; printf '%s' "$1"; } | sha256sum | awk '{print $1}')" || return 1
-    printf 'symlink:%s\n' "$digest"
-}
-
 ableton_atomic_restore_object()
 {
     local source="$1" target="$2" expected tmp parent
@@ -889,16 +784,6 @@ ableton_atomic_restore_object()
         rm -f -- "$tmp"
         return 1
     fi
-}
-
-ableton_txn_replace_unowned_file()
-{
-    local source="$1" target="$2" post
-    [ -f "$source" ] && [ ! -L "$source" ] || return 1
-    ableton_txn_snapshot "$target" || return 1
-    post="$(ableton_object_token "$source")" || return 1
-    ableton_txn_expect "$target" "$post" || return 1
-    ableton_atomic_restore_object "$source" "$target"
 }
 
 ableton_validate_ownership_manifest()
@@ -982,41 +867,6 @@ ableton_validate_prestate_index()
         }
         seen["$path"]=1
     done < "$index"
-    return 0
-}
-
-ableton_validate_mime_prestate()
-{
-    local state="${1:-$ABLETON_STATE_HOME/mime-prestate.tsv}"
-    local type prior extra
-    local -A seen=()
-    if [ ! -e "$state" ] && [ ! -L "$state" ]; then return 0; fi
-    [ -f "$state" ] && [ ! -L "$state" ] && [ -r "$state" ] || {
-        ableton_config_error "the saved file-opening settings are unsafe or unreadable"
-        return 1
-    }
-    ableton_file_has_no_nul "$state" || {
-        ableton_config_error "the saved file-opening settings contain invalid binary data"
-        return 1
-    }
-    while IFS=$'\t' read -r type prior extra || [ -n "$type$prior$extra" ]; do
-        [ -z "$extra" ] && [ -n "$type" ] && [ -z "${seen[$type]+x}" ] || {
-            ableton_config_error "the saved file-opening settings are invalid or ambiguous"
-            return 1
-        }
-        case "$type" in
-            x-scheme-handler/ableton|application/x-wine-extension-auz|\
-            application/x-ableton-live-set|application/x-ableton-live-clip|\
-            application/x-ableton-live-pack|application/x-ableton-live-max-device|\
-            x-scheme-handler/c74max) ;;
-            *) ableton_config_error "the saved file-opening settings contain an unknown file type"; return 1 ;;
-        esac
-        [ -z "$prior" ] || [[ "$prior" =~ ^[A-Za-z0-9_.+-]+[.]desktop$ ]] || {
-            ableton_config_error "the saved file-opening settings contain an invalid application"
-            return 1
-        }
-        seen["$type"]=1
-    done < "$state"
     return 0
 }
 
@@ -1313,159 +1163,6 @@ ableton_install_file()
     ableton_record_owned "$target" "$kind" || return 1
 }
 
-ableton_install_symlink()
-{
-    local link_text="$1" target="$2" prestate_policy="${3:-preserve-local}" post tmp parent
-    [ ! -d "$target" ] || [ -L "$target" ] || {
-        ableton_config_error "refusing to replace directory with a symlink: $target"
-        return 1
-    }
-    ableton_persist_file_prestate "$target" "" "$prestate_policy" || return 1
-    ableton_txn_snapshot "$target" || return 1
-    post="$(ableton_symlink_text_token "$link_text")" || return 1
-    ableton_txn_expect "$target" "$post" || return 1
-    parent="$(dirname "$target")" || return 1
-    mkdir -p -- "$parent" || return 1
-    tmp="$(mktemp "$parent/.ableton-link.XXXXXX")" || return 1
-    rm -f -- "$tmp" || return 1
-    if ! ln -s -- "$link_text" "$tmp" \
-       || [ "$(ableton_object_token "$tmp" 2>/dev/null || true)" != "$post" ] \
-       || ! mv -T -f -- "$tmp" "$target"; then
-        rm -f -- "$tmp"
-        return 1
-    fi
-    ableton_record_owned "$target" symlink || return 1
-}
-
-# Save the most recently displaced launcher object beside its path as
-# <name>.bak. The transaction tracks both paths and restores both objects after
-# a later failure. Persist each foreign object once before replacing either
-# path, so uninstall can restore both the original launcher and a personal file
-# that already occupied <name>.bak, even after later launcher updates.
-ableton_backup_launcher()
-{
-    local target="$1" desired="$2" desired_mode="${3:-}" backup="$1.bak" current
-    local manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
-    ableton_launcher_path_allowed "$target" || {
-        ableton_config_error "launcher path falls outside the managed launcher set: $target"
-        return 1
-    }
-    [ -e "$target" ] || [ -L "$target" ] || return 0
-    [ ! -d "$target" ] || [ -L "$target" ] || {
-        ableton_config_error "launcher path points to a directory: $target"
-        return 1
-    }
-    [ -f "$target" ] || [ -L "$target" ] || {
-        ableton_config_error "launcher path is not a regular file or symlink: $target"
-        return 1
-    }
-    current="$(ableton_object_token "$target")" || return 1
-    if [ "$current" = "$desired" ] \
-       && { [ -z "$desired_mode" ] \
-            || { [ ! -L "$target" ] && [ "$(stat -c '%a' -- "$target")" = "$desired_mode" ]; }; }; then
-        return 0
-    fi
-    # Once both paths belong to an installed launcher pair, the adjacent copy
-    # is the first displaced launcher, not scratch space for every generation.
-    # Keep it unchanged while refreshing the canonical launcher; the active
-    # transaction already protects the canonical path if this update fails.
-    if { [ -n "${ABLETON_OWNED_KINDS[$target]+x}" ] \
-         && [ -n "${ABLETON_OWNED_KINDS[$backup]+x}" ]; } \
-       || { ableton_validate_ownership_manifest "$manifest" >/dev/null 2>&1 \
-            && ableton_manifest_path_claimed "$target" \
-            && ableton_manifest_path_claimed "$backup"; }; then
-        return 0
-    fi
-    [ ! -d "$backup" ] || [ -L "$backup" ] || {
-        ableton_config_error "launcher backup path points to a directory: $backup"
-        return 1
-    }
-    if [ -e "$backup" ] && [ ! -f "$backup" ] && [ ! -L "$backup" ]; then
-        ableton_config_error "launcher backup path is not a regular file or symlink: $backup"
-        return 1
-    fi
-    ableton_persist_file_prestate "$backup" "" preserve-local || return 1
-    ableton_txn_snapshot "$backup" || return 1
-    ableton_txn_expect "$backup" "$current" || return 1
-    ableton_atomic_restore_object "$target" "$backup" || return 1
-    ableton_record_owned "$backup" "${current%%:*}"
-}
-
-ableton_launcher_claim_matches()
-{
-    local target="$1" current="$2"
-    local record kind digest
-    kind="${current%%:*}"
-    if [ "${ABLETON_OWNED_KINDS[$target]-}" = "$kind" ]; then
-        return 0
-    fi
-    record="$(ableton_manifest_object_record "$target")" || return 1
-    IFS=$'\t' read -r kind digest <<< "$record"
-    case "$kind" in file|symlink) ;; *) return 1 ;; esac
-    [ "$current" = "$kind:$digest" ]
-}
-
-ableton_install_launcher_file()
-{
-    local mode="$1" source="$2" target="$3" kind="${4:-file}" desired
-    desired="$(ableton_regular_source_token "$source")" || return 1
-    ableton_backup_launcher "$target" "$desired" "$mode" || return 1
-    ableton_install_file "$mode" "$source" "$target" "$kind" replace-launcher
-}
-
-ableton_install_launcher_symlink()
-{
-    local link_text="$1" target="$2" desired
-    desired="$(ableton_symlink_text_token "$link_text")" || return 1
-    ableton_backup_launcher "$target" "$desired" || return 1
-    ableton_install_symlink "$link_text" "$target" replace-launcher
-}
-
-ableton_publish_file()
-{
-    if [ "$ABLETON_PUBLICATION_JOURNAL_BROKEN" -eq 1 ]; then
-        ableton_publish_without_file_journal ableton_install_file "$@"
-        return
-    fi
-    ableton_install_file "$@" || return 1
-    ableton_txn_checkpoint_files
-}
-
-ableton_publish_launcher_file()
-{
-    if [ "$ABLETON_PUBLICATION_JOURNAL_BROKEN" -eq 1 ]; then
-        ableton_publish_without_file_journal ableton_install_launcher_file "$@"
-        return
-    fi
-    ableton_install_launcher_file "$@" || return 1
-    ableton_txn_checkpoint_files
-}
-
-ableton_publish_launcher_symlink()
-{
-    if [ "$ABLETON_PUBLICATION_JOURNAL_BROKEN" -eq 1 ]; then
-        ableton_publish_without_file_journal ableton_install_launcher_symlink "$@"
-        return
-    fi
-    ableton_install_launcher_symlink "$@" || return 1
-    ableton_txn_checkpoint_files
-}
-
-# Once optional recovery bookkeeping itself becomes unavailable, keep repairing
-# independent files atomically instead of turning that bookkeeping into a gate.
-# The caller still owns and later retires the surrounding core transaction.
-ableton_publish_without_file_journal()
-{
-    local operation="$1" saved_transaction="${ABLETON_TRANSACTION_DIR:-}" rc
-    shift
-    ABLETON_TRANSACTION_DIR=""
-    export ABLETON_TRANSACTION_DIR
-    if "$operation" "$@"; then rc=0; else rc=$?; fi
-    ABLETON_TRANSACTION_DIR="$saved_transaction"
-    export ABLETON_TRANSACTION_DIR
-    return "$rc"
-}
-
 # Project files are a fixed list of independent copies. A failed path does not
 # stop later paths, and completed copies are never restored automatically.
 ableton_prepare_project_backup_dir()
@@ -1740,44 +1437,6 @@ ableton_remove_managed_file()
     else
         rm -f -- "$target" || return 1
         [ ! -e "$target" ] && [ ! -L "$target" ] || return 1
-    fi
-    ableton_record_deowned "$target"
-}
-
-# Relinquish a historical ownership claim after the user changed the object.
-# The live path is untouched; any installer-only prestate is consumed so a
-# later uninstall cannot resurrect or remove the user's replacement.
-ableton_abandon_managed_file()
-{
-    local target="$1" index="$ABLETON_STATE_HOME/install-prestate.tsv"
-    local id backup recorded="" index_tmp row_count=0
-    ableton_validate_install_state_journals || return 1
-    id="$(printf '%s' "$target" | sha256sum | awk '{print $1}')" || return 1
-    backup="$ABLETON_STATE_HOME/install-prestate/$id"
-    if [ -r "$index" ]; then
-        row_count="$(awk -F '\t' -v p="$target" '$2==p { n++ } END { print n+0 }' "$index")" \
-            || return 1
-        recorded="$(awk -F '\t' -v p="$target" '$1=="present" && $2==p { print $3; exit }' "$index")" \
-            || return 1
-        if [ "$row_count" -ne 0 ]; then
-            if ! { [ "$row_count" -eq 1 ] && [ "$recorded" = "$backup" ] \
-                   && { [ -f "$backup" ] || [ -L "$backup" ]; }; }; then
-                ableton_config_error "cannot safely relinquish pre-install state for $target"
-                return 1
-            fi
-            ableton_txn_snapshot "$index" || return 1
-            ableton_txn_snapshot "$backup" || return 1
-            index_tmp="$(mktemp "$ABLETON_STATE_HOME/.prestate.XXXXXX")" || return 1
-            if ! awk -F '\t' -v p="$target" '$2 != p { print }' "$index" > "$index_tmp" \
-               || ! chmod 600 "$index_tmp" \
-               || ! ableton_txn_expect "$index" "$(ableton_regular_source_token "$index_tmp")" \
-               || ! ableton_txn_expect "$backup" absent \
-               || ! mv -f -- "$index_tmp" "$index" \
-               || ! rm -f -- "$backup"; then
-                rm -f -- "$index_tmp"
-                return 1
-            fi
-        fi
     fi
     ableton_record_deowned "$target"
 }

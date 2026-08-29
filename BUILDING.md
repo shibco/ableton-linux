@@ -52,10 +52,15 @@ Use one component directly when a full install is not needed:
 ./scripts/installer.sh link status
 ```
 
-Preview any supported operation without changing files:
+Preview an update while preserving current files:
 
 ```bash
 ./scripts/installer.sh plan update
+```
+
+Validate the paths and records for an uninstall request:
+
+```bash
 ./scripts/installer.sh plan uninstall --delete-prefix
 ```
 
@@ -146,7 +151,7 @@ These environment variables change one launch without changing the saved install
 
 - `ABLETON_LIVE_EXE` selects one exact Live executable.
 - `ABLETON_LINK_MODE=off|session|always` selects the Link policy shared by the
-  installer, Live launcher, Max launcher, service, and uninstaller.
+  installer, Live launcher, Max launcher, and service.
 - `ABLETON_LINKD` selects the Link daemon path. The generated user unit uses
   this exact resolved path.
 - `ABLETON_MAX_AUDIO_THREADS=auto|off|<number>` controls Live 12's audio thread

@@ -213,7 +213,7 @@ declare -A UI_TEXT=(
     [e_damaged]='This installer file is incomplete or damaged. Download it again.'
     [e_workspace]='The installer could not create its temporary workspace under %s.'   # dir
     [e_temp_left]='The installer finished, but temporary files remain at %s.'          # dir
-    [e_extract_args]='extract needs exactly one destination directory.'
+    [e_extract_args]='extract needs one destination directory.'
 
     # ---- footer ---------------------------------------------------------------
     [f_title]='Ableton-Linux %s v. %s'                            # action label, version
@@ -444,7 +444,11 @@ declare -A UI_TEXT=(
     [u_component_state]='Remove shared state'
     [u_moved_to_trash]='Moved to Trash: %s'
     [u_deleted_permanently]='Permanently deleted: %s'
-    [u_kept_changed]='Kept changed path: %s'
+    [u_changed_path]='The installed file or link differs from the recorded version: %s'
+    [u_kept_changed]='Left the changed file or link in place: %s'
+    [u_q_remove_changed]='The file or link changed after installation. Remove it?'
+    [u_q_remove_changed_yes]='[R]emove this path'
+    [u_q_remove_changed_no]='[K]eep this path'
     [u_no_trash]='No supported Trash tool is available; removal would permanently delete files.'
     [u_q_permanent]='Permanently delete the selected files?'
     [u_q_permanent_yes]='[D]elete permanently'
@@ -512,7 +516,6 @@ UI_ITEM_OPEN=0 UI_ITEM_TITLE="" UI_ITEM_MARK="" UI_ITEM_LINES=0 UI_ITEM_LAST=0
 UI_ITEM_ROWS=0 UI_ITEM_COLS=0 UI_RUN_ACTIVE=0 UI_SPINNER_KIND="" UI_ITEM_WAIT=0
 UI_ITEM_STATE=""
 UI_ANSWER="" UI_R="" UI_G="" UI_WRAPPED=0 UI_READ_ACTIVE=0
-UI_CROSS_RENDER_CONTROL=""
 UI_STAMP_FORMAT='%(%d/%m/%Y, %H:%M:%S)T'
 
 ui__init()
@@ -633,32 +636,6 @@ ui__screen()   # raw bytes to the screen, no log
     return 0
 }
 
-ui__cross_render_row()
-{
-    local rows
-    [ -n "$UI_CROSS_RENDER_CONTROL" ] || return 0
-    IFS= read -r rows < "$UI_CROSS_RENDER_CONTROL" 2>/dev/null || return 0
-    case "$rows" in ''|*[!0-9]*) return 0 ;; esac
-    if ! printf '%s\n' "$((rows + 1))" > "$UI_CROSS_RENDER_CONTROL" 2>/dev/null; then true; fi
-}
-
-# A child question owns the trunk until its parent ui_run can settle above it.
-ui__hold_parent_spinner()
-{
-    local control="${ABLETON_UI_RENDER_CONTROL:-}" i
-    [ "$UI_LIVE" -eq 1 ] && [ -z "$UI_CROSS_RENDER_CONTROL" ] \
-        && [ -n "$control" ] && [ -f "$control" ] && [ ! -L "$control" ] || return 0
-    : > "$control.pause" 2>/dev/null || return 0
-    for ((i=0; i<50; i++)); do
-        [ ! -e "$control.paused" ] || break
-        sleep 0.01
-    done
-    [ -e "$control.paused" ] || return 0
-    UI_CROSS_RENDER_CONTROL="$control"
-    ui__screen $'\n'
-    if ! printf '1\n' > "$control" 2>/dev/null; then UI_CROSS_RENDER_CONTROL=""; fi
-}
-
 # Add live-terminal presentation without changing the text that is measured
 # or written to the log. OSC 8 turns displayed web addresses into links. SGR
 # colours start after the tree prefix and end before trailing whitespace, so
@@ -735,7 +712,6 @@ ui__emit()   # one finished line: screen plus log (always the settled form)
     fi
     ui__decorate "$state" "$1"
     { printf '%s\n' "$UI_R" >&"$UI_FD"; } 2>/dev/null || true
-    ui__cross_render_row
     if [ "$UI_ITEM_LAST" -eq 1 ]; then
         ui__g trunk; t="$UI_G"; ui__g last; l="$UI_G"; ui__g branch; b="$UI_G"; ui__g sub_trunk; s="$UI_G"
         case "$logged" in
@@ -750,7 +726,7 @@ ui__emit()   # one finished line: screen plus log (always the settled form)
 }
 
 # Wrap text at the width on the last space; a token longer than the room is
-# cut hard. Every produced line carries its prefix. UI_WRAPPED counts them.
+# cut hard. Each output line starts with its prefix. UI_WRAPPED counts them.
 ui__wrap()   # first prefix, continuation prefix, text, [level], [state]
 {
     local prefix="$1" cont="$2" text="$3" level="${4:-INFO}" state="${5:-}" room line="" word
@@ -899,7 +875,7 @@ ui_prompt()   # key: a prompt on the trunk, no newline; the caller reads
 }
 
 # A trunk-level question: prompt line, hint line, the answer typed on the
-# prompt line. UI_ANSWER holds the raw answer; EOF and the timeout leave it
+# prompt line. UI_ANSWER contains the raw answer; EOF and the timeout leave it
 # empty.
 ui_ask()   # prompt key, hint key, hint args
 {
@@ -1201,19 +1177,14 @@ ui_settle()
 }
 
 # ---- one command with a spinner ------------------------------------------------
-ui__spinner()   # parent pid, line, progress file, total bytes, [render control]
+ui__spinner()   # parent pid, line, progress file, total bytes
 {
-    local parent="$1" line="$2" progress="$3" total="$4" control="${5:-}"
+    local parent="$1" line="$2" progress="$3" total="$4"
     local frame cur suffix
     local -a frames=()
     ui__g spinner; read -r -a frames <<< "$UI_G"
     local cols shown rendered
     while kill -0 "$parent" 2>/dev/null; do
-        if [ -n "$control" ] && [ -e "$control.pause" ]; then
-            : > "$control.paused" 2>/dev/null || true
-            sleep 0.02
-            continue
-        fi
         frame="${frames[RANDOM % ${#frames[@]}]}"
         suffix=""
         if [ -n "$progress" ]; then
@@ -1232,9 +1203,6 @@ ui__spinner()   # parent pid, line, progress file, total bytes, [render control]
         ui__screen "$rendered"
         sleep 0.08
     done
-    [ -z "$control" ] \
-        || rm -f -- "$control" "$control.pause" "$control.paused" 2>/dev/null \
-        || true
 }
 
 ui__stop_spinner()
@@ -1257,26 +1225,6 @@ ui__run_finish()   # mark, [state]: settle a spinner on the title line
     ui__emit_log_only "$t  $b $UI_ITEM_TITLE"
     UI_RUN_ACTIVE=0; UI_SPINNER_KIND=""
     UI_R="$saved"
-}
-
-ui__run_finish_after_child_question()   # control file, mark, state
-{
-    local control="$1" mark="$2" item_state="$3" rows t b line
-    [ -n "$control" ] || return 1
-    IFS= read -r rows < "$control" 2>/dev/null || return 1
-    case "$rows" in ''|*[!0-9]*|0) return 1 ;; esac
-    ui__stop_spinner
-    UI_RUN_ACTIVE=0; UI_SPINNER_KIND=""
-    if ui__rewrite_title branch "$mark" "$rows" "$item_state"; then
-        ui__g trunk; t="$UI_G"; ui__g last; b="$UI_G"
-        ui__emit_log_only "$t  $b $UI_ITEM_TITLE"
-    else
-        ui__g trunk; t="$UI_G"; ui__g branch; b="$UI_G"
-        line="$t  $b $UI_ITEM_TITLE${mark:+ $mark}"
-        ui__emit "$line" INFO "$item_state"
-    fi
-    ui__screen $'\033[?25h'
-    UI_ITEM_LAST=0
 }
 
 # Stop the temporary spinner before the renderer writes another line. A title
@@ -1323,10 +1271,8 @@ ui__finish_item_spinner()   # mark, state
 
 ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
 {
-    local key="$1" progress="" total=0 rc=0 t b line mark title level=OK control=""
-    local inherited_control="${ABLETON_UI_RENDER_CONTROL-}" inherited_control_set=0
+    local key="$1" progress="" total=0 rc=0 t b line mark title level=OK
     local -a targs=()
-    [ "${ABLETON_UI_RENDER_CONTROL+x}" != x ] || inherited_control_set=1
     shift
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -1354,17 +1300,7 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
         ui__decorate active "$line"
         ui__screen "$UI_R"$'\033[?25l'
         UI_RUN_ACTIVE=1; UI_SPINNER_KIND=run
-        control="$(mktemp "${TMPDIR:-/tmp}/ableton-ui-render.XXXXXX" 2>/dev/null)" || control=""
-        if [ -n "$control" ] && printf '0\n' > "$control" 2>/dev/null; then
-            ABLETON_UI_RENDER_CONTROL="$control"
-            export ABLETON_UI_RENDER_CONTROL
-        else
-            [ -z "$control" ] \
-                || rm -f -- "$control" "$control.pause" "$control.paused" 2>/dev/null \
-                || true
-            control=""
-        fi
-        ui__spinner "$$" "$line" "$progress" "$total" "$control" &
+        ui__spinner "$$" "$line" "$progress" "$total" &
         UI_SPINNER_PID=$!
         "$@" || rc=$?
         if [ "$rc" -eq 0 ]; then
@@ -1374,19 +1310,9 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
         fi
         mark="$UI_G"; UI_ITEM_MARK="$mark"
         if [ "$UI_RUN_ACTIVE" -eq 1 ]; then
-            ui__run_finish_after_child_question "$control" "$mark" "$UI_ITEM_STATE" \
-                || ui__finish_item_spinner "$mark" "$UI_ITEM_STATE"
+            ui__finish_item_spinner "$mark" "$UI_ITEM_STATE"
         else
             ui__rewrite_title last "$mark" "$UI_ITEM_LINES" "$UI_ITEM_STATE" || true
-        fi
-        [ -z "$control" ] \
-            || rm -f -- "$control" "$control.pause" "$control.paused" 2>/dev/null \
-            || true
-        if [ "$inherited_control_set" -eq 1 ]; then
-            ABLETON_UI_RENDER_CONTROL="$inherited_control"
-            export ABLETON_UI_RENDER_CONTROL
-        else
-            unset ABLETON_UI_RENDER_CONTROL
         fi
     else
         "$@" || rc=$?
@@ -1415,7 +1341,6 @@ ui_question()
     local -a letters=() labels=()
     shift 2
     ui__init
-    ui__hold_parent_spinner
     ui__text "$title_key"; ui__text q_title "$UI_R"
     ui__item_open "$UI_R" wait
     ui__detail_blank

@@ -276,16 +276,6 @@ ableton_pipeasio_desktop_exec_arg()
         -e 's/%/%%/g'
 }
 
-ableton_pipeasio_icon_may_replace()
-{
-    local path="$1"
-    if [ ! -e "$path" ] && [ ! -L "$path" ]; then return 0; fi
-    if ableton_manifest_path_matches "$path" || ableton_legacy_owned_path "$path"; then return 0; fi
-    ableton_record_deowned "$path"
-    ui_status pa_preserved_existing "$path"
-    return 1
-}
-
 ableton_pipeasio_restore_adjacent_backup()
 {
     local path="$1" saved="$1.bak" path_record saved_record path_kind path_digest

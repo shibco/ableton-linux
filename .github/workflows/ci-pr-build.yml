@@ -128,8 +128,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes cabextract xdg-utils desktop-file-utils shared-mime-info
 
-      - name: Test installer and launcher lifecycle
-        run: make test
+      - name: Test while a separate wineserver process runs
+        run: |
+          separate_wine_dir="$(mktemp -d /tmp/ableton-separate-wine.XXXXXX)"
+          cp -- "$(command -v sleep)" "$separate_wine_dir/wineserver"
+          "$separate_wine_dir/wineserver" 7200 &
+          separate_wine_pid=$!
+          stop_separate_wine() {
+            kill "$separate_wine_pid" 2>/dev/null || true
+            wait "$separate_wine_pid" 2>/dev/null || true
+          }
+          trap stop_separate_wine EXIT
+          test "$(cat "/proc/$separate_wine_pid/comm")" = wineserver
+          make test
+          kill -0 "$separate_wine_pid"
 
       # These are properties of the built runtime, so `make test` cannot assert
       # them: its suites are all host-side. The tarball exists by this point, so

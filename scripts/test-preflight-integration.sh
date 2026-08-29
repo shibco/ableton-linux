@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Cross-boundary contract for pre-flight CLI intent, transaction timing,
-# launcher consumption, uninstall ownership, packaging, and documentation.
+# Tests for preflight command-line choices, write timing, launcher input,
+# uninstall ownership, packaging, and documentation.
 # Behaviour IDs map to notes/PREFLIGHT-SETTINGS-TEST-MATRIX.md.
 set -euo pipefail
 
@@ -19,7 +19,7 @@ preferences_lib="$here/lib/preferences.sh"
 
 # A complete but side-effect-light coordinator kit. The real dispatcher and
 # lifecycle libraries run; only the expensive runtime/prefix/Link components
-# are replaced. The prefix stub exposes values inherited at the core boundary.
+# are replaced. The prefix test program prints values from the main install step.
 kit="$work/kit"
 mkdir -p -- "$kit/scripts/lib" "$kit/bin"
 cp -- "$here/installer.sh" "$kit/scripts/"
@@ -1142,13 +1142,26 @@ stage_loops = re.findall(
 assert sorted(stage_loops) == ["libexec/lib", "share/ableton-wine/scripts/lib"]
 audit = re.search(
     r"for helper in \$\{\.\./scripts/lib\}/\*\.sh; do\s+"
-    r"for d in libexec/lib share/ableton-wine/scripts/lib; do(?P<body>.*?)done\s+done",
+    r"(?P<setup>.*?)for d in libexec/lib share/ableton-wine/scripts/lib; do"
+    r"(?P<body>.*?)done\s+done",
     text,
     re.S,
 )
 assert audit is not None
+expected_config = re.search(
+    r"expected_config=.*?substituteInPlace \"\$expected_config\""
+    r"(?P<body>.*?)for helper in \$\{\.\./scripts/lib\}/\*\.sh; do",
+    text,
+    re.S,
+)
+assert expected_config
+assert "$HOME/.local/opt/$ABLETON_RUNTIME_NAME" in expected_config.group("body")
+assert "$ABLETON_DATA_HOME/ableton-linkd" in expected_config.group("body")
+setup = audit.group("setup")
+assert "expected=$helper" in setup
+assert "expected=$expected_config" in setup
 body = audit.group("body")
-assert "cmp -s -- \"$helper\" \"$out/$d/$(basename \"$helper\")\"" in body
+assert "cmp -s -- \"$expected\" \"$out/$d/$(basename \"$helper\")\"" in body
 PY
 ok "UNINSTALL/PACKAGING: mutable data is checked separately and support ships on every path"
 

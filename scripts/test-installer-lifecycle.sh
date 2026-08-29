@@ -3,6 +3,19 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-installer-test.XXXXXX")"
+wrapper_bin="$work/wrapper-bin"
+mkdir -p -- "$wrapper_bin"
+cat > "$wrapper_bin/pgrep" <<'EOF'
+#!/bin/sh
+[ "$*" = '-x wineserver' ] || exit 2
+exit 1
+EOF
+cat > "$wrapper_bin/pkill" <<'EOF'
+#!/bin/sh
+printf 'unexpected pkill from installer-lifecycle wrapper test\n' >&2
+exit 97
+EOF
+chmod +x "$wrapper_bin/pgrep" "$wrapper_bin/pkill"
 # Checks that expect an installer run to succeed redirect its diagnostics into
 # the per-case log, so set -e ends the suite on an unexpected non-zero exit
 # with no failure line, leaving make's exit code as the only evidence.  Report
@@ -443,7 +456,7 @@ tar -cf "$base/payload.tar" -C "$kit" .
     --payload-sha "$(sha256sum "$base/payload.tar" | awk '{print $1}')" > "$base/kit.run" \
     || fail "make-installer.sh renders the .run header for the suite"
 cat "$base/payload.tar" >> "$base/kit.run"
-run_isolated "$base" env STUB_EXIT=0 STUB_PATH_FILE="$base/installer-path" \
+run_isolated "$base" env PATH="$wrapper_bin:$PATH" STUB_EXIT=0 STUB_PATH_FILE="$base/installer-path" \
     sh "$base/kit.run" >"$base/out" 2>"$base/err" \
     || fail "a successful delegated install exits zero through the .run header"
 grep -qF '│  ┃ 2/8 ╏ CHECK THE HOST AND THE REQUEST ┃' "$base/out" \
@@ -454,7 +467,7 @@ grep -qF '│  └─ Step 1 Complete! ✓' "$base/out" \
 grep -qF 'Launch Ableton Live via your desktop applications launcher' "$base/out" \
     || fail "a successful install ends with the launch hint"
 status=0
-run_isolated "$base" env STUB_EXIT=42 STUB_PATH_FILE="$base/installer-path" \
+run_isolated "$base" env PATH="$wrapper_bin:$PATH" STUB_EXIT=42 STUB_PATH_FILE="$base/installer-path" \
     sh "$base/kit.run" >>"$base/out" 2>>"$base/err" || status=$?
 [ "$status" -eq 42 ] || fail "a delegated install failure code passes through the .run header"
 grep -q '^│ Ableton-Linux Install v. suite-check *│ Complete │$' "$base/out" \
@@ -509,7 +522,7 @@ printf '%s\n' 'pw-cli' 'Linked with libpipewire 1.6.8'
 exec /usr/bin/seq 1 100000
 EOF
 chmod +x "$base/fakebin/lspci" "$base/fakebin/pw-cli"
-run_isolated "$base" env PATH="$base/fakebin:$PATH" STUB_EXIT=0 \
+run_isolated "$base" env PATH="$base/fakebin:$wrapper_bin:$PATH" STUB_EXIT=0 \
     STUB_PATH_FILE="$base/installer-path" sh "$work/run-header/kit.run" \
     > "$base/out" 2> "$base/err" \
     || fail "large host-report output stopped the .run wrapper"
@@ -580,7 +593,7 @@ cat > "$base/fakebin/rm" <<'EOF'
 exec /usr/bin/rm "$@"
 EOF
 chmod +x "$base/fakebin/dd" "$base/fakebin/tar" "$base/fakebin/rm"
-run_isolated "$base" env PATH="$base/fakebin:$PATH" STUB_EXIT=0 \
+run_isolated "$base" env PATH="$base/fakebin:$wrapper_bin:$PATH" STUB_EXIT=0 \
     STUB_PATH_FILE="$base/installer-path" sh "$work/run-header/kit.run" \
     >"$base/out" 2>/dev/full \
     || fail "cleanup output failure changed a successful .run result"
@@ -1447,7 +1460,6 @@ env WINEPREFIX="$base/prefix" \
     bash -c 'exec -a "C:\\learnheal.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
 helper_pid=$!
 sleep 0.3
-start_s=$SECONDS
 run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
     ABLETON_LINK_MODE=off ABLETON_POWER=off ABLETON_RT=off ABLETON_THEME_MODE=preserve \
     ABLETON_DPI_MODE=preserve ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
@@ -2132,6 +2144,10 @@ prestate="$base/state/ableton-wine/install-prestate.tsv"
     || fail "integration did not publish a regular ownership manifest"
 validate_manifest_integration_state "$base" \
     || fail "integration published invalid manifest or prestate data"
+[ "$(awk -F '\t' -v p="$base/runtime" -v n="$ABLETON_RUNTIME_NAME" \
+        '$1=="runtime" { count++; if ($2==p && $3==n && NF==3) matching++ } \
+        END { print count ":" matching+0 }' "$manifest")" = 1:1 ] \
+    || fail "the installed-file list needs one runtime row for the selected runtime"
 
 project_file="$base/data/ableton-wine/lib/config.sh"
 project_digest="$(sha256sum -- "$project_file" | awk '{print $1}')"
@@ -2357,9 +2373,8 @@ kill -0 "$link_controller_pid" 2>/dev/null \
     || fail "unlocked Link stop retained its PID record"
 ok "Link controller serializes direct mutations without leaking the installer lock to its daemon"
 
-# Current project-file installs retain no MIME prestate. Uninstall removes its
-# fixed desktop IDs and clears only defaults that name those IDs; unrelated
-# defaults remain byte-for-byte user state.
+# Current installs save the complete MIME settings file before replacement.
+# Uninstall restores that file after it removes the project desktop entries.
 base="$(new_env mime-cleanup)"
 mkdir -p "$base/data/applications" "$base/fakebin"
 printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"

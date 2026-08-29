@@ -74,7 +74,17 @@ cat > "$work/fakebin/tar" <<'EOF'
 printf '%s\n' "$*" >> "${STUB_TAR_LOG:?}"
 exec "${STUB_REAL_TAR:?}" "$@"
 EOF
-chmod +x "$work/fakebin/tar"
+cat > "$work/fakebin/pgrep" <<'EOF'
+#!/bin/sh
+[ "$*" = '-x wineserver' ] || exit 2
+exit "${STUB_PGREP_RC:-1}"
+EOF
+cat > "$work/fakebin/pkill" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "${STUB_PKILL_LOG:?unexpected pkill from wrapper test}"
+exit "${STUB_PKILL_RC:-0}"
+EOF
+chmod +x "$work/fakebin/tar" "$work/fakebin/pgrep" "$work/fakebin/pkill"
 
 wait_for()   # output literal [minimum count]
 {
@@ -134,13 +144,14 @@ normalize_terminal()   # raw output normalized output
 run_tty()   # name home driver-function
 {
     local name="$1" home="$2" driver="$3" command="${4:-}" scope="${5:-}"
-    local out before after delegation tar_log
+    local out before after delegation tar_log pkill_log
     out="$work/$name.raw"
     before="$work/$name.home.before"
     after="$work/$name.home.after"
     delegation="$work/$name.home.delegation"
     tar_log="$work/$name.tar"
-    rm -f -- "$work/$name.args" "$delegation" "$tar_log"
+    pkill_log="$work/$name.pkill"
+    rm -f -- "$work/$name.args" "$delegation" "$tar_log" "$pkill_log"
     : > "$out"
     snapshot_home "$home" "$before"
     # shellcheck disable=SC2094,SC2016 # child expands path; driver polls transcript
@@ -150,6 +161,7 @@ run_tty()   # name home driver-function
         STUB_ARGS_FILE="$work/$name.args" PREFLIGHT_INSTALLER="$work/installer.run" \
         PREFLIGHT_COMMAND="$command" PREFLIGHT_SCOPE="$scope" \
         STUB_TAR_LOG="$tar_log" STUB_REAL_TAR="$real_tar" \
+        STUB_PGREP_RC="${STUB_PGREP_RC:-1}" STUB_PKILL_LOG="$pkill_log" \
         STUB_SNAPSHOT_HELPER="$snapshot_helper" \
         STUB_HOME_SNAPSHOT_BEFORE="$before" \
         STUB_HOME_SNAPSHOT_AT_DELEGATION="$delegation" \
@@ -200,25 +212,29 @@ assert_uninstall_scope_set()   # run-name
 
 run_notty()   # name home [installer arguments...]
 {
-    local name="$1" home="$2" before after delegation status=0
+    local name="$1" home="$2" before after delegation tar_log pkill_log status=0
     shift 2
     before="$work/$name.home.before"
     after="$work/$name.home.after"
     delegation="$work/$name.home.delegation"
-    rm -f -- "$work/$name.args" "$delegation"
+    tar_log="$work/$name.tar"
+    pkill_log="$work/$name.pkill"
+    rm -f -- "$work/$name.args" "$delegation" "$tar_log" "$pkill_log"
     snapshot_home "$home" "$before"
-    env -i PATH="$PATH" HOME="$home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm \
+    env -i PATH="$work/fakebin:$PATH" HOME="$home" TMPDIR="$work" LANG=C.UTF-8 TERM=xterm \
         STUB_ARGS_FILE="$work/$name.args" \
         STUB_SNAPSHOT_HELPER="$snapshot_helper" \
         STUB_HOME_SNAPSHOT_BEFORE="$before" \
         STUB_HOME_SNAPSHOT_AT_DELEGATION="$delegation" \
+        STUB_TAR_LOG="$tar_log" STUB_REAL_TAR="$real_tar" \
+        STUB_PGREP_RC="${STUB_PGREP_RC:-1}" STUB_PKILL_LOG="$pkill_log" \
         sh "$work/installer.run" "$@" \
         </dev/null > "$work/$name.out" 2>&1 || status=$?
     assert_home_unchanged "$name" "$home" "$before" "$after"
     [ "$status" -eq 0 ] || fail "$name exited with status $status"
 }
 
-answer_defaults()   # output; assumes action was already selected
+answer_default_questions()   # output; assumes action was already selected
 {
     local out="$1" i
     local -a questions=(
@@ -233,6 +249,12 @@ answer_defaults()   # output; assumes action was already selected
         assert_straight_frontier "$out" "$i" "${questions[@]}"
         printf '\n'
     done
+}
+
+answer_defaults()   # output; assumes action was already selected
+{
+    local out="$1"
+    answer_default_questions "$out"
     wait_for "$out" '@@DELEGATED@@'
     wait_for "$out" '@@DONE@@'
 }
@@ -242,6 +264,31 @@ drive_fresh_defaults()
     local out="$1"
     wait_for "$out" 'Choose an action:'; printf '\n'
     answer_defaults "$out"
+}
+
+drive_wine_cancel()
+{
+    local out="$1"
+    wait_for "$out" 'Choose an action:'; printf '\n'
+    answer_default_questions "$out"
+    wait_for "$out" 'Wine processes are still running. Quit them before continuing?'
+    [ ! -s "$work/wine-cancel.pkill" ] \
+        || fail 'the wrapper killed wineserver before the user answered'
+    printf '\n'
+    wait_for "$out" '@@DONE@@'
+}
+
+drive_wine_stop()
+{
+    local out="$1"
+    wait_for "$out" 'Choose an action:'; printf '\n'
+    answer_default_questions "$out"
+    wait_for "$out" 'Wine processes are still running. Quit them before continuing?'
+    [ ! -s "$work/wine-stop.pkill" ] \
+        || fail 'the wrapper killed wineserver before the user answered'
+    printf 'y\n'
+    wait_for "$out" '@@DELEGATED@@'
+    wait_for "$out" '@@DONE@@'
 }
 
 make_preferences()   # home shortcuts dpi threads rt power
@@ -479,6 +526,19 @@ if sed -n "1,${delegated_line}p" "$fresh_transcript" \
     fail "a seventh prompt or settings summary appears before delegation"
 fi
 ok "ACT-FRESH/NAV-ORDER/DEFAULTS: fresh Install asks six explained questions with 128 default"
+
+STUB_PGREP_RC=0 run_tty wine-cancel "$fresh" drive_wine_cancel
+[ ! -e "$work/wine-cancel.args" ] \
+    || fail 'declining the Wine-process question started installer.sh'
+[ ! -s "$work/wine-cancel.pkill" ] \
+    || fail 'declining the Wine-process question killed wineserver'
+
+STUB_PGREP_RC=0 run_tty wine-stop "$fresh" drive_wine_stop
+[ "$(cat "$work/wine-stop.pkill")" = '-x wineserver' ] \
+    || fail 'approval used a command other than pkill -x wineserver'
+[ "$(cat "$work/wine-stop.args")" = install ] \
+    || fail 'approval stopped before the install began'
+ok "WINE QUESTION: approval runs pkill -x wineserver once"
 
 drive_delayed_choice()
 {
@@ -1027,6 +1087,11 @@ if grep -qF 'Choose an action:' "$work/notty.out" \
    || grep -qF '1/6 Audio buffer' "$work/notty.out"; then
     fail "non-TTY invocation prompts"
 fi
+STUB_PGREP_RC=0 run_notty wine-notty "$fresh"
+[ ! -e "$work/wine-notty.args" ] \
+    || fail "a non-terminal Wine question started installer.sh"
+[ ! -s "$work/wine-notty.pkill" ] \
+    || fail "a non-terminal Wine question killed wineserver"
 preferences="$current/.config/ableton-wine/preferences"
 before_preferences="$(sha256sum "$preferences")"
 run_notty notty-saved "$current"
