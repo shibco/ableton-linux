@@ -847,9 +847,9 @@ ui_preflight_read()
     ui_note q_back_hint
     ui_prompt q_prompt
     UI_READ_ACTIVE=1
-    IFS= read -r -s -n 1 first || rc=$?
+    IFS= read -r -n 1 first || rc=$?
     if [ "$rc" -eq 0 ] && [ -n "$first" ] && [ "$first" != $'\033' ]; then
-        IFS= read -r -s rest || true
+        IFS= read -r rest || true
     fi
     UI_READ_ACTIVE=0
     if [ "$rc" -ne 0 ]; then
@@ -859,7 +859,7 @@ ui_preflight_read()
     fi
     if [ "$rc" -ne 0 ] || [ "$first" = $'\033' ]; then
         ui__screen $'\n'
-    else
+    elif [ "$UI_LIVE" -eq 0 ]; then
         ui__screen "$UI_ANSWER"$'\n'
     fi
     ui__log INFO "answer: ${UI_ANSWER:-(default)}"
@@ -1051,7 +1051,7 @@ ui__item_open()   # title text, [wait]: settle the previous block, draw the titl
     fi
     UI_STEP_ITEMS=$((UI_STEP_ITEMS + 1))
     UI_ITEM_WAIT=0; UI_ITEM_STATE=active
-    if [ "$mode" = wait ]; then UI_ITEM_WAIT=1; UI_ITEM_STATE=wait; fi
+    if [ "$mode" = wait ]; then UI_ITEM_WAIT=1; UI_ITEM_STATE="wait"; fi
     ui__title "$1"; UI_ITEM_TITLE="$UI_R"; UI_ITEM_MARK=""
     ui__g trunk; t="$UI_G"
     if [ "$UI_LIVE" -eq 1 ]; then

@@ -479,6 +479,35 @@ assert_adjacent_question "$fresh_transcript" '1/6 Audio buffer' \
     'Lower numbers reduce audio delay; higher numbers are less likely to crackle.' \
     '64 frames' '128 frames (Default)' '256 frames' '512 frames' '1024 frames' \
     'Press Esc to go back'
+
+# A typed choice must appear before Enter is pressed. Silent input makes some
+# terminals display a padlock and gives no visible response to the key.
+drive_visible_choice()
+{
+    local out="$1" i
+    local -a remaining=(
+        '2/6 Keyboard shortcuts' '3/6 Display scaling' '4/6 Audio workers'
+        '5/6 Real-time scheduling' '6/6 Power profile'
+    )
+    wait_for "$out" 'Choose an action:'; printf '\n'
+    wait_for "$out" '1/6 Audio buffer'
+    wait_for "$out" 'Press Esc to go back'
+    printf '2'
+    wait_for "$out" 'Which one?: 2'
+    : > "$work/visible-choice.seen"
+    printf '\n'
+    for i in "${!remaining[@]}"; do
+        wait_for "$out" "${remaining[$i]}"
+        wait_for "$out" 'Press Esc to go back' "$((i + 2))"
+        printf '\n'
+    done
+    wait_for "$out" '@@DELEGATED@@'
+    wait_for "$out" '@@DONE@@'
+}
+run_tty visible-choice "$fresh" drive_visible_choice
+[ -e "$work/visible-choice.seen" ] \
+    || fail "a typed pre-flight choice stays hidden until Enter"
+ok "pre-flight choices appear while the user types"
 assert_adjacent_question "$fresh_transcript" '2/6 Keyboard shortcuts' \
     'On GNOME, Assign to Live lets Live use conflicting desktop shortcuts until Live closes.' \
     'Assign to Live (Default)' 'Preserve desktop shortcuts' \
