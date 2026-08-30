@@ -33,7 +33,8 @@ _ads_gnome() {
     ')"
     [ -n "$chosen" ] || return 1
     if [ "$(printf '%s\n' "$all" | wc -l)" -gt 1 ]; then
-        echo "note: monitors run mixed scales ($(printf '%s' "$all" | tr '\n' ' ' )): using GNOME/Xwayland's shared framebuffer scale from $chosen" >&2
+        echo "note: monitors run mixed scales ($(printf '%s' "$all" | tr '\n' ' '))." >&2
+        echo "note: using GNOME/Xwayland's shared framebuffer scale: $chosen." >&2
     fi
     printf '%s\n' "$chosen"
 }

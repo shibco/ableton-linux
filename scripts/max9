@@ -14,6 +14,15 @@ if ! ableton_config_init 2>/dev/null; then
     echo "max9: installer settings could not be read. Run the latest installer to repair them, then try again." >&2
     exit 1
 fi
+# Saved pre-flight choices are optional. A launcher from a partial support
+# update therefore keeps its established defaults and one-run environment.
+for lib in "$here/lib/preferences.sh" "$ABLETON_DATA_HOME/lib/preferences.sh" \
+           "$ABLETON_WINE_ROOT/share/ableton-wine/scripts/lib/preferences.sh"; do
+    if [ -r "$lib" ]; then . "$lib"; break; fi
+done
+if declare -F ableton_preferences_apply >/dev/null 2>&1; then
+    ableton_preferences_apply || exit 2
+fi
 for lib in "$here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/lifecycle.sh"; do
     if [ -r "$lib" ]; then . "$lib"; break; fi
 done
@@ -118,13 +127,19 @@ printf 'max %s\n' "$$" >&9 || {
 session_started=1
 
 run=("$WINE_ROOT/bin/wine")
-if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
+rt_mode="${ABLETON_RT:-auto}"
+[ "$rt_mode" != on ] || rt_mode=auto
+export ABLETON_RT="$rt_mode"
+if [ "$rt_mode" != off ] && command -v chrt >/dev/null 2>&1 \
     && chrt -r 10 true >/dev/null 2>&1; then
     run=(chrt -r 10 "$WINE_ROOT/bin/wine")
 fi
-if [ "${ABLETON_POWER:-on}" != off ] && command -v powerprofilesctl >/dev/null 2>&1 \
-    && ableton_run_bounded 10 powerprofilesctl launch -p performance -r "Max session" -i max9 -- true >/dev/null 2>&1; then
-    run=(powerprofilesctl launch -p performance -r "Max session" -i max9 -- "${run[@]}")
+power_profile="${ABLETON_POWER:-performance}"
+case "$power_profile" in on|auto) power_profile=performance ;; esac
+export ABLETON_POWER="$power_profile"
+if [ "$power_profile" != off ] && command -v powerprofilesctl >/dev/null 2>&1 \
+    && ableton_run_bounded 10 powerprofilesctl launch -p "$power_profile" -r "Max session" -i max9 -- true >/dev/null 2>&1; then
+    run=(powerprofilesctl launch -p "$power_profile" -r "Max session" -i max9 -- "${run[@]}")
 fi
 
 args=()

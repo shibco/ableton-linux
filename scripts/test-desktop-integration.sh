@@ -145,10 +145,8 @@ ok "launcher gives one repair instruction for incomplete support files"
 base="$(new_env unique-handlers)"
 install_fake_desktop_tools "$base"
 state="$base/state/ableton-wine"
-legacy_handler="$base/data/applications/wine-protocol-ableton.desktop"
 private_support="$base/data/ableton-wine/setup-realtime.sh"
-mkdir -p -- "$base/data/applications" "$(dirname "$private_support")" \
-    "$state/install-prestate"
+mkdir -p -- "$base/data/applications" "$(dirname "$private_support")"
 printf 'older generated support bytes\n' > "$private_support"
 cat > "$base/data/applications/wine-protocol-ableton.desktop" <<EOF
 [Desktop Entry]
@@ -162,17 +160,8 @@ cat > "$base/data/applications/wine-extension-auz.desktop" <<'EOF'
 [Desktop Entry]
 Exec=env WINEPREFIX=/tmp/foreign wine start %f
 EOF
-# Repair installs must identify the legacy handler from its exact generated
-# shape, not from old uninstall inventory. Deliberately leave both historical
-# state files unusable and make sure neither can veto or redirect the repair.
-printf 'format=1\nowner=ableton-linux\n' > "$state/.ableton-linux-state"
-printf 'malformed legacy ownership row\n' > "$state/install-manifest.tsv"
-printf 'present\t%s\t/tmp/untrusted-handler-backup\n' "$legacy_handler" \
-    > "$state/install-prestate.tsv"
-printf 'stale backup sentinel\n' > "$state/install-prestate/not-a-valid-slot"
-chmod 600 "$state/.ableton-linux-state" "$state/install-manifest.tsv" \
-    "$state/install-prestate.tsv"
-if ! run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
+if ! printf 'o\n' | run_isolated "$base" \
+    bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
     cat "$base/err" >&2
     fail "installer cannot install desktop integration in an isolated home"
 fi
@@ -181,19 +170,38 @@ fi
 [ -f "$base/data/ableton-wine/$protocol_id" ] || fail "installer omits the staged protocol handler"
 [ -f "$base/data/ableton-wine/$auz_id" ] || fail "installer omits the staged AUZ handler"
 cmp -s -- "$here/setup-realtime.sh" "$private_support" \
-    || fail "damaged optional bookkeeping blocked private support-file repair"
-[ ! -e "$base/data/applications/wine-protocol-ableton.desktop" ] \
-    || fail "installer keeps its globally named legacy protocol handler"
+    || fail "Overwrite did not replace the selected support file"
+[ -f "$base/data/applications/wine-protocol-ableton.desktop" ] \
+    || fail "installer removed an unrelated legacy protocol handler"
 [ -f "$base/data/applications/wine-extension-auz.desktop" ] \
     || fail "installer removes a foreign globally named handler"
-grep -qxF 'stale backup sentinel' "$state/install-prestate/not-a-valid-slot" \
-    || fail "legacy handler repair consumed unrelated stale recovery data"
+grep -qxF "$private_support exists." "$base/err" \
+    || fail "existing support file prompt did not name its destination"
+grep -qF '│  ├─ FILES FROM AN EARLIER INSTALLATION ALREADY EXIST' "$base/out" \
+    || fail "existing support file did not ask for an overwrite choice"
+mapfile -t support_backups < <(find "$state/backups" -type f \
+    -name 'setup-realtime.sh.bak-*')
+[ "${#support_backups[@]}" -eq 1 ] \
+    || fail "Overwrite did not create exactly one dated backup"
+grep -qxF 'older generated support bytes' "${support_backups[0]}" \
+    || fail "Overwrite backup does not contain the displaced file"
+support_digest="$(sha256sum -- "$private_support" | awk '{print $1}')"
+grep -qxF "$(printf 'file\t%s\t%s' "$private_support" "$support_digest")" \
+    "$state/install-manifest.tsv" \
+    || fail "simple integration did not record the installed support file"
+[ ! -e "$state/install-prestate.tsv" ] \
+    || fail "ordinary support-file overwrite created automatic prestate"
 [ "$(awk -F '\t' '$1 == "x-scheme-handler/ableton" { print $2 }' "$base/mime-defaults.tsv")" = "$protocol_id" ] \
     || fail "installer does not pin the project protocol handler"
 [ "$(awk -F '\t' '$1 == "application/x-wine-extension-auz" { print $2 }' "$base/mime-defaults.tsv")" = "$auz_id" ] \
     || fail "installer does not pin the project AUZ handler"
 installed_ntsync_check="$base/data/ableton-wine/check-ntsync.sh"
 installed_ntsync_probe="$base/data/ableton-wine/ntsyncprobe.exe"
+installed_preferences_lib="$base/data/ableton-wine/lib/preferences.sh"
+if [ ! -f "$installed_preferences_lib" ] || [ -x "$installed_preferences_lib" ] \
+   || ! cmp -s -- "$here/lib/preferences.sh" "$installed_preferences_lib"; then
+    fail "installer omits or changes the data-only launcher preferences support"
+fi
 [ -x "$installed_ntsync_check" ] \
     || fail "installer omits the executable NTSync diagnostic"
 [ -f "$installed_ntsync_probe" ] && [ ! -x "$installed_ntsync_probe" ] \
@@ -230,29 +238,7 @@ fi
     || fail "installed NTSync diagnostic cannot find its packaged sibling probe"
 grep -q 'FAIL: rebuild Wine with linux/ntsync.h' "$base/ntsync.err" \
     || fail "installed NTSync diagnostic does not reach its runtime check"
-ok "installer uses unique callback handlers and retires only its legacy entry"
-
-ownership_data="$base/ownership-data"
-ownership_check="$ownership_data/check-ntsync.sh"
-mkdir -p -- "$ownership_data"
-legacy_ntsync_owned()
-{
-    run_isolated "$base" env \
-        "ABLETON_DATA_HOME=$ownership_data" \
-        "ABLETON_BIN_HOME=$base/bin" \
-        "ABLETON_WINE_ROOT=$base/fake-wine" \
-        bash -c ". \"\$1\"; ableton_legacy_owned_path \"\$2\"" \
-        legacy-ntsync "$base/data/ableton-wine/lib/manifest.sh" "$ownership_check"
-}
-cp -- "$here/check-ntsync.sh" "$ownership_check"
-legacy_ntsync_owned || fail "legacy ownership rejects the current NTSync diagnostic"
-printf '# NT sync semantics hold\n' > "$ownership_check"
-legacy_ntsync_owned || fail "legacy ownership rejects the pre-rewrite NTSync diagnostic"
-printf '# foreign NTSync diagnostic\n' > "$ownership_check"
-if legacy_ntsync_owned; then
-    fail "legacy ownership accepts a foreign NTSync diagnostic"
-fi
-ok "legacy ownership recognises both project NTSync diagnostic generations"
+ok "installer uses unique handlers and backs up only selected fixed destinations"
 
 base="$(new_env mime-query-ignored)"
 install_fake_desktop_tools "$base"
@@ -278,58 +264,59 @@ grep -qxF $'x-scheme-handler/ableton\tio.github.shibco.ableton-linux.protocol.de
     "$base/mime-defaults.tsv" || fail "MIME default was not published before verification was skipped"
 ok "MIME defaults are published without a redundant query failure gate"
 
-optional_real_mv="$(command -v mv)"
+optional_real_cp="$(command -v cp)"
 
 base="$(new_env optional-version-warning)"
 install_fake_desktop_tools "$base"
-cat > "$base/fakebin/mv" <<EOF
+cat > "$base/fakebin/cp" <<EOF
 #!/bin/sh
 last=""
 for argument do last="\$argument"; done
 [ "\$last" != "\${ABLETON_TEST_FAIL_TARGET:-}" ] || exit 88
-exec "$optional_real_mv" "\$@"
+exec "$optional_real_cp" "\$@"
 EOF
-chmod 755 "$base/fakebin/mv"
-txn="$base/parent-transaction"
-mkdir -p -- "$txn"
+chmod 755 "$base/fakebin/cp"
 run_isolated "$base" env \
     ABLETON_TEST_FAIL_TARGET="$base/data/ableton-wine/VERSION" \
-    bash "$here/install.sh" --integration-only --transaction-dir "$txn" \
+    bash "$here/install.sh" --integration-only \
     >"$base/out" 2>"$base/err" \
-    || fail "optional version failure aborted a parent-owned integration phase"
+    || fail "optional version failure aborted integration"
 [ -x "$base/home/.local/bin/ableton-live" ] \
     || fail "optional version failure rolled back the generated launcher"
-grep -qF 'Ableton was installed, but its support files could not be fully updated.' \
-    "$base/err" || fail "optional version failure was not a plain warning"
-if grep -q '^OK:' "$base/out"; then
-    fail "parent-owned integration phase printed a child success line"
-fi
-run_isolated "$base" bash "$here/install.sh" --preflight-commit "$txn" \
-    >"$base/preflight.out" 2>"$base/preflight.err" \
-    || fail "optional version failure poisoned the parent commit check"
-ok "optional version failure warns without invalidating parent-owned generated files"
+grep -qF -- "-> $base/data/ableton-wine/VERSION" "$base/err" \
+    || fail "optional version failure did not report the actual failed path"
+grep -qF '⚠ Some shortcuts or support files could not be updated.' "$base/out" \
+    || fail "optional version failure hid the partial integration result"
+ok "optional version copy failure reports its path and keeps completed files"
 
-base="$(new_env optional-file-list-warning)"
+base="$(new_env overwrite-keep-continues)"
 install_fake_desktop_tools "$base"
-cat > "$base/fakebin/mv" <<EOF
-#!/bin/sh
-last=""
-for argument do last="\$argument"; done
-[ "\$last" != "\${ABLETON_TEST_FAIL_TARGET:-}" ] || exit 89
-exec "$optional_real_mv" "\$@"
-EOF
-chmod 755 "$base/fakebin/mv"
-run_isolated "$base" env \
-    ABLETON_TEST_FAIL_TARGET="$base/state/ableton-wine/install-manifest.tsv" \
-    bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err" \
-    || fail "installed-file list failure aborted generated integration"
+kept_config="$base/data/ableton-wine/lib/config.sh"
+mkdir -p -- "$(dirname "$kept_config")"
+printf 'keep this config\n' > "$kept_config"
+printf 'Keep\n' | run_isolated "$base" \
+    bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || fail "Keep stopped the integration mapping loop"
+grep -qxF 'keep this config' "$kept_config" \
+    || fail "Keep changed the selected destination"
+[ -f "$base/data/ableton-wine/lib/lifecycle.sh" ] \
+    || fail "Keep prevented the next project file from being installed"
 [ -x "$base/home/.local/bin/ableton-live" ] \
-    || fail "installed-file list failure rolled back the generated launcher"
-grep -qF 'Ableton was installed, but the installed-file list could not be updated.' \
-    "$base/err" || fail "installed-file list failure was not a plain warning"
-grep -qxF 'OK: Installation complete.' "$base/out" \
-    || fail "direct integration did not print its simple outcome"
-ok "installed-file list failure warns without invalidating generated files"
+    || fail "Keep prevented later project files from being installed"
+if [ -d "$base/state/ableton-wine/backups" ] \
+   && find "$base/state/ableton-wine/backups" -type f -name 'config.sh.bak-*' \
+        -print -quit | grep -q .; then
+    fail "Keep created a backup for an untouched destination"
+fi
+grep -qF 'Kept existing file unchanged:' "$base/out" \
+    && grep -qF '⚠ Kept 1 existing files unchanged.' "$base/out" \
+    || fail "Keep was not reported as an unchanged result"
+! grep -qF 'Launchers, shortcuts, and file support are ready.' "$base/out" \
+    || fail "Keep was falsely reported as a fully applied update"
+grep -qF '│  ├─ FILES FROM AN EARLIER INSTALLATION ALREADY EXIST' "$base/out" \
+    || fail "the overwrite question is rendered inside the tree"
+ok "Keep leaves one destination unchanged and continues the fixed mapping loop"
 
 base="$(new_env optional-cache-ignored)"
 install_fake_desktop_tools "$base"
@@ -359,20 +346,20 @@ run_isolated "$base" env ABLETON_INTERNAL_OPTIONAL_STATUS=1 \
     || fail "desktop integration invoked gtk-update-icon-cache"
 ! grep -qF 'Some shortcuts or support files could not be updated.' "$base/err" \
     || fail "desktop refresh failure produced an alarming retry warning"
-grep -qxF 'OK: Installation complete.' "$base/out" \
-    || fail "desktop refresh failure hid the successful install outcome"
+! grep -q 'Step [0-9]* Complete' "$base/out" \
+    || fail "coordinated desktop refresh closed a step that belongs to the installer"
 ok "desktop database refresh is silent best-effort work and GTK cache generation is skipped"
 
 base="$(new_env generated-file-publication-status)"
 install_fake_desktop_tools "$base"
-cat > "$base/fakebin/mv" <<EOF
+cat > "$base/fakebin/cp" <<EOF
 #!/bin/sh
 last=""
 for argument do last="\$argument"; done
 [ "\$last" != "\${ABLETON_TEST_FAIL_TARGET:-}" ] || exit 94
-exec "$optional_real_mv" "\$@"
+exec "$optional_real_cp" "\$@"
 EOF
-chmod 755 "$base/fakebin/mv"
+chmod 755 "$base/fakebin/cp"
 publication_status=0
 run_isolated "$base" env \
     ABLETON_TEST_FAIL_TARGET="$base/home/.local/bin/ableton-live" \
@@ -383,60 +370,32 @@ run_isolated "$base" env \
     || fail "generated launcher publication failure lost its internal retry status"
 [ ! -e "$base/home/.local/bin/ableton-live" ] \
     || fail "failed generated launcher publication reported a usable launcher"
+[ -f "$base/data/ableton-wine/detect-scale.sh" ] \
+    || fail "failed launcher copy prevented a later mapping"
+grep -qF -- "-> $base/home/.local/bin/ableton-live" "$base/err" \
+    || fail "generated launcher failure did not report the actual failed path"
 grep -qF 'Some shortcuts or support files could not be updated. Run the installer again to retry them.' \
     "$base/err" || fail "generated launcher publication failure omitted its retry warning"
 ok "generated-file publication failures still request a repair run"
 
-optional_real_rm="$(command -v rm)"
-for optional_mode in integration link; do
-    for cleanup_failure in active directory; do
-        base="$(new_env "optional-final-cleanup-$optional_mode-$cleanup_failure")"
-        install_fake_desktop_tools "$base"
-        cat > "$base/fakebin/rm" <<EOF
-#!/bin/sh
-for argument do
-    case "\${ABLETON_TEST_CLEANUP_FAILURE:-}:\$argument" in
-        active:*/tmp/ableton-install-plan.*/active) exit 91 ;;
-        directory:*/tmp/ableton-install-plan.*) exit 92 ;;
-    esac
-done
-exec "$optional_real_rm" "\$@"
-EOF
-        chmod 755 "$base/fakebin/rm"
-        case "$optional_mode" in
-            integration) selection=--integration-only ;;
-            link) selection=--link-assets-only ;;
-        esac
-        run_isolated "$base" env ABLETON_TEST_CLEANUP_FAILURE="$cleanup_failure" \
-            bash "$here/install.sh" "$selection" >"$base/out" 2>"$base/err" \
-            || fail "$optional_mode $cleanup_failure cleanup failure rejected usable generated files"
-        case "$optional_mode" in
-            integration)
-                [ -x "$base/home/.local/bin/ableton-live" ] \
-                    || fail "integration cleanup warning rolled back the generated launcher" ;;
-            link)
-                [ -x "$base/data/ableton-wine/ableton-linkctl" ] \
-                    && [ -x "$base/data/ableton-wine/setup-link.sh" ] \
-                    || fail "Link cleanup warning rolled back generated Link files" ;;
-        esac
-        case "$cleanup_failure" in
-            active)
-                grep -qF "Ableton's files are ready, but the installer could not finish its final housekeeping." \
-                    "$base/err" || fail "$optional_mode active cleanup failure was not a plain warning" ;;
-            directory)
-                grep -qF 'Installed files are ready, but temporary installer data remains at ' \
-                    "$base/err" || fail "$optional_mode directory cleanup failure was not a plain warning" ;;
-        esac
-        grep -qxF 'OK: Installation complete.' "$base/out" \
-            || fail "$optional_mode direct call did not print its simple outcome"
-        if [ -d "$base/state/ableton-wine/transactions" ] \
-           && find "$base/state/ableton-wine/transactions" -mindepth 1 -print -quit \
-                | grep -q .; then
-            fail "$optional_mode direct cleanup left a persistent core-recovery record"
-        fi
-    done
-done
-ok "integration and Link activity/directory cleanup failures warn after generated files are usable"
+base="$(new_env overwrite-cancel-stops)"
+install_fake_desktop_tools "$base"
+cancel_target="$base/data/ableton-wine/lib/lifecycle.sh"
+mkdir -p -- "$(dirname "$cancel_target")"
+printf 'keep on cancel\n' > "$cancel_target"
+cancel_status=0
+printf 'a\n' | run_isolated "$base" \
+    bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err" \
+    || cancel_status=$?
+[ "$cancel_status" -eq 4 ] || fail "Cancel did not return the cancellation status"
+[ -f "$base/data/ableton-wine/lib/config.sh" ] \
+    || fail "Cancel unwound an earlier completed mapping"
+grep -qxF 'keep on cancel' "$cancel_target" \
+    || fail "Cancel changed its selected destination"
+[ ! -e "$base/data/ableton-wine/lib/live-options.sh" ] \
+    && [ ! -e "$base/home/.local/bin/ableton-live" ] \
+    || fail "Cancel did not stop later project-file mappings"
+ok "Cancel stops later mappings without unwinding completed files"
 
 base="$(new_env callback-discovery)"
 install_fake_desktop_tools "$base"

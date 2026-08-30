@@ -9,9 +9,8 @@ readonly ABLETON_PIPEASIO_CLSID='{2D3CA9E2-1193-4C5D-B5FD-38798F3DC074}'
 readonly ABLETON_PIPEASIO_ASIO_KEY='HKLM\Software\ASIO\PipeASIO'
 readonly ABLETON_PIPEASIO_CLASS_KEY="HKCR\\CLSID\\$ABLETON_PIPEASIO_CLSID"
 
-ABLETON_PIPEWIRE_CLIENT_VERSION=""
-ABLETON_PIPEWIRE_DAEMON_VERSION=""
-ABLETON_PIPEASIO_PANEL_STATE=""
+: "${ABLETON_PIPEWIRE_CLIENT_VERSION:=}"
+: "${ABLETON_PIPEWIRE_DAEMON_VERSION:=}"
 ABLETON_PIPEASIO_DIAGNOSTIC_NOTICE_SHOWN=0
 
 ableton_pipewire_version_core()
@@ -48,6 +47,12 @@ ableton_pipewire_preflight()
 {
     local probe="${1:?PipeWire probe path required}" purpose="${2:-using PipeASIO}"
     local output client daemon client_count daemon_count
+    if [ "${ABLETON_PIPEWIRE_PREFLIGHT_CACHE:-0}" = 1 ] \
+       && [ "${ABLETON_PIPEWIRE_PREFLIGHT_DONE:-0}" = 1 ] \
+       && ableton_pipewire_version_ge "$ABLETON_PIPEWIRE_CLIENT_VERSION" "$ABLETON_PIPEWIRE_FLOOR" \
+       && ableton_pipewire_version_ge "$ABLETON_PIPEWIRE_DAEMON_VERSION" "$ABLETON_PIPEWIRE_FLOOR"; then
+        return 0
+    fi
     ABLETON_PIPEWIRE_CLIENT_VERSION=""
     ABLETON_PIPEWIRE_DAEMON_VERSION=""
 
@@ -97,9 +102,17 @@ ableton_pipewire_preflight()
         printf '!! Upgrade the complete PipeWire stack, then retry. Nothing was changed.\n' >&2
         return 1
     fi
-    # Reporting comes after the compatibility gate has succeeded. A closed
-    # terminal must not turn that successful proof into a rollback request.
-    printf '   PipeWire %s (client %s): supported\n' "$daemon" "$client" || true
+    if [ "${ABLETON_PIPEWIRE_PREFLIGHT_CACHE:-0}" = 1 ]; then
+        ABLETON_PIPEWIRE_PREFLIGHT_DONE=1
+        export ABLETON_PIPEWIRE_PREFLIGHT_DONE
+        export ABLETON_PIPEWIRE_CLIENT_VERSION ABLETON_PIPEWIRE_DAEMON_VERSION
+    fi
+    # Reporting comes after the compatibility gate has succeeded. The .run
+    # system report already names PipeWire, so a coordinated run records one
+    # compatibility proof without printing the same version at every child.
+    if [ "${ABLETON_PIPEWIRE_REPORT_SHOWN:-0}" != 1 ]; then
+        ui_status pa_pipewire_supported "$daemon" "$client"
+    fi
     return 0
 }
 
@@ -158,7 +171,6 @@ ableton_pipeasio_validate_panel()
                 echo "!! PipeASIO Settings icon reference is malformed" >&2; return 1; }
             grep -q '<svg' "$runtime/share/icons/hicolor/scalable/apps/pipeasio.svg" || {
                 echo "!! PipeASIO Settings icon is malformed" >&2; return 1; }
-            ABLETON_PIPEASIO_PANEL_STATE=built
             ;;
         skipped)
             case "$record" in
@@ -169,7 +181,6 @@ ableton_pipeasio_validate_panel()
                 echo "!! runtime says the settings panel was skipped, but panel files are present" >&2
                 return 1
             }
-            ABLETON_PIPEASIO_PANEL_STATE=skipped
             ;;
         *) echo "!! runtime has an unknown PipeASIO panel state" >&2; return 1 ;;
     esac
@@ -265,16 +276,6 @@ ableton_pipeasio_desktop_exec_arg()
         -e 's/%/%%/g'
 }
 
-ableton_pipeasio_icon_may_replace()
-{
-    local path="$1"
-    if [ ! -e "$path" ] && [ ! -L "$path" ]; then return 0; fi
-    if ableton_manifest_path_matches "$path" || ableton_legacy_owned_path "$path"; then return 0; fi
-    ableton_record_deowned "$path"
-    printf '   preserved your existing %s\n' "$path"
-    return 1
-}
-
 ableton_pipeasio_restore_adjacent_backup()
 {
     local path="$1" saved="$1.bak" path_record saved_record path_kind path_digest
@@ -356,7 +357,7 @@ ableton_pipeasio_restore_adjacent_backup()
     fi
     ableton_record_deowned "$path" || return 1
     ableton_record_deowned "$saved" || return 1
-    printf '   restored your previous %s\n' "$path" || true
+    ui_status pa_restored_previous "$path"
     return 0
 }
 
@@ -379,7 +380,7 @@ ableton_pipeasio_remove_panel_path()
         ableton_remove_managed_file "$path"
     else
         ableton_record_deowned "$path"
-        printf '   preserved your existing %s\n' "$path" || true
+        ui_status pa_preserved_existing "$path"
     fi
 }
 
@@ -439,9 +440,8 @@ ableton_pipeasio_optional_tools_advice()
         command -v "$tool" >/dev/null 2>&1 || missing="${missing}${missing:+, }$tool"
     done
     if [ -n "$missing" ]; then
-        printf '   Optional PipeWire tools missing: %s.\n' "$missing" || true
-        echo '   pw-dump enables panel device lists; pw-top enables Monitor; both enrich audio-report.sh.' \
-            || true
+        ui_info pa_optional_tools_missing "$missing"
+        ui_info pa_optional_tools_hint
     fi
     return 0
 }
@@ -487,8 +487,7 @@ ableton_pipeasio_qt_advice()
         missing="${missing}${missing:+$'\n'}Qt $qpa platform plugin"
     fi
     if [ -n "$missing" ]; then
-        printf '   PipeASIO Settings is optional. To enable it, run: %s\n' \
-            "$(ableton_pipeasio_qt_package_hint "$qpa")" || true
+        ui_info pa_qt_advice "$(ableton_pipeasio_qt_package_hint "$qpa")"
     fi
     return 0
 }
@@ -501,52 +500,47 @@ ableton_pipeasio_sync_panel()
     local icon="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/pipeasio.svg"
     local source_desktop="$runtime/share/applications/pipeasio-settings.desktop"
     local source_icon="$runtime/share/icons/hicolor/scalable/apps/pipeasio.svg"
-    local tmp="" failures_before="$ABLETON_OPTIONAL_FILE_FAILURES" removal_ok=1
+    local tmp="" failures_before="$ABLETON_OPTIONAL_FILE_FAILURES"
+    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
     case "$policy" in install|reconcile) ;; *) return 2 ;; esac
-    ableton_pipeasio_validate_panel "$runtime" || return 1
-    state="$ABLETON_PIPEASIO_PANEL_STATE"
+    if [ "$policy" = reconcile ] \
+       && [ ! -e "$command" ] && [ ! -L "$command" ] \
+       && [ ! -e "$desktop" ] && [ ! -L "$desktop" ] \
+       && [ ! -e "$icon" ] && [ ! -L "$icon" ]; then
+        return 0
+    fi
+    state="$(ableton_pipeasio_build_info_value \
+        "$runtime/ABLETON-WINE-BUILD-INFO.txt" pipeasio-panel 2>/dev/null || true)"
+    case "$state" in
+        built|skipped) ;;
+        *)
+            echo "!! copy failed: PipeASIO Settings files from $runtime" >&2 || true
+            ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+            return 1 ;;
+    esac
     if [ "$state" = skipped ]; then
-        ableton_pipeasio_remove_panel_integration || removal_ok=0
-        echo "   PipeASIO Settings was not packaged; edit the INI file when needed" \
-            || true
-        ableton_pipeasio_refresh_panel_caches
-        [ "$removal_ok" -eq 1 ]
-        return
+        ui_status pa_panel_not_packaged
+        return 0
     fi
 
-    if [ "$policy" = reconcile ] && [ ! -e "$command" ] && [ ! -L "$command" ] \
-       && ! ableton_manifest_path_claimed "$command"; then
-        ableton_record_deowned "$command" || true
+    ableton_install_project_symlink "$runtime/bin/pipeasio-settings" "$command"
+    if tmp="$(mktemp "${TMPDIR:-/tmp}/pipeasio-settings.desktop.XXXXXX")" \
+       && { while IFS= read -r line || [ -n "$line" ]; do
+                if [ "$line" = 'Exec=pipeasio-settings' ]; then
+                    printf 'Exec="%s"\n' \
+                        "$(ableton_pipeasio_desktop_exec_arg "$runtime/bin/pipeasio-settings")"
+                else
+                    printf '%s\n' "$line"
+                fi
+            done < "$source_desktop"
+            printf '%s\n' 'X-Ableton-Wine-Managed=true';
+          } > "$tmp"; then
+        ableton_install_project_file 644 "$tmp" "$desktop"
     else
-        ableton_try_publish_launcher_symlink "$runtime/bin/pipeasio-settings" "$command"
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
     fi
-    if [ "$policy" = reconcile ] && [ ! -e "$desktop" ] && [ ! -L "$desktop" ] \
-       && ! ableton_manifest_path_claimed "$desktop"; then
-        ableton_record_deowned "$desktop" || true
-    else
-        if tmp="$(mktemp "${TMPDIR:-/tmp}/pipeasio-settings.desktop.XXXXXX")" \
-           && { while IFS= read -r line || [ -n "$line" ]; do
-                    if [ "$line" = 'Exec=pipeasio-settings' ]; then
-                        printf 'Exec="%s"\n' \
-                            "$(ableton_pipeasio_desktop_exec_arg "$runtime/bin/pipeasio-settings")"
-                    else
-                        printf '%s\n' "$line"
-                    fi
-                done < "$source_desktop"
-                printf '%s\n' 'X-Ableton-Wine-Managed=true';
-              } > "$tmp"; then
-            ableton_try_publish_launcher_file 644 "$tmp" "$desktop"
-        else
-            ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
-        fi
-        [ -z "$tmp" ] || rm -f -- "$tmp" 2>/dev/null || true
-    fi
-    if [ "$policy" = reconcile ] && [ ! -e "$icon" ] && [ ! -L "$icon" ] \
-       && ! ableton_manifest_path_claimed "$icon"; then
-        ableton_record_deowned "$icon" || true
-    elif ableton_pipeasio_icon_may_replace "$icon"; then
-        ableton_try_publish_file 644 "$source_icon" "$icon"
-    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp" 2>/dev/null || true
+    ableton_install_project_file 644 "$source_icon" "$icon"
     [ "$policy" != install ] || ableton_pipeasio_qt_advice "$runtime/bin/pipeasio-settings"
     ableton_pipeasio_refresh_panel_caches
     [ "$ABLETON_OPTIONAL_FILE_FAILURES" -eq "$failures_before" ]
@@ -589,7 +583,7 @@ ableton_pipeasio_register()
     local wine_command="${1:?wine command required}" wait_command="${2:-}"
     local result
     ableton_pipeasio_unregister "$wine_command" "$wait_command" || return 1
-    "$wine_command" regsvr32 /s pipeasio64.dll || {
+    "$wine_command" regsvr32 /s pipeasio64.dll >/dev/null 2>&1 || {
         echo "!! PipeASIO registration command failed" >&2
         return 1
     }
@@ -614,4 +608,5 @@ ableton_pipeasio_register()
         echo "!! PipeASIO class registration is incomplete" >&2
         return 1
     }
+    ui_status pa_registered
 }

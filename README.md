@@ -113,10 +113,26 @@ the installer will try to find one in the same directory.
 
 Once started, the install is mostly automatic.
 
-Near the end, the installer may name a program still running in the Wine prefix and ask whether to close it. Pressing Enter leaves it running, which is the safe answer if you also have Max or another Wine program open. Live is already installed by that point, so either answer keeps it.
+The installer asks six pre-flight questions before an interactive Install,
+Update, or Reinstall. Press `Esc` to go back one question. Press Enter to accept
+the shown default or current value. The launcher preferences are persistent,
+while a nonempty environment variable overrides its saved value for one launch.
+
+The same choices are available as command options:
+
+| Option | Values and effect |
+| --- | --- |
+| `--audio-buffer=VALUE` | `64`, `128`, `256`, `512`, or `1024` frames. The default is `128`; larger buffers improve stability and add latency. |
+| `--shortcuts=VALUE` | `take` assigns conflicting GNOME shortcuts to Live; `preserve` keeps the desktop assignments. The default is `take`. |
+| `--dpi=VALUE` | `auto`, `100`, `fractional`, or `preserve`. The default `auto` matches the detected display scale. |
+| `--audio-threads=VALUE` | `auto`, `off`, or `1` to `63`. The default `auto` selects a worker count; `off` lets Live decide. |
+| `--rt=VALUE` | `auto` uses real-time scheduling when available; `off` uses normal scheduling. The default is `auto`. |
+| `--power=VALUE` | `performance`, `balanced`, or `off`. The default uses the performance profile while Live or Max is open. |
+
+Near the end, the installer may name a program still running in the ableton-linux prefix and ask whether to close it. Press Enter to leave every program running. Use that choice when Max or another Wine program is open. Live installation finishes before this question, and either answer leaves the installed Live files in place.
 
 A final warning about desktop shortcuts, Link, saved settings, or old recovery
-files also keeps the installed runtime, Wine prefix, and Live. The final summary
+files doesn't remove the installed runtime, ableton-linux prefix, or Live. The final summary
 reports what still needs attention. The [installer warning guide](TROUBLESHOOTING.md#live-installs-and-the-final-summary-asks-for-a-retry)
 explains each result and when an update should be retried.
 
@@ -172,25 +188,31 @@ change a launcher default or ask you to select a renamed device again.
 
 ### Uninstalling
 
-To remove this project's runtime and desktop integration while keeping Live and
-its authorization, just run:
+To remove the recorded Linux files and Wine runtime while keeping the Wine
+prefix, Live, authorization, installer settings, and shared records, run:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run uninstall
 ```
 
-If you're really nervous, you can ensure your copy of Live and all of your VSTs remain
-by adding the extra (redundant) flag: 
+The command above selects `--keep-prefix`. You can also write the option:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run uninstall --keep-prefix
 ```
 
-To get rid of everything, including Live, its authorization, and any third-party plugins:
+To remove the ableton-linux prefix, Live, its authorization, and plug-ins installed
+inside that prefix as well:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run uninstall --delete-prefix
 ```
+
+If a recorded Linux file or link changed after installation, uninstall asks
+whether to remove it. Keep is the default answer.
+
+Run `link disable` before uninstall when Link opened a firewall port or enabled
+the user service.
 
 ### Other functionality 
 Our installer supports a range of commands for advanced users or complicated

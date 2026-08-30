@@ -98,6 +98,41 @@ ableton_runtime_pids()
     return 0
 }
 
+ableton_stop_runtime_clients()
+{
+    local runtime="${1:-$ABLETON_WINE_ROOT}" pids pid deadline
+    pids="$(ableton_runtime_pids "$runtime")"
+    [ -n "$pids" ] || return 0
+    if [ ! -t 0 ]; then
+        echo "!! Wine is running. Run the installer in a terminal so it can ask before stopping Wine." >&2
+        return 1
+    fi
+    ui_question q_stop_wine_title n q_stop_wine_yes q_stop_wine_no
+    [ "$UI_ANSWER" = y ] || return 1
+
+    pids="$(ableton_runtime_pids "$runtime")"
+    for pid in $pids; do
+        ableton_pid_uses_runtime "$pid" "$runtime" && kill "$pid" 2>/dev/null || true
+    done
+    deadline=$((SECONDS + 30))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        pids="$(ableton_runtime_pids "$runtime")"
+        [ -n "$pids" ] || return 0
+        sleep 0.1
+    done
+    for pid in $pids; do
+        ableton_pid_uses_runtime "$pid" "$runtime" && kill -KILL "$pid" 2>/dev/null || true
+    done
+    deadline=$((SECONDS + 5))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        pids="$(ableton_runtime_pids "$runtime")"
+        [ -n "$pids" ] || return 0
+        sleep 0.1
+    done
+    echo "!! Wine did not stop within 35 seconds." >&2
+    return 1
+}
+
 ableton_pid_cmdline()
 {
     tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true
@@ -241,7 +276,7 @@ ableton_prefix_holders()
 }
 
 # A helper this project installed and started, asked by the data home rather than
-# by name so it stays right as helpers come and go.  Each carries its own exit
+# by name so it stays right as helpers come and go.  Each has its own exit
 # contract - learnheal.exe outlives Live deliberately, to heal the Learn View
 # pane - so one still running does not mean the session is unfinished.
 ableton_vendored_helper_image()
@@ -393,15 +428,16 @@ ableton_prefix_wait_progress()
     return "$rc"
 }
 
-# Wait, and on timeout end every process in the prefix and wait again.  The stop is
-# indiscriminate: only for a prefix the caller owns outright, never one a user can
-# reach.  Returns 3 when a straggler survived the stop - the caller's prefix is
-# usable and its registry is saved, wineserver -k having shut down through SIGINT -
-# and the wait's own exit code when the wait could not run at all, which is a
-# different thing and stays fatal.
+# Ask as soon as a background application is visible. Otherwise wait for Wine's
+# own processes to finish, and ask before stopping them if the wait expires.
 ableton_prefix_quiesce()
 {
-    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}" rc=0
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}" rc=0 holders
+    holders="$(ableton_prefix_unknown_holders "$runtime" "$prefix")"
+    if [ -n "$holders" ]; then
+        ableton_stop_runtime_clients "$runtime"
+        return
+    fi
     ableton_prefix_wait_progress "$runtime" "$prefix" || rc=$?
     if [ "$rc" -eq 0 ]; then
         return 0
@@ -409,9 +445,7 @@ ableton_prefix_quiesce()
     if [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
         return "$rc"
     fi
-    echo "-- a leftover background program is holding the prefix open; stopping it" || true
-    ableton_run_bounded 20 env WINEPREFIX="$prefix" \
-        "$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
+    ableton_stop_runtime_clients "$runtime" || return 1
     ableton_prefix_wait "$runtime" "$prefix" || return 3
 }
 

@@ -66,6 +66,12 @@ case " $* " in
         exit 0 ;;
 esac
 printf 'wine %s\n' "$*" >> "${ABLETON_TEST_WINE_LOG:?}"
+if [ -n "${ABLETON_TEST_PREFERENCE_ENV_LOG:-}" ]; then
+    printf 'shortcuts=%s dpi=%s threads=%s rt=%s power=%s\n' \
+        "${ABLETON_SHORTCUTS:-unset}" "${ABLETON_DPI_MODE:-unset}" \
+        "${ABLETON_MAX_AUDIO_THREADS:-unset}" "${ABLETON_RT:-unset}" \
+        "${ABLETON_POWER:-unset}" >> "$ABLETON_TEST_PREFERENCE_ENV_LOG"
+fi
 if [ "${1:-}" = reg ]; then
     # Real reg.exe brings up a wineserver which inherits the transaction token
     # and remains observable until wineserver -k. Model that ownership contract
@@ -192,6 +198,201 @@ run_live()
         ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" "$@"
 }
 
+# Saved pre-flight preferences are a real launcher input, not merely a sourced
+# helper. Exercise both launchers through an observable fake Wine child and a
+# logging powerprofilesctl wrapper. The optional-library copy proves that a
+# launcher published after a support-file failure retains its legacy behavior.
+write_launcher_preferences()   # base power [shortcuts dpi threads rt]
+{
+    local base="$1" power="$2" shortcuts="${3:-preserve}" \
+        dpi="${4:-preserve}" threads="${5:-off}" rt="${6:-off}"
+    cat > "$base/config/ableton-wine/preferences" <<EOF
+# ableton-linux launcher preferences; managed by the installer
+format=1
+shortcuts=$shortcuts
+dpi=$dpi
+audio_threads=$threads
+rt=$rt
+power=$power
+EOF
+    chmod 600 "$base/config/ableton-wine/preferences"
+}
+
+run_preferences_launcher()   # base launcher-path image [ENV=VALUE ...]
+{
+    local base="$1" launcher="$2" image="$3"; shift 3
+    local launcher_pid app_pid="" launcher_status=0 i
+    rm -f -- "$base/app.pid"
+    : > "$base/wine.log"
+    : > "$base/power.log"
+    : > "$base/chrt.log"
+    : > "$base/preference-env.log"
+    : > "$base/shortcut.log"
+    run_isolated "$base" env -u ABLETON_SHORTCUTS -u ABLETON_DPI_MODE \
+        -u ABLETON_MAX_AUDIO_THREADS -u ABLETON_RT -u ABLETON_POWER \
+        USER=test ABLETON_THEME_MODE=preserve ABLETON_UI_FONT=preserve \
+        ABLETON_TEXT_SMOOTHING=preserve ABLETON_TOPBAR_MODE=preserve \
+        ABLETON_LAUNCH_TIMEOUT=5 ABLETON_TEST_POWER_LOG="$base/power.log" \
+        ABLETON_TEST_APP_IMAGE="$image" ABLETON_TEST_APP_PID_FILE="$base/app.pid" \
+        ABLETON_TEST_WINE_LOG="$base/wine.log" \
+        ABLETON_TEST_PREFERENCE_ENV_LOG="$base/preference-env.log" \
+        ABLETON_TEST_CHRT_LOG="$base/chrt.log" \
+        ABLETON_TEST_SHORTCUT_LOG="$base/shortcut.log" \
+        "$@" bash "$launcher" \
+        >"$base/launcher.out" 2>"$base/launcher.err" &
+    launcher_pid=$!
+    cleanup_pids+=("$launcher_pid")
+    for ((i=0; i<200; i++)); do
+        [ ! -s "$base/app.pid" ] || { app_pid="$(cat "$base/app.pid")"; break; }
+        kill -0 "$launcher_pid" 2>/dev/null || break
+        sleep 0.05
+    done
+    if [ -z "$app_pid" ]; then
+        kill "$launcher_pid" 2>/dev/null || true
+        wait "$launcher_pid" 2>/dev/null || true
+        fail "$(basename "$launcher") did not reach Wine"
+    fi
+    cleanup_pids+=("$app_pid")
+    sleep 0.3
+    kill "$app_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
+    wait "$launcher_pid" || launcher_status=$?
+    case "$launcher_status" in
+        0|143) ;; # the fixture ends its observable sleep with SIGTERM
+        *) fail "$(basename "$launcher") returned $launcher_status after its observable Wine child" ;;
+    esac
+}
+
+base="$(new_env saved-launcher-preferences)"
+prepare_fixture "$base"
+cat > "$base/fakebin/powerprofilesctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${ABLETON_TEST_POWER_LOG:?}"
+printf 'env shortcuts=%s dpi=%s threads=%s rt=%s power=%s\n' \
+    "${ABLETON_SHORTCUTS:-unset}" "${ABLETON_DPI_MODE:-unset}" \
+    "${ABLETON_MAX_AUDIO_THREADS:-unset}" "${ABLETON_RT:-unset}" \
+    "${ABLETON_POWER:-unset}" >> "${ABLETON_TEST_POWER_LOG:?}"
+[ "${ABLETON_TEST_POWER_FAIL:-0}" -eq 0 ] || exit 75
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+[ "${1:-}" = -- ] || exit 2
+shift
+exec "$@"
+EOF
+cat > "$base/fakebin/chrt" <<'EOF'
+#!/usr/bin/env bash
+printf '%s env rt=%s\n' "$*" "${ABLETON_RT:-unset}" >> "${ABLETON_TEST_CHRT_LOG:?}"
+[ "${1:-}" = -r ] && [ "${2:-}" = 10 ] || exit 2
+shift 2
+exec "$@"
+EOF
+cat > "$base/fakebin/getconf" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" != _NPROCESSORS_ONLN ] || { printf '32\n'; exit 0; }
+exec /usr/bin/getconf "$@"
+EOF
+cat > "$base/fakebin/nproc" <<'EOF'
+#!/usr/bin/env bash
+printf '32\n'
+EOF
+cat > "$base/data/ableton-wine/shortcut-hold.sh" <<'EOF'
+#!/usr/bin/env bash
+ableton_shortcuts_prepare()
+{
+    printf '%s\n' "${ABLETON_SHORTCUTS:-unset}" >> "${ABLETON_TEST_SHORTCUT_LOG:?}"
+    ableton_shortcuts_active=0
+}
+ableton_shortcuts_watch_loop() { return 0; }
+EOF
+chmod 755 "$base/fakebin/powerprofilesctl" "$base/fakebin/chrt" \
+    "$base/fakebin/getconf" "$base/fakebin/nproc"
+audio_preferences="$base/prefix/drive_c/users/test/AppData/Roaming/Ableton/Live 12.1.0/Preferences"
+seed_audio_threads_fixture()
+{
+    mkdir -p -- "$audio_preferences"
+    printf '%s\n' '-MaxAudioThreads=8' > "$audio_preferences/Options.txt"
+    printf 'format=1\ndefault=-MaxAudioThreads=8\n' \
+        > "$audio_preferences/.ableton-linux-max-audio-threads-v1"
+    chmod 600 "$audio_preferences/Options.txt" \
+        "$audio_preferences/.ableton-linux-max-audio-threads-v1"
+}
+for launcher in ableton-live max9; do
+    case "$launcher" in
+        ableton-live) image='Ableton Live 12 Suite.exe' ;;
+        max9) image="C:\\Program Files\\Cycling '74\\Max 9\\Max.exe" ;;
+    esac
+    write_launcher_preferences "$base" balanced
+    [ "$launcher" != ableton-live ] || seed_audio_threads_fixture
+    run_preferences_launcher "$base" "$here/$launcher" "$image"
+    grep -qF 'launch -p balanced' "$base/power.log" \
+        || fail "$launcher does not hold the saved Balanced profile"
+    grep -qF 'shortcuts=preserve dpi=preserve threads=off rt=off power=balanced' \
+        "$base/preference-env.log" \
+        || fail "$launcher does not apply all saved settings before Wine"
+    if [ "$launcher" = ableton-live ]; then
+        if grep -q '^-MaxAudioThreads' "$audio_preferences/Options.txt" \
+           || [ -e "$audio_preferences/.ableton-linux-max-audio-threads-v1" ]; then
+            fail "ableton-live does not apply saved Let Live decide to Options.txt"
+        fi
+    fi
+
+    write_launcher_preferences "$base" performance
+    run_preferences_launcher "$base" "$here/$launcher" "$image"
+    grep -qF 'launch -p performance' "$base/power.log" \
+        || fail "$launcher does not hold an explicitly saved Performance profile"
+
+    write_launcher_preferences "$base" off
+    run_preferences_launcher "$base" "$here/$launcher" "$image"
+    [ ! -s "$base/power.log" ] \
+        || fail "$launcher invokes powerprofilesctl for saved Don't change"
+
+    write_launcher_preferences "$base" balanced
+    run_preferences_launcher "$base" "$here/$launcher" "$image" \
+        ABLETON_SHORTCUTS=take ABLETON_DPI_MODE=fractional \
+        ABLETON_MAX_AUDIO_THREADS=8 ABLETON_RT=auto ABLETON_POWER=performance
+    grep -qF 'launch -p performance' "$base/power.log" \
+        || fail "$launcher ignores a one-run power override over saved Balanced"
+    grep -qF 'shortcuts=take dpi=fractional threads=8 rt=auto power=performance' \
+        "$base/preference-env.log" \
+        || fail "$launcher does not apply all nonempty environment overrides"
+    grep -qF 'env rt=auto' "$base/chrt.log" \
+        || fail "$launcher does not consume saved/overridden Automatic RT behavior"
+    if [ "$launcher" = ableton-live ]; then
+        grep -qxF take "$base/shortcut.log" \
+            || fail "ableton-live does not consume the shortcut preference"
+        if ! grep -qxF -- '-MaxAudioThreads=8' "$audio_preferences/Options.txt" \
+           || [ ! -f "$audio_preferences/.ableton-linux-max-audio-threads-v1" ]; then
+            fail "ableton-live does not apply the audio-worker environment override"
+        fi
+    fi
+
+    write_launcher_preferences "$base" balanced
+    run_preferences_launcher "$base" "$here/$launcher" "$image" ABLETON_POWER=off
+    [ ! -s "$base/power.log" ] \
+        || fail "$launcher invokes powerprofilesctl despite one-run Don't change"
+
+    run_preferences_launcher "$base" "$here/$launcher" "$image" \
+        ABLETON_TEST_POWER_FAIL=1
+    grep -qF 'launch -p balanced' "$base/power.log" \
+        || fail "$launcher does not probe the saved unavailable Balanced profile"
+    grep -q '^wine ' "$base/wine.log" \
+        || fail "$launcher does not continue without an unavailable saved profile"
+
+    isolated="$base/no-preferences-$launcher"
+    mkdir -p -- "$isolated/lib"
+    cp -- "$here/$launcher" "$isolated/$launcher"
+    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/manifest.sh" \
+        "$isolated/lib/"
+    [ "$launcher" != ableton-live ] \
+        || cp -- "$here/lib/live-options.sh" "$isolated/lib/live-options.sh"
+    chmod 755 "$isolated/$launcher"
+    run_preferences_launcher "$base" "$isolated/$launcher" "$image" \
+        ABLETON_SHORTCUTS=preserve ABLETON_DPI_MODE=preserve \
+        ABLETON_MAX_AUDIO_THREADS=off ABLETON_RT=off
+    grep -qF 'launch -p performance' "$base/power.log" \
+        || fail "$launcher without optional preferences support loses its legacy Performance default"
+done
+ok "Live and Max execute saved Balanced/Don't-change choices, environment precedence, and missing-support fallback"
+
 # Mutter exposes mixed logical monitors to Xwayland through one framebuffer at
 # the highest active integer scale. The GNOME detector must therefore not
 # follow a 100% primary while a fractional secondary has doubled X11 space.
@@ -211,8 +412,12 @@ block="$(run_isolated "$base" bash -c \
     '. "$1"; ableton_dpi_block_for_scale 1.33333 gnome' _ "$here/detect-scale.sh")"
 [ "$block" = fractional ] \
     || fail "GNOME mixed-scale detection did not select the doubled-framebuffer DPI block"
-grep -qF "using GNOME/Xwayland's shared framebuffer scale from 1.3333333333333333" \
+grep -qxF 'note: monitors run mixed scales (1.0 1.3333333333333333).' \
+    "$base/detect.err" || fail "GNOME mixed-scale detection did not list the active scales cleanly"
+grep -qxF "note: using GNOME/Xwayland's shared framebuffer scale: 1.3333333333333333." \
     "$base/detect.err" || fail "GNOME mixed-scale detection did not explain its global choice"
+awk 'length > 80 { exit 1 }' "$base/detect.err" \
+    || fail "GNOME mixed-scale diagnostics exceed the terminal-friendly line width"
 ok "GNOME mixed scales follow Xwayland's shared framebuffer"
 
 # Changing LogPixels through reg.exe starts Wine under the old value. A cold

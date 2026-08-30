@@ -80,21 +80,21 @@ sh ~/Downloads/install-ableton-latest.run update
 
 ### Live installs and the final summary asks for a retry
 
-The installer keeps a working runtime, Wine prefix, and Live installation when
-a desktop shortcut, file association, Link setting, saved setting, or cleanup
-step needs another try. It also keeps every shortcut or support file that was
-updated successfully; one failed path does not undo the other repairs.
+A failed desktop shortcut, file association, Link setting, saved setting, or
+cleanup step doesn't remove a working runtime, ableton-linux prefix, or Live
+installation. Files updated earlier in the run stay in place. The failed path
+doesn't undo those repairs.
 
-Check the final `OK` summary. It shows which optional item needs repair:
+Check the final `OK` summary. It lists the optional item that needs repair:
 
-- `desktop shortcuts: retry needed` means the core installation is intact, but
+- `Desktop shortcuts need another try` means the core installation is intact, but
   the launchers and application-menu entries need another update
-- `Link: unchanged; setup can be retried` means Live remains installed with the
+- `Link is unchanged; you can retry its setup` means Live remains installed with the
   previous Link setting
-- `saved settings: retry needed` means the current install works and the next
+- `Saved settings need another try` means the current install works and the next
   command needs the same custom path options
-- `old recovery files: remain at ...` means the core install completed and the
-  installer kept files that it could not remove
+- `old recovery files remain at ...` means the core install completed and the
+  installer kept files for a later recovery or removal attempt
 
 Follow the instruction printed with the warning. For desktop shortcuts, run:
 

@@ -488,6 +488,7 @@ ableton_config_validate_write_layout()
 ableton_config_init()
 {
     local requested_mode="${1:-}" repair_mode=0 config_valid=1
+    local simple_project_files="${ABLETON_SIMPLE_PROJECT_FILES:-0}"
     case "$requested_mode" in
         repair) repair_mode=1 ;;
         strict)
@@ -516,10 +517,13 @@ ableton_config_init()
     local config_file_name config_file_parent config_generation_before config_generation_after
     config_file_name="$(basename -- "$ABLETON_CONFIG_FILE")" || return 1
     config_file_parent="$(dirname -- "$ABLETON_CONFIG_FILE")" || return 1
-    config_generation_before="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || {
-        ableton_config_error "cannot read installer configuration $ABLETON_CONFIG_FILE"
-        return 1
-    }
+    config_generation_before=untracked
+    if [ "$simple_project_files" -ne 1 ]; then
+        config_generation_before="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || {
+            ableton_config_error "cannot read installer configuration $ABLETON_CONFIG_FILE"
+            return 1
+        }
+    fi
     if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
         if ! ableton_managed_config_valid "$ABLETON_CONFIG_FILE"; then
             config_valid=0
@@ -592,13 +596,15 @@ ableton_config_init()
     # field read above to the generation that was present before parsing; a
     # replacement between individual reads must not produce a mixed A/B
     # configuration whose final B token is then treated as authoritative.
-    config_generation_after="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || {
-        ableton_config_error "cannot reread installer configuration $ABLETON_CONFIG_FILE"
-        return 1
-    }
-    if [ "$config_generation_after" != "$config_generation_before" ]; then
-        ableton_config_error "installation configuration changed while it was being read; retry the command"
-        return 1
+    if [ "$simple_project_files" -ne 1 ]; then
+        config_generation_after="$(ableton_config_object_token "$ABLETON_CONFIG_FILE")" || {
+            ableton_config_error "cannot reread installer configuration $ABLETON_CONFIG_FILE"
+            return 1
+        }
+        if [ "$config_generation_after" != "$config_generation_before" ]; then
+            ableton_config_error "installation configuration changed while it was being read; retry the command"
+            return 1
+        fi
     fi
 
     case "$ABLETON_LINK_MODE" in off|session|always) ;;
@@ -643,9 +649,12 @@ ableton_config_init()
         : "${ABLETON_CONFIG_REPAIR_NEEDED:=0}"
         export ABLETON_CONFIG_REPAIR_MODE ABLETON_CONFIG_REPAIR_NEEDED
     fi
-    if [ -z "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] \
-       || [ -z "${ABLETON_CONFIG_SNAPSHOT_TOKEN:-}" ] \
-       || [ -z "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ]; then
+    if [ "$simple_project_files" -eq 1 ]; then
+        unset ABLETON_CONFIG_SNAPSHOT_PATH ABLETON_CONFIG_SNAPSHOT_TOKEN \
+            ABLETON_CONFIG_SNAPSHOT_VALUES
+    elif [ -z "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] \
+         || [ -z "${ABLETON_CONFIG_SNAPSHOT_TOKEN:-}" ] \
+         || [ -z "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ]; then
         # Treat the exported snapshot as one record. A partial inherited
         # environment must be replaced, never trusted or expanded under set -u.
         ableton_config_snapshot_capture "$config_generation_before"
@@ -662,11 +671,6 @@ ableton_render_config()
     printf 'live_major=%s\n' "$major"
     printf 'link_mode=%s\n' "$ABLETON_LINK_MODE"
     printf 'linkd=%s\n' "$ABLETON_LINKD"
-}
-
-ableton_expected_config_token()
-{
-    ableton_render_config | sha256sum | awk '{print "file:"$1}'
 }
 
 ableton_write_config()
@@ -783,14 +787,16 @@ ableton_prepare_transactions_dir()
 ableton_install_lock_acquire()
 {
     local expected observed inherited="${ABLETON_INSTALL_LOCK_FD:-}" lock_fd
+    local simple_project_files="${ABLETON_SIMPLE_PROJECT_FILES:-0}"
     command -v flock >/dev/null 2>&1 || {
         ableton_config_error "flock is required to change this installation"
         return 1
     }
-    if [ "${ABLETON_CONFIG_REPAIR_MODE:-0}" != 1 ] \
+    if [ "$simple_project_files" -ne 1 ] \
+       && { [ "${ABLETON_CONFIG_REPAIR_MODE:-0}" != 1 ] \
        || [ -z "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] \
        || [ -z "${ABLETON_CONFIG_SNAPSHOT_TOKEN:-}" ] \
-       || [ -z "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ]; then
+       || [ -z "${ABLETON_CONFIG_SNAPSHOT_VALUES:-}" ]; }; then
         [ ! -L "$ABLETON_CONFIG_FILE" ] || {
             ableton_config_error "refusing symlink installer configuration $ABLETON_CONFIG_FILE"
             return 1
@@ -812,7 +818,7 @@ ableton_install_lock_acquire()
         *)
             observed="$(readlink -f -- "/proc/${BASHPID:-$$}/fd/$inherited" 2>/dev/null || true)"
             if [ "$observed" = "$expected" ] && flock -n "$inherited"; then
-                ableton_config_snapshot_verify || {
+                [ "$simple_project_files" -eq 1 ] || ableton_config_snapshot_verify || {
                     ableton_config_error "installation configuration changed; retry the command"
                     return 1
                 }
@@ -835,7 +841,7 @@ ableton_install_lock_acquire()
     # inherited descriptor, but only the shell that opened it may issue
     # LOCK_UN. BASHPID also distinguishes a forked Bash subshell from its parent.
     ABLETON_INSTALL_LOCK_OWNER_BASHPID="${BASHPID:-$$}"
-    ableton_config_snapshot_verify || {
+    [ "$simple_project_files" -eq 1 ] || ableton_config_snapshot_verify || {
         ableton_config_error "installation configuration changed; retry the command"
         flock -u "$lock_fd" 2>/dev/null || true
         exec {lock_fd}<&-

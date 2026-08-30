@@ -25,6 +25,42 @@ fail()
     exit 1
 }
 
+python3 - "$root" <<'PY' \
+    || fail 'installer source allowlist omits scripts/lib/ui.sh mode 0644'
+from pathlib import Path
+from types import SimpleNamespace
+import runpy
+import sys
+
+root = Path(sys.argv[1])
+module = runpy.run_path(str(root / "scripts/verify-installer-payload.py"))
+globals_ = module["expected_from_source"].__globals__
+real_add_source = globals_["add_source"]
+globals_["add_source"] = lambda expected, source, destination, mode: (
+    real_add_source(expected, source, destination, mode)
+    if destination == "scripts/lib/ui.sh"
+    else None
+)
+globals_["tracked_paths"] = lambda *args: []
+globals_["subprocess"].run = lambda *args, **kwargs: SimpleNamespace(stdout=b"")
+expected = module["expected_from_source"](root, root / "BUILD-INFO", root / "runtime.tar.zst")
+entry = expected["scripts/lib/ui.sh"]
+assert entry.kind == "file"
+assert entry.mode == 0o644
+assert entry.data == (root / "scripts/lib/ui.sh").read_bytes()
+PY
+printf 'ok - installer source allowlist includes the shared UI library\n'
+
+version="$(cat "$root/VERSION")"
+first_changelog_heading="$(grep -m1 '^## ' "$root/CHANGELOG.md" || true)"
+[ "$first_changelog_heading" = "## $version" ] \
+    && [ "$(grep -cxF "## $version" "$root/CHANGELOG.md")" -eq 1 ] \
+    || fail 'CHANGELOG does not start with exactly one heading for VERSION'
+if grep -qE '[*][*]~~.*[*][*].*~~' "$root/CHANGELOG.md"; then
+    fail 'CHANGELOG contains crossed bold and strikethrough markers'
+fi
+printf 'ok - CHANGELOG names this release and nests emphasis correctly\n'
+
 accepts()
 {
     bash "$checker" "$1" >/dev/null 2>&1
@@ -153,8 +189,7 @@ seal_kit()
     tar --sort=name --owner=0 --group=0 --numeric-owner \
         -cf "$payload" -C "$source_kit" .
     digest="$(sha256sum "$payload" | awk '{print $1}')"
-    sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$digest/g" \
-        "$root/scripts/setup-run-header.sh" > "$wrapper"
+    "$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $digest > "$wrapper"
     cat "$payload" >> "$wrapper"
     chmod +x "$wrapper"
 }
@@ -187,10 +222,15 @@ cleanup_rc=$?
 set -e
 [ "$cleanup_rc" -eq 0 ] \
     || fail "installer wrapper changed child status 0 to $cleanup_rc after scratch cleanup failed"
-grep -qF 'installer child reached status 0' "$tmp/cleanup-zero.out" \
+# The wrapper keeps the screen for the renderer; what the child and the
+# wrapper print raw goes to the log beside the .run (rule D1).
+newest_log() { ls -t "$tmp"/ableton-linux-installer-*.log 2>/dev/null | head -n 1; }
+grep -qF 'installer child reached status 0' "$(newest_log)" \
     || fail 'installer wrapper did not reach its child after early scratch cleanup failed'
-grep -qF '!! The installer finished, but temporary files remain at' "$tmp/cleanup-zero.out" \
+grep -qF 'The installer finished, but temporary files remain at' "$(newest_log)" \
     || fail 'installer wrapper did not name retained scratch after cleanup failed'
+grep -q '│ Complete │' "$tmp/cleanup-zero.out" \
+    || fail 'installer wrapper did not report a completed run after cleanup failed'
 
 set +e
 PATH="$tmp/failing-rm:$PATH" TMPDIR="$tmp/wrapper-tmp" \
@@ -200,15 +240,16 @@ cleanup_rc=$?
 set -e
 [ "$cleanup_rc" -eq 37 ] \
     || fail "installer wrapper changed child status 37 to $cleanup_rc after scratch cleanup failed"
-grep -qF 'installer child reached status 37' "$tmp/cleanup-nonzero.out" \
+grep -qF 'installer child reached status 37' "$(newest_log)" \
     || fail 'installer wrapper did not preserve the failing child execution path'
+grep -q '│   Failed │' "$tmp/cleanup-nonzero.out" \
+    || fail 'installer wrapper did not report the failed run'
 printf 'ok - installer wrapper scratch cleanup is warning-only and preserves child status\n'
 
 tar --sort=name --owner=0 --group=0 --numeric-owner \
     -cf "$tmp/payload.tar" -C "$tmp/kit" .
 payload_sha="$(sha256sum "$tmp/payload.tar" | awk '{print $1}')"
-sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$payload_sha/g" \
-    "$root/scripts/setup-run-header.sh" > "$tmp/installer.run"
+"$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $payload_sha > "$tmp/installer.run"
 cat "$tmp/payload.tar" >> "$tmp/installer.run"
 chmod +x "$tmp/installer.run"
 bash "$checker" "$tmp/official" --version 2026.08.12.1 \
@@ -221,8 +262,7 @@ payload_size="$(wc -c < "$tmp/nonzero-tail.tar")"
 printf X | dd of="$tmp/nonzero-tail.tar" bs=1 seek="$((payload_size - 1))" \
     conv=notrunc status=none
 nonzero_tail_sha="$(sha256sum "$tmp/nonzero-tail.tar" | awk '{print $1}')"
-sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$nonzero_tail_sha/g" \
-    "$root/scripts/setup-run-header.sh" > "$tmp/nonzero-tail.run"
+"$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $nonzero_tail_sha > "$tmp/nonzero-tail.run"
 cat "$tmp/nonzero-tail.tar" >> "$tmp/nonzero-tail.run"
 if bash "$checker" "$tmp/official" --version 2026.08.12.1 \
     --runtime "$tmp/runtime.tar.zst" --installer "$tmp/nonzero-tail.run" \
@@ -235,8 +275,7 @@ printf '\n# changed after the tag\n' >> "$tmp/tampered-kit/scripts/install.sh"
 tar --sort=name --owner=0 --group=0 --numeric-owner \
     -cf "$tmp/tampered-payload.tar" -C "$tmp/tampered-kit" .
 tampered_sha="$(sha256sum "$tmp/tampered-payload.tar" | awk '{print $1}')"
-sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$tampered_sha/g" \
-    "$root/scripts/setup-run-header.sh" > "$tmp/tampered-installer.run"
+"$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $tampered_sha > "$tmp/tampered-installer.run"
 cat "$tmp/tampered-payload.tar" >> "$tmp/tampered-installer.run"
 if bash "$checker" "$tmp/official" --version 2026.08.12.1 \
     --runtime "$tmp/runtime.tar.zst" --installer "$tmp/tampered-installer.run" \
@@ -280,8 +319,7 @@ cp -- "$tmp/skipped-runtime.tar.zst" "$tmp/kit/dist/runtime.tar.zst"
 tar --sort=name --owner=0 --group=0 --numeric-owner \
     -cf "$tmp/mixed-payload.tar" -C "$tmp/kit" .
 mixed_payload_sha="$(sha256sum "$tmp/mixed-payload.tar" | awk '{print $1}')"
-sed -e 's/@VERSION@/2026.08.12.1/g' -e "s/@PAYLOAD_SHA@/$mixed_payload_sha/g" \
-    "$root/scripts/setup-run-header.sh" > "$tmp/mixed-installer.run"
+"$root/scripts/make-installer.sh" --render-header --version 2026.08.12.1 --payload-sha $mixed_payload_sha > "$tmp/mixed-installer.run"
 cat "$tmp/mixed-payload.tar" >> "$tmp/mixed-installer.run"
 chmod +x "$tmp/mixed-installer.run"
 if bash "$checker" "$tmp/official" --version 2026.08.12.1 \
@@ -291,6 +329,14 @@ if bash "$checker" "$tmp/official" --version 2026.08.12.1 \
     fail 'release checker accepted an installer carrying a different runtime'
 fi
 printf 'ok - installer payload must carry the exact release record and runtime\n'
+
+dev_wrapper_gate="$(sed -n '/^echo "== \[4\/5\] wrapper self-check =="$/,/^fi$/p' \
+    "$root/scripts/make-installer.sh")"
+grep -qF 'bash "$out" extract "$stage/wrapper-self-check"' <<< "$dev_wrapper_gate" \
+    && grep -qF '[ -f "$stage/wrapper-self-check/scripts/installer.sh" ]' <<< "$dev_wrapper_gate" \
+    && ! grep -qF -- '--help' <<< "$dev_wrapper_gate" \
+    || fail 'the dev wrapper gate does not extract and inspect the packed payload'
+printf 'ok - dev packing validates the final wrapper payload by extraction\n'
 
 grep -qF '    --version "$VERSION" --runtime "$tarball" --installer "$out"' \
     "$root/scripts/make-installer.sh" \

@@ -52,10 +52,15 @@ Use one component directly when a full install is not needed:
 ./scripts/installer.sh link status
 ```
 
-Preview any supported operation without changing files:
+Preview an update while preserving current files:
 
 ```bash
 ./scripts/installer.sh plan update
+```
+
+Validate the paths and records for an uninstall request:
+
+```bash
 ./scripts/installer.sh plan uninstall --delete-prefix
 ```
 
@@ -71,6 +76,8 @@ make test
 ```
 
 `make check` inspects the pointer changes and tests their limits with difficult input. Neither it nor `make verify` starts Wine or Live.
+
+`scripts/test-installer-ui.sh` covers the installer's screen. It renders a fixed run and compares the result byte for byte with a golden transcript of the template. It replays a real pseudo-terminal through a small terminal simulator to check the `└─` to `├─` rewrite. It checks every adjoining box stroke for matching direction and weight. It also confirms that colour codes apply to text while each line keeps the terminal's default colour. The remaining checks confirm that every tree glyph comes from `scripts/lib/ui.sh` and every sentence comes from the dictionary.
 
 Verify all pinned build and packaging inputs:
 
@@ -115,12 +122,22 @@ After a successful `./build.sh`, create the single-file installer:
 
 This writes `dist/ableton-wine-setup-<version>.run` and its SHA-256 file. Packaging refuses a build that lacks the required sanitizer result or fails the runtime audit.
 
+To try a script change with the Wine runtime you already built, pack a development installer from the current contents of `dist/`:
+
+```bash
+./scripts/make-installer.sh --dev
+```
+
+This command writes `dist/ableton-wine-setup-<version>-dev.run` and skips the BUILD-INFO, digest, and attestation checks. Publish only the release `.run`.
+
+The packer builds the `.run` header from `scripts/setup-run-header.sh` and inserts `scripts/lib/ui.sh` at the `@UI_LIB@` marker, so the banner and the action menu render before the installer unpacks the kit. `./scripts/make-installer.sh --render-header --version V --payload-sha S` prints that assembled header. The test suites use it to build stub installers.
+
 ## Current configuration
 
-The installer saves the runtime root, Wine prefix, selected Live major version, and Link mode. For these values, a command-line option overrides an exported `ABLETON_*` variable, which overrides the saved XDG configuration and then the default.
+The installer saves the runtime root, the ableton-linux prefix, the selected Live major version, and the Link mode. For these values, a command-line option overrides an exported `ABLETON_*` variable, which overrides the saved XDG configuration and then the default.
 
 - `ABLETON_WINE_ROOT` selects the Wine runtime. The default is `~/.local/opt/wine-d2d1-nspa-11.13`; the Nix package's launchers and shipped scripts default to their own store path instead.
-- `ABLETON_WINEPREFIX` selects the Wine prefix. The default is `~/.wine-ableton`.
+- `ABLETON_WINEPREFIX` selects the ableton-linux prefix. The default is `~/.wine-ableton`.
 - `ABLETON_LIVE_VERSION=11|12` selects a Live major version for the launcher.
 - `ABLETON_LINK_MODE=off|session|always` controls when Ableton Link runs.
 
@@ -134,7 +151,7 @@ These environment variables change one launch without changing the saved install
 
 - `ABLETON_LIVE_EXE` selects one exact Live executable.
 - `ABLETON_LINK_MODE=off|session|always` selects the Link policy shared by the
-  installer, Live launcher, Max launcher, service, and uninstaller.
+  installer, Live launcher, Max launcher, and service.
 - `ABLETON_LINKD` selects the Link daemon path. The generated user unit uses
   this exact resolved path.
 - `ABLETON_MAX_AUDIO_THREADS=auto|off|<number>` controls Live 12's audio thread

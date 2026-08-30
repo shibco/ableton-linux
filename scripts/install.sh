@@ -2,9 +2,10 @@
 # Install independently selectable runtime, desktop-integration, and Link-asset
 # components.  Prefix creation is deliberately separate (setup-prefix.sh).
 set -euo pipefail
-export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+. "$here/lib/ui.sh"
+export LC_ALL=C.UTF-8
 . "$here/lib/config.sh"
 . "$here/lib/lifecycle.sh"
 . "$here/lib/manifest.sh"
@@ -63,17 +64,12 @@ elif [ "$want_runtime" -eq 1 ]; then
     # transaction data. Desktop, settings, and Link roots are checked only when
     # their optional phase actually begins.
     ABLETON_CONFIG_LAYOUT_ROOTS=runtime
-elif [ "$want_integration" -eq 1 ]; then
-    # Desktop integration writes generated files under data/state/bin.
-    # Runtime and prefix are referenced by launchers but are not destinations.
-    ABLETON_CONFIG_LAYOUT_ROOTS='data state bin'
-elif [ "$want_link" -eq 1 ]; then
-    # Link assets are generated only under the project data and state roots.
-    ABLETON_CONFIG_LAYOUT_ROOTS='data state'
 else
+    # Optional project files are handled one destination at a time below.
     ABLETON_CONFIG_LAYOUT_ROOTS=none
+    ABLETON_SIMPLE_PROJECT_FILES=1
 fi
-export ABLETON_CONFIG_LAYOUT_ROOTS
+export ABLETON_CONFIG_LAYOUT_ROOTS ABLETON_SIMPLE_PROJECT_FILES
 ableton_config_init repair
 export WINEPREFIX="$ABLETON_WINEPREFIX"
 data="$ABLETON_DATA_HOME"
@@ -82,8 +78,23 @@ apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 mime_root="${XDG_DATA_HOME:-$HOME/.local/share}/mime"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-ownership_manifest_was_present=0
-[ ! -r "$ABLETON_STATE_HOME/install-manifest.tsv" ] || ownership_manifest_was_present=1
+ABLETON_PROJECT_ASSUME_YES="$assume_yes"
+ABLETON_RECORD_PROJECT_FILES=1
+export ABLETON_PROJECT_ASSUME_YES ABLETON_RECORD_PROJECT_FILES
+
+# Shared configuration files use atomic prestate so uninstall can put back the
+# exact file that occupied their fixed path. Ordinary project files keep the
+# installer's existing overwrite prompt and dated backups.
+ableton_install_generated_config()
+{
+    local mode="$1" source="$2" target="$3"
+    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
+    if ! ableton_install_file "$mode" "$source" "$target" config; then
+        echo "!! copy failed: $source -> $target" >&2 || true
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+    fi
+    return 0
+}
 
 if [ "$operation" != install ] || { [ "$validate_only" -eq 0 ] && [ "$dry_run" -eq 0 ]; }; then
     ableton_install_lock_acquire
@@ -355,22 +366,22 @@ if [ "$want_runtime" -eq 1 ] && [ "$want_integration" -eq 0 ] \
    && [ "$want_link" -eq 0 ]; then
     runtime_core_only=1
 fi
+if [ -n "$transaction_arg" ] && [ "$want_runtime" -eq 1 ] \
+   && { [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; }; then
+    echo "!! runtime transactions cannot include desktop or Link files" >&2
+    exit 2
+fi
 
 own_transaction=0
-if [ -n "$transaction_arg" ]; then
-    ABLETON_TRANSACTION_DIR="$transaction_arg"
-else
-    # Only the public coordinator keeps recovery state under XDG_STATE_HOME.
-    # A direct component call is private scratch work; if its cleanup is
-    # interrupted, launchers must never mistake it for an unfinished core run.
-    if ABLETON_TRANSACTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ableton-install-plan.XXXXXX")"; then
-        own_transaction=1
-    elif [ "$want_runtime" -eq 1 ]; then
-        exit 1
+ABLETON_TRANSACTION_DIR=""
+if [ "$want_runtime" -eq 1 ]; then
+    if [ -n "$transaction_arg" ]; then
+        ABLETON_TRANSACTION_DIR="$transaction_arg"
     else
-        ABLETON_TRANSACTION_DIR=""
-        echo "!! Temporary recovery files are unavailable. Continuing with repairable shortcuts and support files." >&2 \
-            || true
+        # Wine is the only component installed by this script that keeps an
+        # automatic rollback transaction.
+        ABLETON_TRANSACTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ableton-install-plan.XXXXXX")"
+        own_transaction=1
     fi
 fi
 export ABLETON_TRANSACTION_DIR
@@ -380,6 +391,7 @@ cleanup_unstarted_component_transaction()
 {
     local rc=$?
     trap - EXIT
+    ui_cleanup "$rc"
     if [ "$rc" -ne 0 ] && [ "$own_transaction" -eq 1 ] \
        && ! rm -rf -- "$ABLETON_TRANSACTION_DIR"; then
         echo "!! Temporary installer files could not be removed: $ABLETON_TRANSACTION_DIR" >&2
@@ -387,24 +399,12 @@ cleanup_unstarted_component_transaction()
     exit "$rc"
 }
 trap cleanup_unstarted_component_transaction EXIT
-if ! ableton_txn_init; then
-    if [ "$want_runtime" -eq 1 ] || [ -n "$transaction_arg" ]; then
-        exit 1
-    fi
-    [ "$own_transaction" -eq 0 ] || rm -rf -- "$ABLETON_TRANSACTION_DIR" 2>/dev/null || true
-    own_transaction=0
-    ABLETON_TRANSACTION_DIR=""
-    export ABLETON_TRANSACTION_DIR
-    echo "!! Temporary recovery files are unavailable. Continuing with repairable shortcuts and support files." >&2 \
-        || true
-fi
-ableton_validate_install_state_journals repair
+[ "$want_runtime" -eq 0 ] || ableton_txn_init
 stage=""
 component_commit_started=0
-runtime_core_ready=0
 runtime_core_committed=0
 optional_files_ready=0
-direct_optional_transaction=0
+manifest_publication_failed=0
 cleanup_preview_scratch()
 {
     local stage_name=""
@@ -439,6 +439,7 @@ cleanup()
     # Recovery must not depend on whether a diagnostic stream is writable.
     # Every mutation/recovery status below is handled explicitly.
     set +e
+    ui_cleanup "$rc"
     if [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ]; then
         # Preview work never mutates installation state. Preserve the real
         # validation/planning result and dispose only its private scratch;
@@ -450,34 +451,23 @@ cleanup()
         restore_error="temporary runtime cleanup failed"
         rc=1
     fi
-    if [ "$rc" -ne 0 ] \
+    if [ "$rc" -ne 0 ] && [ "$manifest_publication_failed" -eq 0 ] \
        && { [ "$runtime_core_committed" -eq 1 ] || [ "$optional_files_ready" -eq 1 ]; }; then
         if [ "$runtime_core_committed" -eq 1 ]; then
-            if [ "$direct_optional_transaction" -eq 1 ] \
-               && { [ -e "$ABLETON_TRANSACTION_DIR/active" ] \
-                    || [ -L "$ABLETON_TRANSACTION_DIR/active" ]; }; then
-                if ! rollback_transaction "$ABLETON_TRANSACTION_DIR"; then
-                    restore_error="optional files could not be fully restored"
-                elif ! rm -rf -- "$ABLETON_TRANSACTION_DIR"; then
-                    restore_error="temporary optional-file recovery data could not be removed"
-                fi
-            fi
             echo "!! Wine is ready. Run the installer again to retry shortcuts or Ableton Link files." >&2 || true
-            [ -z "$restore_error" ] \
-                || echo "!! Some shortcut or Link files from this attempt could not be restored: $restore_error" >&2 || true
-            if [ -z "$transaction_arg" ]; then
-                echo "OK: Installation complete." || true
-            fi
+            [ -n "$transaction_arg" ] || ui_status i_runtime_ready
         else
             echo "!! Ableton is ready. Run the installer again to retry shortcuts or Ableton Link files." >&2 || true
         fi
         rc=0
-    elif [ "$rc" -ne 0 ] && [ "$component_commit_started" -eq 1 ]; then
+    elif [ "$rc" -ne 0 ] && [ "$component_commit_started" -eq 1 ] \
+         && [ -n "$ABLETON_TRANSACTION_DIR" ]; then
         printf 'component=install.sh\nstatus=committed-cleanup-incomplete\nexit=%s\ncleanup_error=%s\n' \
             "$rc" "$restore_error" > "$ABLETON_TRANSACTION_DIR/COMMITTED_CLEANUP_FAILURE" 2>/dev/null || true
         echo "!! Installation finished, but temporary recovery files could not be removed." >&2
         echo "!! Details were saved at $ABLETON_TRANSACTION_DIR/COMMITTED_CLEANUP_FAILURE." >&2
-    elif [ "$rc" -ne 0 ] && [ -e "$ABLETON_TRANSACTION_DIR/active" ]; then
+    elif [ "$rc" -ne 0 ] && [ -n "$ABLETON_TRANSACTION_DIR" ] \
+         && [ -e "$ABLETON_TRANSACTION_DIR/active" ]; then
         echo "!! Installation did not finish. Restoring the files from before this attempt." >&2
         if ! rollback_transaction "$ABLETON_TRANSACTION_DIR"; then
             restore_error="${restore_error}${restore_error:+; }earlier files could not be fully restored"
@@ -537,8 +527,9 @@ validate_runtime_payload()
     bundle_probe="$root/bin/pipewire-version-probe"
     [ -x "$bundle_probe" ] || bundle_probe="$root/dist/pipewire-version-probe"
     [ -x "$bundle_probe" ] || { echo "!! installer kit is missing its PipeWire compatibility check" >&2; return 1; }
-    echo "== Check the Wine package: $(basename "$tarball") ==" || true
-    echo "$(basename "$tarball"): OK" || true
+    ui_item_begin i_check_wine_package "$(basename "$tarball")"
+    ui_status i_wine_package_valid "$(basename "$tarball")"
+    ui_item_end ok
     local parent
     parent="$(dirname "$ABLETON_WINE_ROOT")" || return 1
     if [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ]; then
@@ -550,9 +541,9 @@ validate_runtime_payload()
     local extract_timeout
     extract_timeout="$(ableton_timeout_value "${ABLETON_RUNTIME_EXTRACT_TIMEOUT:-1800}" ABLETON_RUNTIME_EXTRACT_TIMEOUT 60 7200)" \
         || return 1
-    echo "   Unpacking and checking Wine (up to ${extract_timeout}s)" || true
-    ableton_run_bounded "$extract_timeout" tar -C "$stage" -I zstd -xf "$tarball" \
-        >/dev/null || return 1
+    ui_run i_unpack_runtime -- \
+        ableton_run_bounded "$extract_timeout" tar -C "$stage" -I zstd -xf "$tarball" \
+        || return 1
     candidate="$stage/$ABLETON_RUNTIME_NAME"
     local required
     for required in \
@@ -587,119 +578,17 @@ validate_runtime_payload()
             echo "!! runtime GStreamer dependency validation failed" >&2; return 1; }
     fi
     ableton_pipeasio_validate_runtime "$candidate" "$runtime_info" "$version" || return 1
-    if ! ableton_pipeasio_validate_panel "$candidate" "$runtime_info" >/dev/null 2>&1; then
-        echo "!! Wine and PipeASIO passed their checks, but PipeASIO Settings is incomplete. Its desktop shortcut will be left unchanged." >&2 \
-            || true
-    fi
     cmp -s -- "$bundle_probe" "$candidate/bin/pipewire-version-probe" || {
         echo "!! installer and runtime compatibility checks do not match" >&2; return 1; }
     ableton_run_bounded 30 "$candidate/bin/wine" --version >/dev/null || {
         echo "!! staged runtime Wine executable did not pass its bounded version check" >&2
         return 1
     }
-}
-
-validate_integration_sources()
-{
-    local required probe_source="" ntsync_probe_source=""
-    for required in ableton-live max9 detect-scale.sh detect-theme.sh shortcut-hold.sh \
-                    setup-realtime.sh audio-report.sh check-ntsync.sh rollback.sh; do
-        [ -f "$here/$required" ] || { echo "!! installer kit is missing scripts/$required" >&2; return 1; }
-    done
-    for required in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh; do
-        [ -f "$here/lib/$required" ] || { echo "!! installer kit is missing scripts/lib/$required" >&2; return 1; }
-    done
-    for required in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
-                    "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
-        [ -x "$required" ] || continue
-        probe_source="$required"
-        break
-    done
-    [ -n "$probe_source" ] || {
-        echo "!! installer kit is missing its PipeWire compatibility check" >&2
-        return 1
-    }
-    for required in "$here/ntsyncprobe.exe" \
-                    "$root/beta/tester-kit/probes/windows/ntsyncprobe.exe"; do
-        [ -f "$required" ] || continue
-        ntsync_probe_source="$required"
-        break
-    done
-    [ -n "$ntsync_probe_source" ] || {
-        echo "!! installer kit is missing its NTSync semantics probe" >&2
-        return 1
-    }
-    for required in ableton-live.desktop.in ableton-linux-protocol.desktop.in \
-                    ableton-linux-auz.desktop.in x-wine-extension-auz.xml \
-                    icons/application-ableton-live.xml max9.desktop.in \
-                    wine-protocol-c74max.desktop.in; do
-        [ -f "$root/desktop/$required" ] || {
-            echo "!! installer kit is missing desktop/$required" >&2; return 1; }
-    done
-}
-
-validate_link_sources()
-{
-    local file needed managed_linkd="$ABLETON_DATA_HOME/ableton-linkd"
-    for file in "$here/../bin/ableton-linkd" "$root/dist/ableton-linkd"; do
-        [ -f "$file" ] && { linkd_source="$file"; break; }
-    done
-    if [ "$ABLETON_LINKD" = "$managed_linkd" ] && [ -z "$linkd_source" ]; then
-        echo "!! installer kit is missing bin/ableton-linkd" >&2
-        return 1
-    fi
-    unit_source="$here/ableton-linkd.service"
-    [ -f "$unit_source" ] || unit_source="$root/scripts/ableton-linkd.service"
-    [ -f "$unit_source" ] || { echo "!! installer kit is missing ableton-linkd.service" >&2; return 1; }
-    [ -f "$here/ableton-linkctl" ] || { echo "!! installer kit is missing ableton-linkctl" >&2; return 1; }
-    if [ -n "$linkd_source" ] && command -v readelf >/dev/null 2>&1; then
-        needed="$(readelf -d "$linkd_source" \
-            | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')" || {
-            echo "!! could not inspect ableton-linkd dependencies" >&2
-            return 1
-        }
-        for file in $needed; do
-            case "$file" in linux-vdso.so*|libm.so*|libc.so*|libpthread.so*|libatomic.so*|ld-linux*.so*) ;;
-                *) echo "!! ableton-linkd links unexpected library $file" >&2; return 1 ;;
-            esac
-        done
-    fi
-    if [ -n "$linkd_source" ]; then
-        ableton_run_bounded 10 "$linkd_source" --help >/dev/null || {
-            echo "!! ableton-linkd did not pass its bounded startup check" >&2
-            return 1
-        }
-    fi
+    ui_status i_runtime_checks_passed
 }
 
 if [ "$want_runtime" -eq 1 ]; then
     validate_runtime_payload
-fi
-if [ "$want_integration" -eq 1 ]; then
-    if ! validate_integration_sources; then
-        if [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ]; then
-            exit 1
-        fi
-        echo "!! Some shortcut or support files are missing from this installer. Available files will still be updated." >&2 \
-            || true
-    fi
-fi
-if [ "$want_link" -eq 1 ]; then
-    if ! validate_link_sources; then
-        if [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ]; then
-            exit 1
-        fi
-        echo "!! Some Ableton Link files are missing from this installer. Available files will still be updated." >&2 \
-            || true
-    fi
-fi
-if [ "$want_runtime" -eq 1 ] \
-   && { [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; } \
-   && ! ableton_config_validate_layout 'runtime prefix data config state bin'; then
-    echo "!! Wine can still be installed, but shortcuts and Link support were skipped because one of their locations cannot be used safely." >&2 \
-        || true
-    want_integration=0
-    want_link=0
 fi
 if [ "$want_runtime" -eq 1 ] && [ "$want_integration" -eq 0 ] \
    && [ "$want_link" -eq 0 ]; then
@@ -710,9 +599,10 @@ if [ "$validate_only" -eq 1 ]; then
     # Validation has already succeeded. Reporting and disposal of private
     # scratch files cannot turn that result into a failure.
     set +e
-    echo "OK: The selected files passed all checks."
+    ui_status i_validate_ok
     cleanup_preview_scratch
     trap - EXIT
+    ui_cleanup 0
     exit 0
 fi
 
@@ -720,78 +610,37 @@ if [ "$dry_run" -eq 1 ]; then
     # Planning mutates no installation state. Its report and scratch cleanup
     # are presentation/housekeeping only.
     set +e
-    echo "PLAN: resolved configuration"
+    ui_status i_plan_heading
     [ "$want_runtime" -eq 0 ] || {
-        printf '  install or update Wine: %s\n' "$ABLETON_WINE_ROOT"
-        echo "  update PipeASIO Settings shortcuts to match this Wine build"
+        ui_status i_plan_runtime "$ABLETON_WINE_ROOT"
+        ui_status i_plan_panel_shortcuts
     }
     if [ "$want_integration" -eq 1 ]; then
-        echo "  install or update launchers, desktop shortcuts, file-opening support, and icons"
-        echo "  install diagnostic and recovery tools"
+        ui_status i_plan_integration
+        ui_status i_plan_tools
         if [ -f "$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe" ]; then
-            echo "  install or update the Max 9 launcher and file-opening support"
+            ui_status i_plan_max9
         fi
     fi
     if [ "$want_link" -eq 1 ]; then
         if [ "$ABLETON_LINKD" = "$ABLETON_DATA_HOME/ableton-linkd" ]; then
-            echo "  install or update Ableton Link support"
+            ui_status i_plan_link
         else
-            printf '  use the configured Ableton Link helper and leave it unchanged: %s\n' "$ABLETON_LINKD"
+            ui_status i_plan_link_external "$ABLETON_LINKD"
         fi
     fi
-    if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ] \
-       || { [ "$want_runtime" -eq 1 ] && [ "$ownership_manifest_was_present" -eq 1 ]; }; then
-        echo "  record the installed release and files for later repair or removal"
-    fi
+    [ "$want_integration" -eq 0 ] && [ "$want_link" -eq 0 ] \
+        || ui_status i_plan_backups "$ABLETON_STATE_HOME"
     cleanup_preview_scratch
     trap - EXIT
+    ui_cleanup 0
     exit 0
 fi
 
-# Direct component use receives the same gate as the wrapper. Validation and
-# dry-run remain usable without a running daemon; Link/integration-only work
-# carries no PipeASIO driver replacement and is not gated.
+# Validation and dry-run remain usable without a running daemon.
 if [ "$want_runtime" -eq 1 ]; then
     ableton_pipewire_preflight "$candidate/bin/pipewire-version-probe" "installing PipeASIO"
 fi
-
-runtime_pids_all()
-{
-    local proc pid
-    for proc in /proc/[0-9]*; do
-        pid="${proc#/proc/}"
-        ableton_pid_uses_runtime "$pid" && printf '%s\n' "$pid"
-    done
-    return 0
-}
-
-stop_runtime_clients()
-{
-    local all scoped foreign pid answer=""
-    all="$(runtime_pids_all)"
-    [ -n "$all" ] || return 0
-    scoped="$(ableton_prefix_pids)"
-    foreign=""
-    for pid in $all; do
-        case " $scoped " in *" $pid "*) ;; *) foreign="$foreign $pid" ;; esac
-    done
-    if [ -n "$foreign" ]; then
-        echo "!! runtime is used by another Wine prefix (PIDs:$foreign); close it before updating" >&2
-        return 1
-    fi
-    echo "!! the selected prefix has running Wine clients: $(tr ' ' '\n' <<< "$scoped" | sed '/^$/d' | paste -sd, -)" >&2
-    if [ "$assume_yes" -ne 1 ]; then
-        if [ -t 0 ]; then
-            printf 'Stop every client in this prefix (including Live or Max)? [y/N] ' >&2
-            read -r -t 60 answer || answer=""
-            case "$answer" in y|Y|yes|YES|Yes) ;; *) return 1 ;; esac
-        else
-            echo "!! refusing without --yes in a noninteractive session" >&2
-            return 1
-        fi
-    fi
-    ableton_stop_prefix || { echo "!! could not stop all scoped Wine clients" >&2; return 1; }
-}
 
 promote_runtime()
 {
@@ -821,7 +670,7 @@ promote_runtime()
         [ ! -e "$backup" ] && [ ! -L "$backup" ] \
             || { echo "!! transaction backup already exists: $backup" >&2; return 1; }
     fi
-    stop_runtime_clients || return 1
+    ableton_stop_runtime_clients || return 1
     # Mark and verify the staged tree before it can become the live runtime.
     marker="$candidate/.ableton-linux-runtime"
     [ ! -e "$marker" ] && [ ! -L "$marker" ] || {
@@ -876,57 +725,65 @@ finish_direct_runtime_transaction()
     own_transaction=0
 }
 
-start_direct_optional_transaction()
-{
-    if ! ABLETON_TRANSACTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ableton-install-files.XXXXXX")"; then
-        ABLETON_TRANSACTION_DIR=""
-        export ABLETON_TRANSACTION_DIR
-        own_transaction=0
-        direct_optional_transaction=0
-        echo "!! Temporary recovery files are unavailable. Continuing with repairable shortcuts and support files." >&2 \
-            || true
-        return 0
-    fi
-    export ABLETON_TRANSACTION_DIR
-    own_transaction=1
-    direct_optional_transaction=1
-    ABLETON_PUBLICATION_JOURNAL_BROKEN=0
-    if ! ableton_txn_init; then
-        rm -rf -- "$ABLETON_TRANSACTION_DIR" 2>/dev/null || true
-        ABLETON_TRANSACTION_DIR=""
-        export ABLETON_TRANSACTION_DIR
-        own_transaction=0
-        direct_optional_transaction=0
-        echo "!! Temporary recovery files are unavailable. Continuing with repairable shortcuts and support files." >&2 \
-            || true
-    fi
-    return 0
-}
-
 sed_escape()
 {
     printf '%s' "$1" | sed 's/[\\&#]/\\&/g'
 }
 
+render_link_unit()
+{
+    local escaped
+    escaped="${ABLETON_LINKD//\\/\\\\}"
+    escaped="${escaped//\"/\\\"}"
+    escaped="${escaped//%/%%}"
+    cat <<EOF
+[Unit]
+Description=Ableton Link session anchor (ableton-linux)
+After=default.target
+X-AbletonLinuxOwned=true
+
+[Service]
+ExecStart="$escaped" --linger 0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
 install_integration()
 {
     local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d i
-    local probe_source="" ntsync_probe_source="" mime_stage="" mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    local probe_source="" ntsync_probe_source="" mime_stage="" mime_failures_before=0
+    local mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
     local mime_setup_ok=1
     local failures_before="$ABLETON_OPTIONAL_FILE_FAILURES"
     local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
     local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
     local -a handler_templates=(ableton-linux-protocol ableton-linux-auz)
-    echo "== Set up Ableton launchers and desktop shortcuts ==" || true
-    for tool in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh; do
-        ableton_try_publish_file 644 "$here/lib/$tool" "$data/lib/$tool" file replace-generated
+    local -a app_icons=(live-beta live-intro live-lite live-standard live-suite)
+    local -a mimetype_icons=(
+        application-x-ableton-live-clip
+        application-x-ableton-live-device-group
+        application-x-ableton-live-device-preset
+        application-x-ableton-live-generic
+        application-x-ableton-live-max-device
+        application-x-ableton-live-meta-sound
+        application-x-ableton-live-pack
+        application-x-ableton-live-sample-analysis
+        application-x-ableton-live-set
+    )
+    ui_item_begin i_setup_launchers
+    for tool in config.sh lifecycle.sh live-options.sh manifest.sh pipeasio.sh preferences.sh ui.sh; do
+        ableton_install_project_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
-    ableton_try_publish_launcher_file 755 "$here/ableton-live" "$bin/ableton-live"
+    ableton_install_project_file 755 "$here/ableton-live" "$bin/ableton-live"
     for tool in detect-scale.sh detect-theme.sh shortcut-hold.sh; do
-        ableton_try_publish_file 644 "$here/$tool" "$data/$tool" file replace-generated
+        ableton_install_project_file 644 "$here/$tool" "$data/$tool"
     done
     for tool in setup-realtime.sh audio-report.sh check-ntsync.sh rollback.sh; do
-        ableton_try_publish_file 755 "$here/$tool" "$data/$tool" file replace-generated
+        ableton_install_project_file 755 "$here/$tool" "$data/$tool"
     done
     for source in "$here/ntsyncprobe.exe" \
                   "$root/beta/tester-kit/probes/windows/ntsyncprobe.exe"; do
@@ -938,7 +795,7 @@ install_integration()
         echo "!! installer kit is missing its NTSync semantics probe" >&2 || true
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
     else
-        ableton_try_publish_file 644 "$ntsync_probe_source" "$data/ntsyncprobe.exe" file replace-generated
+        ableton_install_project_file 644 "$ntsync_probe_source" "$data/ntsyncprobe.exe"
     fi
     for source in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
                   "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
@@ -950,12 +807,12 @@ install_integration()
         echo "!! installer kit is missing its PipeWire compatibility check" >&2 || true
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
     else
-        ableton_try_publish_file 755 "$probe_source" "$data/pipewire-version-probe" file replace-generated
+        ableton_install_project_file 755 "$probe_source" "$data/pipewire-version-probe"
     fi
     for tool in setsyscolors.exe learnheal.exe; do
         for source in "$here/$tool" "$root/tools/$tool"; do
             [ -f "$source" ] || continue
-            ableton_try_publish_file 644 "$source" "$data/$tool" file replace-generated
+            ableton_install_project_file 644 "$source" "$data/$tool"
             break
         done
     done
@@ -981,7 +838,7 @@ install_integration()
             -e "s#@WMCLASS@#$(sed_escape "$live_wmclass")#g" \
             "$root/desktop/ableton-live.desktop.in" > "$tmp" \
        && { [ -n "$live_wmclass" ] || sed -i '/^StartupWMClass=/d' "$tmp"; }; then
-        ableton_try_publish_launcher_file 644 "$tmp" "$apps/ableton-live.desktop"
+        ableton_install_project_file 644 "$tmp" "$apps/ableton-live.desktop"
     else
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
     fi
@@ -994,63 +851,38 @@ install_integration()
            && sed -e "s#@HOME@#$(sed_escape "$HOME")#g" \
                 -e "s#@BIN@#$(sed_escape "$bin")#g" \
                 "$root/desktop/${handler_templates[i]}.desktop.in" > "$tmp"; then
-            ableton_try_publish_launcher_file 644 "$tmp" "$data/$d"
-            ableton_try_publish_launcher_file 644 "$tmp" "$apps/$d"
+            ableton_install_project_file 644 "$tmp" "$data/$d"
+            ableton_install_project_file 644 "$tmp" "$apps/$d"
         else
             ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
         fi
         [ -z "$tmp" ] || rm -f -- "$tmp" 2>/dev/null || true
     done
 
-    # Retire only the legacy handlers written by this project.  Wine may still
-    # own files with these globally contested names, so an entry that does not
-    # route through ableton-live stays in place while the default moves to the
-    # project-specific ID.
-    for target in \
-        "$data/wine-protocol-ableton.desktop" "$data/wine-extension-auz.desktop" \
-        "$apps/wine-protocol-ableton.desktop" "$apps/wine-extension-auz.desktop"; do
-        [ -e "$target" ] || continue
-        if ableton_legacy_owned_path "$target"; then
-            # Exact legacy launchers are obsolete generated output. Removing
-            # them must not consult stale uninstall inventory or prestate.
-            rm -f -- "$target" 2>/dev/null || true
-            if [ -e "$target" ] || [ -L "$target" ]; then
-                echo "!! Ableton was installed, but an old shortcut could not be removed: $target" >&2 \
-                    || true
-            else
-                ableton_record_deowned "$target" >/dev/null 2>&1 || true
-            fi
-        else
-            echo "   kept an existing shortcut at $target" || true
-        fi
+    for d in "${app_icons[@]}"; do
+        ableton_install_project_file 644 \
+            "$root/desktop/icons/scalable/apps/$d.svg" "$icons/scalable/apps/$d.svg"
     done
+    for d in "${mimetype_icons[@]}"; do
+        ableton_install_project_file 644 \
+            "$root/desktop/icons/scalable/mimetypes/$d.svg" "$icons/scalable/mimetypes/$d.svg"
+    done
+    ableton_install_project_file 644 \
+        "$root/desktop/icons/symbolic/apps/live-symbolic.svg" \
+        "$icons/symbolic/apps/live-symbolic.svg"
+    ableton_install_project_file 644 "$root/desktop/x-wine-extension-auz.xml" "$mime_root/packages/x-wine-extension-auz.xml"
+    ableton_install_project_file 644 "$root/desktop/icons/application-ableton-live.xml" "$mime_root/packages/application-ableton-live.xml"
 
-    for source in "$root"/desktop/icons/scalable/apps/*.svg; do
-        ableton_try_publish_file 644 "$source" "$icons/scalable/apps/$(basename "$source")"
-    done
-    for source in "$root"/desktop/icons/scalable/mimetypes/*.svg; do
-        ableton_try_publish_file 644 "$source" "$icons/scalable/mimetypes/$(basename "$source")"
-    done
-    for source in "$root"/desktop/icons/symbolic/apps/*.svg; do
-        ableton_try_publish_file 644 "$source" "$icons/symbolic/apps/$(basename "$source")"
-    done
-    ableton_try_publish_file 644 "$root/desktop/x-wine-extension-auz.xml" "$mime_root/packages/x-wine-extension-auz.xml"
-    ableton_try_publish_file 644 "$root/desktop/icons/application-ableton-live.xml" "$mime_root/packages/application-ableton-live.xml"
-
-    if command -v xdg-mime >/dev/null 2>&1; then
-        if [ -e "$mimeapps_file" ] || [ -L "$mimeapps_file" ]; then
-            if [ ! -f "$mimeapps_file" ] || [ -L "$mimeapps_file" ]; then
-                mime_setup_ok=0
-                mimeapps_file=""
-            fi
-        fi
-        if [ -n "$mimeapps_file" ]; then
-            mime_stage="$(mktemp -d "${TMPDIR:-/tmp}/ableton-mimeapps.XXXXXX")" || true
-            [ -n "$mime_stage" ] || mime_setup_ok=0
-        fi
-        if [ -n "$mime_stage" ] && [ -e "$mimeapps_file" ] \
+    if [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 1 ]; then
+        :
+    elif command -v xdg-mime >/dev/null 2>&1; then
+        mime_stage="$(mktemp -d "${TMPDIR:-/tmp}/ableton-mimeapps.XXXXXX")" || true
+        [ -n "$mime_stage" ] || mime_setup_ok=0
+        if [ -n "$mime_stage" ] && [ -f "$mimeapps_file" ] \
            && ! cp -- "$mimeapps_file" "$mime_stage/mimeapps.list"; then
             rm -rf -- "$mime_stage" 2>/dev/null || true
+            echo "!! copy failed: $mimeapps_file -> $mime_stage/mimeapps.list" >&2 || true
+            ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
             mime_stage=""
             mime_setup_ok=0
         fi
@@ -1076,22 +908,23 @@ install_integration()
             mime_setup_ok=0
         fi
         if [ -n "$mime_stage" ] && [ -f "$mime_stage/mimeapps.list" ]; then
-            if ! ableton_atomic_restore_object "$mime_stage/mimeapps.list" "$mimeapps_file"; then
-                mime_setup_ok=0
-            fi
+            mime_failures_before="$ABLETON_OPTIONAL_FILE_FAILURES"
+            ableton_install_generated_config 644 "$mime_stage/mimeapps.list" "$mimeapps_file"
+            [ "$ABLETON_OPTIONAL_FILE_FAILURES" -eq "$mime_failures_before" ] \
+                || mime_setup_ok=0
         fi
         [ -z "$mime_stage" ] || rm -rf -- "$mime_stage" 2>/dev/null || true
     else
         mime_setup_ok=0
     fi
-    if [ "$mime_setup_ok" -ne 1 ]; then
+    if [ "$mime_setup_ok" -ne 1 ] && [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ]; then
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
         echo "!! Could not set Ableton as the default app for Live files. Ableton itself can still be used normally." >&2 \
             || true
     fi
 
     if [ -f "$max_unix" ]; then
-        ableton_try_publish_launcher_file 755 "$here/max9" "$bin/max9"
+        ableton_install_project_file 755 "$here/max9" "$bin/max9"
         for d in max9 wine-protocol-c74max; do
             tmp=""
             if tmp="$(mktemp)" \
@@ -1100,7 +933,7 @@ install_integration()
                     -e "s#@PREFIX@#$(sed_escape "$ABLETON_WINEPREFIX")#g" \
                     "$root/desktop/$d.desktop.in" > "$tmp"; then
                 target="$apps/$d.desktop"
-                ableton_try_publish_launcher_file 644 "$tmp" "$target"
+                ableton_install_project_file 644 "$tmp" "$target"
             else
                 ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
             fi
@@ -1108,13 +941,15 @@ install_integration()
         done
     fi
 
-    echo "== Refresh desktop menus and file associations ==" || true
+    ui_item_end ok
+    ui_item_begin i_refresh_desktop_menus
     if command -v update-mime-database >/dev/null 2>&1; then
         update-mime-database "$mime_root" >/dev/null 2>&1 || true
     fi
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$apps" >/dev/null 2>&1 || true
     fi
+    ui_item_end ok
 
     if [ "$ABLETON_OPTIONAL_FILE_FAILURES" -gt "$failures_before" ]; then
         echo "!! Some shortcuts or support files could not be updated. Run the installer again to retry them." >&2 \
@@ -1125,49 +960,30 @@ install_integration()
 
 install_link_assets()
 {
-    echo "== Install Ableton Link support files ==" || true
-    local tool failures_before="$ABLETON_OPTIONAL_FILE_FAILURES"
+    [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] || return 0
+    ui_item_begin i_install_link_files
+    local tool source tmp="" failures_before="$ABLETON_OPTIONAL_FILE_FAILURES"
     local managed_linkd="$ABLETON_DATA_HOME/ableton-linkd"
-    local legacy_custom="${ABLETON_PR182_CUSTOM_LINKD:-}"
-    # Support files are published atomically, so a currently running Link
-    # process may keep using its old executable until the policy step restarts
-    # it. Lifecycle and firewall changes belong to setup-link.sh; they must not
-    # become prerequisites for replacing files that this installer owns.
-    # setup-link.sh sources manifest.sh and stops without it, so a Link-only
-    # install ships it too.
-    for tool in config.sh lifecycle.sh manifest.sh; do
-        ableton_try_publish_file 644 "$here/lib/$tool" "$data/lib/$tool" file replace-generated
+    local installed_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ableton-linkd.service"
+    for source in "$here/../bin/ableton-linkd" "$root/dist/ableton-linkd"; do
+        [ -f "$source" ] || continue
+        linkd_source="$source"
+        break
     done
-    if [ -n "$legacy_custom" ]; then
-        # Seal the proof first and keep it: the VERSION write below stops the live
-        # recogniser matching, and the sealed copy is what authorises this path for
-        # the rest of the transaction.  Then dispose of it the way every other
-        # relinquished managed file is disposed of.  An unmodified object is removed
-        # and any pre-install file it displaced comes back; a changed one is left
-        # exactly where it is and only the ownership claim is dropped.
-        if ! ableton_txn_authorize_pr182_custom_link "$legacy_custom"; then
-            echo "!! Kept an older custom Link helper because the installer could not confirm that it created the file." >&2 \
-                || true
-        elif ableton_pr182_custom_link_owned "$legacy_custom"; then
-            if ableton_remove_managed_file "$legacy_custom"; then
-                echo "   removed the old custom Link helper" || true
-            else
-                ableton_record_deowned "$legacy_custom" >/dev/null 2>&1 || true
-                echo "!! Kept the older custom Link helper because its saved recovery data could not be used safely." >&2 \
-                    || true
-            fi
-        else
-            ableton_abandon_managed_file "$legacy_custom" >/dev/null 2>&1 \
-                || ableton_record_deowned "$legacy_custom" >/dev/null 2>&1 \
-                || true
-            echo "   kept the modified custom Link helper" || true
-        fi
+    unit_source="$here/ableton-linkd.service"
+    [ -f "$unit_source" ] || unit_source="$root/scripts/ableton-linkd.service"
+    # A Link-only run needs these common support files. A combined integration
+    # run already handled the same destinations once.
+    if [ "$want_integration" -eq 0 ]; then
+        for tool in config.sh lifecycle.sh manifest.sh preferences.sh ui.sh; do
+            ableton_install_project_file 644 "$here/lib/$tool" "$data/lib/$tool"
+        done
     fi
     # A configured external Link daemon may be executed by the controller, but
     # it is never installed, claimed, restored, or removed by this project.
     if [ "$ABLETON_LINKD" = "$managed_linkd" ]; then
         if [ -n "$linkd_source" ]; then
-            ableton_try_publish_file 755 "$linkd_source" "$managed_linkd" file replace-generated
+            ableton_install_project_file 755 "$linkd_source" "$managed_linkd"
         else
             ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
         fi
@@ -1177,21 +993,30 @@ install_link_assets()
                 || true
             ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
         else
-            printf '   using the configured Ableton Link helper and leaving it unchanged: %s\n' "$ABLETON_LINKD" \
-                || true
+            ui_status i_link_helper_external "$ABLETON_LINKD"
         fi
     fi
-    ableton_try_publish_file 755 "$here/ableton-linkctl" "$data/ableton-linkctl" file replace-generated
-    ableton_try_publish_file 755 "$here/setup-link.sh" "$data/setup-link.sh" file replace-generated
+    ableton_install_project_file 755 "$here/ableton-linkctl" "$data/ableton-linkctl"
+    ableton_install_project_file 755 "$here/setup-link.sh" "$data/setup-link.sh"
     if [ -n "$unit_source" ] && [ -f "$unit_source" ]; then
-        ableton_try_publish_file 644 "$unit_source" "$data/ableton-linkd.service" file replace-generated
+        ableton_install_project_file 644 "$unit_source" "$data/ableton-linkd.service"
     else
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
     fi
+    if [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ] \
+       && tmp="$(mktemp "${TMPDIR:-/tmp}/ableton-link-service.XXXXXX")" \
+       && render_link_unit > "$tmp"; then
+        ableton_install_generated_config 644 "$tmp" "$installed_unit"
+    elif [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 0 ]; then
+        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+        echo "!! copy failed: generated Ableton Link service -> $installed_unit" >&2 || true
+    fi
+    [ -z "$tmp" ] || rm -f -- "$tmp" 2>/dev/null || true
     if [ "$ABLETON_OPTIONAL_FILE_FAILURES" -gt "$failures_before" ]; then
         echo "!! Some Ableton Link files could not be updated. Run the installer again to retry them." >&2 \
             || true
     fi
+    ui_item_end ok
     return 0
 }
 
@@ -1201,12 +1026,8 @@ if [ "$want_runtime" -eq 1 ]; then
     # Promotion and final core validation are the runtime boundary in every
     # component combination. A direct call closes its private transaction now;
     # a coordinator-owned transaction stays open for the prefix/Live parent.
-    runtime_core_ready=1
     if [ "$own_transaction" -eq 1 ]; then
         finish_direct_runtime_transaction
-        if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
-            start_direct_optional_transaction
-        fi
     fi
 fi
 if [ "$want_integration" -eq 1 ]; then
@@ -1237,7 +1058,7 @@ if [ "$want_runtime" -eq 1 ]; then
     elif [ "$runtime_core_only" -eq 1 ]; then
         # A parent-owned core phase leaves all desktop work to the later repair
         # phase. A direct runtime update performs the same repair only after the
-        # runtime has committed, so launcher drift cannot undo valid Wine files.
+        # runtime has committed, so shortcut failures cannot undo valid Wine files.
         [ -n "$transaction_arg" ] || postcommit_runtime_panel=1
     else
         if ! ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" reconcile; then
@@ -1249,42 +1070,22 @@ if [ "$want_runtime" -eq 1 ]; then
 elif [ "$want_integration" -eq 1 ]; then
     if grep -qxF 'pipeasio-panel: built' "$ABLETON_WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" 2>/dev/null \
        || grep -qxF 'pipeasio-panel: skipped' "$ABLETON_WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" 2>/dev/null; then
-        if ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT" >/dev/null 2>&1; then
-            if ! ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install; then
-                ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
-                echo "!! Ableton was installed, but the PipeASIO settings shortcut could not be updated." >&2 \
-                    || true
-            fi
-        else
-            echo "   kept existing PipeASIO panel links because this runtime uses another panel format" \
+        if ! ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install; then
+            ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
+            echo "!! Ableton was installed, but the PipeASIO settings shortcut could not be updated." >&2 \
                 || true
         fi
     else
-        echo "   launcher integration continues with the available PipeASIO files" || true
+        ui_status i_panel_files_available
     fi
 fi
 
 if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
     version_tmp=""
-    version_ready=0
     if mkdir -p -- "$data" \
        && version_tmp="$(mktemp "$data/.VERSION.XXXXXX")" \
        && printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" > "$version_tmp"; then
-        if [ "$want_runtime" -eq 0 ]; then
-            # This label is repairable metadata. Publish it atomically without
-            # adding it to a parent-owned core journal, then include it in the
-            # best-effort installed-file list below.
-            if chmod 644 "$version_tmp" \
-               && ableton_atomic_restore_object "$version_tmp" "$data/VERSION" \
-               && ableton_record_owned "$data/VERSION"; then
-                version_ready=1
-            fi
-        elif ableton_publish_file 644 "$version_tmp" "$data/VERSION" file replace-generated; then
-            version_ready=1
-        fi
-    fi
-    if [ "$version_ready" -eq 1 ]; then
-        :
+        ableton_install_project_file 644 "$version_tmp" "$data/VERSION"
     else
         ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
         echo "!! Ableton was installed, but its support files could not be fully updated." >&2 \
@@ -1292,106 +1093,80 @@ if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
     fi
     [ -z "$version_tmp" ] || rm -f -- "$version_tmp" 2>/dev/null || true
 fi
-if [ "$runtime_core_only" -eq 0 ] \
-   && { [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ] \
-        || { [ "$want_runtime" -eq 1 ] && [ "$ownership_manifest_was_present" -eq 1 ]; } \
-        || [ "${#ABLETON_OWNED_PATHS[@]}" -gt 0 ]; }; then
-    if ! ableton_write_ownership_manifest "$ABLETON_STATE_HOME/install-manifest.tsv"; then
-        ABLETON_OPTIONAL_FILE_FAILURES=$((ABLETON_OPTIONAL_FILE_FAILURES + 1))
-        echo "!! Ableton was installed, but the installed-file list could not be updated." >&2 \
-            || true
-    fi
-fi
 
 if [ -n "$stage" ]; then
     # The validated runtime has already moved out of this private scratch tree.
-    # Failure to remove that scratch directory does not invalidate the promoted
-    # runtime or any journalled integration changes, so it must not trigger an
-    # otherwise unnecessary rollback.
+    # Failure to remove that scratch directory does not invalidate Wine.
     if ! rm -rf -- "$stage" || [ -e "$stage" ] || [ -L "$stage" ]; then
         echo "!! Wine was installed, but temporary files remain at $stage" >&2 || true
     fi
     stage=""
 fi
-if [ "$own_transaction" -eq 1 ]; then
-    if [ "$optional_files_ready" -eq 1 ] || [ "$runtime_core_ready" -eq 1 ]; then
-        if ! commit_transaction "$ABLETON_TRANSACTION_DIR" 0 1 >/dev/null 2>&1; then
-            if [ "$direct_optional_transaction" -eq 1 ]; then
-                echo "!! Ableton's files are ready, but the installer could not finish its final housekeeping." >&2 \
-                    || true
-            elif [ "$runtime_core_ready" -eq 1 ]; then
-                echo "!! Wine is ready, but the installer may not be able to restore the previous Wine version automatically. Temporary recovery files may remain." >&2 \
-                    || true
-            else
-                echo "!! Ableton's files are ready, but the installer could not finish its final housekeeping." >&2 \
-                    || true
-            fi
-        fi
-    else
-        commit_transaction "$ABLETON_TRANSACTION_DIR" 0 1
-    fi
-    if ! rm -rf -- "$ABLETON_TRANSACTION_DIR"; then
-        if [ "$direct_optional_transaction" -eq 1 ]; then
-                echo "!! Installed files are ready, but temporary installer data remains at $ABLETON_TRANSACTION_DIR" >&2 \
-                    || true
-        elif [ "$runtime_core_ready" -eq 1 ]; then
-                echo "!! Wine is ready, but temporary installer data remains at $ABLETON_TRANSACTION_DIR" >&2 \
-                    || true
-        else
-                echo "!! Installed files are ready, but temporary installer data remains at $ABLETON_TRANSACTION_DIR" >&2 \
-                    || true
-        fi
-    fi
-    if [ "$direct_optional_transaction" -eq 1 ]; then
-        direct_optional_transaction=0
-        own_transaction=0
-        ABLETON_TRANSACTION_DIR=""
-        export ABLETON_TRANSACTION_DIR
-    fi
-fi
 if [ "$postcommit_runtime_panel" -eq 1 ]; then
     # The runtime is committed and its private records are gone. Panel repair is
-    # deliberately unjournalled and warning-only from this point forward.
+    # deliberately warning-only from this point forward.
     unset ABLETON_TRANSACTION_DIR
     panel_repair_status=0
     set +e
-    if ! ableton_config_validate_layout 'runtime prefix data config state bin'; then
-        panel_repair_status=126
-    else
-        (
-            set -e
-            ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" reconcile
-            ableton_write_ownership_manifest "$ABLETON_STATE_HOME/install-manifest.tsv" || exit 125
-        )
-        panel_repair_status=$?
-    fi
+    (
+        set -e
+        ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" reconcile
+    )
+    panel_repair_status=$?
     set -e
     case "$panel_repair_status" in
         0) ;;
-        125)
-            echo "!! Wine was installed, but the installed-file list could not be updated." >&2 \
-                || true ;;
-        126)
-            echo "!! Wine was installed, but the PipeASIO settings shortcut was skipped because one of its locations cannot be used safely." >&2 \
-                || true ;;
         *)
             echo "!! Wine was installed, but the PipeASIO settings shortcut could not be updated." >&2 \
                 || true ;;
     esac
+fi
+
+# The installed-file list is the final publication for every public component
+# run. It always names the configured runtime once, while file/config/symlink
+# rows come only from successful fixed-path publications above.
+ABLETON_RUNTIME_INSTALLED=1
+export ABLETON_RUNTIME_INSTALLED
+if ! ableton_write_ownership_manifest; then
+    manifest_publication_failed=1
+    echo "!! Ableton was installed, but its installed-file list could not be published." >&2 \
+        || true
+    exit 1
+fi
+
+if [ "$ABLETON_OPTIONAL_FILES_BACKED_UP" -gt 0 ]; then
+    ui_status i_backed_up_files "$ABLETON_OPTIONAL_FILES_BACKED_UP"
+fi
+if [ "$ABLETON_OPTIONAL_FILE_CANCELLED" -eq 1 ]; then
+    trap - EXIT
+    ui_cleanup 4
+    exit 4
 fi
 if [ "${ABLETON_INTERNAL_OPTIONAL_STATUS:-0}" = 1 ] \
    && [ "$ABLETON_OPTIONAL_FILE_FAILURES" -gt 0 ]; then
     # Internal advisory status for the public installer summary. All selected
     # repair work and transaction cleanup above has already finished.
     trap - EXIT
+    ui_cleanup 3
     exit 3
 fi
-if [ -z "$transaction_arg" ]; then
-    echo "OK: Installation complete." || true
-fi
-if [ "$want_integration" -eq 1 ]; then
-    printf '   Audio report: %s/audio-report.sh\n' "$data" || true
-    printf '   NTSync check: %s/check-ntsync.sh\n' "$data" || true
-    printf '   Realtime setup: %s/setup-realtime.sh\n' "$data" || true
-    printf '   Restore previous Wine version: %s/rollback.sh\n' "$data" || true
+# A standalone run reports its own outcome; the public installer's summary
+# covers a coordinated one.
+if [ -z "$transaction_arg" ] && [ "${ABLETON_INTERNAL_OPTIONAL_STATUS:-0}" != 1 ]; then
+    [ "$want_runtime" -eq 0 ] || ui_status i_runtime_ready
+    if [ "$ABLETON_OPTIONAL_FILE_FAILURES" -gt 0 ]; then
+        ui_warn i_integration_partial
+    elif [ "$ABLETON_OPTIONAL_FILES_KEPT" -gt 0 ]; then
+        ui_warn i_kept_files "$ABLETON_OPTIONAL_FILES_KEPT"
+    elif [ "$want_integration" -eq 1 ]; then
+        ui_status i_launchers_ready
+    elif [ "$want_link" -eq 1 ]; then
+        ui_status i_link_files_ready
+    fi
+    if [ "$want_integration" -eq 1 ]; then
+        ui_info i_hint_audio_report "$data"
+        ui_info i_hint_ntsync_check "$data"
+        ui_info i_hint_realtime_setup "$data"
+        ui_info i_hint_rollback "$data"
+    fi
 fi
