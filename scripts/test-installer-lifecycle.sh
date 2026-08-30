@@ -479,6 +479,12 @@ grep -qF '[ableton-linux][installer][stdout]    backup: /known/recovery/path' \
     || fail "the .run log omitted a successful backup path"
 ! grep -qF '[ableton-linux][installer][ui]' "$base"/ableton-linux-installer-*.log \
     || fail "the .run log repeats the rendered installer tree"
+grep -qF '[ableton-linux][installer][step] started 1/8: PREPARE THE INSTALLER KIT' \
+    "$base"/ableton-linux-installer-*.log \
+    || fail "the .run log omits step activity"
+grep -qF '[ableton-linux][installer][task] completed: Copy the embedded kit' \
+    "$base"/ableton-linux-installer-*.log \
+    || fail "the .run log omits completed task activity"
 grep -qF '[WARN] ' "$base"/ableton-linux-installer-*.log \
     && grep -qF 'recoverable stub warning' "$base"/ableton-linux-installer-*.log \
     || fail "a recoverable successful-run warning remained an error in the log"
@@ -1274,6 +1280,8 @@ for cleanup_failure in component prefix; do
         || fail "$cleanup_failure cleanup failure hides the completed install"
     grep -q 'old recovery files could not be removed' "$base/err" \
         || fail "$cleanup_failure cleanup failure omits its warning"
+    grep -qF 'Remove ableton-linux prefix recovery files' "$base/out" \
+        || fail "$cleanup_failure cleanup runs without a visible progress item"
     [ -x "$base/runtime/bin/wine" ] && [ -f "$base/prefix/system.reg" ] \
         && [ -f "$live_exe" ] \
         || fail "$cleanup_failure cleanup failure discards the committed core"

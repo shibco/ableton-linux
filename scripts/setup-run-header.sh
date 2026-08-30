@@ -36,9 +36,10 @@ if ! (umask 077; : > "$log_path") 2>/dev/null; then
         log_path=/dev/null
     fi
 fi
-# The saved log records wrapper events and the child process's stdout and
-# stderr. The renderer writes only to the terminal.
+# The saved log records wrapper events, plain operation events, and the child
+# process's stdout and stderr. The renderer writes only to the terminal.
 export ABLETON_INSTALLER_LOG=/dev/null
+export ABLETON_INSTALLER_EVENT_LOG="$log_path"
 
 log_event()
 {
@@ -692,6 +693,8 @@ case "$selected_action" in
 esac
 export ABLETON_UI_ACTION="$ui_action"
 export ABLETON_UI_KIT=1
+printf -v selected_command '%q ' "${original_args[@]}"
+log_event INFO run "selected command: ${selected_command% }"
 
 if [ "$selected_action" = extract ]; then
     ui_step_begin s_extract

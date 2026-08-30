@@ -1443,6 +1443,11 @@ finish_runtime_rollback()
     rm -f -- "$marker" || return 1
 }
 
+remove_prefix_recovery_files()
+{
+    "$here/setup-prefix.sh" --commit "$transaction" >> "$cleanup_log" 2>&1
+}
+
 # Validate the core rollback records before discarding any of them.  These
 # records cover only the runtime and prefix; generated desktop and Link files
 # are repaired after this point and cannot invalidate the core install.
@@ -1479,7 +1484,16 @@ if [ "$component_commit_ok" -eq 1 ] \
    && ! finish_runtime_rollback >> "$cleanup_log" 2>&1; then
     cleanup_status=1
 fi
-"$here/setup-prefix.sh" --commit "$transaction" >> "$cleanup_log" 2>&1 || cleanup_status=1
+if ! ui_run d_remove_prefix_recovery -- remove_prefix_recovery_files; then
+    cleanup_status=1
+fi
+if [ -n "${ABLETON_INSTALLER_EVENT_LOG:-}" ] && [ "$cleanup_log" != /dev/null ]; then
+    while IFS= read -r cleanup_line || [ -n "$cleanup_line" ]; do
+        cleanup_level=INFO
+        case "$cleanup_line" in '!! '*) cleanup_level=ERR ;; esac
+        ui__event "$cleanup_level" cleanup "$cleanup_line"
+    done < "$cleanup_log"
+fi
 if ! rm -f -- "$transaction/active"; then
     cleanup_status=1
 fi

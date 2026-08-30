@@ -733,7 +733,7 @@ tail_start="$(grep -n '^# END UI_TEXT' "$ui_lib" | head -1 | cut -d: -f1)"
 [ "$(grep -n '^declare -A UI_TEXT=' "$ui_lib" | cut -d: -f1)" -lt "$tail_start" ] || fail "the dictionary opens ui.sh"
 leaks="$(tail -n +"$tail_start" "$ui_lib" | grep -v '^[[:space:]]*#' \
     | grep -E '^[[:space:]]*(\{ )?(printf|echo)' \
-    | grep -v '>> *"\$UI_LOG"\|>>"\$UI_LOG"\|>&2' \
+    | grep -v '>> *"\$UI_LOG"\|>>"\$UI_LOG"\|>> *"\$event_log"\|>&2' \
     | sed -E 's/%[-0-9.*]*[sdc]//g; s/\\[nrte]//g; s/\\e\[[0-9;?]*[A-Za-z]//g; s/\\033\[[0-9;?]*[A-Za-z]//g; s/\$\{[^}]*\}//g; s/\$[A-Za-z_0-9]+//g' \
     | grep -E "'[^']*[A-Za-z][^']*'|\"[^\"]*[A-Za-z][^\"]*\"" \
     | grep -v 'UI_TEXT\[' || true)"
@@ -909,7 +909,7 @@ grep -q '^  > boom from the child$' "$work/fail.screen" || fail "the child's err
 log="$(ls -t "$work"/ableton-linux-installer-*.log 2>/dev/null | head -1)"
 [ -n "$log" ] || fail "the .run wrote its log beside itself"
 grep -q '^\[ERR\] .*boom from the child' "$log" || fail "the child's error is in the log as ERR"
-! grep -q 'Copy the embedded kit\|Step 2 Failed!' "$log" \
+! grep -qF '[ableton-linux][installer][ui]' "$log" \
     || fail "the log repeats the rendered tree"
 ! LC_ALL=C grep -q $'\033' "$log" || fail "the log has no escape sequences"
 ok "a failing child closes its item and step, and its raw error reaches the log and footer"

@@ -293,6 +293,7 @@ declare -A UI_TEXT=(
     [d_prefix_held_command]='WINEPREFIX=%s %s/bin/wineserver -k'
     [d_prefix_programs_stopped]='Stopped the programs in the ableton-linux prefix'
     [d_prefix_programs_left]='Left them running; the next update may ask you to close them'
+    [d_remove_prefix_recovery]='Remove ableton-linux prefix recovery files'
     [d_link_configured_mode]='Ableton Link is set to %s mode'
     [d_settings_ready]='Saved settings are ready'
     [d_sum_runtime_installed]='The Wine runtime is installed'
@@ -637,6 +638,18 @@ ui__log()   # level, text
     return 0
 }
 
+ui__event()   # level, context, text
+{
+    local level="$1" context="$2" message="$3" stamp event_log="${ABLETON_INSTALLER_EVENT_LOG:-}"
+    [ -n "$event_log" ] && [ "$event_log" != /dev/null ] || return 0
+    message="${message//$'\r'/ }"
+    message="${message//$'\n'/ }"
+    message="${message//$'\033'/Escape}"
+    printf -v stamp "$UI_STAMP_FORMAT" -1
+    printf '%-7s%s [ableton-linux][installer][%s] %s\n' "[$level]" "$stamp" "$context" "$message" >> "$event_log" 2>/dev/null || true
+    return 0
+}
+
 ui__screen()   # raw bytes to the screen, no log
 {
     { printf '%s' "$1" >&"$UI_FD"; } 2>/dev/null || true
@@ -767,6 +780,7 @@ ui_banner()   # version
 {
     local t title version side sep left=26 right=17 l r
     ui__init
+    ui__event INFO banner "${UI_TEXT[banner_title]} $1 — ${UI_TEXT[banner_url]}"
     ui__g box_top; t="$UI_G"
     ui__rep "${t:1:1}" "$left"; l="$UI_R"; ui__rep "${t:3:1}" "$right"; r="$UI_R"
     ui__emit "${t:0:1}$l${t:2:1}$r${t:4:1}"
@@ -792,14 +806,15 @@ ui_blank()
 ui_heading()   # key
 {
     ui__init
-    ui__text "$@"; ui__g trunk; ui__emit "$UI_G $UI_R"
+    ui__text "$@"; ui__event INFO section "$UI_R"; ui__g trunk; ui__emit "$UI_G $UI_R"
 }
 
 ui_row()   # label key, value
 {
-    local label
+    local label text
     ui__init
-    ui__text "$1"; ui__pad "$UI_R" 14; label="$UI_R"
+    ui__text "$1"; text="$UI_R"; ui__event INFO host "$text: $2"
+    ui__pad "$text" 14; label="$UI_R"
     ui__g trunk
     ui__wrap "$UI_G  $label " "$UI_G                 " "$2"
 }
@@ -807,7 +822,7 @@ ui_row()   # label key, value
 ui_note()   # key, args
 {
     ui__init
-    ui__text "$@"; ui__g trunk
+    ui__text "$@"; ui__event INFO note "$UI_R"; ui__g trunk
     ui__wrap "$UI_G  " "$UI_G  " "$UI_R"
 }
 
@@ -815,7 +830,7 @@ ui_host_warning()   # key, args
 {
     local t
     ui__init
-    ui__text "$@"; ui__g trunk; t="$UI_G"; ui__g warn
+    ui__text "$@"; ui__event WARN host "$UI_R"; ui__g trunk; t="$UI_G"; ui__g warn
     ui__wrap "$t  $UI_G " "$t    " "$UI_R" WARN
 }
 
@@ -825,7 +840,7 @@ ui_menu_option()   # key, [default], args
     shift
     if [ "${1:-}" = default ]; then ui__text m_default_hint; hint="$UI_R"; shift; fi
     ui__init
-    ui__text "$key" "$@"; ui__g trunk; t="$UI_G"; ui__g detail
+    ui__text "$key" "$@"; ui__event INFO option "$UI_R$hint"; ui__g trunk; t="$UI_G"; ui__g detail
     ui__emit "$t  $UI_G $UI_R$hint"
 }
 
@@ -841,7 +856,7 @@ ui_preflight_option()   # key, default|current|plain, [args]
         current) ui__text q_current_tag; hint="$UI_R" ;;
     esac
     ui__init
-    ui__text "$key" "$@"; ui__g trunk; t="$UI_G"; ui__g detail
+    ui__text "$key" "$@"; ui__event INFO option "$UI_R$hint"; ui__g trunk; t="$UI_G"; ui__g detail
     ui__emit "$t  $UI_G $UI_R$hint"
 }
 
@@ -871,12 +886,14 @@ ui_preflight_read()   # displayed choices
         ui__screen "$UI_ANSWER"$'\n'
     fi
     ui__log INFO "answer: ${UI_ANSWER:-(default)}"
+    ui__event INFO answer "${UI_ANSWER:-(default)}"
 }
 
 ui_prompt()   # key: a prompt on the trunk, no newline; the caller reads
 {
     ui__init
     ui__text "$@"; ui__g trunk
+    ui__event INFO prompt "$UI_R"
     ui__decorate wait "$UI_G  $UI_R "
     ui__screen "$UI_R"
     ui__log INFO "$UI_G  $UI_R"
@@ -891,6 +908,7 @@ ui_ask()   # prompt key, hint key, hint args
     ui__init
     ui__text "$1"; prompt="$UI_R"; shift
     ui__text "$@"; hint="$UI_R"
+    ui__event INFO question "$prompt"
     ui__g trunk; t="$UI_G"
     ui__read_inline "$t  $prompt" "$t  $hint"
 }
@@ -921,6 +939,7 @@ ui__read_inline()   # prompt line, hint line
         [ "$rc" -eq 0 ] || ui__screen $'\n'
     fi
     ui__log INFO "answer: ${UI_ANSWER:-(default)}"
+    ui__event INFO answer "${UI_ANSWER:-(default)}"
     return 0
 }
 
@@ -953,6 +972,7 @@ ui_step_begin()   # step key
     fi
     ui__text "$key"; name="${UI_R^^}"
     counter="$n/$x"
+    ui__event INFO step "started $counter: $name"
     w1=$(( ${#counter} + 2 )); w2=$(( ${#name} + 2 ))
     ui__g step_join; left="$UI_G"
     ui__g step_top; t="$UI_G"
@@ -983,8 +1003,10 @@ ui_step_end()   # ok|fail
     ui__g sub_trunk; ui__emit "$t  $UI_G"
     if [ "$1" = ok ]; then
         ui__g ok; mark="$UI_G"; ui__text s_complete "$UI_STEP_N"
+        ui__event OK step "completed step $UI_STEP_N"
     else
         ui__g fail; mark="$UI_G"; ui__text s_failed "$UI_STEP_N"
+        ui__event ERR step "failed step $UI_STEP_N"
     fi
     text="$UI_R"
     ui__g last
@@ -1087,12 +1109,14 @@ ui_item_begin()   # key, args
     ui__init
     ui__text "$@"
     ui__item_open "$UI_R"
+    ui__event INFO task "started: $UI_ITEM_TITLE"
 }
 
 ui_status()   # key, args
 {
     ui__init
     ui__text "$@"
+    ui__event INFO detail "$UI_R"
     ui__detail detail "$UI_R" INFO status
 }
 
@@ -1101,6 +1125,7 @@ ui_info()   # key, args
     local text
     ui__init
     ui__text "$@"; text="$UI_R"
+    ui__event INFO detail "$text"
     ui__detail_blank
     ui__detail info "$text" INFO status
 }
@@ -1110,6 +1135,7 @@ ui_warn()   # key, args
     local text
     ui__init
     ui__text "$@"; text="$UI_R"
+    ui__event WARN detail "$text"
     ui__detail_blank
     ui__detail warn "$text" WARN warn
 }
@@ -1139,8 +1165,10 @@ ui_item_end()   # ok|fail
     fi
     if [ "$1" = ok ]; then
         ui__g ok; UI_ITEM_STATE=complete
+        ui__event OK task "completed: $UI_ITEM_TITLE"
     else
         ui__g fail; level=ERR; UI_ITEM_STATE=fail
+        ui__event ERR task "failed: $UI_ITEM_TITLE"
     fi
     mark="$UI_G"
     UI_ITEM_MARK="$mark"
@@ -1291,6 +1319,7 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
     ui__text "$key" "${targs[@]}"; title="$UI_R"
     [ "$UI_ITEM_OPEN" -eq 0 ] || ui_item_end ok
     ui_settle
+    ui__event INFO task "started: $title"
     if [ "$UI_STEP_ITEMS" -gt 0 ]; then UI_ITEM_LAST=0; ui__detail_blank; fi
     UI_STEP_ITEMS=$((UI_STEP_ITEMS + 1))
     UI_ITEM_WAIT=0; UI_ITEM_STATE=active; UI_ITEM_OPEN=1
@@ -1334,6 +1363,11 @@ ui_run()   # key [title args] [--progress FILE TOTAL] -- command...
     fi
     UI_ITEM_OPEN=0
     ui__log "$level" "$UI_ITEM_TITLE $mark"
+    if [ "$rc" -eq 0 ]; then
+        ui__event OK task "completed: $UI_ITEM_TITLE"
+    else
+        ui__event ERR task "failed with status $rc: $UI_ITEM_TITLE"
+    fi
     ui_settle
     return "$rc"
 }
@@ -1354,6 +1388,7 @@ ui_question()
         ui__screen $'\r\033[2K\033[?25h'
     fi
     ui__text "$title_key"
+    ui__event INFO question "$UI_R"
     ui__item_open "$UI_R" wait
     ui__detail_blank
     for key in "$@"; do
@@ -1362,6 +1397,7 @@ ui_question()
         label="${text//[/}"; label="${label//]/}"; label="${label,,}"
         letters+=("$letter"); labels+=("$label")
         [ "$letter" != "$default" ] || { ui__text q_default_tag; text="$text$UI_R"; }
+        ui__event INFO option "$text"
         ui__detail detail "$text"
     done
     ui__detail_blank
@@ -1424,6 +1460,7 @@ ui_footer()
         *) ui__text f_failed ;;
     esac
     state="$UI_R"
+    ui__event INFO summary "$label $version: $state; ${seconds}s; warnings=$warnings; errors=$errors"
     [ -z "$runtime" ] || { ui__text f_runtime; rows+=("$UI_R $runtime"); }
     [ -z "$prefix" ] || { ui__text f_prefix; rows+=("$UI_R $prefix"); }
     right=10
@@ -1517,6 +1554,11 @@ ui_cleanup()
         fi
         UI_ITEM_MARK="$UI_G"
         ui__finish_item_spinner "$UI_G" "$UI_ITEM_STATE"
+        if [ "$outcome" = ok ]; then
+            ui__event OK task "completed: $UI_ITEM_TITLE"
+        else
+            ui__event ERR task "interrupted: $UI_ITEM_TITLE"
+        fi
         UI_ITEM_OPEN=0
         if [ "$outcome" = ok ]; then ui__log OK "$UI_ITEM_TITLE $UI_G"; else ui__log ERR "$UI_ITEM_TITLE $UI_G"; fi
     fi
