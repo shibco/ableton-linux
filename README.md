@@ -51,10 +51,6 @@ performance with:
 
 Experimental AArch64 work for Apple Silicon computers that run Asahi Linux is
 tracked in [draft PR 259](https://github.com/shibco/ableton-linux/pull/259).
-PipeASIO and build auditing are not ready yet. Current test builds require
-clearing Live's saved application state before each launch and removing Demo
-Songs to avoid a crash; Ableton Index still crashes and shows error pop-ups.
-The draft PR tracks the required workarounds while those limits are being fixed.
 
 ## Installation
 
