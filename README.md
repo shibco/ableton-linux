@@ -88,6 +88,8 @@ straightforward:
 2. Download [the latest version of our installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run).
 3. Double-click the `install-ableton-latest.run` file.
 
+Note: Installation on NixOS requires using the flake. [Details here](FLAKE.md).
+
 You can also run the installer from the terminal.
 
    ```bash
@@ -260,6 +262,8 @@ There are two ways to install Windows plugins:
 
 You can also use the command in step 2 to run patches, software updaters, and
 copy-protection tools.
+
+If you are using the nix flake, use the procedure [detailed here](FLAKE.md#wine) instead.
 
 ### If you have a VST3 file
 
