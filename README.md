@@ -433,9 +433,7 @@ Maintained by [Cade 'shibco' Diehm](https://shiba.computer/about) and
 [astrazds](https://github.com/astrazds),
 [Version33](https://github.com/Version33),
 [Sajattack](https://github.com/sajattack) (for the Aarch64 port work),
-[0tanh](https://github.com/0tanh). [yioannides](https://github.com/yioannides)
-made the application and MIME icons and [haushaushaus](https://github.com/haushaushaus)
-provided the Ableton project and sets we use for benchmarking and testing.
+[0tanh](https://github.com/0tanh), and [yioannides](https://github.com/yioannides) for the application and MIME icons.
 
 This project is based on the `d2d1-dcomp` stack from 
 [giang17/wine](https://github.com/giang17/wine), specifically, we forked
