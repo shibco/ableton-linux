@@ -470,6 +470,8 @@ if ableton_install_state_has_active_transaction; then
     [ -n "$active_transaction" ] || active_transaction="$ABLETON_STATE_HOME/transactions"
     echo "ableton-live: an earlier install stopped before it restored the Wine runtime or prefix." >&2
     echo "ableton-live: keep the recovery files at $active_transaction and report the problem before launching Live." >&2
+    echo "ableton-live: To unblock the launcher after reporting, remove the recovery directory:" >&2
+    echo "ableton-live:   rm -rf \"$active_transaction\"" >&2
     ableton_install_lock_release || true
     exit 1
 fi
