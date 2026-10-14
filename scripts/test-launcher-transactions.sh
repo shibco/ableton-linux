@@ -38,7 +38,7 @@ new_env()
 run_isolated()
 {
     local base="$1"; shift
-    env HOME="$base/home" XDG_CONFIG_HOME="$base/config" XDG_DATA_HOME="$base/data" \
+    env -u WINEDLLOVERRIDES HOME="$base/home" XDG_CONFIG_HOME="$base/config" XDG_DATA_HOME="$base/data" \
         XDG_STATE_HOME="$base/state" XDG_CACHE_HOME="$base/cache" \
         XDG_RUNTIME_DIR="$base/run" TMPDIR="$base/tmp" \
         ABLETON_SHORTCUTS=preserve ABLETON_MAX_AUDIO_THREADS=off \
@@ -71,6 +71,7 @@ if [ -n "${ABLETON_TEST_PREFERENCE_ENV_LOG:-}" ]; then
         "${ABLETON_SHORTCUTS:-unset}" "${ABLETON_DPI_MODE:-unset}" \
         "${ABLETON_MAX_AUDIO_THREADS:-unset}" "${ABLETON_RT:-unset}" \
         "${ABLETON_POWER:-unset}" >> "$ABLETON_TEST_PREFERENCE_ENV_LOG"
+    printf 'dlloverrides=%s\n' "${WINEDLLOVERRIDES:-}" >> "$ABLETON_TEST_PREFERENCE_ENV_LOG"
 fi
 if [ "${1:-}" = reg ]; then
     # Real reg.exe brings up a wineserver which inherits the transaction token
@@ -329,6 +330,9 @@ for launcher in ableton-live max9; do
         "$base/preference-env.log" \
         || fail "$launcher does not apply all saved settings before Wine"
     if [ "$launcher" = ableton-live ]; then
+        grep -qxF 'dlloverrides=vcruntime140,vcruntime140_1=n,b;mscoree,mshtml=' \
+            "$base/preference-env.log" \
+            || fail "Live does not prefer the installed native C++ exception handlers"
         if grep -q '^-MaxAudioThreads' "$audio_preferences/Options.txt" \
            || [ -e "$audio_preferences/.ableton-linux-max-audio-threads-v1" ]; then
             fail "ableton-live does not apply saved Let Live decide to Options.txt"
@@ -348,7 +352,8 @@ for launcher in ableton-live max9; do
     write_launcher_preferences "$base" balanced
     run_preferences_launcher "$base" "$here/$launcher" "$image" \
         ABLETON_SHORTCUTS=take ABLETON_DPI_MODE=fractional \
-        ABLETON_MAX_AUDIO_THREADS=8 ABLETON_RT=auto ABLETON_POWER=performance
+        ABLETON_MAX_AUDIO_THREADS=8 ABLETON_RT=auto ABLETON_POWER=performance \
+        WINEDLLOVERRIDES='vcruntime140,vcruntime140_1=b;example=n'
     grep -qF 'launch -p performance' "$base/power.log" \
         || fail "$launcher ignores a one-run power override over saved Balanced"
     grep -qF 'shortcuts=take dpi=fractional threads=8 rt=auto power=performance' \
@@ -357,6 +362,9 @@ for launcher in ableton-live max9; do
     grep -qF 'env rt=auto' "$base/chrt.log" \
         || fail "$launcher does not consume saved/overridden Automatic RT behavior"
     if [ "$launcher" = ableton-live ]; then
+        grep -qxF 'dlloverrides=vcruntime140,vcruntime140_1=n,b;vcruntime140,vcruntime140_1=b;example=n;mscoree,mshtml=' \
+            "$base/preference-env.log" \
+            || fail "Live does not preserve caller DLL overrides after its runtime defaults"
         grep -qxF take "$base/shortcut.log" \
             || fail "ableton-live does not consume the shortcut preference"
         if ! grep -qxF -- '-MaxAudioThreads=8' "$audio_preferences/Options.txt" \

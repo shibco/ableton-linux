@@ -555,7 +555,13 @@ fi
 # Keep Wine's Mono/.NET and HTML-help hooks out of Live: nothing in the
 # stack loads them. winemenubuilder.exe is deliberately absent here: setup-prefix.sh
 # already disables it registry-side, and that form stays canonical.
-export WINEDLLOVERRIDES="${caller_winedlloverrides:+$caller_winedlloverrides;}mscoree,mshtml="
+# setup-prefix.sh installs Microsoft's VC++ runtime, but Wine can still choose
+# its builtin exception handlers. With Max 9.1.5, inserting LFO or Shaper then
+# faults in ucrtbase!__CxxUnregisterExceptionObject via __CxxFrameHandler4.
+# Keep the matching native vcruntime pair together, with builtin fallback for
+# incomplete prefixes. Explicit caller overrides come last and remain usable
+# for troubleshooting (Wine resolves duplicate module entries last-wins).
+export WINEDLLOVERRIDES="vcruntime140,vcruntime140_1=n,b;${caller_winedlloverrides:+$caller_winedlloverrides;}mscoree,mshtml="
 # Opt-in A/B against the Learn View flicker fix:
 # ABLETON_DCOMP=off disables DirectComposition outright. Off contradicts the d2d1-dcomp
 # stack this runtime ships (WINED3D_DCOMP_FORCE_FULL_REDRAW above), so it is no default.
