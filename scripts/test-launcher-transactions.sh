@@ -66,6 +66,7 @@ case " $* " in
         exit 0 ;;
 esac
 printf 'wine %s\n' "$*" >> "${ABLETON_TEST_WINE_LOG:?}"
+[ -z "${ABLETON_TEST_CWD_LOG:-}" ] || printf '%s\t%s\n' "$(pwd)" "$*" >> "$ABLETON_TEST_CWD_LOG"
 if [ -n "${ABLETON_TEST_PREFERENCE_ENV_LOG:-}" ]; then
     printf 'shortcuts=%s dpi=%s threads=%s rt=%s power=%s\n' \
         "${ABLETON_SHORTCUTS:-unset}" "${ABLETON_DPI_MODE:-unset}" \
@@ -1453,6 +1454,47 @@ kill "$non_wine_pid" "$sibling_prefix_wine_pid" 2>/dev/null || true
 wait "$non_wine_pid" 2>/dev/null || true
 wait "$sibling_prefix_wine_pid" 2>/dev/null || true
 ok "prefix promotion recognizes an exact-prefix Wine process from another runtime"
+
+# Live walks its working directory recursively before its window appears, so
+# the directory the launcher inherits must never reach Wine (#348). Start from
+# the fixture's home, as a menu entry without Path= or a terminal would, and
+# check every Wine command: a plain launch and a relative set run from Live's
+# Program folder, the set keeps naming the same file, and a cold callback,
+# which resolves no edition, runs from the prefix's system32.
+base="$(new_env launch-working-directory)"
+prepare_fixture "$base"
+program_dir="$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program"
+system32_dir="$base/prefix/drive_c/windows/system32"
+mkdir -p -- "$base/home/Sets" "$system32_dir"
+printf 'set\n' > "$base/home/Sets/My Song.als"
+cwd_launch()   # label [ARG]
+{
+    local label="$1"; shift
+    : > "$base/wine.log"
+    : > "$base/cwd-$label.log"
+    ( cd -- "$base/home" \
+        && export ABLETON_TEST_CWD_LOG="$base/cwd-$label.log" \
+        && run_live "$base" "$@" ) >"$base/out" 2>"$base/err" || true
+}
+cwd_launch plain
+grep -qxF "$program_dir"$'\t''C:\ProgramData\Ableton\Live 12 Suite\Program\Ableton Live 12 Suite.exe' \
+    "$base/cwd-plain.log" || fail "plain launch did not start Live from its Program folder"
+cwd_launch relative-set 'Sets/My Song.als'
+grep -qxF "$program_dir"$'\t'"start /w /unix $base/home/Sets/My Song.als" \
+    "$base/cwd-relative-set.log" \
+    || fail "relative set did not reach Wine as an absolute path from Live's Program folder"
+cwd_launch protocol 'ableton://working-directory'
+grep -qxF "$system32_dir"$'\t''start /w ableton://working-directory' "$base/cwd-protocol.log" \
+    || fail "protocol callback did not start Wine from the prefix's system32"
+for label in plain relative-set protocol; do
+    [ -s "$base/cwd-$label.log" ] || fail "$label launch reached no Wine command"
+    if awk -F '\t' -v program="$program_dir" -v system32="$system32_dir" \
+        '$1 != program && $1 != system32 { found = 1 } END { exit !found }' \
+        "$base/cwd-$label.log"; then
+        fail "$label launch ran a Wine command from an inherited directory"
+    fi
+done
+ok "Wine runs from Live's Program folder or system32, never the caller's directory"
 
 # Keep the two easy-to-regress close sites and promotion barrier explicit. The
 # behavioural handoff checks above cover fd 9 and the global fd; these source

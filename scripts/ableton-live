@@ -453,6 +453,31 @@ if [ -z "$callback_kind" ]; then
     if [ "$rel" != "$live_exe_unix" ]; then EXE="C:\\${rel//\//\\}"; else EXE="$live_exe_unix"; fi
 fi
 
+# Live walks its working directory recursively during start-up, before its
+# window appears. The directory this launcher inherits is arbitrary: the
+# generated menu entry's Path= is the prefix, whose dosdevices/z: maps all of
+# /; the Nix entry has no Path=; a terminal passes its own directory. Each can
+# hold Live at "Begin InitApplication" for as long as the walk takes (#348).
+# Run Wine from Live's Program folder, which is where Windows starts Live from
+# its shortcut. Callbacks resolve no edition, so they use the prefix's small
+# system32. Existing relative paths in the arguments become absolute first so
+# they still name the file the caller meant.
+if [ "$#" -gt 0 ]; then
+    launch_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            /*) ;;
+            *) [ -e "$arg" ] && arg="$PWD/${arg#./}" ;;
+        esac
+        launch_args+=("$arg")
+    done
+    set -- "${launch_args[@]}"
+fi
+live_cwd="$WINEPREFIX/drive_c/windows/system32"
+[ -z "$live_exe_unix" ] || live_cwd="${live_exe_unix%/*}"
+cd -- "$live_cwd" \
+    || echo "ableton-live: cannot enter $live_cwd; Live may scan $PWD before its window appears" >&2
+
 caller_winedlloverrides="${WINEDLLOVERRIDES:-}"
 
 # Host integration, diagnostics, and the selected prefix are installer-managed
