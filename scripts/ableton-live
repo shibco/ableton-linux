@@ -684,6 +684,13 @@ repair_mime_defaults()
 }
 repair_mime_defaults
 
+# A session whose wineserver was killed leaves Wine's services in the prefix for
+# good, and they make it look busy to every idle check below (#349). Clear them
+# before the first Wine command. Older support files lack the helper.
+if declare -F ableton_clear_prefix_orphans >/dev/null 2>&1; then
+    ableton_clear_prefix_orphans ableton-live "$WINE_ROOT" "$WINEPREFIX"
+fi
+
 # Live and Max share this coordinator.  It is acquired only for a cold Live
 # start and remains held until the selected prefix exposes the Live process.
 cold_launch=0

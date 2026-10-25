@@ -103,6 +103,11 @@ export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 export WINEDLLOVERRIDES="${caller_winedlloverrides:+$caller_winedlloverrides;}mscoree,mshtml="
 
+# Wine's services left behind by a session whose wineserver was killed (#349).
+if declare -F ableton_clear_prefix_orphans >/dev/null 2>&1; then
+    ableton_clear_prefix_orphans max9 "$WINE_ROOT" "$WINEPREFIX"
+fi
+
 coordinator_dir="$(ableton_lifecycle_runtime_dir)" || {
     echo "max9: Max was not started because its launch lock could not be prepared. Try again; if it repeats, report the problem." >&2
     exit 1

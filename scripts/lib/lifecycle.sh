@@ -472,3 +472,137 @@ ableton_stop_prefix()
     done
     ! ableton_prefix_busy "$runtime" "$prefix"
 }
+
+# Seconds since the process started, from /proc alone.  Field 22 of
+# /proc/PID/stat is the start time in clock ticks after boot; the command name
+# before it can contain spaces, so the fields are counted from its closing ")".
+ableton_pid_age()
+{
+    local stat hz uptime
+    local -a fields
+    stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+    read -r -a fields <<< "${stat##*) }"
+    hz="$(getconf CLK_TCK 2>/dev/null)" || return 1
+    read -r uptime _ < /proc/uptime || return 1
+    [ "${#fields[@]}" -gt 19 ] && [ "${hz:-0}" -gt 0 ] || return 1
+    printf '%s\n' "$(( ${uptime%.*} - fields[19] / hz ))"
+}
+
+# True while a wineserver serves the prefix.  The authoritative sign is Wine's
+# own: a server keeps a POSIX lock on the lock file in its directory,
+# server-<st_dev>-<st_ino> of the prefix in hex, for as long as it runs.  The
+# lock does not care how the client spelled WINEPREFIX, which the process walk
+# does: a session started as "prefix/" is invisible to it.  A wineserver the
+# walk can see counts as well, so a Wine build that keeps its server elsewhere
+# is never taken for an idle one.  The second argument overrides the server
+# root, /tmp/.wine-<uid>, for tests.
+ableton_prefix_server_running()
+{
+    local prefix="${1:-$ABLETON_WINEPREFIX}" root="${2:-/tmp/.wine-$(id -u)}"
+    local dev ino lock lock_dev lock_ino major minor pid exe
+    if dev="$(stat -L -c %d -- "$prefix" 2>/dev/null)" \
+       && ino="$(stat -L -c %i -- "$prefix" 2>/dev/null)"; then
+        lock="$(printf '%s/server-%x-%x/lock' "$root" "$dev" "$ino")"
+        if lock_ino="$(stat -c %i -- "$lock" 2>/dev/null)"; then
+            # /proc/locks names the file as major:minor:inode, the device in hex.
+            lock_dev="$(stat -c %d -- "$lock")"
+            major=$(( (lock_dev >> 8) & 0xfff )); minor=$(( (lock_dev & 0xff) | ((lock_dev >> 12) & 0xfff00) ))
+            awk -v file="$(printf '%02x:%02x:%s' "$major" "$minor" "$lock_ino")" \
+                '$2 != "->" && $6 == file { found = 1 } $2 == "->" && $7 == file { found = 1 }
+                 END { exit !found }' /proc/locks 2>/dev/null && return 0
+        fi
+    fi
+    while IFS="$(printf '\t')" read -r pid exe; do
+        [ -n "$pid" ] || continue
+        case "${exe##*/}" in wineserver|wineserver64) return 0 ;; esac
+        case "$(ableton_pid_image "$pid")" in wineserver|wineserver64) return 0 ;; esac
+    done < <(ableton_prefix_wine_processes_any_runtime "$prefix")
+    return 1
+}
+
+# A Wine client cannot do anything once its wineserver is gone: every request
+# it makes fails, so it can open no file, save nothing and draw nothing.  With
+# NTSync it does not find out either, because its threads sleep in kernel waits
+# that never touch the server socket, so the processes of a session whose
+# server was killed stay for the rest of the login session.  wineserver -k
+# cannot reach them, there being no server left to ask, and while they remain
+# the prefix never looks idle: a changed DPI block refuses Live, and an
+# orphaned Live reads as a running one (#349).
+# Orphans are the prefix's Wine processes while no server serves it.  Only
+# those older than the grace period count, so a client that is still bringing
+# its server up is never taken for one.  Prints pid<TAB>image<TAB>own|foreign,
+# foreign meaning another Wine runtime's.
+ableton_prefix_orphans()
+{
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
+    local grace="${3:-5}" server_root="${4:-}" pid exe age owner
+    ableton_prefix_server_running "$prefix" ${server_root:+"$server_root"} && return 0
+    while IFS="$(printf '\t')" read -r pid exe; do
+        [ -n "$pid" ] || continue
+        age="$(ableton_pid_age "$pid")" || continue
+        [ "$age" -ge "$grace" ] || continue
+        owner=foreign
+        ableton_pid_uses_runtime "$pid" "$runtime" && owner=own
+        printf '%s\t%s\t%s\n' "$pid" "$(ableton_pid_image "$pid")" "$owner"
+    done < <(ableton_prefix_wine_processes_any_runtime "$prefix" "$runtime")
+    return 0
+}
+
+# End this runtime's orphans.  Nothing they hold can be saved without a server,
+# so ending one loses nothing; another runtime's are left for the caller to
+# report, since the lifecycle walkers never act on a foreign Wine
+# installation.  The signals re-check identity because a pid can be reissued
+# between the walk and the stop.  Orphans exit on SIGTERM; SIGKILL is the
+# fallback.  Prints ended|kept<TAB>pid<TAB>image per orphan.
+ableton_end_prefix_orphans()
+{
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
+    local orphans pid image owner
+    local -a ended=()
+    orphans="$(ableton_prefix_orphans "$runtime" "$prefix" "${3:-5}" "${4:-}")"
+    [ -n "$orphans" ] || return 0
+    while IFS="$(printf '\t')" read -r pid image owner; do
+        [ -n "$pid" ] || continue
+        if [ "$owner" != own ]; then
+            printf 'kept\t%s\t%s\n' "$pid" "$image"
+            continue
+        fi
+        ableton_pid_uses_runtime "$pid" "$runtime" || continue
+        ableton_pid_uses_prefix "$pid" "$prefix" || continue
+        kill "$pid" 2>/dev/null || continue
+        ended+=("$pid")
+        printf 'ended\t%s\t%s\n' "$pid" "$image"
+    done <<< "$orphans"
+    [ "${#ended[@]}" -gt 0 ] || return 0
+    for pid in "${ended[@]}"; do
+        ableton_wait_for_pid_exit "$pid" 5 || {
+            ableton_pid_uses_runtime "$pid" "$runtime" \
+                && ableton_pid_uses_prefix "$pid" "$prefix" \
+                && kill -KILL "$pid" 2>/dev/null || true
+        }
+    done
+    return 0
+}
+
+# The launchers' entry point: end the prefix's orphans and say so on stderr,
+# naming each one left alone with the command that ends it.  The caller passes
+# its message prefix, as in "ableton-live" or "max9".
+ableton_clear_prefix_orphans()
+{
+    local label="$1" runtime="${2:-$ABLETON_WINE_ROOT}" prefix="${3:-$ABLETON_WINEPREFIX}"
+    local state pid image ended_names="" count=0
+    while IFS="$(printf '\t')" read -r state pid image; do
+        case "$state" in
+            ended)
+                count=$((count + 1))
+                ended_names="${ended_names:+$ended_names, }$image" ;;
+            kept)
+                printf '%s: %s (pid %s, another Wine runtime) is left in the prefix from a session whose wineserver stopped; it cannot run any more. End it with: kill %s\n' \
+                    "$label" "$image" "$pid" "$pid" >&2 ;;
+        esac
+    done < <(ableton_end_prefix_orphans "$runtime" "$prefix")
+    [ "$count" -eq 0 ] \
+        || printf '%s: ended %s Wine process(es) left in the prefix by a session whose wineserver stopped: %s\n' \
+            "$label" "$count" "$ended_names" >&2
+    return 0
+}

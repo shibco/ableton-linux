@@ -759,6 +759,128 @@ kill "$holder_pid" 2>/dev/null || true
 wait "$holder_pid" 2>/dev/null || true
 ok "a changed DPI block never restarts a shared Wine prefix"
 
+# A wineserver that is killed leaves the prefix's Wine processes running for
+# good, since their NTSync waits never notice, and they failed every idle check:
+# a changed DPI block refused Live with advice that could not help (#349). The
+# launchers end this runtime's orphans, older than the grace period, once no
+# wineserver serves the prefix, and only report another runtime's.
+spawn_prefix_process()   # base image [wine-binary]
+{
+    # shellcheck disable=SC2016
+    env WINEPREFIX="$1/prefix" bash -c 'exec -a "$1" "$2" 120' _ "$2" \
+        "${3:-$1/runtime/bin/wine-client}" >/dev/null 2>&1 &
+    printf '%s\n' "$!"
+}
+end_orphans()   # base [grace [server-root]]
+{
+    # shellcheck disable=SC2016
+    run_isolated "$1" bash -c '. "$1/lib/lifecycle.sh"
+        ableton_end_prefix_orphans "$2" "$3" "$4" "$5"' _ "$here" \
+        "$1/runtime" "$1/prefix" "${2:-5}" "${3:-$1/no-server-root}"
+}
+base="$(new_env orphaned-prefix-services)"
+prepare_fixture "$base"
+: > "$base/wine.log"
+services_pid="$(spawn_prefix_process "$base" 'C:\windows\system32\services.exe')"
+plugplay_pid="$(spawn_prefix_process "$base" 'C:\windows\system32\plugplay.exe')"
+cleanup_pids+=("$services_pid" "$plugplay_pid")
+sleep 6
+run_isolated "$base" env USER=test ABLETON_POWER=off ABLETON_RT=off \
+    ABLETON_THEME_MODE=preserve ABLETON_DPI_MODE=fractional \
+    ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
+    ABLETON_TOPBAR_MODE=preserve ABLETON_LAUNCH_TIMEOUT=5 \
+    ABLETON_TEST_APP_IMAGE='Ableton Live 12 Suite.exe' \
+    ABLETON_TEST_APP_PID_FILE="$base/app.pid" \
+    ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/ableton-live" \
+    >"$base/out" 2>"$base/err" &
+launcher_pid=$!
+cleanup_pids+=("$launcher_pid")
+for _ in {1..100}; do [ -s "$base/app.pid" ] && break; sleep 0.1; done
+[ -s "$base/app.pid" ] || fail "orphaned prefix services still blocked a DPI change: $(cat "$base/err")"
+app_pid="$(cat "$base/app.pid")"
+cleanup_pids+=("$app_pid")
+if kill -0 "$services_pid" 2>/dev/null || kill -0 "$plugplay_pid" 2>/dev/null; then
+    fail "launcher left Wine services that no wineserver serves"
+fi
+grep -qF 'ableton-live: ended 2 Wine process(es) left in the prefix by a session whose wineserver stopped:' \
+    "$base/err" || fail "launcher did not report the orphaned Wine services it ended"
+if ! grep -qF 'services.exe' "$base/err" || ! grep -qF 'plugplay.exe' "$base/err"; then
+    fail "launcher did not name the orphaned Wine services it ended"
+fi
+grep -qF 'wine reg add HKCU\Control Panel\Desktop /v LogPixels' "$base/wine.log" \
+    || fail "launcher did not apply the changed DPI block after clearing orphans"
+kill "$app_pid" 2>/dev/null || true
+wait "$launcher_pid" 2>/dev/null || true
+ok "orphaned Wine services are ended, and no longer block a DPI change"
+
+# An orphaned Live reads as a running one, so it is ended too; another
+# runtime's orphan is reported with the command that ends it, never ended.
+base="$(new_env orphan-boundaries)"
+prepare_fixture "$base"
+mkdir -p -- "$base/foreign-runtime/bin"
+cp -- /bin/sleep "$base/foreign-runtime/bin/wine"
+orphan_live_pid="$(spawn_prefix_process "$base" \
+    'C:\ProgramData\Ableton\Live 12 Suite\Program\Ableton Live 12 Suite.exe')"
+foreign_pid="$(spawn_prefix_process "$base" 'C:\windows\system32\services.exe' \
+    "$base/foreign-runtime/bin/wine")"
+cleanup_pids+=("$orphan_live_pid" "$foreign_pid")
+sleep 6
+: > "$base/wine.log"
+run_live "$base" >"$base/out" 2>"$base/err" || true
+! kill -0 "$orphan_live_pid" 2>/dev/null \
+    || fail "launcher left an orphaned Live that no wineserver serves"
+grep -qF 'ableton-live: ended 1 Wine process(es) left in the prefix by a session whose wineserver stopped: Ableton Live 12 Suite.exe' \
+    "$base/err" || fail "launcher did not report the orphaned Live it ended"
+grep -qF 'wine C:\ProgramData\Ableton\Live 12 Suite\Program\Ableton Live 12 Suite.exe' "$base/wine.log" \
+    || fail "launcher took an orphaned Live for a running one instead of starting Live"
+kill -0 "$foreign_pid" 2>/dev/null \
+    || fail "launcher ended an orphan that belongs to another Wine runtime"
+grep -qF "ableton-live: services.exe (pid $foreign_pid, another Wine runtime) is left in the prefix from a session whose wineserver stopped; it cannot run any more. End it with: kill $foreign_pid" \
+    "$base/err" || fail "launcher did not name another runtime's orphan with the command that ends it"
+kill "$foreign_pid" 2>/dev/null || true
+
+# Never while something could still be serving the prefix: a client younger
+# than the grace period, a visible wineserver, or a lock on the server's lock
+# file, which a session started with a differently spelled WINEPREFIX holds.
+young_pid="$(spawn_prefix_process "$base" 'C:\windows\system32\rpcss.exe')"
+cleanup_pids+=("$young_pid")
+young_out="$(end_orphans "$base" 30)"
+kill -0 "$young_pid" 2>/dev/null && [ -z "$young_out" ] \
+    || fail "orphan cleanup ended a Wine process younger than its grace period"
+kill "$young_pid" 2>/dev/null || true
+served_pid="$(spawn_prefix_process "$base" 'C:\windows\system32\services.exe')"
+server_pid="$(spawn_prefix_process "$base" "$base/runtime/bin/wineserver")"
+cleanup_pids+=("$served_pid" "$server_pid")
+sleep 6
+served_out="$(end_orphans "$base")"
+kill -0 "$served_pid" 2>/dev/null && [ -z "$served_out" ] \
+    || fail "orphan cleanup ended a Wine process while a wineserver serves the prefix"
+kill "$server_pid" 2>/dev/null || true
+wait "$server_pid" 2>/dev/null || true
+server_dir="$(printf '%s/server-%x-%x' "$base/server-root" \
+    "$(stat -L -c %d -- "$base/prefix")" "$(stat -L -c %i -- "$base/prefix")")"
+mkdir -p -- "$server_dir"
+: > "$server_dir/lock"
+flock "$server_dir/lock" sleep 60 &
+lock_holder_pid=$!
+cleanup_pids+=("$lock_holder_pid")
+lock_ino="$(stat -c %i -- "$server_dir/lock")"
+for _ in {1..50}; do grep -q ":$lock_ino " /proc/locks && break; sleep 0.1; done
+grep -q ":$lock_ino " /proc/locks || fail "could not hold the server lock fixture"
+locked_out="$(end_orphans "$base" 5 "$base/server-root")"
+kill -0 "$served_pid" 2>/dev/null && [ -z "$locked_out" ] \
+    || fail "orphan cleanup ended a Wine process while the server's lock file is held"
+kill "$lock_holder_pid" 2>/dev/null || true
+wait "$lock_holder_pid" 2>/dev/null || true
+run_isolated "$base" env ABLETON_POWER=off ABLETON_RT=off ABLETON_LAUNCH_TIMEOUT=5 \
+    ABLETON_TEST_WINE_LOG="$base/wine.log" bash "$here/max9" \
+    >"$base/max.out" 2>"$base/max.err" || true
+! kill -0 "$served_pid" 2>/dev/null \
+    || fail "Max launcher left a Wine service that no wineserver serves"
+grep -qF 'max9: ended 1 Wine process(es) left in the prefix by a session whose wineserver stopped: services.exe' \
+    "$base/max.err" || fail "Max launcher did not report the orphaned Wine service it ended"
+ok "orphan cleanup ends an orphaned Live, spares other runtimes, young clients, and served prefixes; Max clears orphans too"
+
 # If an uncoordinated Wine client appears after the registry writes, do not
 # kill it. Persist the pending reseed, refuse Live, and complete only after the
 # prefix becomes idle—even though the persistent values then look matched.
