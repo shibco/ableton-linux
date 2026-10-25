@@ -37,6 +37,7 @@ have already fixed your issue.
   - [A dialog opens black until you click it](#a-dialog-opens-black-until-you-click-it)
   - [Live is the wrong size, or looks blurry](#live-is-the-wrong-size-or-looks-blurry)
 - [Plugins and Max for Live devices](#plugins-and-max-for-live-devices)
+  - [Live crashes when inserting LFO or Shaper](#live-crashes-when-inserting-lfo-or-shaper)
   - [A plugin's installer won't start](#a-plugins-installer-wont-start)
   - [My plugin won't activate, or its copy protection fails](#my-plugin-wont-activate-or-its-copy-protection-fails)
   - [A plugin I installed doesn't appear in Live](#a-plugin-i-installed-doesnt-appear-in-live)
@@ -694,6 +695,32 @@ tell us your desktop, and whether Full Screen was still shifted with that
 command.
 
 ## Plugins and Max for Live devices
+
+### Live crashes when inserting LFO or Shaper
+
+On the Wine 11.13 runtime, Max for Live can crash during device insertion when
+Wine selects its builtin C++ exception handlers despite the Microsoft VC++
+redistributable being installed. This was reproduced with Live 12.4.6 and its
+bundled Max 9.1.5. The observed fault was in
+`ucrtbase!__CxxUnregisterExceptionObject`, called through
+`vcruntime140_1!__CxxFrameHandler4`.
+
+The Live launcher now prefers the installed Microsoft `vcruntime140` and
+`vcruntime140_1` DLLs together. It keeps Wine's builtin UCRT and the project's
+patched graphics runtime. Updating the launcher applies this default to existing
+prefixes; prefix setup already installs the required Microsoft files.
+
+For an older launcher, close Live and try one launch with:
+
+```bash
+WINEDLLOVERRIDES='vcruntime140,vcruntime140_1=n,b' ableton-live
+```
+
+Try LFO and Shaper in a blank Set, then check parameter mapping and audio.
+If the native DLLs are missing, run the installer update to repair the prefix.
+The launcher retains builtin fallback, so an incomplete prefix can still launch,
+but that fallback does not resolve this crash. Explicit `WINEDLLOVERRIDES`
+settings take precedence over the new default.
 
 ### A plugin's installer won't start
 
