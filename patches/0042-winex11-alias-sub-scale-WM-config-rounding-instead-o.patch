@@ -1,4 +1,4 @@
-From a014d2aa06ca241fb50cefeebfcf334e5a580700 Mon Sep 17 00:00:00 2001
+From dea93bbfbcd7da240f5a50569e8859ef0ae39c11 Mon Sep 17 00:00:00 2001
 From: ableton-wine <local@ableton-wine>
 Date: Tue, 21 Jul 2026 10:47:11 +0200
 Subject: [PATCH] winex11: alias sub-scale WM config rounding instead of
@@ -14,6 +14,17 @@ up, and the window grows two pixels per cycle without bound (Ableton
 Live 12 at 125% display scale; menu bands of 7 and 8 pixels both
 ratchet, so no frame constant can converge).
 
+At fractional scales the same loop runs against a tiling window manager:
+it imposes geometry the app's grid cannot hold, the app answers every
+grant with a request one pixel over, and the window manager refuses it
+again (Ableton Live 12 tiled on Hyprland at 1.6, LogPixels 154, ~170
+round trips a second, input starved). Bound the tolerated delta by the
+scale rounded up, and keep the scale-aligned edge check for integer
+scales only, where it is the window manager's grid. The local answer to
+requests within sub-scale deltas also stays integer-only: at fractional
+scales the window manager may grant them, so they are only aliased after
+it has refused.
+
 Track each configure request. When the grant differs from the request
 only by sub-scale deltas on scale-aligned edges, alias the granted host
 rect to the requested Win32 rect and do not notify Win32. Requests
@@ -23,26 +34,27 @@ pointer motion during interactive drags. The alias survives WM
 translations and is dropped on any genuine Win32 rect change via a
 generation counter. Adapted from ENCORE's encore-wine.patch.
 ---
- dlls/winex11.drv/window.c | 327 +++++++++++++++++++++++++++++++++++++-
+ dlls/winex11.drv/window.c | 339 +++++++++++++++++++++++++++++++++++++-
  dlls/winex11.drv/x11drv.h |   7 +
- 2 files changed, 332 insertions(+), 2 deletions(-)
+ 2 files changed, 344 insertions(+), 2 deletions(-)
 
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 85161e2f..6a84639b 100644
+index 19bd6aeb..17fb803b 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1597,6 +1597,183 @@ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_stat
+@@ -1597,6 +1597,193 @@ static void window_set_net_wm_state( struct x11drv_win_data *data, UINT new_stat
      }
  }
  
 +/* Sub-scale config-rounding suppression.  At integer scales above 1 the
 + * window manager grants only scale-aligned physical geometry, so a request
-+ * with an off-grid edge comes back one pixel off.  Feeding that back to
-+ * Win32 makes an app whose layout is also scale-aligned (Ableton Live 12,
-+ * per-monitor aware) re-request endlessly, growing 2px per cycle. When a
-+ * grant differs from our
-+ * request only by sub-scale deltas on scale-aligned edges, alias the
-+ * granted host rect to the requested Win32 rect and do not tell Win32.
++ * with an off-grid edge comes back one pixel off.  At fractional scales a
++ * tiling window manager imposes its own geometry, which can sit a pixel off
++ * the grid the app snaps to.  Feeding either back to Win32 makes an app whose
++ * layout is scale-aligned (Ableton Live 12, per-monitor aware) re-request
++ * endlessly.  When a grant differs from our request only by sub-scale deltas
++ * (on scale-aligned edges, at integer scales), alias the granted host rect
++ * to the requested Win32 rect and do not tell Win32.
 + * Adapted from ENCORE's encore-wine.patch (github.com/wowitsjack/ENCORE). */
 +enum config_rounding_state
 +{
@@ -78,6 +90,16 @@ index 85161e2f..6a84639b 100644
 +           data->whole_window, wine_dbgstr_rect(rect), serial, data->config_generation );
 +}
 +
++/* physical pixels per logical pixel, rounded up. a rounded edge moves by less than this.
++ * 0 below the default dpi, where nothing is aliased */
++static UINT config_rounding_scale( struct x11drv_win_data *data )
++{
++    UINT dpi = NtUserGetDpiForWindow( data->hwnd );
++
++    if (dpi < USER_DEFAULT_SCREEN_DPI) return 0;
++    return (dpi + USER_DEFAULT_SCREEN_DPI - 1) / USER_DEFAULT_SCREEN_DPI;
++}
++
 +static BOOL rect_sizes_equal( const RECT *first, const RECT *second )
 +{
 +    return first->right - first->left == second->right - second->left &&
@@ -89,19 +111,20 @@ index 85161e2f..6a84639b 100644
 +{
 +    const int expected_edges[] = {expected->left, expected->top, expected->right, expected->bottom};
 +    const int value_edges[] = {value->left, value->top, value->right, value->bottom};
-+    UINT dpi = NtUserGetDpiForWindow( data->hwnd ), scale;
-+    BOOL different = FALSE;
++    UINT dpi = NtUserGetDpiForWindow( data->hwnd ), scale = config_rounding_scale( data );
++    /* only an integer scale gives the window manager a grid to snap granted edges to */
++    BOOL aligned = !(dpi % USER_DEFAULT_SCREEN_DPI), different = FALSE;
 +    unsigned int i;
 +
-+    if (dpi <= USER_DEFAULT_SCREEN_DPI || dpi % USER_DEFAULT_SCREEN_DPI) return FALSE;
++    if (dpi <= USER_DEFAULT_SCREEN_DPI) return FALSE;
 +
-+    scale = dpi / USER_DEFAULT_SCREEN_DPI;
 +    for (i = 0; i < ARRAY_SIZE(expected_edges); i++)
 +    {
 +        int delta = value_edges[i] - expected_edges[i];
 +
 +        if (!delta) continue;
-+        if (delta <= -(int)scale || delta >= (int)scale || value_edges[i] % (int)scale) return FALSE;
++        if (delta <= -(int)scale || delta >= (int)scale) return FALSE;
++        if (aligned && value_edges[i] % (int)scale) return FALSE;
 +        different = TRUE;
 +    }
 +
@@ -113,10 +136,9 @@ index 85161e2f..6a84639b 100644
 +{
 +    const int expected_edges[] = {expected->left, expected->top, expected->right, expected->bottom};
 +    const int value_edges[] = {value->left, value->top, value->right, value->bottom};
-+    UINT dpi = NtUserGetDpiForWindow( data->hwnd ), scale, i;
++    UINT scale = config_rounding_scale( data ), i;
 +
-+    if (dpi < USER_DEFAULT_SCREEN_DPI || dpi % USER_DEFAULT_SCREEN_DPI) return FALSE;
-+    scale = dpi / USER_DEFAULT_SCREEN_DPI;
++    if (!scale) return FALSE;
 +
 +    for (i = 0; i < ARRAY_SIZE(expected_edges); i++)
 +    {
@@ -170,14 +192,13 @@ index 85161e2f..6a84639b 100644
 +{
 +    const RECT old_host_rect = data->current_state.rect;
 +    RECT win32_rect = data->rects.visible;
-+    UINT dpi = NtUserGetDpiForWindow( data->hwnd ), scale;
++    UINT scale = config_rounding_scale( data );
 +    int left, top, right, bottom;
 +
 +    if (!data->managed || data->desired_state.wm_state != NormalState ||
 +        IsRectEmpty( &old_host_rect ) || IsRectEmpty( &win32_rect ))
 +        return FALSE;
-+    if (dpi < USER_DEFAULT_SCREEN_DPI || dpi % USER_DEFAULT_SCREEN_DPI) return FALSE;
-+    scale = dpi / USER_DEFAULT_SCREEN_DPI;
++    if (!scale) return FALSE;
 +
 +    left = host_rect->left - old_host_rect.left;
 +    top = host_rect->top - old_host_rect.top;
@@ -215,7 +236,7 @@ index 85161e2f..6a84639b 100644
  static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL above )
  {
      UINT style = NtUserGetWindowLongW( data->hwnd, GWL_STYLE ), mask = 0;
-@@ -1627,6 +1804,29 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
+@@ -1627,6 +1814,31 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
          return;
      }
  
@@ -223,8 +244,10 @@ index 85161e2f..6a84639b 100644
 +     * cannot be represented by the WM; issuing it causes one pointless
 +     * round trip, and during an interactive grab the extra requests
 +     * conflict visibly with the drag.  Alias it locally, with no X
-+     * traffic.  Only fires at integer scales above 1. */
++     * traffic.  Only fires at integer scales above 1, where the WM grid
++     * guarantees the refusal; at fractional scales the WM may grant it. */
 +    if (data->managed && !above && !data->configure_serial &&
++        !(NtUserGetDpiForWindow( data->hwnd ) % USER_DEFAULT_SCREEN_DPI) &&
 +        EqualRect( old_rect, &data->current_state.rect ) &&
 +        !EqualRect( new_rect, &data->current_state.rect ) &&
 +        config_edges_within_dpi_rounding( data, new_rect, &data->current_state.rect ))
@@ -245,7 +268,7 @@ index 85161e2f..6a84639b 100644
      if (old_rect->right - old_rect->left != new_rect->right - new_rect->left ||
          old_rect->bottom - old_rect->top != new_rect->bottom - new_rect->top)
      {
-@@ -1665,6 +1865,8 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
+@@ -1665,6 +1877,8 @@ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL abo
      data->pending_state.rect = *new_rect;
      data->pending_state.above = above;
      data->configure_serial = NextRequest( data->display );
@@ -254,7 +277,7 @@ index 85161e2f..6a84639b 100644
      TRACE( "window %p/%lx, requesting config %s mask %#x above %u, serial %lu\n", data->hwnd, data->whole_window,
             wine_dbgstr_rect(new_rect), mask, above, data->configure_serial );
      XReconfigureWMWindow( data->display, data->whole_window, data->vis.screen, mask, &changes );
-@@ -2067,6 +2269,29 @@ static UINT window_update_client_config( struct x11drv_win_data *data )
+@@ -2067,6 +2281,29 @@ static UINT window_update_client_config( struct x11drv_win_data *data )
      if (data->mwm_hints_serial) return 0; /* another MWM_HINT update is pending, wait for it to complete */
      if (data->configure_serial) return 0; /* another config update is pending, wait for it to complete */
  
@@ -284,7 +307,7 @@ index 85161e2f..6a84639b 100644
      /* Ignore fullscreen config changes when it's still on the same monitor. This is needed because
       * adding __NET_WM_STATE_FULLSCREEN will make WMs move the window to cover exactly the monitor
       * rect. If the application sets a visible rect slightly larger than the monitor rect and insists
-@@ -2125,7 +2350,10 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
+@@ -2125,7 +2362,10 @@ BOOL X11DRV_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp_flags,
      {
          *state_cmd = window_update_client_state( data );
          *swp_flags = window_update_client_config( data );
@@ -296,7 +319,7 @@ index 85161e2f..6a84639b 100644
          release_win_data( data );
      }
  
-@@ -2265,12 +2493,50 @@ void window_configure_notify( struct x11drv_win_data *data, unsigned long serial
+@@ -2265,12 +2505,50 @@ void window_configure_notify( struct x11drv_win_data *data, unsigned long serial
  {
      RECT *desired = &data->desired_state.rect, *pending = &data->pending_state.rect, *current = &data->current_state.rect;
      unsigned long *expect_serial = &data->configure_serial;
@@ -347,7 +370,7 @@ index 85161e2f..6a84639b 100644
      /* if we've delayed some config we want to continue with it, make sure handle_state_change doesn't overwrite it */
      if ((*expect_serial || window_needs_config_change_delay( data )) &&
          serial >= *expect_serial && !EqualRect( desired, pending ))
-@@ -2282,10 +2548,38 @@ void window_configure_notify( struct x11drv_win_data *data, unsigned long serial
+@@ -2282,10 +2560,38 @@ void window_configure_notify( struct x11drv_win_data *data, unsigned long serial
      if (!handle_state_change( serial, expect_serial, sizeof(*value), value, desired, pending,
                                current, expected, prefix, received, NULL ))
          return;
@@ -386,7 +409,7 @@ index 85161e2f..6a84639b 100644
  }
  
  void net_active_window_notify( unsigned long serial, Window value, Time time )
-@@ -2497,6 +2791,18 @@ static void sync_window_position( struct x11drv_win_data *data, UINT swp_flags,
+@@ -2497,6 +2803,18 @@ static void sync_window_position( struct x11drv_win_data *data, UINT swp_flags,
      if (data->is_offscreen) OffsetRect( &new_rect, window_rect.left - old_rects->window.left,
                                          window_rect.top - old_rects->window.top );
  
@@ -405,7 +428,7 @@ index 85161e2f..6a84639b 100644
      window_set_config( data, new_rect, above );
  }
  
-@@ -2843,6 +3149,8 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
+@@ -2843,6 +3161,8 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
          }
      }
      if (data->whole_colormap) XFreeColormap( data->display, data->whole_colormap );
@@ -414,7 +437,7 @@ index 85161e2f..6a84639b 100644
      data->whole_window = data->client_window = 0;
      data->whole_colormap = 0;
      data->managed = FALSE;
-@@ -3643,7 +3951,22 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+@@ -3643,7 +3963,22 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
  
      old_rects = data->rects;
      was_fullscreen = data->is_fullscreen;
@@ -456,3 +479,6 @@ index 4d1aa53c..34b53ce4 100644
  };
  
  extern struct x11drv_win_data *get_win_data( HWND hwnd );
+-- 
+2.55.0
+
