@@ -2,6 +2,9 @@
 # Audit a runtime artifact against the frozen patch stack (patches/SERIES.sha256): patch file hashes,
 # build stamp, per-patch binary fingerprints. Arg: tarball, tree, or --freeze; defaults to newest dist/*.tar.zst.
 set -euo pipefail
+# readelf localises its output, so the DT_NEEDED checks below - which match the
+# English literal "Shared library: [...]" - fail on any non-English system.
+export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 NAME="wine-d2d1-nspa-11.13"
